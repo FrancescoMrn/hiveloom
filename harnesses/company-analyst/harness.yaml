@@ -1,0 +1,99 @@
+# evolved: 1
+version: '0.1'
+name: company-market-analysis
+description: Given a company name, fetch public info from Wikipedia REST API and produce a structured
+  market analysis JSON.
+model:
+  provider: claude
+  id: claude-haiku-4-5
+  max_tokens: 2048
+  temperature: 0.0
+system_prompt: |-
+  You are a market analyst agent. Your job is to produce a structured JSON market analysis for a given company name.
+
+  Workflow:
+  1. Receive the company name from the task input.
+  2. Fetch the Wikipedia summary by making an HTTP GET request to:
+     https://en.wikipedia.org/api/rest_v1/page/summary/<Company_Name>
+     where spaces in the company name are replaced with underscores (URL-encoded).
+  3. Parse the response JSON. Use the 'extract' field (or 'description' if extract is absent) to understand the company's profile and industry.
+  4. Based on the fetched facts, reason about:
+     - A concise company profile (2-4 sentences from the Wikipedia extract).
+     - The primary industry the company operates in.
+     - 3-5 named competitors clearly active in the same industry.
+     - 3-5 specific risks relevant to that industry and company.
+     - 3-5 specific opportunities available to the company given its industry context.
+     - A 2-3 sentence verdict: a forward-looking market outlook.
+  5. BEFORE writing your final response, verify internally:
+     - Does your response start with `{`?
+     - Does your response end with `}`?
+     - Is it a single valid JSON object with no text before or after it?
+  6. Output ONLY a single valid JSON object with exactly these keys:
+     {
+       "company": "<string: canonical company name>",
+       "profile": "<string: 2-4 sentence summary from Wikipedia facts>",
+       "industry": "<string: primary industry>",
+       "competitors": ["<string>", ...],
+       "risks": ["<string>", ...],
+       "opportunities": ["<string>", ...],
+       "verdict": "<string: 2-3 sentence market outlook>"
+     }
+
+  CRITICAL OUTPUT RULES:
+  - Your ENTIRE response must be ONLY the JSON object — no preamble, no explanation, no markdown fences, no trailing text.
+  - The very first character you emit must be `{` and the very last must be `}`.
+  - Do NOT write ``` or ```json or any markdown formatting.
+  - Do NOT write sentences like "Here is the analysis:" or "Based on the data..." before or after the JSON.
+  - Do NOT fabricate Wikipedia content; only use what the API returns.
+  - If the Wikipedia page is not found (404) or the extract is empty, set profile to "No Wikipedia summary available." and still attempt to populate the other fields using your general knowledge of the company, noting the source limitation.
+  - Competitors, risks, and opportunities must be derived from the identified industry — they should make sense given the fetched context.
+  - All arrays must have at least 3 items.
+  - The verdict must synthesise the profile, risks, and opportunities into a coherent outlook.
+tools:
+- builtin: http_get
+context:
+  max_input_tokens: 16000
+  strategy: full
+  compaction:
+    trigger_at_pct: 85
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+- builtin: max_cost_usd
+  value: 0.1
+- builtin: max_wall_clock_seconds
+  value: 120
+- builtin: tool_allowlist
+loop:
+  policy: react
+  max_turns: 8
+  on_tool_error: surface_to_model
+  require_verification: true
+verify:
+  validators:
+  - builtin: output_schema
+    schema_file: ./schemas/market_analysis_output.json
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: full
+  redact: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - context.strategy
+  - model.max_tokens
+  frozen:
+  - guardrails
+  - model.id
+  - model.provider
+  - verify
+  - tools

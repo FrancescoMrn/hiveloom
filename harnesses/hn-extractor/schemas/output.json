@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hn-extractor output",
+  "type": "object",
+  "required": ["source", "fetched_stories", "stories"],
+  "properties": {
+    "source": {
+      "type": "string",
+      "const": "https://news.ycombinator.com/",
+      "description": "URL that was fetched."
+    },
+    "fetched_stories": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of stories extracted."
+    },
+    "stories": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["rank", "title", "url"],
+        "properties": {
+          "rank": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "url": { "type": "string" },
+          "points": { "type": ["integer", "null"] },
+          "comments": { "type": ["integer", "null"] }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
