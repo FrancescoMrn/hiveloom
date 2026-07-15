@@ -1,0 +1,10 @@
+Quarterly Engineering Review — Q2
+
+The platform team shipped the new ingestion pipeline, cutting median event
+latency from 4.2s to 0.9s. Reliability improved: there were two incidents this
+quarter, both resolved within the SLA, down from five last quarter. The team
+also paid down significant tech debt by retiring the legacy queue.
+
+Hiring came in under plan: three of five open roles were filled. The biggest
+risk for next quarter is the database migration, which is on the critical path
+for the billing rework and has no slack in the schedule.

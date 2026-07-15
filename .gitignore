@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# hiveloom local
+.hiveloom/
+hive.db
+
+# env
+.env
+.token.*

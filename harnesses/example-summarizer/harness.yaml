@@ -1,0 +1,61 @@
+version: '0.1'
+name: example-summarizer
+description: Summarize a text file into a structured JSON summary.
+model:
+  provider: claude
+  id: claude-haiku-4-5
+  max_tokens: 4096
+  temperature: 0.0
+system_prompt: |
+  You summarize a source text into a compact, structured JSON object.
+  Read the input file, then produce JSON with keys: "title" (string),
+  "summary" (string, shorter than the source), and "key_points"
+  (array of strings). Do not include any prose outside the JSON.
+tools:
+- builtin: file_read
+- builtin: file_write
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+guardrails:
+- builtin: max_cost_usd
+  value: 0.25
+- builtin: max_wall_clock_seconds
+  value: 120
+- builtin: tool_allowlist
+loop:
+  policy: react
+  max_turns: 12
+  on_tool_error: retry_once
+  require_verification: true
+verify:
+  validators:
+  - builtin: output_schema
+    schema_file: ./schemas/output.json
+  - code: validators/check_summary.py:validate
+    description: Ensure the summary is well-formed and shorter than the source.
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: full
+  redact:
+  - api[_-]?key
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  frozen:
+  - guardrails
+  - model
