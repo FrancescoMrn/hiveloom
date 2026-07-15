@@ -411,7 +411,7 @@ class HarnessSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: str = Field(default="0.1", description="Spec format version.")
+    version: str = Field(default="0.1.0", description="Spec format version.")
     name: str = Field(description="Harness name (used for the Hive and packaging).")
     description: str = Field(description="One-line description of the task.")
     extensions: list[str] = Field(

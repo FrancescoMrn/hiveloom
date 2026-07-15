@@ -16,7 +16,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 
 | Section | Purpose | Notable fields |
 |---|---|---|
-| `version` | Spec format version | defaults to `0.1` |
+| `version` | Spec format version | defaults to `0.1.0` |
 | `name` / `description` | Identity (Hive + packaging) | required |
 | `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
