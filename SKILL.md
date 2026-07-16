@@ -19,6 +19,10 @@ harness — not the conversation — is the durable, versionable, improvable
 artifact. Run traces are memory (the *Hive*), and an evolve loop improves the
 harness after failures.
 
+This is the compact all-in-one skill. Focused per-stage skills (build / run /
+evolve / extend / ship) live in [`skills/`](skills/README.md), and
+[`AGENTS.md`](AGENTS.md) is the agent entry point for the whole repo.
+
 ## When to use it
 
 - **Repetitive + verifiable task** → generate a harness instead of doing the

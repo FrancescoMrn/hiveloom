@@ -170,6 +170,11 @@ Custom LLM providers (Ollama, vLLM, any OpenAI-compatible server) are one
 
 ## Documentation
 
+**For agents:** [AGENTS.md](AGENTS.md) is the entry point — ground rules, exit
+codes, and a task→skill map. [skills/](skills/README.md) holds a series of
+installable Agent Skills (build / run / evolve / extend / ship); the root
+[SKILL.md](SKILL.md) is the compact all-in-one variant.
+
 - [Architecture](docs/architecture.md) — components, data flow, and invariants.
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.
 - [Extending hiveloom](docs/extending.md) — extension packs, providers, hooks, and SDK embedding.
