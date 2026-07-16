@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from hiveloom import trust
+from hiveloom.catalog import CATALOGS
 from hiveloom.errors import SpecError
 from hiveloom.spec.loader import (
     HARNESS_FILENAME,
@@ -333,20 +334,63 @@ def add_validator(
     )
 
 
+def find_guardrails(directory: str | Path, builtin: str) -> list[dict[str, Any]]:
+    """Return the raw guardrail entries in the spec that reference ``builtin``."""
+    raw = load_raw(Path(directory))
+    return [
+        g
+        for g in raw.get("guardrails") or []
+        if isinstance(g, dict) and g.get("builtin") == builtin
+    ]
+
+
+def _apply_guardrail(entries: list[Any], entry: dict[str, Any]) -> None:
+    """Add ``entry`` to ``entries`` in place, replacing what it supersedes.
+
+    Singleton guardrails (per the catalog) allow only one meaningful entry, so a
+    new one replaces any existing entries of that name — otherwise `init`'s
+    default ``max_cost_usd`` would linger next to the one the caller just asked
+    for. Guardrails that compose as a list (e.g. ``regex_output_filter``, one per
+    pattern) only collapse exact duplicates, which are always no-ops.
+
+    Superseded entries are collapsed to one, so adding to a spec that already
+    carries duplicates cleans it up rather than adding to the pile.
+    """
+    catalog_entry = CATALOGS["guardrails"].get(entry["builtin"])
+    singleton = catalog_entry is not None and catalog_entry.singleton
+    superseded = [
+        index
+        for index, existing in enumerate(entries)
+        if isinstance(existing, dict)
+        and existing.get("builtin") == entry["builtin"]
+        and (singleton or existing == entry)
+    ]
+    if not superseded:
+        entries.append(entry)
+        return
+    entries[superseded[0]] = entry  # keep the original position
+    for index in reversed(superseded[1:]):
+        del entries[index]
+
+
 def add_guardrail(
     directory: str | Path,
     builtin: str,
     value: Any = None,
     **params: Any,
 ) -> HarnessSpec:
-    """Add a builtin guardrail (guardrails are code-hookable but usually builtin)."""
+    """Add a builtin guardrail, replacing an existing entry of the same name.
+
+    Guardrails are code-hookable but usually builtin. See :func:`_apply_guardrail`
+    for when adding replaces rather than appends.
+    """
     directory = Path(directory)
     entry: dict[str, Any] = {"builtin": builtin}
     if value is not None:
         entry["value"] = value
     entry.update({k: v for k, v in params.items() if v is not None})
     raw = load_raw(directory)
-    raw.setdefault("guardrails", []).append(entry)
+    _apply_guardrail(raw.setdefault("guardrails", []), entry)
     return _commit(directory, raw, [], "add_guardrail", {"builtin": builtin, "value": value})
 
 

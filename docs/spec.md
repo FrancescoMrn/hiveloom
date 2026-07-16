@@ -38,7 +38,11 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
   (allowlist-only, disabled without one), `http_get`.
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
-  `tool_allowlist`, `no_network_write`, `regex_output_filter`.
+  `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
+  `regex_output_filter` are *singletons*: only one entry is meaningful, so
+  `hiveloom add guardrail` replaces an existing one (including the injected
+  default `max_cost_usd`) rather than appending a redundant second entry.
+  `regex_output_filter` composes as a list — one entry per pattern.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
   `file_exists`, `command_succeeds` (exit 0 = pass).
 - **Policies:** `react`, `plan_then_act`.

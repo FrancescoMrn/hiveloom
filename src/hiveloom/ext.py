@@ -146,9 +146,14 @@ class ExtensionAPI:
         description: str,
         tags: Sequence[str] = (),
         params: Sequence[Any] = (),
+        singleton: bool = False,
     ) -> None:
-        """Register a guardrail. ``factory(params, ctx)`` must return a ``Guardrail``."""
-        self._register("guardrails", name, factory, description, tags, params)
+        """Register a guardrail. ``factory(params, ctx)`` must return a ``Guardrail``.
+
+        Set ``singleton`` when only one entry of this guardrail is meaningful in a
+        spec, so ``hiveloom add guardrail`` replaces rather than appends.
+        """
+        self._register("guardrails", name, factory, description, tags, params, singleton=singleton)
 
     def register_validator(
         self,
@@ -264,6 +269,7 @@ class ExtensionAPI:
         description: str,
         tags: Sequence[str],
         params: Sequence[Any],
+        singleton: bool = False,
     ) -> None:
         entries = catalog.CATALOGS[kind]
         if name in entries:
@@ -278,6 +284,7 @@ class ExtensionAPI:
             tags=list(tags),
             params=[catalog.ParamSpec.model_validate(p) for p in params],
             source=self.source,
+            singleton=singleton,
         )
         _registry.factories[kind][name] = factory
         _registry.registrations.append({"source": self.source, "kind": kind, "name": name})

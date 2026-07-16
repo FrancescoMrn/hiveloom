@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from hiveloom import construct
 from hiveloom.errors import SpecError
+from hiveloom.spec import loader
 from hiveloom.spec.loader import load_spec, validate_harness
 
 
@@ -102,6 +104,80 @@ def test_add_guardrail(harness_dir: Path):
     assert any(
         getattr(g, "builtin", None) == "max_wall_clock_seconds" for g in spec.guardrails
     )
+
+
+def _guardrails(harness_dir: Path, builtin: str) -> list:
+    return [g for g in load_spec(harness_dir).guardrails if getattr(g, "builtin", None) == builtin]
+
+
+def test_add_singleton_guardrail_replaces_injected_default(harness_dir: Path):
+    """The spec's default max_cost_usd (1.00) must not linger beside an explicit one."""
+    assert [g.value for g in _guardrails(harness_dir, "max_cost_usd")] == [1.00]
+
+    construct.add_guardrail(harness_dir, builtin="max_cost_usd", value=0.25)
+
+    assert [g.value for g in _guardrails(harness_dir, "max_cost_usd")] == [0.25]
+
+
+def test_add_singleton_guardrail_is_idempotent(harness_dir: Path):
+    construct.add_guardrail(harness_dir, builtin="tool_allowlist")
+    construct.add_guardrail(harness_dir, builtin="tool_allowlist")
+    construct.add_guardrail(harness_dir, builtin="max_wall_clock_seconds", value=60)
+    construct.add_guardrail(harness_dir, builtin="max_wall_clock_seconds", value=120)
+
+    assert len(_guardrails(harness_dir, "tool_allowlist")) == 1
+    assert [g.value for g in _guardrails(harness_dir, "max_wall_clock_seconds")] == [120]
+
+
+def test_add_singleton_guardrail_keeps_position(harness_dir: Path):
+    """Replacing must overwrite in place, not reorder the guardrail list."""
+    construct.add_guardrail(harness_dir, builtin="tool_allowlist")
+    before = [getattr(g, "builtin", None) for g in load_spec(harness_dir).guardrails]
+
+    construct.add_guardrail(harness_dir, builtin="max_cost_usd", value=0.10)
+
+    assert [getattr(g, "builtin", None) for g in load_spec(harness_dir).guardrails] == before
+
+
+def test_add_singleton_guardrail_collapses_preexisting_duplicates(harness_dir: Path):
+    """A spec written before replace semantics may already carry duplicates."""
+    raw = loader.load_raw(harness_dir)
+    raw["guardrails"] = [
+        {"builtin": "max_cost_usd", "value": 1.00},
+        {"builtin": "tool_allowlist"},
+        {"builtin": "max_cost_usd", "value": 0.25},
+    ]
+    (harness_dir / "harness.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    construct.add_guardrail(harness_dir, builtin="max_cost_usd", value=0.10)
+
+    assert [g.value for g in _guardrails(harness_dir, "max_cost_usd")] == [0.10]
+    assert len(_guardrails(harness_dir, "tool_allowlist")) == 1
+
+
+def test_add_composing_guardrail_keeps_distinct_patterns(harness_dir: Path):
+    """regex_output_filter is a list of filters — distinct patterns must all survive."""
+    construct.add_guardrail(harness_dir, builtin="regex_output_filter", pattern="sk-ant-")
+    construct.add_guardrail(harness_dir, builtin="regex_output_filter", pattern="BEGIN PRIVATE KEY")
+
+    patterns = [g.params()["pattern"] for g in _guardrails(harness_dir, "regex_output_filter")]
+    assert patterns == ["sk-ant-", "BEGIN PRIVATE KEY"]
+
+
+def test_add_composing_guardrail_collapses_exact_duplicate(harness_dir: Path):
+    construct.add_guardrail(harness_dir, builtin="regex_output_filter", pattern="sk-ant-")
+    construct.add_guardrail(harness_dir, builtin="regex_output_filter", pattern="sk-ant-")
+
+    assert len(_guardrails(harness_dir, "regex_output_filter")) == 1
+
+
+def test_find_guardrails_reports_raw_entries(harness_dir: Path):
+    construct.add_guardrail(harness_dir, builtin="max_cost_usd", value=0.25)
+
+    assert construct.find_guardrails(harness_dir, "max_cost_usd") == [
+        {"builtin": "max_cost_usd", "value": 0.25}
+    ]
+    assert construct.find_guardrails(harness_dir, "no_network_write") == []
 
 
 def test_remove_tool_by_name(harness_dir: Path):

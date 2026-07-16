@@ -41,6 +41,15 @@ class CatalogEntry(BaseModel):
     tags: list[str] = Field(default_factory=list)
     params: list[ParamSpec] = Field(default_factory=list)
     source: str = "builtin"
+    singleton: bool = Field(
+        default=False,
+        description=(
+            "Only one entry of this name is meaningful in a spec, so ``add`` replaces "
+            "an existing one instead of appending (e.g. a second, weaker max_cost_usd "
+            "is redundant). Entries that compose as a list — like regex_output_filter, "
+            "one per pattern — leave this False."
+        ),
+    )
 
 
 # Python types accepted for each declared param ``type``.
@@ -99,6 +108,7 @@ BUILTIN_GUARDRAILS: dict[str, CatalogEntry] = _entries(
         name="max_cost_usd",
         description="Halt the run once accumulated model cost exceeds this many USD.",
         tags=["budget"],
+        singleton=True,
         params=[
             ParamSpec(
                 name="value",
@@ -113,6 +123,7 @@ BUILTIN_GUARDRAILS: dict[str, CatalogEntry] = _entries(
         name="max_wall_clock_seconds",
         description="Halt the run once it has run longer than this many seconds.",
         tags=["budget", "time"],
+        singleton=True,
         params=[
             ParamSpec(name="value", type="int", required=True, default=300,
                       description="Wall-clock ceiling in seconds."),
@@ -122,6 +133,7 @@ BUILTIN_GUARDRAILS: dict[str, CatalogEntry] = _entries(
         name="max_turns_hard_cap",
         description="Hard cap on loop turns, independent of loop.max_turns.",
         tags=["budget"],
+        singleton=True,
         params=[
             ParamSpec(name="value", type="int", required=True, default=50,
                       description="Absolute maximum number of loop turns."),
@@ -131,11 +143,13 @@ BUILTIN_GUARDRAILS: dict[str, CatalogEntry] = _entries(
         name="tool_allowlist",
         description="Block any tool call whose name is not a registered tool.",
         tags=["safety"],
+        singleton=True,
     ),
     CatalogEntry(
         name="no_network_write",
         description="Block tools tagged both 'network' and 'write'.",
         tags=["safety", "network"],
+        singleton=True,
     ),
     CatalogEntry(
         name="regex_output_filter",

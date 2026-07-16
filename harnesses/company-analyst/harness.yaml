@@ -62,8 +62,6 @@ context:
   - task_statement
 guardrails:
 - builtin: max_cost_usd
-  value: 1.0
-- builtin: max_cost_usd
   value: 0.1
 - builtin: max_wall_clock_seconds
   value: 120

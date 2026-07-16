@@ -65,6 +65,32 @@ def test_add_and_remove_tool(tmp_path: Path):
     assert _json(r)["removed"] == "file_read"
 
 
+def test_add_guardrail_reports_replacement(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+
+    # init's spec carries the default max_cost_usd of 1.00; adding one replaces it.
+    r = runner.invoke(
+        app, ["add", "guardrail", "--builtin", "max_cost_usd", "--value", "0.25",
+              "--dir", directory, "--json"]
+    )
+    assert r.exit_code == ExitCode.OK
+    payload = _json(r)
+    assert payload["replaced"] == "guardrail"
+    assert payload["before"] == [{"builtin": "max_cost_usd", "value": 1.00}]
+    assert payload["after"] == {"builtin": "max_cost_usd", "value": 0.25}
+
+
+def test_add_new_guardrail_reports_addition(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app, ["add", "guardrail", "--builtin", "tool_allowlist", "--dir", directory, "--json"]
+    )
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["added"] == "guardrail"
+
+
 def test_validate_missing_harness(tmp_path: Path):
     r = runner.invoke(app, ["validate", str(tmp_path / "nope"), "--json"])
     assert r.exit_code == ExitCode.SPEC_ERROR

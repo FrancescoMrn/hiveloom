@@ -324,8 +324,13 @@ def add_guardrail_cmd(
 
     with _guard(json_output):
         parsed_value = yaml.safe_load(value) if value is not None else None
+        before = construct.find_guardrails(directory, builtin)
         construct.add_guardrail(directory, builtin=builtin, value=parsed_value, pattern=pattern)
-        _added(json_output, "guardrail", builtin)
+        after = construct.find_guardrails(directory, builtin)
+        if len(after) > len(before):
+            _added(json_output, "guardrail", builtin)
+        else:
+            _replaced(json_output, "guardrail", builtin, before, after[0])
 
 
 @add_app.command("hook")
@@ -791,6 +796,29 @@ def _added(json_output: bool, kind: str, ident: str | None) -> None:
         _emit_json({"ok": True, "added": kind, "ref": ident})
     else:
         _console.print(f"[green]added[/green] {kind} {ident}")
+
+
+def _replaced(
+    json_output: bool,
+    kind: str,
+    ident: str | None,
+    before: list[dict[str, Any]],
+    after: dict[str, Any],
+) -> None:
+    """Report an add that superseded ``before`` (one or more existing entries)."""
+    if json_output:
+        _emit_json({"ok": True, "replaced": kind, "ref": ident, "before": before, "after": after})
+    elif before == [after]:
+        _console.print(f"[green]unchanged[/green] {kind} {ident} — already present")
+    else:
+        was = " and ".join(_terse(entry) for entry in before)
+        _console.print(f"[green]replaced[/green] {kind} {ident} — was {was}")
+
+
+def _terse(entry: dict[str, Any]) -> str:
+    """Render a guardrail entry's params (everything but its name) for a message."""
+    params = {k: v for k, v in entry.items() if k != "builtin"}
+    return ", ".join(f"{k}={v}" for k, v in params.items()) or "no params"
 
 
 if __name__ == "__main__":

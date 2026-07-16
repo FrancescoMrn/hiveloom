@@ -70,8 +70,6 @@ guardrails:
   value: 120
 - builtin: no_network_write
 - builtin: max_cost_usd
-  value: 1.0
-- builtin: max_cost_usd
   value: 0.25
 loop:
   policy: react

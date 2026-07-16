@@ -72,3 +72,6 @@ or `code`; `code` also needs `description`; builtin validators take their param,
 e.g. `schema_file`/`pattern`/`path`/`command`), and `add_guardrail` (`builtin`
 plus its param, e.g. `value`/`pattern`). The harness is created with `init`
 using `name` and `task`, and a cost guardrail is always present by default.
+Emit at most one `add_guardrail` per guardrail name — a second one replaces the
+first rather than adding to it (`regex_output_filter` is the exception: one op
+per pattern, since those compose as a list).
