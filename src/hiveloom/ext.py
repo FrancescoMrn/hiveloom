@@ -555,8 +555,8 @@ def _register_builtin_providers() -> None:
 
 class _YamlModelEntry(BaseModel):
     id: str
-    input_cost_per_mtok: float = 0.0
-    output_cost_per_mtok: float = 0.0
+    input_cost_per_mtok: float | None = None
+    output_cost_per_mtok: float | None = None
     context_window: int | None = None
 
 
@@ -603,15 +603,42 @@ def _load_models_yaml() -> None:
                 name,
                 _openai_compat_factory(entry.base_url, entry.api_key_env),
                 models=[
-                    ModelInfo(id=m.id, provider=name,
-                              input_cost_per_mtok=m.input_cost_per_mtok,
-                              output_cost_per_mtok=m.output_cost_per_mtok,
-                              context_window=m.context_window)
+                    _model_info_from_yaml(m, name, source)
                     for m in entry.models
                 ],
             )
     except Exception as exc:  # noqa: BLE001 - a bad models.yaml must not crash the CLI
         _registry.errors.append({"source": source, "error": f"{type(exc).__name__}: {exc}"})
+
+
+def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) -> ModelInfo:
+    """Require explicit zero pricing for free models; otherwise stay conservative."""
+    fallback_input, fallback_output = (1.00, 5.00)
+    if entry.input_cost_per_mtok is None or entry.output_cost_per_mtok is None:
+        _registry.errors.append(
+            {
+                "source": source,
+                "error": (
+                    f"provider '{provider}' model '{entry.id}' omits pricing; "
+                    "using conservative fallback pricing (set both costs to 0 for a free model)"
+                ),
+            }
+        )
+    return ModelInfo(
+        id=entry.id,
+        provider=provider,
+        input_cost_per_mtok=(
+            entry.input_cost_per_mtok
+            if entry.input_cost_per_mtok is not None
+            else fallback_input
+        ),
+        output_cost_per_mtok=(
+            entry.output_cost_per_mtok
+            if entry.output_cost_per_mtok is not None
+            else fallback_output
+        ),
+        context_window=entry.context_window,
+    )
 
 
 def _openai_compat_factory(base_url: str, api_key_env: str | None) -> ProviderFactory:

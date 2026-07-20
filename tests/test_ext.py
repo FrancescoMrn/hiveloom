@@ -255,6 +255,25 @@ def test_models_yaml_registers_provider_and_pricing(monkeypatch, tmp_path: Path)
     assert config.provider == "localllm"
 
 
+def test_models_yaml_without_pricing_uses_conservative_fallback(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  remote:
+    api: openai_compat
+    base_url: https://api.example.test/v1
+    models:
+      - id: unknown-price
+""",
+        encoding="utf-8",
+    )
+
+    assert ext.model_pricing("unknown-price") == (1.0, 5.0)
+    assert any("omits pricing" in error["error"] for error in ext.status()["errors"])
+
+
 def test_unknown_provider_rejected_in_spec():
     with pytest.raises(ValueError, match="unknown model provider"):
         ModelConfig(provider="who-dis")
@@ -385,6 +404,107 @@ def test_openai_compat_normalizes_tool_calls(monkeypatch):
     assert result.stop_reason == "tool_use"
     assert result.tool_calls[0].input == {"text": "y"}
     assert result.usage.input_tokens == 10
+
+
+def test_openai_compat_estimates_usage_when_server_omits_it(monkeypatch):
+    from hiveloom.models import openai_compat
+    from hiveloom.models.provider import ModelConfig as MC
+
+    provider = openai_compat.OpenAICompatProvider("http://x/v1")
+    monkeypatch.setattr(
+        openai_compat.OpenAICompatProvider,
+        "_post",
+        lambda *_args: {"choices": [{"finish_reason": "stop", "message": {"content": "done"}}]},
+    )
+
+    result = provider.complete(
+        system="system prompt",
+        messages=[{"role": "user", "content": "a request"}],
+        tools=[],
+        config=MC(id="tiny-model"),
+    )
+
+    assert result.usage.input_tokens > 0
+    assert result.usage.output_tokens > 0
+
+
+def test_openai_compat_retries_transient_transport_failure(monkeypatch):
+    from urllib import error as urlerror
+
+    from hiveloom.models import openai_compat
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    attempts = 0
+
+    def flaky_urlopen(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urlerror.URLError("temporary failure")
+        return Response()
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(openai_compat.urlrequest, "urlopen", flaky_urlopen)
+    provider = openai_compat.OpenAICompatProvider("http://x/v1", sleep=sleeps.append)
+
+    assert provider._post("/chat/completions", {}) == {"ok": True}
+    assert attempts == 2
+    assert sleeps == [1.0]
+
+
+def test_claude_retries_overload_and_normalizes_response():
+    """Exercise the provider's retry path without importing the Anthropic SDK."""
+    from types import SimpleNamespace
+
+    from hiveloom.models.claude import ClaudeProvider
+
+    class RetryableError(Exception):
+        pass
+
+    attempts = 0
+
+    def create(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RetryableError("overloaded")
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(type="text", text="checking"),
+                SimpleNamespace(type="tool_use", id="c1", name="echo", input={"x": 1}),
+            ],
+            usage=SimpleNamespace(input_tokens=7, output_tokens=3),
+            stop_reason="tool_use",
+        )
+
+    provider = ClaudeProvider.__new__(ClaudeProvider)
+    provider._anthropic = SimpleNamespace(
+        RateLimitError=RetryableError,
+        InternalServerError=RetryableError,
+        APIConnectionError=RetryableError,
+        OverloadedError=RetryableError,
+    )
+    provider._client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    sleeps: list[float] = []
+    provider._sleep = sleeps.append
+
+    raw = provider._call_with_backoff(model="claude-test", messages=[])
+    result = provider._normalize(raw)
+
+    assert attempts == 2
+    assert sleeps == [1.0]
+    assert result.text == "checking"
+    assert result.tool_calls[0].input == {"x": 1}
+    assert result.usage.input_tokens == 7
 
 
 # --------------------------------------------------------------------------- #

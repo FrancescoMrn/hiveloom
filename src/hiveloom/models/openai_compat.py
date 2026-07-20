@@ -14,6 +14,7 @@ loop converts them into an ``error`` run status.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -25,18 +26,29 @@ from hiveloom.models.provider import (
     ModelResponse,
     ToolCall,
     Usage,
+    estimate_tokens,
 )
 
 _STOP_REASONS = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0
 
 
 class OpenAICompatProvider(ModelProvider):
     """Runs the harness model against an OpenAI-compatible ``/chat/completions``."""
 
-    def __init__(self, base_url: str, api_key: str | None = None, *, timeout: int = 120):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None = None,
+        *,
+        timeout: int = 120,
+        sleep=time.sleep,
+    ):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self._sleep = sleep
 
     def complete(
         self,
@@ -55,7 +67,10 @@ class OpenAICompatProvider(ModelProvider):
         if tools:
             payload["tools"] = [_to_openai_tool(t) for t in tools]
         data = self._post("/chat/completions", payload)
-        return _normalize(data)
+        return _normalize(
+            data,
+            estimated_input_tokens=self.count_tokens(system=system, messages=messages, tools=tools),
+        )
 
     # ------------------------------------------------------------------ #
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -68,14 +83,24 @@ class OpenAICompatProvider(ModelProvider):
             headers=headers,
             method="POST",
         )
-        try:
-            with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
-                return json.loads(resp.read().decode("utf-8"))
-        except urlerror.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"provider returned HTTP {exc.code}: {body}") from exc
-        except urlerror.URLError as exc:
-            raise RuntimeError(f"provider unreachable at {self._base_url}: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
+                    return json.loads(resp.read().decode("utf-8"))
+            except urlerror.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")[:500]
+                last_exc = RuntimeError(f"provider returned HTTP {exc.code}: {body}")
+                retryable = exc.code == 429 or 500 <= exc.code < 600
+            except (urlerror.URLError, TimeoutError, ConnectionError) as exc:
+                last_exc = RuntimeError(f"provider unreachable at {self._base_url}: {exc}")
+                retryable = True
+            if not retryable or attempt == _MAX_RETRIES:
+                break
+            self._sleep(_BASE_DELAY * (2**attempt))
+        raise RuntimeError(
+            f"model call failed after {_MAX_RETRIES} retries: {last_exc}"
+        ) from last_exc
 
 
 def _to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -143,7 +168,7 @@ def _to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, 
     return out
 
 
-def _normalize(data: dict[str, Any]) -> ModelResponse:
+def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> ModelResponse:
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError(f"provider returned no choices: {json.dumps(data)[:300]}")
@@ -167,10 +192,15 @@ def _normalize(data: dict[str, Any]) -> ModelResponse:
             {"type": "tool_use", "id": call.id, "name": call.name, "input": call.input}
         )
 
-    raw_usage = data.get("usage") or {}
+    raw_usage = data.get("usage")
+    raw_usage = raw_usage if isinstance(raw_usage, dict) else {}
     usage = Usage(
-        input_tokens=int(raw_usage.get("prompt_tokens", 0)),
-        output_tokens=int(raw_usage.get("completion_tokens", 0)),
+        input_tokens=int(raw_usage["prompt_tokens"])
+        if "prompt_tokens" in raw_usage
+        else estimated_input_tokens,
+        output_tokens=int(raw_usage["completion_tokens"])
+        if "completion_tokens" in raw_usage
+        else estimate_tokens(text or json.dumps(message.get("tool_calls") or [])),
     )
     finish = choice.get("finish_reason") or "stop"
     return ModelResponse(

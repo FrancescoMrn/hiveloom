@@ -76,6 +76,11 @@ class ClaudeProvider(ModelProvider):
             anthropic.RateLimitError,
             anthropic.InternalServerError,
             anthropic.APIConnectionError,
+            *(
+                (anthropic.OverloadedError,)
+                if hasattr(anthropic, "OverloadedError")
+                else ()
+            ),
         )
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
