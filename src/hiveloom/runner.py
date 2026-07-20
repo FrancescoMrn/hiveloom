@@ -162,6 +162,9 @@ def resolve_and_ingest(target: str | Path, hive) -> str:
     path = Path(target)
     yaml_path = path / "harness.yaml" if path.is_dir() else path
     if yaml_path.name == "harness.yaml" and yaml_path.exists():
+        # load_spec imports declared extensions, so the trust decision must
+        # happen before parsing a foreign harness rather than only before run.
+        trust.ensure_trusted(yaml_path.parent)
         spec = load_spec(yaml_path)
         hive.ingest_dir(_resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
         return spec.name

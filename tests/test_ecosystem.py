@@ -13,6 +13,7 @@ from hiveloom import construct, ext, runner, trust
 from hiveloom.cli import app
 from hiveloom.errors import ExitCode, SpecError
 from hiveloom.generate.generator import expand_blueprint, resolve_blueprint
+from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response
 
 cli_runner = CliRunner()
@@ -73,6 +74,13 @@ def test_construct_on_untrusted_dir_is_rejected(harness_dir: Path, monkeypatch):
     trust.revoke_trust(harness_dir)
     with pytest.raises(SpecError, match="not trusted"):
         construct.set_field(harness_dir, "loop.max_turns", "5")
+
+
+def test_stats_ingestion_requires_trust_before_loading_spec(harness_dir: Path, monkeypatch):
+    monkeypatch.setenv("HIVELOOM_TRUST", "never")
+    trust.revoke_trust(harness_dir)
+    with Hive() as hive, pytest.raises(SpecError, match="not trusted"):
+        runner.resolve_and_ingest(harness_dir, hive)
 
 
 # --------------------------------------------------------------------------- #

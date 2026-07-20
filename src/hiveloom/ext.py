@@ -435,9 +435,12 @@ def ensure_environment_loaded() -> None:
             _registry.errors.append({"source": source, "error": f"{type(exc).__name__}: {exc}"})
     ext_dir = paths.user_extensions_dir()
     if ext_dir.is_dir():
+        from hiveloom import trust
+
         for py_file in sorted(ext_dir.glob("*.py")):
             source = f"user:{py_file.name}"
             try:
+                trust.ensure_trusted(ext_dir)
                 _load_extension_file(py_file, source)
             except Exception as exc:  # noqa: BLE001 - same discipline as packs
                 _registry.errors.append(

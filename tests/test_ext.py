@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from hiveloom import catalog, construct, ext, runner
+from hiveloom import catalog, construct, ext, runner, trust
 from hiveloom.cli import app
 from hiveloom.errors import CatalogError, SpecError
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
@@ -187,6 +187,20 @@ def test_environment_loads_once(monkeypatch, tmp_path: Path):
     ext.ensure_environment_loaded()
     ext.ensure_environment_loaded()  # idempotent: no duplicate-registration error
     assert "ping" in catalog.BUILTIN_TOOLS
+
+
+def test_untrusted_user_extensions_are_skipped(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    monkeypatch.setenv("HIVELOOM_TRUST", "never")
+    ext.reset()
+    ext_dir = _user_ext_dir(tmp_path)
+    (ext_dir / "good.py").write_text(_GOOD_EXT, encoding="utf-8")
+    trust.revoke_trust(ext_dir)
+
+    ext.ensure_environment_loaded()
+
+    assert "ping" not in catalog.BUILTIN_TOOLS
+    assert any("not trusted" in error["error"] for error in ext.status()["errors"])
 
 
 # --------------------------------------------------------------------------- #
