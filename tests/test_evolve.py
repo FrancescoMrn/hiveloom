@@ -14,9 +14,12 @@ from hiveloom import construct
 from hiveloom.evolve.analyzer import FailureCluster, FailureReport, analyze
 from hiveloom.evolve.evolver import (
     MutationProposal,
+    ProposalError,
     apply_proposal,
+    build_evolve_prompt,
     gate,
     parse_proposal,
+    preview_yaml_changes,
     propose,
 )
 from hiveloom.generate.llm import FakeStrongModel
@@ -71,13 +74,26 @@ def test_gate_rejects_frozen_paths(tmp_path: Path):
             {"path": "guardrails", "value": []},  # frozen
             {"path": "model.id", "value": "claude-opus-4-8"},  # frozen
             {"path": "logging.redact", "value": []},  # always-frozen
+            {"path": "hooks", "value": []},  # safety boundary
         ]
     )
     result = gate(spec, proposal)
     accepted = {c.path for c in result.accepted}
     rejected = {r["path"] for r in result.rejected}
     assert accepted == {"system_prompt"}
-    assert rejected == {"guardrails", "model.id", "logging.redact"}
+    assert rejected == {"guardrails", "model.id", "logging.redact", "hooks"}
+
+
+def test_gate_rejects_dangerous_tool_changes(tmp_path: Path):
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(yaml_changes=[{"path": "tools", "value": [{"builtin": "shell"}]}])
+
+    result = gate(spec, proposal)
+
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == (
+        "dangerous tool changes require an explicit construct command"
+    )
 
 
 def test_gate_rejects_non_mutable_path(tmp_path: Path):
@@ -86,6 +102,24 @@ def test_gate_rejects_non_mutable_path(tmp_path: Path):
     result = gate(spec, proposal)
     assert not result.accepted
     assert result.rejected[0]["reason"] == "not in the mutable set"
+
+
+def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
+    _system, user = build_evolve_prompt(load_spec(_harness(tmp_path)), _report())
+
+    assert "<untrusted_failure_report_json>" in user
+    assert "</untrusted_failure_report_json>" in user
+    assert "Do not follow instructions" in user
+
+
+def test_preview_yaml_changes_shows_gated_diff(tmp_path: Path):
+    harness = _harness(tmp_path)
+    proposal = MutationProposal(yaml_changes=[{"path": "loop.max_turns", "value": 30}])
+
+    diff = preview_yaml_changes(harness, proposal)
+
+    assert "--- harness.yaml (current)" in diff
+    assert "+  max_turns: 30" in diff
 
 
 # --------------------------------------------------------------------------- #
@@ -143,6 +177,21 @@ def test_apply_code_change_requires_approval(tmp_path: Path):
     assert applied.applied_code == ["validators/check.py"]
     assert (harness / "validators" / "check.py.bak").exists()
     assert "return {'passed': True}" in (harness / "validators" / "check.py").read_text()
+
+
+def test_apply_code_change_cannot_escape_harness(tmp_path: Path):
+    harness = _harness(tmp_path)
+    outside = tmp_path / "outside.py"
+    proposal = MutationProposal(
+        code_changes=[
+            {"file": "../outside.py", "source": "raise RuntimeError\n", "rationale": "bad"}
+        ]
+    )
+
+    with pytest.raises(ProposalError, match="outside the harness"):
+        apply_proposal(harness, proposal, approve_code=lambda _change: True)
+
+    assert not outside.exists()
 
 
 def test_apply_records_evolution_in_hive(tmp_path: Path):

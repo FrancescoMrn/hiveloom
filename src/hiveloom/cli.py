@@ -718,14 +718,19 @@ def evolve(
                 return
 
             proposal = evolve_mod.propose(load_spec_for(harness_dir), report, model)
+            yaml_diff = evolve_mod.preview_yaml_changes(harness_dir, proposal)
 
             def approve(change: CodeChange) -> bool:
                 if json_output:
                     return False
-                _console.print(f"[yellow]code change[/yellow] {change.file}: {change.rationale}")
+                resolved = evolve_mod.resolve_code_change_path(base, change.file)
+                _console.print(f"[yellow]code change[/yellow] {resolved}: {change.rationale}")
                 _console.print(change.source)
-                return typer.confirm(f"Apply regenerated code to {change.file}?", default=False)
+                return typer.confirm(f"Apply regenerated code to {resolved}?", default=False)
 
+            if yaml_diff and not json_output:
+                _console.print("[yellow]proposed YAML diff[/yellow]")
+                _console.print(yaml_diff)
             apply_yaml = yes or (
                 not json_output
                 and typer.confirm("Apply the proposed YAML changes?", default=False)
