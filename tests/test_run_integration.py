@@ -46,6 +46,13 @@ def test_full_run_success_emits_ordered_events(tmp_path: Path):
     assert events[-1] == "run_finished"
     assert "tool_call" in events and "tool_result" in events
     assert events.count("verification_result") == 2  # output_schema + code validator
+    model_call = next(
+        json.loads(line)
+        for line in Path(result.trace_path).read_text().splitlines()
+        if json.loads(line)["type"] == "model_call"
+    )
+    assert model_call["payload"]["messages"]
+    assert "system" in model_call["payload"]
 
 
 def test_verify_failure_triggers_retry_with_feedback(tmp_path: Path):

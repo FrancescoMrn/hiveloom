@@ -30,6 +30,11 @@ class MaxCostGuardrail(Guardrail):
     def before_model_call(self, state: RunState) -> Decision:
         if state.cost_usd >= self._limit:
             return Halt(f"cost ${state.cost_usd:.4f} reached limit ${self._limit:.2f}")
+        if state.cost_usd + state.pending_cost_usd > self._limit:
+            return Halt(
+                f"estimated next call (${state.pending_cost_usd:.4f}) would exceed "
+                f"cost limit ${self._limit:.2f}"
+            )
         return Allow()
 
     def after_model_response(self, state: RunState, response: ModelResponse) -> Decision:
@@ -57,7 +62,7 @@ class MaxTurnsHardCapGuardrail(Guardrail):
         self._limit = int(value)
 
     def before_model_call(self, state: RunState) -> Decision:
-        if state.turns >= self._limit:
+        if state.model_calls >= self._limit:
             return Halt(f"turns reached hard cap {self._limit}")
         return Allow()
 

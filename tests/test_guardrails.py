@@ -30,6 +30,12 @@ def test_max_cost_allows_under_limit():
     assert g.after_model_response(RunState(cost_usd=0.1), ModelResponse()).kind == "allow"
 
 
+def test_max_cost_blocks_a_call_that_would_overspend():
+    g = MaxCostGuardrail(0.5)
+    state = RunState(cost_usd=0.4, pending_cost_usd=0.2)
+    assert g.before_model_call(state).kind == "halt"
+
+
 def test_tool_allowlist_blocks_unknown():
     g = ToolAllowlistGuardrail()
     state = RunState(tool_names={"file_read"})

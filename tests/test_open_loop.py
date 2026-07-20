@@ -121,6 +121,48 @@ def test_hook_patches_tool_result(harness_dir: Path):
     assert _tool_result_blocks(provider)[0]["content"] == "a [X] value"
 
 
+def test_tool_error_abort_stops_the_run(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.add_tool(harness_dir, builtin="file_read")
+    construct.set_field(harness_dir, "loop.on_tool_error", "abort")
+
+    result = runner.run_harness(
+        harness_dir,
+        "go",
+        provider=FakeModelProvider([tool_response("file_read", {"path": "missing.txt"})]),
+    )
+
+    assert result.status == "error"
+    assert "file_read" in result.reason
+
+
+def test_tool_error_retry_once_retries_before_surface_to_model(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.add_tool(harness_dir, builtin="file_read")
+    construct.set_field(harness_dir, "loop.on_tool_error", "retry_once")
+    provider = FakeModelProvider(
+        [tool_response("file_read", {"path": "missing.txt"}), text_response("done")]
+    )
+
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    assert "tool_retry" in [event["type"] for event in _events(result.trace_path)]
+
+
+def test_max_turns_preserves_the_last_verification_verdict(harness_dir: Path):
+    construct.add_validator(harness_dir, builtin="regex_match", pattern="^good$")
+    construct.set_field(harness_dir, "loop.max_turns", "1")
+
+    result = runner.run_harness(
+        harness_dir, "go", provider=FakeModelProvider([text_response("bad")])
+    )
+
+    assert result.status == "max_turns"
+    assert result.verdicts and result.verdicts[0].passed is False
+    assert result.turns == 1
+
+
 def test_raising_hook_is_logged_and_skipped(harness_dir: Path):
     _no_verify(harness_dir)
     _add_code_hook(harness_dir, "run_started", _RAISING_HOOK, "boom")
@@ -172,6 +214,21 @@ def test_context_assemble_hook_transforms_messages():
     cm.add_user("hi")
     _, messages = cm.assemble()
     assert messages[-1]["content"] == "extra"
+    assert cm.messages == [{"role": "user", "content": "hi"}]
+
+
+def test_plan_then_act_folds_plan_instruction_into_task_turn(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.set_field(harness_dir, "loop.policy", "plan_then_act")
+    provider = FakeModelProvider([text_response("1. Plan."), text_response("done")])
+
+    result = runner.run_harness(harness_dir, "do the task", provider=provider)
+
+    assert result.status == "success"
+    first_call = provider.calls[0]["messages"]
+    assert [message["role"] for message in first_call] == ["user"]
+    assert "do the task" in first_call[0]["content"]
+    assert "Before acting" in first_call[0]["content"]
 
 
 def test_ambient_extension_hook_runs(harness_dir: Path):
@@ -312,6 +369,27 @@ def test_before_compaction_hook_custom_summary():
     assert cm.maybe_compact()
     assert "my custom notes" in cm.messages[1]["content"]
     assert provider.calls == []
+
+
+def test_summarization_compaction_is_costed_as_a_model_call(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.set_field(harness_dir, "context.max_input_tokens", "1")
+    construct.set_field(harness_dir, "context.compaction.trigger_at_pct", "1")
+    provider = FakeModelProvider(
+        [
+            tool_response("unknown", {}, call_id="c1"),
+            text_response("compressed history"),
+            text_response("done"),
+        ]
+    )
+
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    assert len(provider.calls) == 3  # tool turn, compaction, final turn
+    assert result.cost_usd == pytest.approx(0.0006)
+    responses = [event for event in _events(result.trace_path) if event["type"] == "model_response"]
+    assert any(event["payload"]["phase"] == "compaction" for event in responses)
 
 
 # --------------------------------------------------------------------------- #

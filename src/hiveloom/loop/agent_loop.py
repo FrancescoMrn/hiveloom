@@ -23,7 +23,7 @@ from hiveloom.events import EventBus
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter
 from hiveloom.loop.policies import LoopPolicy, build_policy
-from hiveloom.models.provider import ModelConfig, ModelProvider, ModelResponse
+from hiveloom.models.provider import ModelConfig, ModelProvider, ModelResponse, Usage
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry
 from hiveloom.verify.base import VerdictResult, Verifier
@@ -41,6 +41,14 @@ class RunResult(BaseModel):
     trace_path: str = ""
     verdicts: list[VerdictResult] = Field(default_factory=list)
     reason: str = ""
+
+
+class GuardrailHalt(RuntimeError):
+    """Internal signal used when a model-call guardrail prevents a request."""
+
+
+class ToolAbort(RuntimeError):
+    """Internal signal used when ``loop.on_tool_error`` is ``abort``."""
 
 
 class AgentLoop:
@@ -79,6 +87,7 @@ class AgentLoop:
             temperature=spec.model.temperature,
         )
         self._state = RunState(tool_names=set(registry.names()))
+        self._context.set_compaction_model_call(self._compaction_model_turn)
 
     # ------------------------------------------------------------------ #
     # Public surface for policies and hooks
@@ -112,33 +121,31 @@ class AgentLoop:
         self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
+        except GuardrailHalt as exc:
+            return self._finish("guardrail_halt", reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
             return self._finish("error", reason=f"policy failed: {type(exc).__name__}: {exc}")
 
         retries = 0
-        while self._state.turns < loop.max_turns:
-            halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
-            if halt is not None:
-                return self._finish("guardrail_halt", reason=halt)
-
+        last_verdicts: list[VerdictResult] = []
+        while self._state.model_calls < loop.max_turns:
             try:
                 response = self.model_turn()
+            except GuardrailHalt as exc:
+                return self._finish("guardrail_halt", reason=str(exc))
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
                 return self._finish("error", reason=f"{type(exc).__name__}: {exc}")
-
-            halt = self._guardrail_halt(
-                lambda g, resp=response: g.after_model_response(self._state, resp)
-            )
-            if halt is not None:
-                return self._finish("guardrail_halt", reason=halt)
 
             self._context.add_assistant(self.assistant_blocks(response))
 
             if response.tool_calls:
-                halt, terminate_output = self._dispatch_tools(response)
+                try:
+                    halt, terminate_output = self._dispatch_tools(response)
+                except ToolAbort as exc:
+                    return self._finish("error", reason=str(exc))
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
-                self._state.turns += 1
+                self._state.tool_turns += 1
                 if terminate_output is None:
                     continue
                 # Every tool result in the batch asked to terminate: treat the
@@ -148,7 +155,7 @@ class AgentLoop:
                 nudge = self._policy.wants_continue(self, response)
                 if nudge is not None:
                     self._context.add_user(nudge)
-                    self._state.turns += 1
+                    self._state.policy_nudges += 1
                     continue
                 # No tool calls -> the model is signalling completion.
                 output = response.text
@@ -163,11 +170,11 @@ class AgentLoop:
                 self._context.add_user(
                     f"Your output was blocked ({block}). Produce a compliant result."
                 )
-                self._state.turns += 1
                 continue
 
             if loop.require_verification:
                 verdicts = self._verify(output)
+                last_verdicts = verdicts
                 if all(v.passed for v in verdicts):
                     return self._finish("success", output=output, verdicts=verdicts)
                 if (
@@ -175,36 +182,69 @@ class AgentLoop:
                     and retries < self._spec.verify.on_fail.max_retries
                 ):
                     retries += 1
+                    self._state.verify_retries += 1
                     feedback = "\n".join(v.feedback for v in verdicts if not v.passed)
                     self._context.add_user(
                         f"Verification failed:\n{feedback}\nRevise your answer and try again."
                     )
-                    self._state.turns += 1
                     continue
                 return self._finish("verify_failed", output=output, verdicts=verdicts)
 
             return self._finish("success", output=output)
 
-        return self._finish("max_turns", output=self._state.output or "")
+        return self._finish(
+            "max_turns", output=self._state.output or "", verdicts=last_verdicts
+        )
 
     # ------------------------------------------------------------------ #
     def model_turn(self, *, phase: str = "act") -> ModelResponse:
         system, messages = self._context.assemble()
+        return self._complete_model_call(
+            system, messages, self._registry.anthropic_payload(), phase
+        )
+
+    def _compaction_model_turn(
+        self, system: str, messages: list[dict[str, Any]]
+    ) -> ModelResponse:
+        return self._complete_model_call(system, messages, [], "compaction")
+
+    def _complete_model_call(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        phase: str,
+    ) -> ModelResponse:
+        input_tokens = self._provider.count_tokens(system=system, messages=messages, tools=tools)
+        self._state.pending_cost_usd = self._provider.estimated_cost(
+            Usage(input_tokens=input_tokens, output_tokens=self._model_config.max_tokens),
+            self._model_config.id,
+        )
+        halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
+        if halt is not None:
+            self._state.pending_cost_usd = 0.0
+            raise GuardrailHalt(halt)
         self._trace.emit(
             "model_call",
             turn=self._state.turns,
             phase=phase,
             num_messages=len(messages),
+            system=system,
+            messages=messages,
+            tools=tools,
         )
         self._events.emit("before_model_call", {"turn": self._state.turns, "phase": phase})
         response = self._provider.complete(
             system=system,
             messages=messages,
-            tools=self._registry.anthropic_payload(),
+            tools=tools,
             config=self._model_config,
         )
+        self._state.model_calls += 1
+        self._state.turns = self._state.model_calls
         cost = self._provider.estimated_cost(response.usage, self._model_config.id)
         self._state.cost_usd += cost
+        self._state.pending_cost_usd = 0.0
         self._trace.emit(
             "model_response",
             turn=self._state.turns,
@@ -224,6 +264,11 @@ class AgentLoop:
                 "tool_calls": [c.name for c in response.tool_calls],
             },
         )
+        halt = self._guardrail_halt(
+            lambda g, resp=response: g.after_model_response(self._state, resp)
+        )
+        if halt is not None:
+            raise GuardrailHalt(halt)
         return response
 
     def _dispatch_tools(self, response: ModelResponse) -> tuple[str | None, str | None]:
@@ -306,6 +351,11 @@ class AgentLoop:
                 self._trace.emit("tool_update", id=_call.id, name=_call.name, content=progress)
 
             result = self._registry.dispatch(call, on_update=on_update)
+            if result.is_error and self._spec.loop.on_tool_error == "retry_once":
+                self._trace.emit("tool_retry", id=call.id, name=call.name)
+                result = self._registry.dispatch(call, on_update=on_update)
+            if result.is_error and self._spec.loop.on_tool_error == "abort":
+                raise ToolAbort(f"tool '{call.name}' failed: {result.content}")
 
             for outcome in self._events.emit(
                 "after_tool_call",

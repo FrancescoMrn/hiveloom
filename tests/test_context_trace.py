@@ -26,6 +26,15 @@ def test_tool_result_truncation():
     assert len(block["content"]) < 100
 
 
+def test_default_tool_result_cap_scales_with_context_budget():
+    spec = _spec(max_input_tokens=20)
+    cm = ContextManager(spec, FakeModelProvider([]))
+
+    cm.add_tool_results([{"tool_use_id": "1", "content": "x" * 100}])
+
+    assert cm.messages[0]["content"][0]["content"].startswith("x" * 20)
+
+
 def test_truncate_oldest_keeps_task_pinned():
     spec = _spec(
         max_input_tokens=40,
@@ -51,6 +60,50 @@ def test_compaction_emits_trace_event(tmp_path: Path):
         cm.add_user("some filler content here " + str(i))
     assert cm.maybe_compact() is True
     assert any(e.type == "context_compaction" for e in trace.events)
+
+
+def test_full_context_strategy_never_compacts():
+    spec = _spec(
+        max_input_tokens=20,
+        strategy="full",
+        compaction={"trigger_at_pct": 1, "method": "truncate_oldest"},
+    )
+    cm = ContextManager(spec, FakeModelProvider([]))
+    for i in range(6):
+        cm.add_user(f"large message {i} " * 20)
+
+    assert not cm.maybe_compact()
+    assert len(cm.messages) == 6
+
+
+def test_context_pinned_controls_whether_task_statement_is_retained():
+    spec = _spec(
+        max_input_tokens=20,
+        pinned=[],
+        compaction={"trigger_at_pct": 1, "method": "truncate_oldest"},
+    )
+    cm = ContextManager(spec, FakeModelProvider([]))
+    cm.add_user("TASK: may be dropped")
+    for i in range(4):
+        cm.add_user(f"filler {i} " * 20)
+
+    assert cm.maybe_compact()
+    assert not cm.messages[0]["content"].startswith("TASK:")
+
+
+def test_summary_context_strategy_uses_summary_even_with_truncate_configured():
+    spec = _spec(
+        max_input_tokens=20,
+        strategy="summary",
+        compaction={"trigger_at_pct": 1, "method": "truncate_oldest"},
+    )
+    cm = ContextManager(spec, FakeModelProvider([]))
+    cm.add_user("TASK")
+    for i in range(3):
+        cm.add_user(f"filler {i} " * 20)
+
+    assert cm.maybe_compact()
+    assert "[summary of earlier turns]" in cm.messages[1]["content"]
 
 
 def test_trace_writer_redacts_and_persists(tmp_path: Path):

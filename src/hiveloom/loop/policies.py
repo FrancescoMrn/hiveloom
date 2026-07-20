@@ -53,14 +53,17 @@ class PlanThenActPolicy(LoopPolicy):
     name = "plan_then_act"
 
     def on_run_start(self, loop: AgentLoop) -> None:
-        loop.context.add_user(
+        # The task input is already the first user turn. Folding the planning
+        # instruction into it preserves providers' strict role alternation.
+        first = loop.context.messages[-1]
+        first["content"] = (
+            f"{first['content']}\n\n"
             "Before acting, output a brief numbered plan of the steps you will take. "
             "Do not call any tools yet."
         )
         response = loop.model_turn(phase="plan")
         loop.context.add_assistant(loop.assistant_blocks(response))
         loop.context.set_plan(response.text)
-        loop.state.turns += 1
 
 
 def build_policy(name: str) -> LoopPolicy:

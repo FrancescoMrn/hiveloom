@@ -46,7 +46,12 @@ class RunState:
     """Mutable run bookkeeping shared with guardrails."""
 
     cost_usd: float = 0.0
+    pending_cost_usd: float = 0.0
     turns: int = 0
+    model_calls: int = 0
+    tool_turns: int = 0
+    verify_retries: int = 0
+    policy_nudges: int = 0
     tool_names: set[str] = field(default_factory=set)
     started_at: float = field(default_factory=time.monotonic)
     output: str | None = None
