@@ -144,6 +144,17 @@ class TraceWriter:
             payload=self._redact(payload),
         )
         self._seq += 1
+        if self._level == "tool_calls_only" and event_type not in {
+            "run_started",
+            "run_finished",
+            "tool_call",
+            "tool_update",
+            "tool_retry",
+            "tool_result",
+            "guardrail_triggered",
+            "verification_result",
+        }:
+            return event
         self.events.append(event)
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(event.model_dump_json() + "\n")

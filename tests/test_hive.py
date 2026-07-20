@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from hiveloom.logging.hive import Hive, default_db_path
@@ -138,3 +139,20 @@ def test_ingest_skips_non_run_events(tmp_path: Path):
     )
     with Hive(tmp_path / "hive.db") as hive:
         assert hive.ingest_trace_file(tmp_path / "construction.jsonl") == []
+
+
+def test_hive_uses_wal_and_can_prune_completed_runs(tmp_path: Path):
+    old = _write_trace(tmp_path, "run_old")
+    recent = _write_trace(tmp_path, "run_recent")
+    # The helper uses a fixed timestamp; update the recent trace for this case.
+    recent.write_text(recent.read_text().replace("2026-01-01", "2026-01-31"))
+
+    with Hive(tmp_path / "hive.db") as hive:
+        assert hive._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert hive._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        hive.ingest_trace_file(old)
+        hive.ingest_trace_file(recent)
+        removed = hive.prune_runs(10, now=datetime(2026, 2, 1, tzinfo=UTC))
+        assert removed == 1
+        assert hive.get_run("run_old") is None
+        assert hive.get_run("run_recent") is not None

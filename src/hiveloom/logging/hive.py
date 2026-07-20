@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +81,13 @@ class Hive:
     def __init__(self, db_path: str | Path | None = None):
         self.path = Path(db_path) if db_path is not None else default_db_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path))
+        self._conn = sqlite3.connect(str(self.path), timeout=5)
         self._conn.row_factory = sqlite3.Row
+        # WAL lets a running CLI ingest traces without blocking read-only stats
+        # commands. The timeout handles brief write contention gracefully.
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -312,6 +318,40 @@ class Hive:
             ).fetchall()
         ]
         return entry
+
+    def prune_runs(
+        self, retention_days: int, *, now: datetime | None = None
+    ) -> int:
+        """Delete completed runs older than ``retention_days`` and their details.
+
+        Retention is intentionally explicit: opening a Hive never silently
+        removes historical run data. Callers may schedule this maintenance
+        method according to their own data-retention policy.
+        """
+        if retention_days < 1:
+            raise ValueError("retention_days must be at least 1")
+        reference = now or datetime.now(UTC)
+        if reference.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        cutoff = (reference.astimezone(UTC) - timedelta(days=retention_days)).isoformat()
+        run_ids = [
+            row["run_id"]
+            for row in self._conn.execute(
+                "SELECT run_id FROM runs "
+                "WHERE finished_at IS NOT NULL AND finished_at < ?",
+                (cutoff,),
+            )
+        ]
+        if not run_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in run_ids)
+        self._conn.execute(f"DELETE FROM verifications WHERE run_id IN ({placeholders})", run_ids)
+        self._conn.execute(
+            f"DELETE FROM guardrail_triggers WHERE run_id IN ({placeholders})", run_ids
+        )
+        self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
+        self._conn.commit()
+        return len(run_ids)
 
     def record_evolution(
         self,

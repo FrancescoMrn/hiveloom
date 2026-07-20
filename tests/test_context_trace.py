@@ -122,6 +122,15 @@ def test_trace_seq_increments(tmp_path: Path):
     assert [e.seq for e in trace.events] == [0, 1]
 
 
+def test_tool_calls_only_trace_omits_model_events(tmp_path: Path):
+    trace = TraceWriter(tmp_path, "run_1", "h", "abc", level="tool_calls_only")
+    trace.emit("model_call", messages=[{"role": "user", "content": "secret"}])
+    trace.emit("tool_call", name="file_read")
+    trace.emit("run_finished", status="success")
+
+    assert [event.type for event in trace.events] == ["tool_call", "run_finished"]
+
+
 def test_version_hash_stable_and_short():
     spec = HarnessSpec.model_validate({"name": "t", "description": "d", "system_prompt": "sp"})
     h1 = spec_version_hash(spec)
