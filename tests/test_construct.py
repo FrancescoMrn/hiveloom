@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from hiveloom import construct
-from hiveloom.errors import SpecError
+from hiveloom.errors import HiveloomError, SpecError
 from hiveloom.spec import loader
 from hiveloom.spec.loader import load_spec, validate_harness
 
@@ -30,6 +30,29 @@ def test_init_creates_valid_skeleton(tmp_path: Path):
 def test_init_refuses_to_clobber(harness_dir: Path):
     with pytest.raises(SpecError, match="already exists"):
         construct.init_harness(harness_dir, name="x", task="y")
+
+
+def test_init_rolls_back_new_directory_on_failure(tmp_path: Path, monkeypatch):
+    directory = tmp_path / "h"
+    monkeypatch.setattr(
+        construct, "_pkg_version", lambda: (_ for _ in ()).throw(OSError("disk full"))
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        construct.init_harness(directory, name="my-h", task="Task.")
+
+    assert not directory.exists()
+
+
+def test_init_does_not_fail_when_trust_recording_fails(tmp_path: Path, monkeypatch):
+    directory = tmp_path / "h"
+    monkeypatch.setattr(
+        construct.trust, "record_trust", lambda _path: (_ for _ in ()).throw(OSError())
+    )
+
+    construct.init_harness(directory, name="my-h", task="Task.")
+
+    assert validate_harness(directory).name == "my-h"
 
 
 def test_set_field_coerces_scalar(harness_dir: Path):
@@ -68,6 +91,17 @@ def test_add_code_tool_scaffolds_stub(harness_dir: Path):
     assert stub.exists()
     assert "def fetch(" in stub.read_text()
     validate_harness(harness_dir)
+
+
+def test_add_code_tool_rolls_back_unexpected_hook_error(harness_dir: Path, monkeypatch):
+    monkeypatch.setattr(
+        construct, "resolve_hooks", lambda *_args: (_ for _ in ()).throw(OSError("boom"))
+    )
+
+    with pytest.raises(HiveloomError, match="could not add_tool"):
+        construct.add_tool(harness_dir, code="tools/fetch.py:fetch", description="Fetch a thing.")
+
+    assert not (harness_dir / "tools" / "fetch.py").exists()
 
 
 def test_add_code_tool_requires_description(harness_dir: Path):

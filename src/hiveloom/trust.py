@@ -26,6 +26,7 @@ from pathlib import Path
 
 from hiveloom.errors import SpecError
 from hiveloom.paths import hiveloom_home
+from hiveloom.spec.loader import atomic_write_text
 
 
 def trust_store_path() -> Path:
@@ -50,7 +51,7 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     path = trust_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def is_trusted(base: str | Path) -> bool:

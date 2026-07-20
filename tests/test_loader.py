@@ -8,6 +8,7 @@ import pytest
 
 from hiveloom.errors import SpecError
 from hiveloom.spec.loader import (
+    atomic_write_text,
     dump_spec,
     load_spec,
     resolve_hooks,
@@ -28,6 +29,16 @@ def test_dump_load_round_trip_is_stable():
     dumped = dump_spec(spec)
     reloaded = HarnessSpec.model_validate_json(reloaded_json(dumped))
     assert dump_spec(reloaded) == dumped
+
+
+def test_atomic_write_replaces_contents_without_leaving_temp_files(tmp_path: Path):
+    target = tmp_path / "harness.yaml"
+    target.write_text("old")
+
+    atomic_write_text(target, "new")
+
+    assert target.read_text() == "new"
+    assert list(tmp_path.glob(".harness.yaml.*")) == []
 
 
 def reloaded_json(dumped_yaml: str) -> str:

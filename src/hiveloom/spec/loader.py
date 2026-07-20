@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +67,23 @@ def dump_spec(spec: HarnessSpec) -> str:
         allow_unicode=True,
         width=100,
     )
+
+
+def atomic_write_text(path: str | Path, content: str) -> None:
+    """Durably replace a text file without exposing a partially-written spec."""
+    target = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 # --------------------------------------------------------------------------- #

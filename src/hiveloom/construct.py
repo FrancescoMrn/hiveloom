@@ -16,6 +16,7 @@ A harness directory is therefore never left in an invalid state.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,10 @@ import yaml
 
 from hiveloom import trust
 from hiveloom.catalog import CATALOGS
-from hiveloom.errors import SpecError
+from hiveloom.errors import HiveloomError, SpecError
 from hiveloom.spec.loader import (
     HARNESS_FILENAME,
+    atomic_write_text,
     dump_spec,
     harness_path,
     load_raw,
@@ -79,14 +81,22 @@ def _commit(
         trust.ensure_trusted(directory)
         spec = spec_from_dict(raw, source=str(harness_path(directory)), base_dir=directory)
         resolve_hooks(spec, directory)
-    except SpecError as exc:
+        atomic_write_text(harness_path(directory), dump_spec(spec))
+        _log_construction(directory, command, args, "ok")
+        return spec
+    except Exception as exc:  # noqa: BLE001 - rollback is part of the construct contract
         for path in created:
-            path.unlink(missing_ok=True)
-        _log_construction(directory, command, args, "error", str(exc))
-        raise
-    harness_path(directory).write_text(dump_spec(spec), encoding="utf-8")
-    _log_construction(directory, command, args, "ok")
-    return spec
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            _log_construction(directory, command, args, "error", str(exc))
+        except Exception:  # noqa: BLE001 - never hide the original construction failure
+            pass
+        if isinstance(exc, HiveloomError):
+            raise
+        raise HiveloomError(f"could not {command}: {type(exc).__name__}: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -205,32 +215,65 @@ def init_harness(directory: str | Path, name: str, task: str) -> HarnessSpec:
     target = Path(directory)
     if (target / HARNESS_FILENAME).exists():
         raise SpecError(f"a harness already exists at {target / HARNESS_FILENAME}")
-    target.mkdir(parents=True, exist_ok=True)
-    for sub in ("tools", "validators", "schemas"):
-        (target / sub).mkdir(exist_ok=True)
-    (target / TRACE_SUBDIR).mkdir(parents=True, exist_ok=True)
+    target_existed = target.exists()
+    created_dirs: list[Path] = []
+    originals: dict[Path, bytes | None] = {}
 
-    spec = HarnessSpec(
-        name=name,
-        description=task,
-        system_prompt=(
-            f"You are an agent that performs the following task:\n{task}\n\n"
-            "Use the available tools, and stop when the work is complete and verified."
-        ),
-    )
-    # Structural + hook validation of the freshly built spec (defensive).
-    spec = spec_from_dict(spec.model_dump(mode="json"), source=str(target))
-    harness_path(target).write_text(dump_spec(spec), encoding="utf-8")
+    def make_dir(path: Path) -> None:
+        if not path.exists():
+            path.mkdir(parents=True)
+            created_dirs.append(path)
 
-    (target / ".gitignore").write_text(_GITIGNORE, encoding="utf-8")
-    (target / ".env.example").write_text("ANTHROPIC_API_KEY=\n", encoding="utf-8")
-    (target / "requirements.txt").write_text(f"hiveloom=={_pkg_version()}\n", encoding="utf-8")
-    (target / "README.md").write_text(
-        _README_TEMPLATE.format(name=name, task=task), encoding="utf-8"
-    )
-    trust.record_trust(target)  # built on this machine -> trusted
-    _log_construction(target, "init", {"name": name, "task": task}, "ok")
-    return spec
+    def write(path: Path, content: str) -> None:
+        if path not in originals:
+            originals[path] = path.read_bytes() if path.exists() else None
+        atomic_write_text(path, content)
+
+    try:
+        make_dir(target)
+        for sub in ("tools", "validators", "schemas"):
+            make_dir(target / sub)
+        make_dir(target / ".hiveloom")
+        make_dir(target / TRACE_SUBDIR)
+
+        spec = HarnessSpec(
+            name=name,
+            description=task,
+            system_prompt=(
+                f"You are an agent that performs the following task:\n{task}\n\n"
+                "Use the available tools, and stop when the work is complete and verified."
+            ),
+        )
+        # Structural + hook validation of the freshly built spec (defensive).
+        spec = spec_from_dict(spec.model_dump(mode="json"), source=str(target))
+        write(harness_path(target), dump_spec(spec))
+        write(target / ".gitignore", _GITIGNORE)
+        write(target / ".env.example", "ANTHROPIC_API_KEY=\n")
+        write(target / "requirements.txt", f"hiveloom=={_pkg_version()}\n")
+        write(target / "README.md", _README_TEMPLATE.format(name=name, task=task))
+
+        # Trust is convenience metadata, not a requirement for a valid local harness.
+        try:
+            trust.record_trust(target)
+        except Exception:  # noqa: BLE001 - e.g. an unwritable HIVELOOM_HOME
+            pass
+        _log_construction(target, "init", {"name": name, "task": task}, "ok")
+        return spec
+    except Exception:
+        for path, original in originals.items():
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(original)
+        if not target_existed:
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            for path in reversed(created_dirs):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+        raise
 
 
 def _pkg_version() -> str:
