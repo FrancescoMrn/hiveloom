@@ -260,6 +260,36 @@ def test_unknown_provider_rejected_in_spec():
         ModelConfig(provider="who-dis")
 
 
+def test_unknown_or_wrong_provider_model_rejected_in_spec(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown model id"):
+        ModelConfig(id="does-not-exist")
+    with pytest.raises(ValueError, match="belongs to provider 'localllm'"):
+        ModelConfig(provider="claude", id="tiny-model")
+
+
+def test_model_and_runtime_numeric_bounds_are_rejected():
+    with pytest.raises(ValueError, match="less than or equal to 32768"):
+        ModelConfig(max_tokens=32_769)
+    with pytest.raises(ValueError, match="less than or equal to 1000000"):
+        HarnessSpec(
+            name="h",
+            description="d",
+            system_prompt="s",
+            context={"max_input_tokens": 1_000_001},
+        )
+    with pytest.raises(ValueError, match="max_cost_usd.value"):
+        HarnessSpec(
+            name="h",
+            description="d",
+            system_prompt="s",
+            guardrails=[{"builtin": "max_cost_usd", "value": 10_001}],
+        )
+
+
 def test_estimated_cost_uses_registry_pricing(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
     ext.reset()

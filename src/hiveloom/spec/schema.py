@@ -224,7 +224,9 @@ class ModelConfig(BaseModel):
         ),
     )
     id: str = Field(default="claude-haiku-4-5", description="Model id to execute with.")
-    max_tokens: int = Field(default=4096, gt=0, description="Max output tokens per call.")
+    max_tokens: int = Field(
+        default=4096, gt=0, le=32768, description="Max output tokens per call."
+    )
     temperature: float = Field(default=0.0, ge=0.0, le=1.0, description="Sampling temperature.")
 
     @field_validator("provider")
@@ -239,6 +241,22 @@ class ModelConfig(BaseModel):
                 "Register providers via an extension or ~/.hiveloom/models.yaml."
             )
         return value
+
+    @model_validator(mode="after")
+    def _check_model_belongs_to_provider(self) -> ModelConfig:
+        from hiveloom import ext
+
+        info = ext.model_info(self.id)
+        if info is None:
+            raise ValueError(
+                f"unknown model id '{self.id}' for provider '{self.provider}'. "
+                "Register it through an extension or ~/.hiveloom/models.yaml."
+            )
+        if info.provider and info.provider != self.provider:
+            raise ValueError(
+                f"model id '{self.id}' belongs to provider '{info.provider}', not '{self.provider}'"
+            )
+        return self
 
 
 class CompactionConfig(BaseModel):
@@ -276,7 +294,7 @@ class ContextConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_input_tokens: int = Field(
-        default=30000, gt=0, description="Input token budget per model call."
+        default=30000, gt=0, le=1_000_000, description="Input token budget per model call."
     )
     strategy: Literal["rolling", "full", "summary"] = Field(
         default="rolling", description="How message history is assembled."
@@ -313,7 +331,9 @@ class LoopConfig(BaseModel):
             valid = ", ".join(sorted(catalog.POLICIES))
             raise ValueError(f"unknown loop policy '{value}' (valid: {valid})")
         return value
-    max_turns: int = Field(default=20, gt=0, description="Max loop turns before stopping.")
+    max_turns: int = Field(
+        default=20, gt=0, le=1_000, description="Max loop turns before stopping."
+    )
     on_tool_error: Literal["retry_once", "surface_to_model", "abort"] = Field(
         default="retry_once", description="What to do when a tool call errors."
     )
@@ -332,7 +352,7 @@ class OnFailConfig(BaseModel):
         description="On verify failure: retry with feedback injected, or abort.",
     )
     max_retries: int = Field(
-        default=2, ge=0, description="Max verify-driven retries before giving up."
+        default=2, ge=0, le=100, description="Max verify-driven retries before giving up."
     )
 
 
@@ -400,7 +420,16 @@ class EvolutionConfig(BaseModel):
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
 # list. Enforced in the evolver (M4); declared here as the safety contract.
 # `extensions` load arbitrary code, so evolution can never add or change them.
-ALWAYS_FROZEN: tuple[str, ...] = ("guardrails", "model", "logging.redact", "extensions")
+# Hooks can transform tool inputs/results and final output, placing them
+# upstream of guardrails. They therefore share the non-negotiable evolution
+# boundary with guardrails themselves.
+ALWAYS_FROZEN: tuple[str, ...] = (
+    "guardrails",
+    "model",
+    "logging.redact",
+    "extensions",
+    "hooks",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -475,4 +504,20 @@ class HarnessSpec(BaseModel):
         )
         if not has_cost:
             self.guardrails.append(BuiltinGuardrailRef(builtin="max_cost_usd", value=1.00))
+        for guardrail in self.guardrails:
+            if not isinstance(guardrail, BuiltinGuardrailRef):
+                continue
+            value = guardrail.params().get("value")
+            limits = {
+                "max_cost_usd": 10_000.0,
+                "max_wall_clock_seconds": 86_400,
+                "max_turns_hard_cap": 10_000,
+            }
+            if guardrail.builtin in limits and (
+                not isinstance(value, (int, float)) or not 0 < value <= limits[guardrail.builtin]
+            ):
+                raise ValueError(
+                    f"{guardrail.builtin}.value must be greater than 0 and at most "
+                    f"{limits[guardrail.builtin]}"
+                )
         return self
