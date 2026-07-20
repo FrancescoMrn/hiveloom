@@ -91,7 +91,11 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
                 type="list",
                 required=False,
                 default=[],
-                description="Allowlist of permitted command names (argv[0]).",
+                description=(
+                    "Strict commands as strings, or mappings such as "
+                    "{argv: [echo], allow_extra_args: true}. Strings match exact argv; "
+                    "arbitrary extra args are limited to a small safe command set."
+                ),
             )
         ],
     ),

@@ -181,6 +181,8 @@ class ToolRegistry:
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult(content=f"unknown tool '{call.name}'", is_error=True)
+        if call.name not in self._active:
+            return ToolResult(content=f"tool '{call.name}' is inactive", is_error=True)
         try:
             kwargs = tool.prepare(dict(call.input))
             if on_update is not None and tool.supports_updates:

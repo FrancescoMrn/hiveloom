@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from hiveloom.models.provider import ToolCall
 from hiveloom.spec.schema import BuiltinToolRef, HarnessSpec
-from hiveloom.tools.builtin import FileReadTool, FileWriteTool, ShellTool
+from hiveloom.tools.builtin import (
+    FileReadTool,
+    FileWriteTool,
+    HttpGetTool,
+    ShellTool,
+    _validate_public_http_url,
+)
 from hiveloom.tools.registry import (
     FunctionTool,
+    ToolError,
     ToolRegistry,
     build_registry,
     schema_from_function,
@@ -40,7 +49,7 @@ def test_shell_disabled_without_allowlist(tmp_path: Path):
 
 
 def test_shell_allowlist_blocks_unlisted(tmp_path: Path):
-    tool = ShellTool(tmp_path, allowed=["echo"])
+    tool = ShellTool(tmp_path, allowed=[{"argv": ["echo"], "allow_extra_args": True}])
     result = tool.run(command="echo hi")
     assert "exit=0" in result and "hi" in result
     registry = ToolRegistry()
@@ -49,10 +58,48 @@ def test_shell_allowlist_blocks_unlisted(tmp_path: Path):
     assert blocked.is_error and "allowlist" in blocked.content
 
 
+def test_shell_blocks_interpreters_and_dangerous_arguments(tmp_path: Path):
+    tool = ShellTool(tmp_path, allowed=["python", "find ."])
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    interpreter = registry.dispatch(
+        ToolCall(id="1", name="shell", input={"command": "python -c pass"})
+    )
+    assert interpreter.is_error
+    assert registry.dispatch(
+        ToolCall(id="2", name="shell", input={"command": "find . -exec echo {} ;"})
+    ).is_error
+
+
+def test_shell_legacy_rules_are_exact_and_wildcards_are_limited(tmp_path: Path):
+    exact = ShellTool(tmp_path, allowed=["git status"])
+    assert "exit=" in exact.run(command="git status")
+    with pytest.raises(ToolError, match="allowlist"):
+        exact.run(command="git status --short")
+    with pytest.raises(ToolError, match="cannot allow arbitrary"):
+        ShellTool(tmp_path, allowed=[{"argv": ["git", "status"], "allow_extra_args": True}])
+
+
+def test_http_get_rejects_private_addresses(tmp_path: Path):
+    _ = HttpGetTool(tmp_path)
+    with pytest.raises(ToolError, match="non-public"):
+        _validate_public_http_url("http://127.0.0.1/latest/meta-data")
+
+
 def test_dispatch_unknown_tool_is_error():
     registry = ToolRegistry()
     result = registry.dispatch(ToolCall(id="1", name="nope", input={}))
     assert result.is_error and "unknown tool" in result.content
+
+
+def test_dispatch_inactive_tool_is_error(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.register(FileReadTool(tmp_path), active=False)
+
+    result = registry.dispatch(ToolCall(id="1", name="file_read", input={"path": "x.txt"}))
+
+    assert result.is_error and "inactive" in result.content
 
 
 def test_schema_from_function_derives_properties():
