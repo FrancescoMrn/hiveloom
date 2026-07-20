@@ -39,11 +39,34 @@ def test_package_creates_zip_with_lock(tmp_path: Path):
 
 def test_package_excludes_secrets_and_traces(tmp_path: Path):
     harness = _harness(tmp_path)
+    (harness / ".env.local").write_text("TOKEN=secret\n")
+    (harness / ".env.production").write_text("TOKEN=secret\n")
     result = package_harness(harness, output_dir=tmp_path / "dist")
     names = _names(result["zip_path"])
-    assert not any(".env" == Path(n).name for n in names)  # .env excluded
+    assert not any(Path(n).name in {".env", ".env.local", ".env.production"} for n in names)
     assert any(n.endswith(".env.example") for n in names)  # .env.example kept
     assert not any(".hiveloom" in n for n in names)  # local run memory excluded
+
+
+def test_package_excludes_configured_trace_directory(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.set_field(harness, "logging.trace_dir", "local-traces")
+    trace = harness / "local-traces"
+    trace.mkdir()
+    (trace / "run_x.jsonl").write_text("{}\n")
+
+    result = package_harness(harness, docker=True, output_dir=tmp_path / "dist")
+
+    assert not any("local-traces" in name for name in _names(result["zip_path"]))
+    assert "local-traces/" in (harness / ".dockerignore").read_text()
+
+
+def test_package_rejects_harness_root_as_trace_directory(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.set_field(harness, "logging.trace_dir", ".")
+
+    with pytest.raises(SpecError, match="cannot be the harness root"):
+        package_harness(harness, output_dir=tmp_path / "dist")
 
 
 def test_package_docker_emits_dockerfile(tmp_path: Path):
