@@ -75,13 +75,20 @@ def _guard(json_output: bool):
         def __exit__(self, exc_type, exc, _tb) -> bool:
             if exc is None:
                 return False
+            # Commands deliberately use typer.Exit for their documented
+            # status; it is not an untranslated runtime failure.
+            if isinstance(exc, typer.Exit):
+                return False
             if isinstance(exc, SpecError):
                 _fail(str(exc), json_output, ExitCode.SPEC_ERROR)
             if isinstance(exc, HiveloomError):
                 _fail(str(exc), json_output, ExitCode.RUNTIME_ERROR)
             if isinstance(exc, (KeyError, ValueError)):
                 _fail(str(exc).strip("'\""), json_output, ExitCode.SPEC_ERROR)
-            return False
+            # A command must never leak a traceback or accidentally use the
+            # verify-failed exit code for an untranslated runtime failure.
+            message = str(exc) or type(exc).__name__
+            _fail(message, json_output, ExitCode.RUNTIME_ERROR)
 
     return _Guard()
 

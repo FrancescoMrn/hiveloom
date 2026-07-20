@@ -96,6 +96,20 @@ def test_validate_missing_harness(tmp_path: Path):
     assert r.exit_code == ExitCode.SPEC_ERROR
 
 
+def test_unexpected_error_uses_runtime_exit_and_json(tmp_path: Path, monkeypatch):
+    from hiveloom import cli
+
+    monkeypatch.setattr(
+        cli.construct,
+        "init_harness",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    r = runner.invoke(app, ["init", str(tmp_path / "h"), "--name", "h", "--task", "T", "--json"])
+
+    assert r.exit_code == ExitCode.RUNTIME_ERROR
+    assert _json(r) == {"ok": False, "error": "boom"}
+
+
 def test_schema_annotated_is_raw_yaml():
     r = runner.invoke(app, ["schema", "--annotated"])
     assert r.exit_code == ExitCode.OK
