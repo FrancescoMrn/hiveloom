@@ -1,4 +1,4 @@
-version: '0.1.0'
+version: '0.2.0'
 name: hn-extractor
 description: Fetch the Hacker News front page and extract the top stories into structured JSON.
 model:

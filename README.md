@@ -10,7 +10,7 @@ Performance of agentic systems is governed as much by the **harness** (tools, lo
 
 The harness — not the conversation — is the durable, versionable, improvable artifact. The *hive* is the collective memory of runs; the *loom* weaves harnesses from that memory.
 
-> **Status:** 0.1.0 beta. The core library and CLI are implemented: the harness spec + loader, the explore/construct commands, the runtime (`run`), the Hive (`trace`/`stats`), generation + evolution (`generate`/`evolve`), and packaging (`package`). See the [documentation](#documentation) for architecture, extension, and deployment details.
+> **Status:** 0.2.0 beta. The core library and CLI are implemented: the harness spec + loader, the explore/construct commands, the runtime (`run`), the Hive (`trace`/`stats`), generation + evolution (`generate`/`evolve`), and packaging (`package`). See the [documentation](#documentation) for architecture, extension, and deployment details.
 
 ## Install
 

@@ -16,7 +16,7 @@ language-agnostic embedding interface is ``hiveloom run --stream`` (trace
 events as JSONL on stdout, final ``run_result`` line last).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from hiveloom.spec.schema import HarnessSpec
 

@@ -1,5 +1,5 @@
 # evolved: 1
-version: '0.1.0'
+version: '0.2.0'
 name: company-market-analysis
 description: Given a company name, fetch public info from Wikipedia REST API and produce a structured
   market analysis JSON.
