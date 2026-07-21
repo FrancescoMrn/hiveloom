@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Lint & consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Check lockfile is up to date
+        run: uv lock --check
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Check pyproject.toml and __init__.py versions match
+        run: |
+          uv run python - <<'EOF'
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          init = re.search(
+              r'__version__ = "([^"]+)"', Path("src/hiveloom/__init__.py").read_text()
+          ).group(1)
+          if pyproject != init:
+              sys.exit(f"version mismatch: pyproject.toml={pyproject} __init__.py={init}")
+          print(f"version {pyproject} consistent")
+          EOF
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+      # No ANTHROPIC_API_KEY on purpose: tests must pass offline with fake
+      # providers (CONTRIBUTING.md contract).
+      - name: Run tests
+        run: uv run pytest
+
+  harnesses:
+    name: Validate example harnesses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install project
+        run: uv sync --extra dev
+      - name: Validate every harness in harnesses/
+        run: |
+          for harness in harnesses/*/; do
+            uv run hiveloom validate "$harness"
+          done
+      - name: Dry-run the example summarizer
+        run: >
+          uv run hiveloom run harnesses/example-summarizer
+          --input harnesses/example-summarizer/notes.txt --dry-run
+
+  build:
+    name: Build & install smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check distribution metadata
+        run: uvx twine check dist/*
+      - name: Smoke-test the wheel in a clean environment
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          uv run --isolated --no-project --with "$WHEEL" -- hiveloom --help
+          uv run --isolated --no-project --with "$WHEEL" -- python -c \
+            "import hiveloom; print('imported hiveloom', hiveloom.__version__)"
+      - name: Ensure no secrets or traces leaked into the sdist
+        run: |
+          SDIST=$(ls dist/*.tar.gz)
+          # .env.example templates are the one intentional exception.
+          if tar -tzf "$SDIST" \
+            | grep -E '(^|/)\.env|(^|/)\.token\.|(^|/)traces/' \
+            | grep -v '\.env\.example$'; then
+            echo "::error::sdist contains files that must never ship (.env / .token.* / traces)"
+            exit 1
+          fi
+          echo "sdist clean"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

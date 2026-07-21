@@ -1,0 +1,22 @@
+name: Dependency audit
+
+on:
+  schedule:
+    # Monday 06:00 UTC — catches advisories published between releases.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: Audit locked dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: Export locked runtime dependencies
+        run: uv export --locked --no-dev --no-emit-project --no-hashes -o requirements.txt
+      - name: Audit against known vulnerability databases
+        run: uvx pip-audit --no-deps -r requirements.txt
