@@ -10,17 +10,17 @@ keywords = ["agents", "llm", "harness", "anthropic", "claude", "evolution"]
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
-    "typer>=0.12",
+    "typer>=0.27.0",
     "rich>=13.0",
     "structlog>=24.1",
-    "anthropic>=0.40",
+    "anthropic>=0.117.0",
     "mcp>=1.0",
     "python-dotenv>=1.0",
     "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.15.22"]
 
 [project.scripts]
 hiveloom = "hiveloom.cli:app"
