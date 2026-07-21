@@ -82,6 +82,18 @@ Step by step:
   build context. This embeds hiveloom itself; a fully air-gapped image also needs a
   wheelhouse for its third-party dependencies. Mount `.hiveloom/traces` to a shared
   volume so every replica feeds the same trace pool.
+- **HTTP service** — `hiveloom package --docker --serve` builds the same image with
+  `hiveloom serve` as the entrypoint: a long-lived container answering
+  `POST /runs` (`{"input": "...", "stream": true}` streams trace events as NDJSON,
+  final `run_result` line last) with `GET /healthz` for probes. Set
+  `HIVELOOM_API_KEY` to require a `Bearer`/`X-API-Key` header on `/runs` — but treat
+  that as defense in depth and put real authentication in your gateway. Run inputs
+  over HTTP are always literal text, never file paths, so remote callers cannot read
+  files out of the container. Because the harness executes model-written code hooks,
+  the container *is* the sandbox: no docker socket, read-only filesystem outside the
+  harness dir, and an egress policy. Traces still land in `.hiveloom/traces/`
+  in-container, so the evolve loop works unchanged — or capture the `/runs` stream at
+  your gateway and ship events wherever you like.
 - **Git-backed harness** — keep `harness.yaml` + hooks in git (traces are
   gitignored by `init`). Evolution produces a clean diff (the `# evolved` counter
   and version hash); commit it and redeploy. Rollback = `git revert`.

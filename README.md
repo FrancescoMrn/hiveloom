@@ -108,6 +108,23 @@ hiveloom run ./my-harness --input notes.txt --stream  # trace events as JSONL (e
 written to the harness's `.hiveloom/traces/<run_id>.jsonl`. The small executor model
 (default `claude-haiku-4-5`) runs inside the harness; guardrails and verification gate it.
 
+**Serve (long-lived HTTP deployment)**
+
+```bash
+hiveloom serve ./my-harness                    # http://127.0.0.1:8080, stdlib-only
+hiveloom serve ./my-harness --host 0.0.0.0 --port 8080 --concurrency 4
+HIVELOOM_API_KEY=sekret hiveloom serve .       # require Bearer / X-API-Key on /runs
+```
+
+`run` is one-shot; `serve` keeps the harness up behind two endpoints: `GET /healthz`
+(always unauthenticated, for orchestrator probes) and `POST /runs` with
+`{"input": "...", "stream": true|false}` — non-stream responses match `run --json`,
+streamed responses are NDJSON trace events with a final `run_result` line, exactly like
+`run --stream`. Inputs over HTTP are always literal text (never file paths), extra
+requests beyond `--concurrency` get `429`, and no new dependencies are involved — the
+server is standard library only. `hiveloom package --docker --serve` emits a Dockerfile
+whose container serves on `:8080` instead of running once.
+
 **Inspect memory**
 
 ```bash

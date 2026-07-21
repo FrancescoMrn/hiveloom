@@ -507,6 +507,57 @@ def run(
 
 
 @app.command()
+def serve(
+    harness_dir: str = typer.Argument(".", help="Harness directory to serve."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (0.0.0.0 in containers)."),
+    port: int = typer.Option(8080, "--port", help="Bind port."),
+    concurrency: int = typer.Option(
+        1, "--concurrency", help="Concurrent runs allowed; extra requests get 429."
+    ),
+    approve: bool = typer.Option(
+        False, "--approve", "-a", help="Trust the harness folder without prompting."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the startup line as JSON."),
+) -> None:
+    """Serve the harness over HTTP — the long-lived deployment interface.
+
+    ``GET /healthz`` reports liveness; ``POST /runs`` with ``{"input": "..."}``
+    runs the harness (add ``"stream": true`` for NDJSON trace events, final
+    ``run_result`` line last — same format as ``run --stream``). Set
+    ``HIVELOOM_API_KEY`` to require ``Authorization: Bearer`` / ``X-API-Key``
+    on ``/runs``; run inputs are always treated as literal text, never file
+    paths. Blocks until interrupted.
+    """
+    from hiveloom import serve as serve_mod
+    from hiveloom import trust as trust_mod
+
+    with _guard(json_output):
+        if approve:
+            trust_mod.record_trust(harness_dir)
+        server = serve_mod.HarnessServer(
+            harness_dir, host=host, port=port, concurrency=concurrency
+        )
+        info = {
+            "ok": True,
+            "name": server.harness_name,
+            "version_hash": server.version_hash,
+            "host": host,
+            "port": server.server_address[1],
+            "auth": bool(server.api_key),
+            "concurrency": concurrency,
+        }
+        if json_output:
+            _emit_json(info)
+        else:
+            auth = "API key required" if info["auth"] else "no API key (HIVELOOM_API_KEY unset)"
+            _console.print(
+                f"[green]serving[/green] {server.harness_name} "
+                f"on http://{host}:{info['port']} — {auth}"
+            )
+        serve_mod.serve_forever(server)
+
+
+@app.command()
 def trace(
     run_id: str = typer.Argument(..., help="Run id to display (e.g. run_abc123)."),
     directory: str | None = typer.Option(
@@ -765,6 +816,11 @@ def load_spec_for(harness_dir: str):
 def package(
     harness_dir: str = typer.Argument(..., help="Harness directory to package."),
     docker: bool = typer.Option(False, "--docker", help="Also emit a Dockerfile."),
+    serve: bool = typer.Option(
+        False,
+        "--serve",
+        help="Docker image serves HTTP (`hiveloom serve` on :8080) instead of one-shot run.",
+    ),
     runtime_wheel: str | None = typer.Option(
         None,
         "--runtime-wheel",
@@ -789,6 +845,7 @@ def package(
         result = package_harness(
             harness_dir,
             docker=docker,
+            serve=serve,
             output_dir=output,
             runtime_wheel=runtime_wheel,
         )

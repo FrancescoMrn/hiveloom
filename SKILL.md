@@ -99,4 +99,7 @@ the runtime at the destination. A harness folder that arrives from elsewhere is
 trust-gated: `hiveloom trust <dir>` (or `run --approve`, or
 `HIVELOOM_TRUST=always` in CI) before its code hooks may load. To embed a run
 in another program, use `hiveloom run --stream` (JSONL trace events on stdout)
-or the Python SDK (`from hiveloom import run_harness`).
+or the Python SDK (`from hiveloom import run_harness`). For a long-lived HTTP
+deployment, `hiveloom serve ./h` exposes `POST /runs` + `GET /healthz`
+(`HIVELOOM_API_KEY` gates `/runs`); `package --docker --serve` builds a
+container that serves on `:8080`.

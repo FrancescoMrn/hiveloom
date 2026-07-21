@@ -11,9 +11,10 @@ construction API that the CLI and generator both drive, and the embedding SDK:
 
 SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :class:`RunResult`, :func:`generate_harness`, :func:`load_spec`,
-:func:`validate_harness`, :class:`HarnessSpec`, :class:`Hive`. The other,
-language-agnostic embedding interface is ``hiveloom run --stream`` (trace
-events as JSONL on stdout, final ``run_result`` line last).
+:func:`validate_harness`, :class:`HarnessSpec`, :class:`Hive`,
+:class:`HarnessServer`. The other, language-agnostic embedding interfaces are
+``hiveloom run --stream`` (trace events as JSONL on stdout, final
+``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
 """
 
 __version__ = "0.2.0"
@@ -29,6 +30,7 @@ _SDK = {
     "load_spec": ("hiveloom.spec.loader", "load_spec"),
     "validate_harness": ("hiveloom.spec.loader", "validate_harness"),
     "Hive": ("hiveloom.logging.hive", "Hive"),
+    "HarnessServer": ("hiveloom.serve", "HarnessServer"),
 }
 
 
