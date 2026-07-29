@@ -17,3 +17,6 @@ hive.db
 # local credentials — never commit
 anthropic.token
 *.token
+
+# macOS
+.DS_Store

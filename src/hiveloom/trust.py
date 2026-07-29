@@ -60,6 +60,11 @@ def is_trusted(base: str | Path) -> bool:
 
 def record_trust(base: str | Path) -> None:
     data = _load()
+    if _key(base) in data:
+        # Idempotent: re-trusting must not rewrite the store. Callers invoke
+        # this per run (e.g. `run --approve` in eval sweeps), and the unlocked
+        # read-modify-write would race under concurrent runs.
+        return
     data[_key(base)] = {"trusted_at": datetime.now(UTC).isoformat()}
     _save(data)
 
