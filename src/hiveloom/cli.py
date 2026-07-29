@@ -54,12 +54,14 @@ _err_console = Console(stderr=True)
 # Output helpers
 # --------------------------------------------------------------------------- #
 def _emit_json(payload: dict[str, Any]) -> None:
-    _console.print_json(json.dumps(payload))
+    # Machine-readable contract: plain bytes, never through rich (which
+    # injects ANSI codes under FORCE_COLOR and breaks downstream json.loads).
+    print(json.dumps(payload, indent=2))
 
 
 def _fail(message: str, json_output: bool, code: int) -> None:
     if json_output:
-        _console.print_json(json.dumps({"ok": False, "error": message}))
+        print(json.dumps({"ok": False, "error": message}, indent=2))
     else:
         _err_console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code)
