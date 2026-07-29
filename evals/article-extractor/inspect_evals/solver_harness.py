@@ -14,6 +14,12 @@ from inspect_evals._shared import EVAL_ROOT, REPO_ROOT
 
 SUBPROCESS_TIMEOUT = 300  # hard backstop over the harness's own 240s wall clock
 
+# The --json contract needs plain bytes; color-forcing vars (e.g. FORCE_COLOR
+# exported by CI/agent shells) would make rich inject ANSI into stdout.
+_CHILD_ENV = {
+    k: v for k, v in os.environ.items() if k not in ("FORCE_COLOR", "CLICOLOR_FORCE")
+} | {"NO_COLOR": "1"}
+
 
 def _hiveloom_cmd() -> list[str]:
     env_bin = os.environ.get("HIVELOOM_BIN")
@@ -41,6 +47,7 @@ def hiveloom_subprocess(harness_dir: str) -> Solver:
                 text=True,
                 timeout=SUBPROCESS_TIMEOUT,
                 check=False,
+                env=_CHILD_ENV,
             )
         except subprocess.TimeoutExpired:
             result = {

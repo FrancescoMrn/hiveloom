@@ -200,8 +200,10 @@ def main() -> None:
         f"- Pricing (USD/Mtok, as of {PRICING_AS_OF}): "
         + ", ".join(f"{m} {p}" for m, p in PRICING_PER_MTOK.items())
         + ". Sonnet 5 is at the introductory rate through 2026-08-31.",
-        "- qwen arm cost is ~$0 by hiveloom accounting (local inference, usage-less "
-        "openai-compat responses counted free) — latency is its resource proxy.",
+        "- Local arms (qwen, gemma, qwen35) cost $0 by definition (local inference; "
+        "hiveloom also counts usage-less openai-compat responses as free) — latency "
+        "is their resource proxy. qwen3:4b and gemma4:12b are served by native "
+        "Ollama (Metal); qwen3.6-35B-A3B by mlx_lm.server.",
         "- The scorer strips one markdown fence layer for all arms (lenient to raw arms).",
         "- Harness-arm cost comes from hiveloom's own accounting; raw-arm cost from "
         "inspect_ai token usage × the pricing table (cache writes at 1.25x input, reads at 0.1x).",

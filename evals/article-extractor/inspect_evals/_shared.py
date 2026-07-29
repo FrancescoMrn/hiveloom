@@ -23,9 +23,13 @@ DATASET_PATH = EVAL_ROOT / "dataset" / "samples.jsonl"
 
 # Anthropic first-party rates, USD per 1M tokens (input, output).
 # Sonnet 5 is at the introductory rate through 2026-08-31; standard is (3.00, 15.00).
+# Local Ollama models are $0 marginal cost by definition; latency is their proxy.
 PRICING_PER_MTOK = {
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-sonnet-5": (2.00, 10.00),
+    "qwen3:4b-instruct": (0.0, 0.0),
+    "gemma4:12b-mlx": (0.0, 0.0),
+    "Qwen3.6-35B-A3B-8bit": (0.0, 0.0),
 }
 PRICING_AS_OF = "2026-07-29"
 

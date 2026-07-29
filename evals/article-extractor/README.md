@@ -7,12 +7,19 @@ fraction of the cost? This benchmark tests hiveloom's core thesis on the
 
 ## Arms
 
-| Arm | Model | Pipeline |
+Each model runs raw (same system prompt + same `fetch_clean` tool, no
+scaffolding) and, except Sonnet, inside the full hiveloom harness (validators,
+retry-with-feedback, guardrails):
+
+| Model | Arms | Served by |
 |---|---|---|
-| `haiku_harness` | claude-haiku-4-5 | full hiveloom harness (validators, retry-with-feedback, guardrails) |
-| `haiku_raw` | claude-haiku-4-5 | same system prompt + same `fetch_clean` tool, no scaffolding |
-| `sonnet_raw` | claude-sonnet-5 | same as above — the incumbent baseline |
-| `qwen_harness` | qwen3:4b-instruct (Ollama) | full hiveloom harness, ~$0 local arm |
+| claude-haiku-4-5 | harness + raw | Anthropic API |
+| claude-sonnet-5 | raw (incumbent baseline) | Anthropic API |
+| qwen3:4b-instruct | harness + raw | native Ollama (Metal) |
+| gemma4:12b-mlx | harness + raw | native Ollama (Metal) |
+| mlx-community/Qwen3.6-35B-A3B-8bit | harness + raw | mlx_lm.server :8081 |
+
+Local arms cost ~$0 by definition; latency is their resource proxy.
 
 The raw arms reuse the harness's system prompt verbatim, so the eval measures
 the **scaffolding delta** (validators / retries / guardrails / loop policy),
