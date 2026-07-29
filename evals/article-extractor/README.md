@@ -1,0 +1,68 @@
+# article-extractor evals
+
+Does a small model inside a hiveloom harness match or beat a big model raw, at a
+fraction of the cost? This benchmark tests hiveloom's core thesis on the
+`article-extractor` task (URL → strict JSON metadata), built on
+[inspect_ai](https://inspect.aisi.org.uk/).
+
+## Arms
+
+| Arm | Model | Pipeline |
+|---|---|---|
+| `haiku_harness` | claude-haiku-4-5 | full hiveloom harness (validators, retry-with-feedback, guardrails) |
+| `haiku_raw` | claude-haiku-4-5 | same system prompt + same `fetch_clean` tool, no scaffolding |
+| `sonnet_raw` | claude-sonnet-5 | same as above — the incumbent baseline |
+| `qwen_harness` | qwen3:4b-instruct (Ollama) | full hiveloom harness, ~$0 local arm |
+
+The raw arms reuse the harness's system prompt verbatim, so the eval measures
+the **scaffolding delta** (validators / retries / guardrails / loop policy),
+not prompt engineering.
+
+## Metrics
+
+- **task_success** — schema-valid AND no hallucination (title/headings verbatim
+  on the re-fetched live page, via the harness's own
+  `validators/article_on_page.py`) AND title matches golden. Wilson 95% CI.
+- **cost_per_success** — total arm cost / successful samples (the headline
+  economic number).
+- Secondary: hallucination rate, per-field accuracy, headings F1, pass^3,
+  p50/p90 latency. Paired McNemar test for haiku_harness vs sonnet_raw.
+
+## Setup
+
+```bash
+uv sync
+cp .env.example .env          # fill ANTHROPIC_API_KEY
+ollama pull qwen3:4b-instruct
+python dataset/check_dataset_urls.py   # pre-flight: URL liveness + drift
+```
+
+The per-arm harness dirs under `harnesses/` are generated (not committed) from
+the canonical `../../harnesses/article-extractor` by
+`./scripts/setup_harnesses.sh` — run_all_arms.sh calls it automatically. Only
+the `model:` block differs per arm (verify with
+`diff harnesses/harness-haiku/harness.yaml harnesses/harness-qwen/harness.yaml`);
+the script trusts each dir at build time.
+
+## Run
+
+```bash
+./scripts/run_all_arms.sh              # all 4 arms, 3 epochs
+python scripts/aggregate_results.py logs/* --out RESULTS.md
+```
+
+Or one arm at a time — see `scripts/run_all_arms.sh` for the individual
+`inspect eval` invocations.
+
+## Known caveats (disclosed in RESULTS.md)
+
+- Live URLs can drift; every run stamps the dataset git hash and the pre-flight
+  drift report. Goldens carry a `fingerprint` + `verified_at` for detection.
+- qwen arm reports ~$0 cost (local inference has no API cost, but hiveloom
+  counts usage-less openai-compat responses as free — see AUDIT.md). Latency is
+  its resource proxy.
+- Sonnet 5 intro pricing ($2/$10 per Mtok) expires 2026-08-31; the pricing
+  table used is dated in every report.
+- The scorer strips one markdown fence layer for all arms (the harness has a
+  `strip_json_fence` hook; raw arms don't) — slightly lenient to raw arms on a
+  cosmetic formatting quirk.
