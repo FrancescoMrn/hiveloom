@@ -142,13 +142,32 @@ def _covered(path: str, patterns: set[str]) -> bool:
     happens to be harmless *today* only because the mismatched-case write
     that would follow creates an unrecognized key `_commit`'s pydantic
     validation then rejects — an unrelated backstop, not this check working.
-    Shared by `gate()` for both the ALWAYS_FROZEN check and the mutable-set
-    check, so both become case-insensitive; a case-variant mutable path
-    still can't actually reach the real field for the same reason above, so
-    this loses nothing there.
+    Used by `gate()` for the mutable-set check (the frozen check uses
+    :func:`_touches_frozen`, which also catches ancestors); the case-insensitive
+    mutable match loses nothing, since a case-variant path still can't reach the
+    real field for the same reason above.
     """
     path_cf = path.casefold()
     return any(path_cf == p.casefold() or path_cf.startswith(p.casefold() + ".") for p in patterns)
+
+
+def _touches_frozen(path: str, patterns: set[str]) -> bool:
+    """True if writing ``path`` would create, overwrite, or land inside a frozen pattern.
+
+    Broader than :func:`_covered` (equality or descendant only): it also matches
+    when ``path`` is an *ancestor* of a frozen pattern. Writing a parent mapping
+    replaces its children, so ``set logging {redact: []}`` overwrites the frozen
+    ``logging.redact`` and ``set evolution {auto_propose: {...}}`` overwrites the
+    frozen ``evolution.auto_propose`` — both must be refused too. Case-insensitive,
+    same reason as :func:`_covered`. Used only for the frozen deny-list, never for
+    the mutable-set check (where ancestor semantics would wrongly widen it).
+    """
+    path_cf = path.casefold()
+    for p in patterns:
+        p_cf = p.casefold()
+        if path_cf == p_cf or path_cf.startswith(p_cf + ".") or p_cf.startswith(path_cf + "."):
+            return True
+    return False
 
 
 def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
@@ -164,7 +183,7 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
     accepted: list[YamlChange] = []
     rejected: list[dict[str, str]] = []
     for change in proposal.yaml_changes:
-        if _covered(change.path, frozen):
+        if _touches_frozen(change.path, frozen):
             rejected.append({"path": change.path, "reason": "frozen path"})
         elif _enables_dangerous_tool(change):
             rejected.append(

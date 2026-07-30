@@ -89,6 +89,25 @@ def test_gate_rejects_frozen_paths(tmp_path: Path):
     assert rejected == {"guardrails", "model.id", "logging.redact", "hooks"}
 
 
+def test_gate_rejects_parent_of_frozen_leaf(tmp_path: Path):
+    """Writing a parent mapping overwrites its frozen child, so it must be
+    rejected too: `logging` replaces the frozen `logging.redact`, `evolution`
+    replaces the frozen `evolution.auto_propose`. Pre-fix (`_covered`, which
+    matches only equality or descendants) these slipped through and silently
+    defeated the freeze."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "logging", "value": {"redact": []}},
+            {"path": "evolution", "value": {"auto_propose": {"enabled": True}}},
+        ]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert {r["path"] for r in result.rejected} == {"logging", "evolution"}
+    assert all(r["reason"] == "frozen path" for r in result.rejected)
+
+
 def test_gate_rejects_dangerous_tool_changes(tmp_path: Path):
     spec = load_spec(_harness(tmp_path))
     proposal = MutationProposal(yaml_changes=[{"path": "tools", "value": [{"builtin": "shell"}]}])

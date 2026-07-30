@@ -45,7 +45,7 @@ from hiveloom.errors import (
     SpecError,
 )
 from hiveloom.evolve import proposals as proposals_mod
-from hiveloom.evolve.evolver import _covered, _read_counter
+from hiveloom.evolve.evolver import _read_counter, _touches_frozen
 from hiveloom.generate.llm import StrongModel, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
@@ -72,12 +72,27 @@ _SSE_DONE = object()
 # hand-maintained parallel list, so a future addition there (e.g. ws2's
 # mcp_servers) is refused here automatically, with no further change to this
 # file — the same "one definition" discipline as `is_sensitive_path`.
-_FROZEN_ROOTS = set(ALWAYS_FROZEN)
+#
+# `_HTTP_ONLY_FROZEN` extends that set for the control plane ONLY, because the
+# HTTP threat model is strictly worse than evolution's (a remote token, not a
+# local operator):
+#   - `tools` / `verify.validators` are code-execution roots. `hiveloom add
+#     tool shell` and the `command_succeeds` validator both run arbitrary shell
+#     on the next run, so a `mutate` token that could set them would be RCE.
+#     The evolver refuses dangerous *tool* changes case-by-case; over HTTP we
+#     freeze both roots wholesale — the gap-free fix for a non-production
+#     surface, at the cost of not adding tools/validators remotely.
+#   - `name` binds every Hive lookup (`/trace`, `/proposals`) to this harness;
+#     letting a caller rewrite it re-points those reads at another harness's
+#     traces and proposals.
+_HTTP_ONLY_FROZEN = {"tools", "verify.validators", "name"}
+_FROZEN_ROOTS = set(ALWAYS_FROZEN) | _HTTP_ONLY_FROZEN
 
 # Which spec root each `/add/{kind}` targets, so it can be checked against
-# _FROZEN_ROOTS exactly like a `/set` to that same root would be. `guardrail`
-# and `hook` map onto ALWAYS_FROZEN roots directly, so both kinds are always
-# refused over the control plane, full stop.
+# _FROZEN_ROOTS exactly like a `/set` to that same root would be. `guardrail`,
+# `hook`, `tool`, and `validator` all map onto frozen roots (the last two via
+# `_HTTP_ONLY_FROZEN`), so those kinds are always refused over the control
+# plane, full stop; only `skill` remains addable.
 _ADD_KIND_ROOTS = {
     "tool": "tools",
     "validator": "verify.validators",
@@ -126,12 +141,13 @@ def _error_response(exc: Exception) -> JSONResponse:
 
 
 def _refuse_if_frozen(path: str) -> None:
-    """Raise :class:`AuthorizationError` if ``path`` falls within an
-    ALWAYS_FROZEN root — the deny-list for ``/set`` and ``/add/{kind}``
-    (via ``_ADD_KIND_ROOTS``). A 403, not a 400: this is "your scope does
-    not permit that", not "your request was malformed".
+    """Raise :class:`AuthorizationError` if ``path`` touches a frozen root — the
+    deny-list for ``/set`` and ``/add/{kind}`` (via ``_ADD_KIND_ROOTS``). Uses
+    :func:`_touches_frozen`, so writing a *parent* of a frozen leaf (``logging``
+    over ``logging.redact``) is refused too. A 403, not a 400: this is "your
+    scope does not permit that", not "your request was malformed".
     """
-    if _covered(path, _FROZEN_ROOTS):
+    if _touches_frozen(path, _FROZEN_ROOTS):
         raise AuthorizationError(
             f"'{path}' cannot be changed over the control plane (frozen from remote mutation)"
         )
@@ -146,9 +162,10 @@ def _remove_target_is_frozen(raw: dict[str, Any], target: str) -> bool:
     name-shape question from the same table the removal itself walks, so this
     cannot fall out of step with what removal would actually touch.
     """
-    if _covered(target, _FROZEN_ROOTS):
+    if _touches_frozen(target, _FROZEN_ROOTS):
         return True
-    return any(_covered(root, _FROZEN_ROOTS) for root in construct.matching_roots(raw, target))
+    roots = construct.matching_roots(raw, target)
+    return any(_touches_frozen(root, _FROZEN_ROOTS) for root in roots)
 
 
 def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> dict[str, Any]:

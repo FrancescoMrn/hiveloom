@@ -448,7 +448,12 @@ def test_set_round_trips(tmp_path: Path):
     assert load_spec(harness).loop.max_turns == 7
 
 
-def test_add_tool_round_trips(tmp_path: Path):
+def test_add_tool_refused_over_http_but_works_locally(tmp_path: Path):
+    """`tools` is frozen over the control plane: it is a code-execution root
+    (`add tool shell` runs arbitrary shell on the next run), so a remote
+    `mutate`-scoped caller must not reach it, even though the local construct
+    API still can.
+    """
     harness = _harness(tmp_path)
     app = create_app(harness)
     _, token = _authorize(harness, ["mutate"])
@@ -457,12 +462,19 @@ def test_add_tool_round_trips(tmp_path: Path):
             "/add/tool", json={"builtin": "http_get", "description": "fetch a URL"},
             headers=_bearer(token),
         )
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "added": "tool", "ref": "http_get"}
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert load_spec(harness).tools == []
+
+    construct.add_tool(harness, builtin="http_get", description="fetch a URL")
     assert any(getattr(t, "builtin", None) == "http_get" for t in load_spec(harness).tools)
 
 
-def test_add_validator_round_trips(tmp_path: Path):
+def test_add_validator_refused_over_http_but_works_locally(tmp_path: Path):
+    """`verify.validators` is frozen over the control plane: the
+    `command_succeeds` validator runs arbitrary shell, so like `tools` it is a
+    code-execution root a remote `mutate` caller must not reach.
+    """
     harness = _harness(tmp_path)
     app = create_app(harness)
     _, token = _authorize(harness, ["mutate"])
@@ -471,8 +483,13 @@ def test_add_validator_round_trips(tmp_path: Path):
             "/add/validator", json={"builtin": "file_exists", "path": "output.txt"},
             headers=_bearer(token),
         )
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "added": "validator", "ref": "file_exists"}
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert not any(
+        getattr(v, "builtin", None) == "file_exists" for v in load_spec(harness).verify.validators
+    )
+
+    construct.add_validator(harness, builtin="file_exists", path="output.txt")
     assert any(
         getattr(v, "builtin", None) == "file_exists" for v in load_spec(harness).verify.validators
     )
@@ -550,15 +567,31 @@ def test_add_unknown_kind_is_400(tmp_path: Path):
 
 
 def test_remove_round_trips(tmp_path: Path):
+    # A non-frozen removable target (a skill). `tools` is frozen over the
+    # control plane — see test_remove_tool_refused_over_http.
+    harness = _harness(tmp_path)
+    construct.add_skill(harness, name="greeting", description="how to greet")
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/remove", json={"target": "greeting"}, headers=_bearer(token))
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "removed": "greeting"}
+    assert "greeting" not in load_spec(harness).skills
+
+
+def test_remove_tool_refused_over_http(tmp_path: Path):
+    """Removing a tool touches the frozen `tools` root, so `/remove` refuses it
+    over the control plane — a remote caller cannot strip a harness's tools."""
     harness = _harness(tmp_path)
     construct.add_tool(harness, builtin="http_get", description="fetch")
     app = create_app(harness)
     _, token = _authorize(harness, ["mutate"])
     with TestClient(app) as client:
         r = client.post("/remove", json={"target": "http_get"}, headers=_bearer(token))
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "removed": "http_get"}
-    assert load_spec(harness).tools == []
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert any(getattr(t, "builtin", None) == "http_get" for t in load_spec(harness).tools)
 
 
 # --------------------------------------------------------------------------- #
@@ -630,6 +663,64 @@ def test_set_ordinary_path_still_succeeds(tmp_path: Path):
         )
     assert r.status_code == 200
     assert load_spec(harness).system_prompt == "Be helpful."
+
+
+# --------------------------------------------------------------------------- #
+# Post-merge CRITICAL: bypasses that survived the fix-round-4 deny-list
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        # Writing a parent mapping overwrites its frozen child: `logging`
+        # replaces the frozen `logging.redact`, `evolution` replaces the frozen
+        # `evolution.auto_propose`. Each value is independently valid for its
+        # field, so pre-fix each was accepted (200) and silently defeated the
+        # freeze — stripping redaction / enabling the paid auto-propose trigger.
+        ("logging", {"redact": []}),
+        ("evolution", {"auto_propose": {"enabled": True, "min_failures": 1}}),
+    ],
+)
+def test_set_parent_of_frozen_leaf_is_refused(tmp_path: Path, path: str, value):
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/set", json={"path": path, "value": value}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    # The frozen child is untouched.
+    assert load_spec(harness).evolution.auto_propose.enabled is False
+
+
+def test_set_name_is_refused_so_hive_binding_holds(tmp_path: Path):
+    """`name` binds every Hive lookup (`/trace`, `/proposals`) to this harness.
+    A remote caller must not rewrite it to re-point those reads at another
+    harness's traces and proposals."""
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/set", json={"path": "name", "value": "victim"}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert load_spec(harness).name == "srv"
+
+
+def test_set_tools_shell_is_refused_no_rce(tmp_path: Path):
+    """The RCE vector: `/set tools` to a shell-executing builtin. `tools` is a
+    frozen code-execution root over the control plane, so it is refused."""
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post(
+            "/set",
+            json={"path": "tools", "value": [{"builtin": "shell", "commands": ["echo hi"]}]},
+            headers=_bearer(token),
+        )
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert load_spec(harness).tools == []
 
 
 def test_remove_refuses_dotted_path_under_frozen_root(tmp_path: Path):

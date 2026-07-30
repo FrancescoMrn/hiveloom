@@ -93,7 +93,7 @@ uses.
 | `GET /trace/{run_id}` | `read` | Hive lookup + trace read, bound to the served harness; 404 if unknown *or if the run belongs to a different harness* (the Hive is global — see below). |
 | `POST /validate` | `read` | Full spec + code-hook validation. |
 | `POST /set` | `mutate` | Set one dotted field to an already-typed JSON value (`construct.set_value`) — refused for any ALWAYS_FROZEN root; see below. |
-| `POST /add/{tool,validator,guardrail,hook,skill}` | `mutate` | The matching `construct.add_*` function. `guardrail` and `hook` are always refused — both map onto ALWAYS_FROZEN roots. |
+| `POST /add/{tool,validator,guardrail,hook,skill}` | `mutate` | The matching `construct.add_*` function. `tool`, `validator`, `guardrail`, and `hook` are always refused — they map onto frozen roots (`tools`/`verify.validators` are code-execution roots); only `skill` is addable. |
 | `POST /remove` | `mutate` | `construct.remove_item` — refused for any ALWAYS_FROZEN root, whether named by dotted path or by an entry's builtin/code-ref name. |
 | `POST /evolve/propose` | `evolve` | Drafts and queues a proposal (`trigger="http"`); never applies. |
 | `GET /proposals` | `read` | List queued proposals for this harness (optional `?status=`). |
@@ -121,10 +121,21 @@ entirely. So `/set`, every `/add/{kind}`, and `/remove` refuse any of
 `extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` — with
 **403**, not 400: this is "your scope does not permit that," not "your request
 was malformed." The local CLI is completely unaffected; this check lives
-entirely in the HTTP layer
-(`serve/app.py`), derived from `ALWAYS_FROZEN` itself rather than a
-hand-maintained parallel list, so it never drifts from what the evolver
-already refuses to touch.
+entirely in the HTTP layer (`serve/app.py`), derived from `ALWAYS_FROZEN`
+itself rather than a hand-maintained parallel list, so it never drifts from
+what the evolver already refuses to touch.
+
+Three roots are frozen over HTTP **beyond** `ALWAYS_FROZEN`, because the
+control plane's threat model is stricter than the evolver's (a remote token,
+not a local operator): `tools` and `verify.validators` are code-execution
+roots — `add tool shell` and the `command_succeeds` validator both run
+arbitrary shell on the next run — and `name` binds every Hive lookup
+(`/trace`, `/proposals`) to this harness, so rewriting it would re-point those
+reads at another harness. The freeze is by *containment*, not just an exact
+match: writing a **parent** of a frozen leaf (`/set logging` over the frozen
+`logging.redact`, `/set evolution` over `evolution.auto_propose`) overwrites
+the child, so ancestors of a frozen path are refused too. Adding a skill
+(`/add/skill`) remains the one permitted `add` over HTTP.
 
 ### Proposals and traces are bound to the served harness
 
