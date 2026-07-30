@@ -30,6 +30,10 @@ jobs:
       - name: Run tests
         run: uv run pytest
       - name: Validate example harnesses
+        # Trust-gated like the CI job; scoped to this step so pytest above still
+        # runs with an unset policy.
+        env:
+          HIVELOOM_TRUST: always
         run: |
           for harness in harnesses/*/; do
             uv run hiveloom validate "$harness"
