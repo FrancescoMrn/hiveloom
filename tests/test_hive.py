@@ -182,6 +182,7 @@ def test_insert_proposal_dedups_via_the_partial_unique_index(tmp_path: Path):
         second = hive.insert_proposal(_proposal_row(id="prop_bbbbbbbbbbbbbbbb"))
         assert second["id"] == first["id"] == "prop_aaaaaaaaaaaaaaaa"
         assert len(hive.list_proposals(harness_name="demo")) == 1
+        assert hive._conn.in_transaction is False
 
 
 def test_insert_proposal_reopens_slot_after_resolution(tmp_path: Path):
@@ -194,6 +195,67 @@ def test_insert_proposal_reopens_slot_after_resolution(tmp_path: Path):
         second = hive.insert_proposal(_proposal_row(id="prop_bbbbbbbbbbbbbbbb"))
         assert second["id"] == "prop_bbbbbbbbbbbbbbbb"
         assert hive.find_pending_proposal("demo", "v1", "abc123")["id"] == second["id"]
+
+
+def test_release_proposal_claim_survives_a_dedup_collision(tmp_path: Path):
+    """Releasing a claim must never raise — it runs inside a failed apply's
+    exception handler, so raising would mask the real error.
+
+    The dedup index is partial on status='pending', so a claimed proposal's
+    slot is momentarily free and a concurrent create can queue a fresh row for
+    the same cluster. Restoring the claimed one then collides on that index.
+    """
+    with Hive(tmp_path / "hive.db") as hive:
+        claimed = hive.insert_proposal(_proposal_row())
+        assert hive.claim_pending_proposal(claimed["id"]) is True
+        # The freed slot lets a concurrent auto-propose queue the same cluster.
+        rival = hive.insert_proposal(_proposal_row(id="prop_bbbbbbbbbbbbbbbb"))
+        assert rival["id"] == "prop_bbbbbbbbbbbbbbbb"
+
+        hive.release_proposal_claim(claimed["id"])  # must not raise
+
+        assert hive._conn.in_transaction is False
+        assert hive.get_proposal(claimed["id"])["status"] == "applying"
+        assert hive.find_pending_proposal("demo", "v1", "abc123")["id"] == rival["id"]
+
+
+def test_last_auto_proposal_at_filters_and_limits_in_sql(tmp_path: Path):
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.insert_proposal(
+            _proposal_row(
+                id="prop_manual",
+                dedup_key="manual",
+                created_at="2026-01-03T00:00:00+00:00",
+            )
+        )
+        hive.insert_proposal(
+            _proposal_row(
+                id="prop_auto_old",
+                dedup_key="auto-old",
+                trigger="auto",
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        hive.insert_proposal(
+            _proposal_row(
+                id="prop_auto_new",
+                dedup_key="auto-new",
+                trigger="auto",
+                created_at="2026-01-02T00:00:00+00:00",
+            )
+        )
+
+        statements: list[str] = []
+        hive._conn.set_trace_callback(statements.append)
+        created_at = hive.last_auto_proposal_at("demo")
+        hive._conn.set_trace_callback(None)
+
+    assert created_at == "2026-01-02T00:00:00+00:00"
+    query = next(statement for statement in statements if statement.startswith("SELECT"))
+    assert "SELECT created_at FROM proposals" in query
+    assert "trigger='auto'" in query
+    assert "LIMIT 1" in query
+    assert "proposal_json" not in query
 
 
 def test_hive_uses_wal_and_can_prune_completed_runs(tmp_path: Path):

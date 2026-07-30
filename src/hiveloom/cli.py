@@ -743,11 +743,14 @@ def load_spec_for(harness_dir: str):
 # --------------------------------------------------------------------------- #
 def _proposal_payload(record: Any) -> dict[str, Any]:
     """Expand a ProposalRecord's JSON-text columns into nested objects for output."""
-    payload = record.model_dump()
-    payload["proposal"] = record.proposal.model_dump()
-    payload["gate"] = record.gate.model_dump()
-    payload["apply_result"] = record.apply_result
-    return payload
+    return {
+        **record.model_dump(
+            exclude={"proposal_json", "gate_json", "apply_result_json"}
+        ),
+        "proposal": record.proposal.model_dump(),
+        "gate": record.gate.model_dump(),
+        "apply_result": record.apply_result,
+    }
 
 
 def _emit_proposal_created(record: Any, json_output: bool) -> None:
@@ -836,20 +839,27 @@ def proposals_list_cmd(
 @proposals_app.command("show")
 def proposals_show_cmd(
     harness_dir: str = typer.Argument(
-        ..., help="Harness dir (kept for CLI-shape parity; ids are looked up directly)."
+        ..., help="Harness name or directory."
     ),
     proposal_id: str = typer.Argument(..., help="Proposal id (e.g. prop_abc123)."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show a queued proposal: its rationale, gate result, and any apply result."""
+    from hiveloom import runner
     from hiveloom.evolve import proposals as proposals_mod
     from hiveloom.logging.hive import Hive
 
     with _guard(json_output):
         with Hive() as hive:
+            name = runner.resolve_and_ingest(harness_dir, hive)
             record = proposals_mod.get_proposal(hive, proposal_id)
         if record is None:
             raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
+        if record.harness_name != name:
+            raise ProposalQueueError(
+                f"proposal '{proposal_id}' belongs to harness '{record.harness_name}', "
+                f"not '{name}'"
+            )
 
         if json_output:
             _emit_json({"ok": True, **_proposal_payload(record)})
@@ -901,7 +911,11 @@ def proposals_apply_cmd(
     from hiveloom.evolve import proposals as proposals_mod
     from hiveloom.logging.hive import Hive
 
-    approved_files = set(approve_code_arg.split(",")) if approve_code_arg else None
+    approved_files = (
+        {path for item in approve_code_arg.split(",") if (path := item.strip())}
+        if approve_code_arg
+        else None
+    )
     approve = _make_approve_code(
         Path(harness_dir), json_output=json_output, allowlist=approved_files
     )
@@ -932,18 +946,28 @@ def proposals_apply_cmd(
 @proposals_app.command("reject")
 def proposals_reject_cmd(
     harness_dir: str = typer.Argument(
-        ..., help="Harness directory (kept for CLI-shape parity; reject never touches it)."
+        ..., help="Harness name or directory."
     ),
     proposal_id: str = typer.Argument(..., help="Proposal id to reject."),
     reason: str = typer.Option("", "--reason", help="Why this proposal is being rejected."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Reject a queued proposal. Never touches harness.yaml."""
+    from hiveloom import runner
     from hiveloom.evolve import proposals as proposals_mod
     from hiveloom.logging.hive import Hive
 
     with _guard(json_output):
         with Hive() as hive:
+            name = runner.resolve_and_ingest(harness_dir, hive)
+            record = proposals_mod.get_proposal(hive, proposal_id)
+            if record is None:
+                raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
+            if record.harness_name != name:
+                raise ProposalQueueError(
+                    f"proposal '{proposal_id}' belongs to harness '{record.harness_name}', "
+                    f"not '{name}'"
+                )
             proposals_mod.reject_proposal(hive, proposal_id, reason)
         if json_output:
             _emit_json({"ok": True, "proposal_id": proposal_id, "status": "rejected"})

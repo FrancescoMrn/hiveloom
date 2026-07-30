@@ -429,6 +429,10 @@ class Hive:
             self._conn.commit()
             return dict(row)
         except sqlite3.IntegrityError:
+            # The failed INSERT opened a transaction in sqlite3's default
+            # non-autocommit mode. End it before the lookup so this connection
+            # does not keep a needless write lock after the expected collision.
+            self._conn.rollback()
             existing = self.find_pending_proposal(
                 row["harness_name"], row["spec_version_hash"], row["dedup_key"]
             )
@@ -469,6 +473,45 @@ class Hive:
         query += " ORDER BY created_at DESC"
         rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    def last_auto_proposal_at(self, harness_name: str) -> str | None:
+        """Creation timestamp of this harness's newest auto-triggered proposal."""
+        row = self._conn.execute(
+            "SELECT created_at FROM proposals "
+            "WHERE harness_name=? AND trigger='auto' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (harness_name,),
+        ).fetchone()
+        return row["created_at"] if row else None
+
+    def claim_pending_proposal(self, proposal_id: str) -> bool:
+        """Atomically move a pending proposal into the transient applying state."""
+        cursor = self._conn.execute(
+            "UPDATE proposals SET status='applying' WHERE id=? AND status='pending'",
+            (proposal_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def release_proposal_claim(self, proposal_id: str) -> None:
+        """Return a failed apply's claimed proposal to pending for a retry.
+
+        Best-effort by design. The dedup index is partial on ``status='pending'``,
+        so a claimed proposal's slot is momentarily free and a concurrent
+        ``create_proposal`` can queue a fresh row for the same failure cluster.
+        Restoring this one would then collide on that index — and since this
+        runs inside the failed apply's exception handler, raising would mask the
+        real error. The colliding row already represents the same work, so
+        leaving this one claimed loses nothing.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE proposals SET status='pending' WHERE id=? AND status='applying'",
+                (proposal_id,),
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError:
+            self._conn.rollback()
 
     def update_proposal(self, proposal_id: str, **fields: Any) -> None:
         """Update selected columns of a proposal row (e.g. status, resolved_at)."""

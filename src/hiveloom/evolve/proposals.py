@@ -141,10 +141,7 @@ def last_auto_proposal_at(hive: Hive, harness_name: str) -> str | None:
     to window the failure count (only failures since the last auto-proposal
     matter) and to enforce the cooldown between auto-drafted proposals.
     """
-    for row in hive.list_proposals(harness_name=harness_name):
-        if row["trigger"] == "auto":
-            return row["created_at"]
-    return None
+    return hive.last_auto_proposal_at(harness_name)
 
 
 def get_proposal(hive: Hive, proposal_id: str) -> ProposalRecord | None:
@@ -189,6 +186,11 @@ def apply_proposal_by_id(
     row = _require_pending(hive, proposal_id)
 
     spec = load_spec(harness_dir)
+    if spec.name != row["harness_name"]:
+        raise ProposalQueueError(
+            f"proposal '{proposal_id}' belongs to harness '{row['harness_name']}', "
+            f"not '{spec.name}'"
+        )
     base = harness_path(harness_dir).parent
     live_hash = spec_version_hash(spec, base)
     if live_hash != row["spec_version_hash"]:
@@ -200,10 +202,20 @@ def apply_proposal_by_id(
     if confirm_apply_yaml is not None:
         apply_yaml = confirm_apply_yaml()
 
+    if not hive.claim_pending_proposal(proposal_id):
+        current = hive.get_proposal(proposal_id)
+        if current is None:
+            raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
+        raise ProposalQueueError(f"proposal '{proposal_id}' is already {current['status']}")
+
     proposal = MutationProposal.model_validate_json(row["proposal_json"])
-    result = evolver.apply_proposal(
-        harness_dir, proposal, hive=hive, approve_code=approve_code, apply_yaml=apply_yaml
-    )
+    try:
+        result = evolver.apply_proposal(
+            harness_dir, proposal, hive=hive, approve_code=approve_code, apply_yaml=apply_yaml
+        )
+    except BaseException:
+        hive.release_proposal_claim(proposal_id)
+        raise
 
     hive.update_proposal(
         proposal_id,
