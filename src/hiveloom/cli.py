@@ -16,6 +16,8 @@ Milestone M1 implements the explore (``schema``/``catalog``/``explain``/
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +27,7 @@ from rich.table import Table
 
 from hiveloom import catalog as catalog_mod
 from hiveloom import construct
-from hiveloom.errors import ExitCode, HiveloomError, SpecError
+from hiveloom.errors import ExitCode, HiveloomError, ProposalQueueError, SpecError
 from hiveloom.spec import annotate
 from hiveloom.spec.loader import validate_harness
 
@@ -45,6 +47,14 @@ app = typer.Typer(
 )
 add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to a harness.")
 app.add_typer(add_app, name="add")
+proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
+app.add_typer(proposals_app, name="proposals")
+keys_app = typer.Typer(
+    help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
+)
+app.add_typer(keys_app, name="keys")
+mcp_app = typer.Typer(help="Introspect the MCP servers declared by a harness.")
+app.add_typer(mcp_app, name="mcp")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -413,6 +423,71 @@ def add_skill_cmd(
         _added(json_output, "skill", name)
 
 
+@add_app.command("mcp-server")
+def add_mcp_server_cmd(
+    name: str = typer.Option(
+        ..., "--name", help="Server name; becomes the mcp__<name>__<tool> prefix."
+    ),
+    stdio_command: str | None = typer.Option(
+        None, "--stdio-command", help="Executable to launch (stdio transport)."
+    ),
+    stdio_arg: list[str] = typer.Option(
+        [], "--stdio-arg", help="Argument for --stdio-command (repeatable)."
+    ),
+    env: list[str] = typer.Option(
+        [], "--env", help="Literal env var as KEY=VALUE (repeatable, stdio only)."
+    ),
+    env_from_host: list[str] = typer.Option(
+        [],
+        "--env-from-host",
+        help="Env var resolved from the host as TARGET=HOST_VAR (repeatable, stdio only).",
+    ),
+    cwd: str | None = typer.Option(
+        None, "--cwd", help="Subprocess working dir, relative to the harness (stdio only)."
+    ),
+    url: str | None = typer.Option(
+        None, "--url", help="Streamable HTTP endpoint (http transport)."
+    ),
+    header: list[str] = typer.Option(
+        [], "--header", help="Literal HTTP header as 'Name: value' (repeatable, http only)."
+    ),
+    header_env: list[str] = typer.Option(
+        [],
+        "--header-env",
+        help="HTTP header resolved from the host as Name=HOST_VAR (repeatable, http only).",
+    ),
+    tool: list[str] = typer.Option(
+        [], "--tool", help="Allowlist a remote tool name (repeatable; omit to expose all)."
+    ),
+    deferred: bool = typer.Option(
+        False, "--deferred", help="Register discovered tools inactive until search_tools."
+    ),
+    directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Add an MCP server. Exactly one of --stdio-command / --url.
+
+    Makes no live connection — a typo in the command or URL only surfaces at
+    ``run``/``dry-run``/``mcp list-tools``.
+    """
+    with _guard(json_output):
+        construct.add_mcp_server(
+            directory,
+            name=name,
+            stdio_command=stdio_command,
+            stdio_args=stdio_arg or None,
+            stdio_env=_parse_kv_pairs(env, "--env") or None,
+            stdio_env_from_host=_parse_kv_pairs(env_from_host, "--env-from-host") or None,
+            stdio_cwd=cwd,
+            url=url,
+            headers=_parse_header_pairs(header) or None,
+            header_env=_parse_kv_pairs(header_env, "--header-env") or None,
+            tools=tool or None,
+            deferred=deferred,
+        )
+        _added(json_output, "mcp-server", name)
+
+
 @app.command()
 def remove(
     target: str = typer.Argument(..., help="Builtin name, code ref, or dotted field path."),
@@ -470,12 +545,72 @@ def trust(
             _console.print(f"[green]{verb}[/green] {harness_dir}")
 
 
+@mcp_app.command("list-tools")
+def mcp_list_tools_cmd(
+    directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Connect to every declared MCP server, discover its tools, then disconnect.
+
+    The dynamic analogue of ``catalog`` for server-defined tools: unlike
+    builtins, an MCP server's tools aren't known until it's actually reached.
+    A stdio server is arbitrary local exec, so this enforces the same trust
+    gate as ``run``/``dry-run`` before connecting (reuses build_registry's
+    bridge and closer — no second connection path).
+    """
+    from hiveloom import trust as trust_mod
+    from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
+    from hiveloom.tools.registry import build_registry
+
+    with _guard(json_output):
+        yaml_path = harness_path(directory)
+        base = yaml_path.parent
+        trust_mod.ensure_trusted(base, _trust_prompt(json_output))
+        spec = load_spec(yaml_path)
+        resolve_hooks(spec, base)
+
+        registry = build_registry(spec, base)
+        try:
+            tools = [
+                registry.get(n) for n in registry.names() if "mcp" in registry.get(n).tags
+            ]
+        finally:
+            registry.close()
+
+        payload = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "tags": t.tags,
+                "input_schema": t.input_schema,
+            }
+            for t in tools
+        ]
+        if json_output:
+            _emit_json({"ok": True, "tools": payload})
+            return
+        if not payload:
+            _console.print("no mcp tools (mcp_servers is empty)")
+            return
+        table = Table(title="mcp tools")
+        table.add_column("name", style="bold cyan")
+        table.add_column("description")
+        table.add_column("tags", style="green")
+        table.add_column("input", style="yellow")
+        for t in payload:
+            props = ", ".join((t["input_schema"] or {}).get("properties", {})) or "-"
+            table.add_row(t["name"], t["description"], ", ".join(t["tags"]), props)
+        _console.print(table)
+
+
 @app.command()
 def run(
     harness_dir: str = typer.Argument(".", help="Harness directory to run."),
     input_value: str = typer.Option(..., "--input", help="Input FILE path or literal TEXT."),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Assemble the first model call and print it; no API use."
+        False,
+        "--dry-run",
+        help="Assemble the first model call without calling the model; MCP discovery does I/O.",
     ),
     stream: bool = typer.Option(
         False, "--stream", help="Stream every trace event to stdout as JSONL (result last)."
@@ -495,10 +630,11 @@ def run(
 ) -> None:
     """Run a harness on an input.
 
-    ``--dry-run`` resolves hooks and prints the would-be first model call without
-    touching the API. ``--stream`` emits each trace event as a JSON line while
-    the run progresses — the embedding interface for other programs. Exit codes:
-    0 success, 1 verify failed, 2 guardrail halt, 4 runtime error.
+    ``--dry-run`` resolves hooks and prints the would-be first model call
+    without calling the model API; declared MCP servers are still contacted
+    for tool discovery. ``--stream`` emits each trace event as a JSON line
+    while the run progresses — the embedding interface for other programs.
+    Exit codes: 0 success, 1 verify failed, 2 guardrail halt, 4 runtime error.
     """
     from hiveloom import runner
     from hiveloom import trust as trust_mod
@@ -536,17 +672,7 @@ def run(
             on_event=on_event,
             approve_trust=_trust_prompt(json_output or stream),
         )
-        payload = {
-            "ok": result.status == "success",
-            "status": result.status,
-            "output": result.output,
-            "turns": result.turns,
-            "cost_usd": result.cost_usd,
-            "duration_seconds": result.duration_seconds,
-            "run_id": result.run_id,
-            "trace_path": result.trace_path,
-            "reason": result.reason,
-        }
+        payload = runner.run_result_payload(result)
         if stream:
             typer.echo(json.dumps({"type": "run_result", **payload}))
         elif json_output:
@@ -733,39 +859,6 @@ def _status_colour(status: str) -> str:
     return "green" if status == "success" else "yellow"
 
 
-def _strong_model(model_id: str | None, base: Path | None = None):
-    """Build the strong generation/evolution model.
-
-    ``--model provider/model-id`` (e.g. ``ollama/qwen3:32b``) routes through the
-    provider registry when the prefix names a registered provider; anything else
-    is a Claude model id.
-    """
-    import os
-
-    from hiveloom import ext
-    from hiveloom.generate.llm import (
-        DEFAULT_STRONG_MODEL,
-        ClaudeStrongModel,
-        ProviderStrongModel,
-    )
-
-    if model_id and "/" in model_id:
-        prefix, rest = model_id.split("/", 1)
-        if prefix in ext.provider_names():
-            return ProviderStrongModel(ext.build_provider(prefix, base), rest)
-
-    if base is not None and (base / ".env").exists():
-        try:
-            from dotenv import load_dotenv
-
-            load_dotenv(base / ".env")
-        except ImportError:  # pragma: no cover
-            pass
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SpecError("ANTHROPIC_API_KEY is not set (needed for generate/evolve).")
-    return ClaudeStrongModel(model_id or DEFAULT_STRONG_MODEL)
-
-
 @app.command()
 def generate(
     task: str = typer.Argument(..., help="Task description to build a harness for."),
@@ -783,12 +876,14 @@ def generate(
     """Generate a harness for a task (a strong model drives the construction API).
 
     Sugar over the construct commands: explore → init → add/set → validate, with
-    a validate/repair loop. Needs ANTHROPIC_API_KEY.
+    a validate/repair loop. Needs credentials for the configured provider when
+    that provider requires them.
     """
     from hiveloom.generate.generator import generate as run_generate
+    from hiveloom.generate.llm import build_strong_model
 
     with _guard(json_output):
-        model = _strong_model(model_id)
+        model = build_strong_model(model_id)
         spec = run_generate(task, output, model, blueprint=blueprint)
         if json_output:
             _emit_json({"ok": True, "directory": output, "name": spec.name})
@@ -801,24 +896,33 @@ def evolve(
     harness_dir: str = typer.Argument(..., help="Harness directory to evolve."),
     yes: bool = typer.Option(False, "--yes", help="Auto-apply YAML changes (never code)."),
     model_id: str | None = typer.Option(None, "--model", help="Strong model id for proposals."),
+    propose: bool = typer.Option(
+        False,
+        "--propose",
+        help="Queue the gated proposal for later review instead of applying it. "
+        "--yes is ignored.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
 
     Guardrails/model/logging.redact can never be changed. YAML changes within the
     mutable set auto-apply with ``--yes``; regenerated code always needs y/n
-    approval. Recorded in the Hive under a new version hash.
+    approval. Recorded in the Hive under a new version hash. With ``--propose``,
+    the gated proposal is queued (see ``hiveloom proposals``) instead of applied;
+    a human reviews and applies it later via ``proposals apply``.
     """
     from hiveloom import evolve as evolve_mod
     from hiveloom import runner
     from hiveloom import trust as trust_mod
-    from hiveloom.evolve.evolver import CodeChange
+    from hiveloom.evolve import proposals as proposals_mod
+    from hiveloom.generate.llm import build_strong_model
     from hiveloom.logging.hive import Hive
 
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         base = Path(harness_dir)
-        model = _strong_model(model_id, base if base.is_dir() else base.parent)
+        model = build_strong_model(model_id, base if base.is_dir() else base.parent)
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
             report = evolve_mod.analyze(hive, name)
@@ -831,26 +935,29 @@ def evolve(
                     _console.print("[green]nothing to evolve[/green] — no recorded failures")
                 return
 
-            proposal = evolve_mod.propose(load_spec_for(harness_dir), report, model)
-            yaml_diff = evolve_mod.preview_yaml_changes(harness_dir, proposal)
+            from hiveloom.spec.loader import load_spec
 
-            def approve(change: CodeChange) -> bool:
-                if json_output:
-                    return False
-                resolved = evolve_mod.resolve_code_change_path(base, change.file)
-                _console.print(f"[yellow]code change[/yellow] {resolved}: {change.rationale}")
-                _console.print(change.source)
-                return typer.confirm(f"Apply regenerated code to {resolved}?", default=False)
+            spec = load_spec(harness_dir)
+            if propose:
+                record = proposals_mod.create_proposal(
+                    hive, spec, harness_dir, report, model, trigger="manual"
+                )
+                _emit_proposal_created(record, json_output)
+                return
+
+            proposal = evolve_mod.propose(spec, report, model)
+            yaml_diff = evolve_mod.preview_yaml_changes(harness_dir, proposal)
 
             if yaml_diff and not json_output:
                 _console.print("[yellow]proposed YAML diff[/yellow]")
                 _console.print(yaml_diff)
-            apply_yaml = yes or (
-                not json_output
-                and typer.confirm("Apply the proposed YAML changes?", default=False)
-            )
+            apply_yaml = _confirm_apply_yaml(yes, json_output)
             result = evolve_mod.apply_proposal(
-                harness_dir, proposal, hive=hive, approve_code=approve, apply_yaml=apply_yaml
+                harness_dir,
+                proposal,
+                hive=hive,
+                approve_code=_make_approve_code(base, json_output=json_output),
+                apply_yaml=apply_yaml,
             )
 
         if json_output:
@@ -863,16 +970,237 @@ def evolve(
                 )
             else:
                 _console.print("[yellow]no changes applied[/yellow]")
-            for rej in result.rejected:
-                _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
-            for pending in result.pending_code:
-                _console.print(f"  [dim]pending code approval[/dim] {pending}")
+            _print_apply_leftovers(result)
 
 
-def load_spec_for(harness_dir: str):
-    from hiveloom.spec.loader import load_spec
+# --------------------------------------------------------------------------- #
+# Proposals queue
+# --------------------------------------------------------------------------- #
+def _emit_proposal_created(record: Any, json_output: bool) -> None:
+    if json_output:
+        from hiveloom.evolve.proposals import proposal_payload
 
-    return load_spec(harness_dir)
+        _emit_json({"ok": True, **proposal_payload(record)})
+        return
+    gate = record.gate
+    _console.print(
+        f"[green]queued[/green] proposal {record.id} — "
+        f"{len(gate.accepted)} accepted, {len(gate.rejected)} rejected, "
+        f"{len(gate.code_changes)} code change(s) pending review"
+    )
+
+
+def _confirm_apply_yaml(yes: bool, json_output: bool) -> bool:
+    """Whether to apply gated YAML changes: ``--yes``, or an interactive y/n."""
+    return yes or (
+        not json_output and typer.confirm("Apply the proposed YAML changes?", default=False)
+    )
+
+
+def _print_apply_leftovers(result: Any) -> None:
+    """Print an ApplyResult's rejected paths and any code changes still awaiting approval."""
+    for rej in result.rejected:
+        _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
+    for pending in result.pending_code:
+        _console.print(f"  [dim]pending code approval[/dim] {pending}")
+
+
+def _make_approve_code(
+    harness_dir: Path, *, json_output: bool, allowlist: set[str] | None = None
+) -> Any:
+    """Build a code-change approval callback: auto-approve ``allowlist`` paths,
+    else interactive y/n (never in ``--json`` mode) — the same flow ``evolve``
+    and ``proposals apply`` both use.
+    """
+    from hiveloom.evolve import resolve_code_change_path
+    from hiveloom.evolve.evolver import CodeChange
+
+    def approve(change: CodeChange) -> bool:
+        if change.file in (allowlist or ()):
+            return True
+        if json_output:
+            return False
+        resolved = resolve_code_change_path(harness_dir, change.file)
+        _console.print(f"[yellow]code change[/yellow] {resolved}: {change.rationale}")
+        _console.print(change.source)
+        return typer.confirm(f"Apply regenerated code to {resolved}?", default=False)
+
+    return approve
+
+
+@proposals_app.command("list")
+def proposals_list_cmd(
+    harness_dir: str = typer.Argument(..., help="Harness name or directory."),
+    status: str | None = typer.Option(
+        None, "--status", help="Filter by status: pending|applied|rejected."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List queued proposals for a harness, newest first."""
+    from hiveloom import runner
+    from hiveloom.evolve import proposals as proposals_mod
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        with Hive() as hive:
+            name = runner.resolve_and_ingest(harness_dir, hive)
+            records = proposals_mod.list_proposals(hive, harness_name=name, status=status)
+        if json_output:
+            _emit_json(
+                {"ok": True, "proposals": [proposals_mod.proposal_payload(r) for r in records]}
+            )
+            return
+        if not records:
+            _console.print("[green]no proposals[/green]")
+            return
+        table = Table()
+        table.add_column("id")
+        table.add_column("status")
+        table.add_column("trigger")
+        table.add_column("rationale")
+        table.add_column("created_at")
+        for r in records:
+            table.add_row(r.id, r.status, r.trigger, r.rationale, r.created_at)
+        _console.print(table)
+
+
+@proposals_app.command("show")
+def proposals_show_cmd(
+    harness_dir: str = typer.Argument(
+        ..., help="Harness name or directory."
+    ),
+    proposal_id: str = typer.Argument(..., help="Proposal id (e.g. prop_abc123)."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show a queued proposal: its rationale, gate result, and any apply result."""
+    from hiveloom import runner
+    from hiveloom.evolve import proposals as proposals_mod
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        with Hive() as hive:
+            name = runner.resolve_and_ingest(harness_dir, hive)
+            record = proposals_mod.get_proposal(hive, proposal_id)
+        if record is None:
+            raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
+        if record.harness_name != name:
+            raise ProposalQueueError(
+                f"proposal '{proposal_id}' belongs to harness '{record.harness_name}', "
+                f"not '{name}'"
+            )
+
+        if json_output:
+            _emit_json({"ok": True, **proposals_mod.proposal_payload(record)})
+            return
+
+        gate = record.gate
+        _console.print(
+            f"[bold]{record.id}[/bold] — {record.harness_name} @ {record.spec_version_hash} "
+            f"[{record.status}] (trigger={record.trigger})"
+        )
+        _console.print(f"rationale: {record.rationale}")
+        _console.print(
+            f"gate: {len(gate.accepted)} accepted, {len(gate.rejected)} rejected, "
+            f"{len(gate.code_changes)} code change(s)"
+        )
+        for rej in gate.rejected:
+            _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
+        for change in gate.code_changes:
+            _console.print(f"  [yellow]code change[/yellow] {change.file}: {change.rationale}")
+        apply_result = record.apply_result
+        if apply_result is not None:
+            _console.print(f"resolved_at: {record.resolved_at}")
+            _console.print(json.dumps(apply_result, indent=2))
+
+
+@proposals_app.command("apply")
+def proposals_apply_cmd(
+    harness_dir: str = typer.Argument(..., help="Harness directory to apply into."),
+    proposal_id: str = typer.Argument(..., help="Proposal id to apply."),
+    yes: bool = typer.Option(False, "--yes", help="Auto-apply YAML changes (never code)."),
+    approve_code_arg: str | None = typer.Option(
+        None,
+        "--approve-code",
+        help="Comma-separated file paths to approve for code changes.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Apply a queued proposal.
+
+    Re-derives the harness's version hash first; if it no longer matches what
+    the proposal was drafted against, it fails without touching disk (the
+    harness changed — regenerate). Review with ``proposals show`` first: YAML
+    changes apply with ``--yes`` or interactive confirmation, same as
+    ``evolve`` (asked only after the trust/existence/staleness checks above
+    pass); code changes need per-file ``--approve-code`` or interactive y/n,
+    fed from the proposal's stored gate result rather than a fresh propose.
+    """
+    from hiveloom import trust as trust_mod
+    from hiveloom.evolve import proposals as proposals_mod
+    from hiveloom.logging.hive import Hive
+
+    approved_files = (
+        {path for item in approve_code_arg.split(",") if (path := item.strip())}
+        if approve_code_arg
+        else None
+    )
+    approve = _make_approve_code(
+        Path(harness_dir), json_output=json_output, allowlist=approved_files
+    )
+
+    with _guard(json_output):
+        trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
+        with Hive() as hive:
+            result = proposals_mod.apply_proposal_by_id(
+                hive,
+                harness_dir,
+                proposal_id,
+                approve_code=approve,
+                confirm_apply_yaml=lambda: _confirm_apply_yaml(yes, json_output),
+            )
+        if json_output:
+            _emit_json({"ok": True, "proposal_id": proposal_id, **result.model_dump()})
+        else:
+            if result.changed:
+                _console.print(
+                    f"[green]applied[/green] proposal {proposal_id} — now #{result.counter} "
+                    f"({result.old_version_hash} -> {result.new_version_hash})"
+                )
+            else:
+                _console.print(f"[yellow]no changes applied[/yellow] for proposal {proposal_id}")
+            _print_apply_leftovers(result)
+
+
+@proposals_app.command("reject")
+def proposals_reject_cmd(
+    harness_dir: str = typer.Argument(
+        ..., help="Harness name or directory."
+    ),
+    proposal_id: str = typer.Argument(..., help="Proposal id to reject."),
+    reason: str = typer.Option("", "--reason", help="Why this proposal is being rejected."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Reject a queued proposal. Never touches harness.yaml."""
+    from hiveloom import runner
+    from hiveloom.evolve import proposals as proposals_mod
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        with Hive() as hive:
+            name = runner.resolve_and_ingest(harness_dir, hive)
+            record = proposals_mod.get_proposal(hive, proposal_id)
+            if record is None:
+                raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
+            if record.harness_name != name:
+                raise ProposalQueueError(
+                    f"proposal '{proposal_id}' belongs to harness '{record.harness_name}', "
+                    f"not '{name}'"
+                )
+            proposals_mod.reject_proposal(hive, proposal_id, reason)
+        if json_output:
+            _emit_json({"ok": True, "proposal_id": proposal_id, "status": "rejected"})
+        else:
+            _console.print(f"[yellow]rejected[/yellow] proposal {proposal_id}")
 
 
 @app.command()
@@ -923,6 +1251,245 @@ def package(
                 _console.print("  wrote Dockerfile")
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _serve_approve_callback():
+    """Interactive trust prompt for `serve`, or ``None`` when stdin isn't a
+    TTY — refuse to start rather than hang waiting for input that will never
+    come (a piped/CI/systemd invocation).
+    """
+    if not sys.stdin.isatty():
+        return None
+    return _trust_prompt(json_output=False)
+
+
+@app.command("control-plane")
+def control_plane(
+    harness_dir: str = typer.Argument(..., help="Harness directory to serve."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
+    port: int = typer.Option(8420, "--port", help="Bind port."),
+    max_concurrent_runs: int = typer.Option(
+        1, "--max-concurrent-runs", help="How many runs may execute at once."
+    ),
+    max_queued_runs: int = typer.Option(
+        4, "--max-queued-runs", help="How many more runs may wait before /run returns 503."
+    ),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the authorized-keys store path."
+    ),
+    approve: bool = typer.Option(
+        False, "--approve", "-a", help="Trust the harness folder without prompting."
+    ),
+) -> None:
+    """Serve a harness's CLI surface over HTTP to bearer-authorized members.
+
+    Non-production by design: no TLS, no replay cache, one harness per
+    process. See ``docs/control-plane.md`` for the endpoint table, the
+    ``hiveloom keys`` custody model, and the full limitations list. Trust is
+    checked once here, before the socket binds — never per request.
+    """
+    from hiveloom import trust as trust_mod
+    from hiveloom.serve.app import create_app
+
+    if approve:
+        trust_mod.record_trust(harness_dir)
+    trust_mod.ensure_trusted(harness_dir, _serve_approve_callback())
+
+    if host not in _LOOPBACK_HOSTS:
+        _err_console.print(
+            f"[red]warning:[/red] binding to '{host}' — there is no TLS, so bearer "
+            "tokens travel in cleartext over the network. Put a reverse proxy or "
+            "SSH tunnel in front, or bind to 127.0.0.1 instead."
+        )
+
+    import uvicorn
+
+    asgi_app = create_app(
+        harness_dir,
+        keys_path=authorized_keys,
+        max_concurrent_runs=max_concurrent_runs,
+        max_queued_runs=max_queued_runs,
+    )
+    uvicorn.run(asgi_app, host=host, port=port)
+
+
+# --------------------------------------------------------------------------- #
+# Keys: ed25519 identity + bearer tokens for the (non-production) control plane
+# --------------------------------------------------------------------------- #
+# Custody model: a member runs `generate` (and later `sign`) on THEIR OWN
+# machine — the private key never leaves it. The operator runs `authorize` on
+# the deploy box using the member's public key. See docs/control-plane.md for
+# the full limitations list (no TLS, no replay cache, no revocation propagation).
+@keys_app.command("generate")
+def keys_generate_cmd(
+    name: str = typer.Argument(..., help="Key name; written as <name>.pem."),
+    out_dir: str = typer.Option(
+        "~/.hiveloom/keys", "--out-dir", help="Directory to write the private key into."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Generate an ed25519 keypair on THIS machine; the private key never leaves it.
+
+    Writes ``<out-dir>/<name>.pem`` (mode 0600, refusing to overwrite) and
+    prints the public key — send that to the harness operator for
+    ``keys authorize`` — and its key_id.
+    """
+    from hiveloom.serve import keys as keys_mod
+
+    with _guard(json_output):
+        directory = Path(out_dir).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+        key_path = directory / f"{name}.pem"
+        private_pem, public_key = keys_mod.generate_keypair()
+        try:
+            fd = os.open(key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise SpecError(f"{key_path} already exists; refusing to overwrite") from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(private_pem)
+        key_id = keys_mod.key_id_for(public_key)
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "private_key_path": str(key_path),
+                    "public_key": public_key,
+                    "key_id": key_id,
+                }
+            )
+        else:
+            _console.print(f"[green]generated[/green] {key_path} (0600)")
+            _console.print(f"public key: {public_key}")
+            _console.print(f"key_id: {key_id}")
+
+
+@keys_app.command("authorize")
+def keys_authorize_cmd(
+    name: str = typer.Argument(..., help="Human-readable name for this key (e.g. a person)."),
+    public_key: str = typer.Argument(..., help="The public key printed by `keys generate`."),
+    harness: str = typer.Option(..., "--harness", help="Harness directory to authorize into."),
+    scope: list[str] = typer.Option(
+        ...,
+        "--scope",
+        help="Repeatable; scopes this key may use (required — e.g. --scope run). "
+        "Pass --scope '*' only for a fully-trusted admin key; there is no default, "
+        "so a key is never granted broad scope by omission.",
+    ),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Authorize a member's public key for a harness (run on the deploy box).
+
+    Idempotent on key_id: re-authorizing an already-known public key
+    un-revokes it and replaces its scopes.
+    """
+    from hiveloom.serve import auth as auth_mod
+
+    with _guard(json_output):
+        path = auth_mod.authorized_keys_path(harness, override=authorized_keys)
+        row = auth_mod.authorize_key(path, name=name, public_key_b64=public_key, scopes=scope)
+        if json_output:
+            _emit_json({"ok": True, **row})
+        else:
+            _console.print(
+                f"[green]authorized[/green] {row['key_id']} ({name}) scopes={row['scopes']}"
+            )
+
+
+@keys_app.command("revoke")
+def keys_revoke_cmd(
+    key_id: str = typer.Argument(..., help="Key id to revoke (see `keys list`)."),
+    harness: str = typer.Option(..., "--harness", help="Harness directory."),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Revoke a key. The row is kept (not deleted) as an audit trail."""
+    from hiveloom.serve import auth as auth_mod
+
+    with _guard(json_output):
+        path = auth_mod.authorized_keys_path(harness, override=authorized_keys)
+        auth_mod.revoke_key(path, key_id)
+        if json_output:
+            _emit_json({"ok": True, "key_id": key_id, "revoked": True})
+        else:
+            _console.print(f"[yellow]revoked[/yellow] {key_id}")
+
+
+@keys_app.command("list")
+def keys_list_cmd(
+    harness: str = typer.Option(..., "--harness", help="Harness directory."),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List authorized keys for a harness (revoked rows are kept and shown)."""
+    from hiveloom.serve import auth as auth_mod
+
+    with _guard(json_output):
+        path = auth_mod.authorized_keys_path(harness, override=authorized_keys)
+        rows = auth_mod.list_keys(path)
+        if json_output:
+            _emit_json({"ok": True, "keys": rows})
+            return
+        if not rows:
+            _console.print("[green]no authorized keys[/green]")
+            return
+        table = Table()
+        table.add_column("key_id")
+        table.add_column("name")
+        table.add_column("scopes")
+        table.add_column("revoked")
+        table.add_column("added_at")
+        for row in rows:
+            table.add_row(
+                row["key_id"],
+                row["name"],
+                ", ".join(row["scopes"]),
+                str(row["revoked"]),
+                row["added_at"],
+            )
+        _console.print(table)
+
+
+@keys_app.command("sign")
+def keys_sign_cmd(
+    key: str = typer.Option(..., "--key", help="Path to the private key PEM from `keys generate`."),
+    subject: str | None = typer.Option(
+        None, "--subject", help="Subject claim (defaults to the key file's stem)."
+    ),
+    scope: str = typer.Option("*", "--scope", help="Scope this token requests."),
+    ttl: int = typer.Option(900, "--ttl", help="Token lifetime in seconds (default 900 = 15 min)."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Mint a bearer token on YOUR OWN machine, using your private key.
+
+    Prints the token (or ``{"token": ...}`` with ``--json``). The 900s
+    default TTL is short by design — there is no revocation-propagation or
+    replay cache, so mint a fresh token whenever you need one.
+    """
+    from hiveloom.serve import keys as keys_mod
+
+    with _guard(json_output):
+        key_path = Path(key)
+        private_pem = key_path.read_text(encoding="utf-8")
+        public_key = keys_mod.public_key_b64_for(private_pem)
+        key_id = keys_mod.key_id_for(public_key)
+        token = keys_mod.sign_token(
+            private_pem, key_id=key_id, subject=subject or key_path.stem, scope=scope,
+            ttl_seconds=ttl,
+        )
+        if json_output:
+            _emit_json({"ok": True, "token": token, "key_id": key_id})
+        else:
+            _console.print(token)
+
+
 def _added(json_output: bool, kind: str, ident: str | None) -> None:
     if json_output:
         _emit_json({"ok": True, "added": kind, "ref": ident})
@@ -953,6 +1520,27 @@ def _terse(entry: dict[str, Any]) -> str:
     return ", ".join(f"{k}={v}" for k, v in params.items()) or "no params"
 
 
+def _parse_kv_pairs(values: list[str], flag: str) -> dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` option values into a dict."""
+    result: dict[str, str] = {}
+    for raw in values:
+        key, sep, value = raw.partition("=")
+        if not sep or not key:
+            raise SpecError(f"{flag} expects KEY=VALUE (got {raw!r})")
+        result[key] = value
+    return result
+
+
+def _parse_header_pairs(values: list[str]) -> dict[str, str]:
+    """Parse repeated ``Name: value`` option values into a dict."""
+    result: dict[str, str] = {}
+    for raw in values:
+        name, sep, value = raw.partition(":")
+        name, value = name.strip(), value.strip()
+        if not sep or not name:
+            raise SpecError(f"--header expects 'Name: value' (got {raw!r})")
+        result[name] = value
+    return result
 # --------------------------------------------------------------------------- #
 # cloud — linked mode against a hiveloom-cloud harness
 # --------------------------------------------------------------------------- #

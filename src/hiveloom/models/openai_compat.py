@@ -29,7 +29,12 @@ from hiveloom.models.provider import (
     estimate_tokens,
 )
 
-_STOP_REASONS = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
+_STOP_REASONS = {
+    "stop": "end_turn",
+    "tool_calls": "tool_use",
+    "length": "max_tokens",
+    "content_filter": "end_turn",
+}
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0
 
@@ -156,7 +161,9 @@ def _to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, 
                     }
                 )
         if role == "assistant":
-            entry: dict[str, Any] = {"role": "assistant", "content": "\n".join(texts) or None}
+            # An assistant turn with no text is legal as "", never as null:
+            # strict servers (e.g. Ollama) reject content:null with HTTP 400.
+            entry: dict[str, Any] = {"role": "assistant", "content": "\n".join(texts) or ""}
             if tool_calls:
                 entry["tool_calls"] = tool_calls
             out.append(entry)
@@ -174,7 +181,15 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
         raise RuntimeError(f"provider returned no choices: {json.dumps(data)[:300]}")
     choice = choices[0]
     message = choice.get("message") or {}
-    text = message.get("content") or ""
+    # Reasoning models (DeepSeek-R1 family etc.) may return an empty "content"
+    # with the chain-of-thought in "reasoning"/"reasoning_content" instead;
+    # fall back so a reasoning-only turn isn't silently normalized to "".
+    text = (
+        message.get("content")
+        or message.get("reasoning")
+        or message.get("reasoning_content")
+        or ""
+    )
 
     tool_calls: list[ToolCall] = []
     content_blocks: list[dict[str, Any]] = []
@@ -182,9 +197,17 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
         content_blocks.append({"type": "text", "text": text})
     for raw_call in message.get("tool_calls") or []:
         function = raw_call.get("function") or {}
-        try:
-            arguments = json.loads(function.get("arguments") or "{}")
-        except json.JSONDecodeError:
+        raw_arguments = function.get("arguments")
+        if isinstance(raw_arguments, dict):
+            arguments = raw_arguments
+        else:
+            try:
+                arguments = json.loads(raw_arguments or "{}")
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+        # A lenient backend can emit arguments that parse to a valid-but-non-object
+        # JSON value (`"null"`, `"[1]"`, `"42"`); ToolCall.input requires a dict.
+        if not isinstance(arguments, dict):
             arguments = {}
         call = ToolCall(id=raw_call.get("id", ""), name=function.get("name", ""), input=arguments)
         tool_calls.append(call)
@@ -194,14 +217,25 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
 
     raw_usage = data.get("usage")
     raw_usage = raw_usage if isinstance(raw_usage, dict) else {}
-    usage = Usage(
-        input_tokens=int(raw_usage["prompt_tokens"])
-        if "prompt_tokens" in raw_usage
-        else estimated_input_tokens,
-        output_tokens=int(raw_usage["completion_tokens"])
-        if "completion_tokens" in raw_usage
-        else estimate_tokens(text or json.dumps(message.get("tool_calls") or [])),
-    )
+
+    def _usage(key: str) -> int | None:
+        # Some backends (vLLM/LM Studio) emit an explicit null token count;
+        # treat null/missing/non-numeric identically as "absent", so int() of
+        # None never raises and the estimate fallback kicks in.
+        value = raw_usage.get(key)
+        return int(value) if isinstance(value, (int, float)) else None
+
+    input_tokens = _usage("prompt_tokens")
+    if input_tokens is None:
+        input_tokens = _usage("input_tokens")
+    if input_tokens is None:
+        input_tokens = estimated_input_tokens
+    output_tokens = _usage("completion_tokens")
+    if output_tokens is None:
+        output_tokens = _usage("output_tokens")
+    if output_tokens is None:
+        output_tokens = estimate_tokens(text or json.dumps(message.get("tool_calls") or []))
+    usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
     finish = choice.get("finish_reason") or "stop"
     return ModelResponse(
         text=text,

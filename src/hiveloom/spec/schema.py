@@ -12,6 +12,7 @@ carry company-specific logic.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
@@ -209,6 +210,172 @@ HookRef = Annotated[
 
 
 # --------------------------------------------------------------------------- #
+# MCP server references (stdio | http union, discriminated on `transport`)
+# --------------------------------------------------------------------------- #
+_MCP_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _check_mcp_server_name(value: str) -> str:
+    if not _MCP_NAME_RE.match(value):
+        raise ValueError(
+            f"mcp server name {value!r} must match [a-zA-Z0-9_-]+ (it becomes "
+            "the mcp__<name>__<tool> prefix on every tool it exposes)"
+        )
+    # `__` is the delimiter in `mcp__<name>__<tool>`. If a server name may
+    # contain it, the prefix is no longer injective — server `a__b` tool `c`
+    # and server `a` tool `b__c` both flatten to `mcp__a__b__c`, and one
+    # silently shadows the other in the registry. Forbid it so the mapping
+    # stays one-to-one.
+    if "__" in value:
+        raise ValueError(
+            f"mcp server name {value!r} must not contain '__' (it is the "
+            "delimiter in the mcp__<name>__<tool> tool prefix)"
+        )
+    return value
+
+
+class McpStdioServerRef(BaseModel):
+    """An MCP server launched as a local subprocess and spoken to over stdio.
+
+    ARBITRARY LOCAL EXEC: ``command`` runs with the harness's own permissions
+    the moment its tool registry is built (``build_registry`` connects
+    eagerly, including for ``run --dry-run``). Same risk class as
+    ``extensions`` — see ``ALWAYS_FROZEN``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        description=(
+            "Unique identifier for this server; becomes the mcp__<name>__<tool> "
+            "prefix on every tool it exposes. Must match [a-zA-Z0-9_-]+."
+        )
+    )
+    transport: Literal["stdio"] = Field(
+        default="stdio",
+        description=(
+            "Discriminates this variant from `McpHttpServerRef`. Must be written "
+            "explicitly as `transport: stdio` in YAML — the union dispatches on "
+            "this literal tag before field defaults apply."
+        ),
+    )
+    command: str = Field(
+        description=(
+            "Executable to launch. ARBITRARY LOCAL EXEC — runs with the "
+            "harness's permissions. Use `hiveloom add mcp-server` to add one."
+        )
+    )
+    args: list[str] = Field(
+        default_factory=list, description="Command-line arguments passed to `command`."
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Literal environment variables merged into a minimal safe env for "
+            "the subprocess — NOT a full host environment passthrough."
+        ),
+    )
+    env_from_host_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "target-var -> host env-var name, resolved from this process's "
+            "environment at connect time (for secrets that must not live in YAML)."
+        ),
+    )
+    cwd: str | None = Field(
+        default=None,
+        description=(
+            "Working directory for the subprocess, resolved relative to the "
+            "harness directory (defaults to the harness directory itself when "
+            "unset). NOT a security boundary: unlike file_read/file_write, "
+            "traversal (e.g. '../..') is not constrained, and an absolute path "
+            "here overrides the harness directory entirely — `command` is "
+            "already arbitrary local exec, so sandboxing `cwd` alone would not "
+            "add a real boundary."
+        ),
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Allowlist of remote tool names to expose; omit to expose every "
+            "tool the server reports."
+        ),
+    )
+    deferred: bool = Field(
+        default=False,
+        description=(
+            "Register discovered tools inactive; the auto-added search_tools "
+            "tool activates them on demand."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="Timeout in seconds for connect/initialize and for each tool call.",
+    )
+
+    _check_name = field_validator("name")(_check_mcp_server_name)
+
+
+class McpHttpServerRef(BaseModel):
+    """An MCP server reached over the Streamable HTTP transport."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        description=(
+            "Unique identifier for this server; becomes the mcp__<name>__<tool> "
+            "prefix on every tool it exposes. Must match [a-zA-Z0-9_-]+."
+        )
+    )
+    transport: Literal["http"] = Field(
+        default="http",
+        description=(
+            "Discriminates this variant from `McpStdioServerRef`. Must be written "
+            "explicitly as `transport: http` in YAML — the union dispatches on "
+            "this literal tag before field defaults apply."
+        ),
+    )
+    url: str = Field(description="Base URL of the server's Streamable HTTP endpoint.")
+    headers: dict[str, str] = Field(
+        default_factory=dict, description="Literal HTTP headers sent with every request."
+    )
+    header_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "header-name -> host env-var name, resolved from this process's "
+            "environment at connect time (e.g. Authorization -> ACME_MCP_TOKEN)."
+        ),
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Allowlist of remote tool names to expose; omit to expose every "
+            "tool the server reports."
+        ),
+    )
+    deferred: bool = Field(
+        default=False,
+        description=(
+            "Register discovered tools inactive; the auto-added search_tools "
+            "tool activates them on demand."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="Timeout in seconds for connect/initialize and for each tool call.",
+    )
+
+    _check_name = field_validator("name")(_check_mcp_server_name)
+
+
+McpServerRef = Annotated[McpStdioServerRef | McpHttpServerRef, Field(discriminator="transport")]
+
+
+# --------------------------------------------------------------------------- #
 # Section models
 # --------------------------------------------------------------------------- #
 class ModelConfig(BaseModel):
@@ -331,6 +498,26 @@ class LoopConfig(BaseModel):
             valid = ", ".join(sorted(catalog.POLICIES))
             raise ValueError(f"unknown loop policy '{value}' (valid: {valid})")
         return value
+
+    steps: list[str] = Field(
+        default_factory=list,
+        description="Ordered objectives for the sequential_steps policy; each is injected "
+        "as the current objective in turn and the loop refuses completion "
+        "until every step is consumed. Ignored by other policies.",
+    )
+
+    @model_validator(mode="after")
+    def _check_sequential_steps(self) -> LoopConfig:
+        # Deliberately one-directional: only reject sequential_steps with empty
+        # steps, never the reverse. Every `hiveloom set` commits and fully
+        # re-validates immediately (see construct._commit), so a two-directional
+        # check would make the natural workflow `hiveloom set loop.steps
+        # '[...]'` then `hiveloom set loop.policy sequential_steps` fail on the
+        # first command. Non-empty steps with any other policy are allowed.
+        if self.policy == "sequential_steps" and not self.steps:
+            raise ValueError("loop.policy 'sequential_steps' requires a non-empty loop.steps")
+        return self
+
     max_turns: int = Field(
         default=20, gt=0, le=1_000, description="Max loop turns before stopping."
     )
@@ -401,6 +588,43 @@ def _default_frozen() -> list[str]:
     return ["guardrails", "model"]
 
 
+# A bare `gt=0` bound on cooldown_hours would still accept e.g. 1e-9, which is
+# functionally "no cooldown" (no two runs complete within nanoseconds of each
+# other) — that would make the "cannot be disabled" claim below false. One
+# minute is generous enough to constrain no legitimate configuration while
+# making the floor real. No ceiling: an unusually large cooldown just means
+# less auto-proposing, the safe direction (unlike a cost guardrail's ceiling).
+MIN_COOLDOWN_HOURS = 1 / 60
+
+
+class AutoProposeConfig(BaseModel):
+    """Opt-in: draft (never apply) an evolution proposal after a failing run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Draft a gated proposal after a failing run. Never auto-applies.",
+    )
+    min_failures: int = Field(
+        default=5, ge=1,
+        description="Non-success runs required (since the last auto-proposal) before drafting.",
+    )
+    cooldown_hours: float = Field(
+        default=24.0, ge=MIN_COOLDOWN_HOURS,
+        description=(
+            "Minimum gap between auto-drafted proposals for this harness. Cannot be "
+            "removed: values below one minute are rejected. Each qualifying failing run "
+            "costs a strong-model call unless the dedup pre-check catches it, so this is "
+            "partly a spend guard; use `min_failures` for a different shape of restraint."
+        ),
+    )
+    model: str | None = Field(
+        default=None,
+        description="Strong-model override for auto-drafted proposals; else the CLI/env default.",
+    )
+
+
 class EvolutionConfig(BaseModel):
     """What the evolver may and may not change."""
 
@@ -415,6 +639,10 @@ class EvolutionConfig(BaseModel):
         default_factory=_default_frozen,
         description="Spec paths the evolver must NEVER change.",
     )
+    auto_propose: AutoProposeConfig = Field(
+        default_factory=AutoProposeConfig,
+        description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
+    )
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
@@ -422,13 +650,19 @@ class EvolutionConfig(BaseModel):
 # `extensions` load arbitrary code, so evolution can never add or change them.
 # Hooks can transform tool inputs/results and final output, placing them
 # upstream of guardrails. They therefore share the non-negotiable evolution
-# boundary with guardrails themselves.
+# boundary with guardrails themselves. `mcp_servers` is the same risk class as
+# `extensions` (arbitrary local exec / arbitrary network endpoint).
+# `evolution.auto_propose` is its own paid, post-run trigger — a harness must
+# never be able to enable that trigger via evolution itself (docs/spec.md
+# documents it as never mutable; this is what makes that claim true).
 ALWAYS_FROZEN: tuple[str, ...] = (
     "guardrails",
     "model",
     "logging.redact",
     "extensions",
     "hooks",
+    "mcp_servers",
+    "evolution.auto_propose",
 )
 
 
@@ -454,6 +688,17 @@ class HarnessSpec(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig, description="Model config.")
     system_prompt: str = Field(description="System prompt for the harness model.")
     tools: list[ToolRef] = Field(default_factory=list, description="Tools available to the loop.")
+    mcp_servers: list[McpServerRef] = Field(
+        default_factory=list,
+        description=(
+            "MCP servers whose tools become ordinary dispatchable tools inside "
+            "the loop (mcp__<name>__<tool>). Discovered eagerly when the tool "
+            "registry is built — including for `run --dry-run` — and frozen "
+            "from evolution: same risk class as `extensions` (arbitrary "
+            "code/process). stdio servers are arbitrary local exec. Use "
+            "`hiveloom add mcp-server` to add one."
+        ),
+    )
     skills: list[str] = Field(
         default_factory=list,
         description=(
@@ -520,4 +765,13 @@ class HarnessSpec(BaseModel):
                     f"{guardrail.builtin}.value must be greater than 0 and at most "
                     f"{limits[guardrail.builtin]}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_mcp_server_names_unique(self) -> HarnessSpec:
+        seen: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in seen:
+                raise ValueError(f"duplicate mcp server name '{server.name}'")
+            seen.add(server.name)
         return self

@@ -14,9 +14,10 @@ description: >-
 hiveloom run ./h --input notes.txt --json     # --input takes a FILE path or literal TEXT
 ```
 
-Needs `ANTHROPIC_API_KEY` (loaded from the harness `.env` if present). The
-small executor model (default `claude-haiku-4-5`) runs inside; guardrails and
-validators gate it.
+Needs credentials for the configured provider when required (for example,
+`ANTHROPIC_API_KEY` for the default provider, loaded from the harness `.env`
+if present). The small executor model (default `claude-haiku-4-5`) runs
+inside; guardrails and validators gate it.
 
 ## Interpret the exit code — always
 
@@ -32,7 +33,7 @@ validators gate it.
 
 ```bash
 hiveloom validate ./h                          # structure + code-hook checks
-hiveloom run ./h --input x.txt --dry-run       # print the assembled first model call; no API use
+hiveloom run ./h --input x.txt --dry-run       # no model call; MCP discovery still does I/O
 ```
 
 A harness folder that arrived from elsewhere (unzipped artifact, clone) is

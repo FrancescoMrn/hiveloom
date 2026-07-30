@@ -2,6 +2,10 @@
 
 All builtins are sandboxed to the harness working directory (files) or an
 allowlist (shell). ``shell`` is disabled unless the spec provides an allowlist.
+``file_read``/``file_write`` are further refused ``package.py``'s "never
+leaves the harness" paths (``.hiveloom/``, ``.env*``, the trace dir) via
+``_safe_path`` — a model can no more read its own harness's auth store or
+credentials through a tool call than an HTTP caller can through `input_file`.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from urllib.parse import urlsplit
 
 from hiveloom import ext
 from hiveloom.catalog import BUILTIN_TOOLS
+from hiveloom.package import is_sensitive_path
 from hiveloom.spec.schema import BuiltinToolRef
 from hiveloom.tools.registry import Tool, ToolError
 
@@ -32,20 +37,42 @@ _EXTRA_ARGS_SAFE_BINARIES = {
 }
 
 
-def _safe_path(base: Path, path: str) -> Path:
-    """Resolve ``path`` and ensure it stays within ``base`` (no traversal)."""
+def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
+    """Resolve ``path``, ensure it stays within ``base`` (no traversal), and
+    refuse anything ``package.py`` would never ship either (``.hiveloom/``,
+    ``.env*`` except checked-in templates, VCS/cache noise, and — when the
+    caller supplies it — the configured trace directory).
+
+    Staying inside the harness directory is necessary but not sufficient:
+    ``.hiveloom/`` (the trust store, construction log, and — for a served
+    harness — its own auth store and every run's trace) and ``.env`` (a
+    live ``ANTHROPIC_API_KEY`` in any real deployment) both live INSIDE it.
+    This check is default-on here — the one chokepoint every caller
+    (``file_read``/``file_write`` below, the evolver's code-change
+    containment, the HTTP control plane's ``input_file``) already goes
+    through for containment — so nothing has to remember a second check.
+    ``trace_dir`` is optional only because a caller without a loaded spec
+    (there is none today, but ``_safe_path`` doesn't require one) has
+    nothing to pass; every current caller resolves and supplies it, so a
+    reconfigured (non-default) trace directory is covered everywhere, not
+    just the default location under ``.hiveloom/``.
+    """
     candidate = (base / path).resolve()
     base_resolved = base.resolve()
     if candidate != base_resolved and base_resolved not in candidate.parents:
         raise ToolError(f"path '{path}' escapes the working directory")
+    rel = candidate.relative_to(base_resolved)
+    if is_sensitive_path(rel, trace_dir=trace_dir):
+        raise ToolError(f"path '{path}' is protected harness state, not accessible here")
     return candidate
 
 
 class FileReadTool(Tool):
     """Read a UTF-8 text file from the working directory."""
 
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, *, trace_dir: Path | None = None):
         self._base = base
+        self._trace_dir = trace_dir
         entry = BUILTIN_TOOLS["file_read"]
         self.name = "file_read"
         self.description = entry.description
@@ -57,7 +84,7 @@ class FileReadTool(Tool):
         }
 
     def run(self, path: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path)
+        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
         if not target.exists():
             raise ToolError(f"file not found: {path}")
         return target.read_text(encoding="utf-8")
@@ -66,8 +93,9 @@ class FileReadTool(Tool):
 class FileWriteTool(Tool):
     """Write a UTF-8 text file within the working directory."""
 
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, *, trace_dir: Path | None = None):
         self._base = base
+        self._trace_dir = trace_dir
         entry = BUILTIN_TOOLS["file_write"]
         self.name = "file_write"
         self.description = entry.description
@@ -82,7 +110,7 @@ class FileWriteTool(Tool):
         }
 
     def run(self, path: str = "", content: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path)
+        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return f"wrote {len(content)} chars to {path}"
@@ -220,14 +248,20 @@ class _SafeRedirectHandler(urlrequest.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def make_builtin_tool(ref: BuiltinToolRef, base: Path) -> Tool:
+def make_builtin_tool(ref: BuiltinToolRef, base: Path, *, trace_dir: Path | None = None) -> Tool:
     """Instantiate the catalog tool named by ``ref`` (builtin or extension)."""
-    return ext.build("tools", ref.builtin, ref.params(), ext.BuildContext(base=base))
+    return ext.build(
+        "tools", ref.builtin, ref.params(), ext.BuildContext(base=base, trace_dir=trace_dir)
+    )
 
 
 def _register_factories() -> None:
-    ext.register_builtin_factory("tools", "file_read", lambda _p, ctx: FileReadTool(ctx.base))
-    ext.register_builtin_factory("tools", "file_write", lambda _p, ctx: FileWriteTool(ctx.base))
+    ext.register_builtin_factory(
+        "tools", "file_read", lambda _p, ctx: FileReadTool(ctx.base, trace_dir=ctx.trace_dir)
+    )
+    ext.register_builtin_factory(
+        "tools", "file_write", lambda _p, ctx: FileWriteTool(ctx.base, trace_dir=ctx.trace_dir)
+    )
     ext.register_builtin_factory(
         "tools", "shell", lambda p, ctx: ShellTool(ctx.base, list(p.get("commands", []) or []))
     )

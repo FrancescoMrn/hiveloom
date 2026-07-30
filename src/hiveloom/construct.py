@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -479,6 +480,65 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
     return _commit(directory, raw, created, "add_skill", {"name": name})
 
 
+def add_mcp_server(
+    directory: str | Path,
+    *,
+    name: str,
+    stdio_command: str | None = None,
+    stdio_args: list[str] | None = None,
+    stdio_env: dict[str, str] | None = None,
+    stdio_env_from_host: dict[str, str] | None = None,
+    stdio_cwd: str | None = None,
+    url: str | None = None,
+    headers: dict[str, str] | None = None,
+    header_env: dict[str, str] | None = None,
+    tools: list[str] | None = None,
+    deferred: bool = False,
+) -> HarnessSpec:
+    """Add an MCP server (a stdio subprocess or a Streamable HTTP endpoint).
+
+    Exactly one of ``stdio_command`` / ``url`` must be given.
+
+    Unlike ``add tool --code``, there is no local file to import and validate
+    here, so this makes NO live connection — a typo in the command or URL only
+    surfaces later, at ``run``/``dry-run`` (which discover eagerly) or
+    ``hiveloom mcp list-tools``.
+    """
+    if (stdio_command is None) == (url is None):
+        raise SpecError("add mcp-server requires exactly one of --stdio-command or --url")
+
+    directory = Path(directory)
+    entry: dict[str, Any] = {"name": name}
+    if stdio_command is not None:
+        entry["transport"] = "stdio"
+        entry["command"] = stdio_command
+        if stdio_args:
+            entry["args"] = list(stdio_args)
+        if stdio_env:
+            entry["env"] = dict(stdio_env)
+        if stdio_env_from_host:
+            entry["env_from_host_env"] = dict(stdio_env_from_host)
+        if stdio_cwd is not None:
+            entry["cwd"] = stdio_cwd
+    else:
+        entry["transport"] = "http"
+        entry["url"] = url
+        if headers:
+            entry["headers"] = dict(headers)
+        if header_env:
+            entry["header_env"] = dict(header_env)
+    if tools:
+        entry["tools"] = list(tools)
+    if deferred:
+        entry["deferred"] = True
+
+    raw = load_raw(directory)
+    raw.setdefault("mcp_servers", []).append(entry)
+    return _commit(
+        directory, raw, [], "add_mcp_server", {"name": name, "transport": entry["transport"]}
+    )
+
+
 def _make_ref(
     directory: Path,
     kind: str,
@@ -512,6 +572,7 @@ _LIST_SECTIONS = {
     "validators": ("verify", "validators"),
     "hooks": ("hooks",),
     "skills": ("skills",),
+    "mcp_servers": ("mcp_servers",),
 }
 
 
@@ -534,8 +595,8 @@ def remove_item(directory: str | Path, target: str) -> HarnessSpec:
     return _commit(directory, raw, [], "remove", {"target": target})
 
 
-def _remove_from_lists(raw: dict[str, Any], target: str) -> bool:
-    removed = False
+def _iter_list_sections(raw: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any], str]]:
+    """Yield ``(dotted_root, container, key)`` per list section present in ``raw``."""
     for keys in _LIST_SECTIONS.values():
         container: Any = raw
         for key in keys[:-1]:
@@ -544,12 +605,33 @@ def _remove_from_lists(raw: dict[str, Any], target: str) -> bool:
                 break
         if not isinstance(container, dict):
             continue
-        items = container.get(keys[-1])
-        if not isinstance(items, list):
-            continue
+        if isinstance(container.get(keys[-1]), list):
+            yield ".".join(keys), container, keys[-1]
+
+
+def matching_roots(raw: dict[str, Any], target: str) -> set[str]:
+    """The spec roots :func:`remove_item` would remove a ``target`` entry from.
+
+    Callers that gate removal on a spec path (the HTTP control plane refuses
+    frozen roots) need to know what a bare name resolves to. Sharing
+    ``_iter_list_sections`` with the removal itself means a new list section is
+    covered the moment it is added to ``_LIST_SECTIONS`` — a caller cannot
+    drift out of step with what removal actually touches.
+    """
+    return {
+        root
+        for root, container, key in _iter_list_sections(raw)
+        if any(_ref_matches(item, target) for item in container[key])
+    }
+
+
+def _remove_from_lists(raw: dict[str, Any], target: str) -> bool:
+    removed = False
+    for _root, container, key in _iter_list_sections(raw):
+        items = container[key]
         kept = [it for it in items if not _ref_matches(it, target)]
         if len(kept) != len(items):
-            container[keys[-1]] = kept
+            container[key] = kept
             removed = True
     return removed
 
@@ -559,7 +641,13 @@ def _ref_matches(item: Any, target: str) -> bool:
         return item == target
     if not isinstance(item, dict):
         return False
-    return item.get("builtin") == target or item.get("code") == target
+    # mcp_servers entries key on `name` rather than `builtin`/`code`; no other
+    # list section uses that key, so checking it here is unambiguous.
+    return (
+        item.get("builtin") == target
+        or item.get("code") == target
+        or item.get("name") == target
+    )
 
 
 def _delete_path(raw: dict[str, Any], path: str) -> bool:

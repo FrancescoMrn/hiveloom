@@ -2,8 +2,8 @@
 
 Safety invariants (enforced here, in code — not by convention):
 
-* The evolver can never modify ``guardrails``, ``model``, or ``logging.redact``
-  (``schema.ALWAYS_FROZEN``), nor any path the harness lists as ``frozen``.
+* The evolver can never modify any ``schema.ALWAYS_FROZEN`` path, nor any path
+  the harness lists as ``frozen``.
 * A proposed change must fall within the harness's ``mutable`` set.
 * Code-hook regeneration always requires explicit human approval.
 """
@@ -21,11 +21,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.catalog import CATALOGS
-from hiveloom.errors import HiveloomError
+from hiveloom.errors import HiveloomError, SpecError
 from hiveloom.evolve.analyzer import FailureReport
 from hiveloom.generate.llm import StrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
+from hiveloom.package import trace_dir_relative_to
 from hiveloom.spec.loader import (
     atomic_write_text,
     dump_spec,
@@ -33,6 +34,7 @@ from hiveloom.spec.loader import (
     load_raw,
     load_spec,
     spec_from_dict,
+    spec_to_dict,
     validate_harness,
 )
 from hiveloom.spec.schema import ALWAYS_FROZEN, HarnessSpec
@@ -132,21 +134,56 @@ def propose(spec: HarnessSpec, report: FailureReport, model: StrongModel) -> Mut
 # Gate (frozen-path enforcement)
 # --------------------------------------------------------------------------- #
 def _covered(path: str, patterns: set[str]) -> bool:
-    return any(path == p or path.startswith(p + ".") for p in patterns)
+    """True if ``path`` equals, or is a dotted sub-path of, one of ``patterns``.
+
+    Case-insensitive, unconditionally — same principle and same reason as
+    `hiveloom.package.is_sensitive_path`'s casefold fix: a case-variant path
+    (``"Model"``, ``"logging.Redact"``) must not slip past this check. It
+    happens to be harmless *today* only because the mismatched-case write
+    that would follow creates an unrecognized key `_commit`'s pydantic
+    validation then rejects — an unrelated backstop, not this check working.
+    Used by `gate()` for the mutable-set check (the frozen check uses
+    :func:`_touches_frozen`, which also catches ancestors); the case-insensitive
+    mutable match loses nothing, since a case-variant path still can't reach the
+    real field for the same reason above.
+    """
+    path_cf = path.casefold()
+    return any(path_cf == p.casefold() or path_cf.startswith(p.casefold() + ".") for p in patterns)
+
+
+def _touches_frozen(path: str, patterns: set[str]) -> bool:
+    """True if writing ``path`` would create, overwrite, or land inside a frozen pattern.
+
+    Broader than :func:`_covered` (equality or descendant only): it also matches
+    when ``path`` is an *ancestor* of a frozen pattern. Writing a parent mapping
+    replaces its children, so ``set logging {redact: []}`` overwrites the frozen
+    ``logging.redact`` and ``set evolution {auto_propose: {...}}`` overwrites the
+    frozen ``evolution.auto_propose`` — both must be refused too. Case-insensitive,
+    same reason as :func:`_covered`. Used only for the frozen deny-list, never for
+    the mutable-set check (where ancestor semantics would wrongly widen it).
+    """
+    path_cf = path.casefold()
+    for p in patterns:
+        p_cf = p.casefold()
+        if path_cf == p_cf or path_cf.startswith(p_cf + ".") or p_cf.startswith(path_cf + "."):
+            return True
+    return False
 
 
 def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
-    """Split proposed YAML changes into accepted and rejected (frozen/non-mutable).
+    """Split proposed YAML changes into accepted and rejected.
 
     Code changes pass through unchanged — they are gated separately by human
-    approval at apply time.
+    approval at apply time. The accepted YAML batch must also produce a
+    schema-valid spec; otherwise every provisionally accepted change is
+    rejected as part of that invalid batch.
     """
     frozen = set(spec.evolution.frozen) | set(ALWAYS_FROZEN)
     mutable = set(spec.evolution.mutable)
     accepted: list[YamlChange] = []
     rejected: list[dict[str, str]] = []
     for change in proposal.yaml_changes:
-        if _covered(change.path, frozen):
+        if _touches_frozen(change.path, frozen):
             rejected.append({"path": change.path, "reason": "frozen path"})
         elif _enables_dangerous_tool(change):
             rejected.append(
@@ -159,6 +196,18 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
             rejected.append({"path": change.path, "reason": "not in the mutable set"})
         else:
             accepted.append(change)
+
+    if accepted:
+        raw = spec_to_dict(spec)
+        for change in accepted:
+            _set_dotted(raw, change.path, change.value)
+        try:
+            spec_from_dict(raw, source="accepted evolution mutation batch")
+        except SpecError as exc:
+            reason = f"accepted mutation batch would produce an invalid spec: {exc}"
+            rejected.extend({"path": change.path, "reason": reason} for change in accepted)
+            accepted = []
+
     return GateResult(accepted=accepted, rejected=rejected, code_changes=proposal.code_changes)
 
 
@@ -217,10 +266,15 @@ def preview_yaml_changes(harness_dir: str | Path, proposal: MutationProposal) ->
     )
 
 
-def resolve_code_change_path(base: Path, file: str) -> Path:
-    """Resolve an evolved code target and reject paths outside its harness."""
+def resolve_code_change_path(
+    base: Path, file: str, *, trace_dir: Path | None = None
+) -> Path:
+    """Resolve an evolved code target and reject paths outside its harness
+    (or one of the paths `_safe_path` never allows regardless — the trust
+    store, credentials, and, when supplied, the configured trace directory).
+    """
     try:
-        return _safe_path(base, file)
+        return _safe_path(base, file, trace_dir=trace_dir)
     except ToolError as exc:
         raise ProposalError(f"code change path is outside the harness: {file}") from exc
 
@@ -256,8 +310,13 @@ def apply_proposal(
 
     # Validate every target before modifying any file, so a malicious later
     # proposal entry cannot leave an earlier approved one half-applied.
+    # trace_dir is passed through so a code change can't target a
+    # reconfigured (non-default) trace directory either — the same
+    # protection _safe_path's other callers get when they have it available.
+    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
     code_targets = [
-        (change, resolve_code_change_path(base, change.file)) for change in result.code_changes
+        (change, resolve_code_change_path(base, change.file, trace_dir=trace_dir))
+        for change in result.code_changes
     ]
     applied_code: list[str] = []
     pending_code: list[str] = []

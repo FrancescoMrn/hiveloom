@@ -11,10 +11,12 @@ description: >-
 
 # Extending hiveloom
 
-Everything a spec references is a **catalog entry**, and the catalog is open.
-A registered entry validates in specs, lists in `hiveloom catalog`, and flows
-into the generator meta-prompt — install a pack and `hiveloom generate` can
-immediately use it. Check what's loaded (and any load errors) with:
+Builtin and extension-registered capabilities are **catalog entries**, and the
+catalog is open. A registered entry validates in specs, lists in
+`hiveloom catalog`, and flows into the generator meta-prompt — install a pack
+and `hiveloom generate` can immediately use it. MCP tools are discovered
+dynamically and list under `hiveloom mcp list-tools` instead. Check what's
+loaded (and any load errors) with:
 
 ```bash
 hiveloom extensions
@@ -90,6 +92,12 @@ Then `hiveloom set model.provider ollama` / `set model.id qwen3:8b`, or
 `hive.register_provider(name, factory, models=[...])`. Unknown models fall
 back to Haiku-class pricing so cost guardrails stay conservative.
 
+The same provider works against hosted endpoints, e.g. OpenRouter:
+`base_url: https://openrouter.ai/api/v1`, `api_key_env: OPENROUTER_API_KEY`
+(Groq/Together/vLLM/mlx_lm.server work the same way — see `docs/extending.md`
+for typical base URLs). Reasoning-style models (DeepSeek-R1 family etc.) are
+supported.
+
 ## Event hooks (middleware, not guardrails)
 
 Attach with `hiveloom add hook --on <event> --code|--builtin …`. Handlers get
@@ -102,11 +110,25 @@ YAML boolean. Handlers must not raise; a raising handler is logged as
 `hook_error` and skipped. Guardrails remain the frozen safety layer and always
 run first.
 
+## MCP servers
+
+`mcp_servers` tools join the loop as ordinary tools (`mcp__<name>__<tool>`),
+discovered eagerly (including on `run --dry-run`):
+
+```bash
+hiveloom add mcp-server --name search --stdio-command npx \
+  --stdio-arg -y --stdio-arg @foo/mcp-search --dir ./h
+hiveloom mcp list-tools --dir ./h   # see what it actually exposes
+```
+
+A stdio server is arbitrary local exec — trust-gated like any code hook.
+
 ## Rules that never bend
 
-Extensions **widen choice, never the evolution gate**: `model`, `guardrails`,
-`logging.redact`, and `extensions` stay frozen from evolution, and foreign
-harness folders stay trust-gated before their code loads.
+Extensions **widen choice, never the evolution gate**: `guardrails`, `model`,
+`logging.redact`, `extensions`, `hooks`, `mcp_servers`, and
+`evolution.auto_propose` stay frozen from evolution, and foreign harness
+folders stay trust-gated before their code loads.
 
 Full reference (deferred tools, tool ergonomics, `$HIVELOOM_HOME`, SDK):
 `docs/extending.md`.
