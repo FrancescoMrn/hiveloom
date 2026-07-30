@@ -3,7 +3,8 @@
 Loads the spec, resolves hooks, builds the runtime components (provider, tool
 registry, guardrails, verifiers, context manager, trace writer), and drives the
 agent loop. Also supports ``--dry-run``: assemble the first model call without
-any API use.
+calling the model API. Declared MCP servers are still contacted because tool
+discovery is eager.
 """
 
 from __future__ import annotations
@@ -62,7 +63,10 @@ def _new_run_id() -> str:
 def dry_run(
     harness_dir: str | Path, input_value: str, *, approve_trust=None
 ) -> dict[str, Any]:
-    """Assemble the would-be first model call without any API use."""
+    """Assemble the first model call without calling the model provider.
+
+    Declared MCP servers are still contacted because tool discovery is eager.
+    """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
@@ -169,6 +173,7 @@ def run_harness(
 
     if ingest:
         _ingest_trace(trace.path, hive_path)
+        # Auto-propose needs this run ingested before it can count the failure.
         _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
     return result
 

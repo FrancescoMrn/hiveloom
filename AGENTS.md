@@ -16,20 +16,23 @@ the library; humans should start at [README.md](README.md).
 2. **Always pass `--json`** and branch on the result and the exit code:
    `0` success · `1` verify failed · `2` guardrail halt · `3` spec/validation
    error · `4` runtime error.
-3. **The catalog is the truth.** If `hiveloom catalog <kind>` doesn't list it,
-   it doesn't exist. Check `hiveloom extensions` — installed packs may have
-   widened the catalog.
+3. **The catalog is the truth for builtin and extension-registered entries.**
+   If `hiveloom catalog <kind>` doesn't list one, it doesn't exist. Check
+   `hiveloom extensions` — installed packs may have widened the catalog. MCP
+   tools are the named exception: servers expose them dynamically at run time,
+   so inspect them with `hiveloom mcp list-tools`.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
-   `extensions`, and `mcp_servers` are frozen from evolution; the cost
-   guardrail defaults on; `shell` is allowlist-only; foreign harness folders
-   are trust-gated before their code loads. Don't route around any of this on
-   a user's behalf.
+   `extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` are
+   frozen from evolution; the cost guardrail defaults on; `shell` is
+   allowlist-only; foreign harness folders are trust-gated before their code
+   loads. Don't route around any of this on a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
    `extensions`, and `run --dry-run` never call the model API. A harness with
    `mcp_servers` is the one exception to "free": its tools are discovered
    eagerly, so `run --dry-run` does perform real local/network I/O against
    those declared servers (see `docs/spec.md`). `run`, `generate`, and
-   `evolve` need `ANTHROPIC_API_KEY`.
+   `evolve` need credentials for their configured provider when that provider
+   requires them (for example, `ANTHROPIC_API_KEY` for the default provider).
 
 ## Task → skill map
 

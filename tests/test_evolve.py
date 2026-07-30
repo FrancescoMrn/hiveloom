@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from hiveloom import cli, construct
 from hiveloom.errors import ExitCode
+from hiveloom.evolve import evolver as evolver_mod
 from hiveloom.evolve.analyzer import FailureCluster, FailureReport, analyze
 from hiveloom.evolve.evolver import (
     MutationProposal,
@@ -146,6 +147,63 @@ def test_gate_accepts_loop_steps_when_harness_opts_in(tmp_path: Path):
     proposal = MutationProposal(yaml_changes=[{"path": "loop.steps", "value": ["a", "b"]}])
     result = gate(spec, proposal)
     assert {c.path for c in result.accepted} == {"loop.steps"}
+
+
+def test_gate_rejects_an_accepted_batch_that_would_invalidate_the_spec(tmp_path: Path):
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "loop.policy", "value": "sequential_steps"},
+            {"path": "guardrails", "value": []},
+        ]
+    )
+
+    result = gate(spec, proposal)
+
+    assert result.accepted == []
+    reasons = {rejection["path"]: rejection["reason"] for rejection in result.rejected}
+    assert reasons["guardrails"] == "frozen path"
+    assert "invalid spec" in reasons["loop.policy"]
+    assert "requires a non-empty loop.steps" in reasons["loop.policy"]
+
+
+def test_gate_validates_and_accepts_a_valid_multi_change_batch(
+    tmp_path: Path, monkeypatch
+):
+    harness = _harness(tmp_path)
+    construct.set_value(
+        harness,
+        "evolution.mutable",
+        ["loop.policy", "loop.steps"],
+    )
+    spec = load_spec(harness)
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "loop.policy", "value": "sequential_steps"},
+            {"path": "loop.steps", "value": ["extract", "verify"]},
+        ]
+    )
+    validated: list[dict] = []
+    real_spec_from_dict = evolver_mod.spec_from_dict
+
+    def recording_spec_from_dict(data, *args, **kwargs):
+        validated.append(data)
+        return real_spec_from_dict(data, *args, **kwargs)
+
+    monkeypatch.setattr(evolver_mod, "spec_from_dict", recording_spec_from_dict)
+
+    result = gate(spec, proposal)
+
+    assert [change.path for change in result.accepted] == [
+        "loop.policy",
+        "loop.steps",
+    ]
+    assert result.rejected == []
+    assert len(validated) == 1
+    assert validated[0]["loop"]["policy"] == "sequential_steps"
+    assert validated[0]["loop"]["steps"] == ["extract", "verify"]
+
+
 def test_gate_rejects_evolution_auto_propose_touching(tmp_path: Path):
     """Evolution must not tune its own auto-propose trigger. It's in
     ALWAYS_FROZEN (fix-round-4 regression), so this is rejected as a frozen

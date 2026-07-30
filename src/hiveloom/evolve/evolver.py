@@ -2,8 +2,8 @@
 
 Safety invariants (enforced here, in code — not by convention):
 
-* The evolver can never modify ``guardrails``, ``model``, or ``logging.redact``
-  (``schema.ALWAYS_FROZEN``), nor any path the harness lists as ``frozen``.
+* The evolver can never modify any ``schema.ALWAYS_FROZEN`` path, nor any path
+  the harness lists as ``frozen``.
 * A proposed change must fall within the harness's ``mutable`` set.
 * Code-hook regeneration always requires explicit human approval.
 """
@@ -21,7 +21,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.catalog import CATALOGS
-from hiveloom.errors import HiveloomError
+from hiveloom.errors import HiveloomError, SpecError
 from hiveloom.evolve.analyzer import FailureReport
 from hiveloom.generate.llm import StrongModel
 from hiveloom.logging.hive import Hive
@@ -34,6 +34,7 @@ from hiveloom.spec.loader import (
     load_raw,
     load_spec,
     spec_from_dict,
+    spec_to_dict,
     validate_harness,
 )
 from hiveloom.spec.schema import ALWAYS_FROZEN, HarnessSpec
@@ -151,10 +152,12 @@ def _covered(path: str, patterns: set[str]) -> bool:
 
 
 def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
-    """Split proposed YAML changes into accepted and rejected (frozen/non-mutable).
+    """Split proposed YAML changes into accepted and rejected.
 
     Code changes pass through unchanged — they are gated separately by human
-    approval at apply time.
+    approval at apply time. The accepted YAML batch must also produce a
+    schema-valid spec; otherwise every provisionally accepted change is
+    rejected as part of that invalid batch.
     """
     frozen = set(spec.evolution.frozen) | set(ALWAYS_FROZEN)
     mutable = set(spec.evolution.mutable)
@@ -174,6 +177,18 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
             rejected.append({"path": change.path, "reason": "not in the mutable set"})
         else:
             accepted.append(change)
+
+    if accepted:
+        raw = spec_to_dict(spec)
+        for change in accepted:
+            _set_dotted(raw, change.path, change.value)
+        try:
+            spec_from_dict(raw, source="accepted evolution mutation batch")
+        except SpecError as exc:
+            reason = f"accepted mutation batch would produce an invalid spec: {exc}"
+            rejected.extend({"path": change.path, "reason": reason} for change in accepted)
+            accepted = []
+
     return GateResult(accepted=accepted, rejected=rejected, code_changes=proposal.code_changes)
 
 

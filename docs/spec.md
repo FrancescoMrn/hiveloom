@@ -62,9 +62,10 @@ stub.
 A harness can declare MCP servers; their tools become ordinary dispatchable
 tools inside the loop, named `mcp__<server-name>__<tool>`. Discovery is
 **eager** — it happens when the tool registry is built, which includes
-`run --dry-run` (a harness with `mcp_servers` genuinely performs local/network
-I/O on dry-run; see AGENTS.md rule 5). `mcp_servers` is **always frozen** from
-evolution — the same risk class as `extensions` (arbitrary code/process).
+`run --dry-run`. Dry-run never calls the model API, but a harness with
+`mcp_servers` genuinely performs local/network I/O to discover their tools
+(see AGENTS.md rule 5). `mcp_servers` is **always frozen** from evolution —
+the same risk class as `extensions` (arbitrary code/process).
 
 A stdio entry launches a local subprocess — **arbitrary local exec** —
 gated by the same harness-trust boundary as any other code hook (see
@@ -98,7 +99,8 @@ inspect what a harness's declared servers actually expose with
 
 ## Safety invariants (enforced in code)
 
-1. The evolver can never modify `guardrails`, `model`, or `logging.redact`.
+1. The evolver can never modify `guardrails`, `model`, `logging.redact`,
+   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
 2. Code-hook regeneration always requires explicit human approval.
 3. `shell` is allowlist-only and disabled unless the spec enables it.
 4. Redaction patterns are applied before any trace is persisted.

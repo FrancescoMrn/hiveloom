@@ -567,7 +567,9 @@ def run(
     harness_dir: str = typer.Argument(".", help="Harness directory to run."),
     input_value: str = typer.Option(..., "--input", help="Input FILE path or literal TEXT."),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Assemble the first model call and print it; no API use."
+        False,
+        "--dry-run",
+        help="Assemble the first model call without calling the model; MCP discovery does I/O.",
     ),
     stream: bool = typer.Option(
         False, "--stream", help="Stream every trace event to stdout as JSONL (result last)."
@@ -579,10 +581,11 @@ def run(
 ) -> None:
     """Run a harness on an input.
 
-    ``--dry-run`` resolves hooks and prints the would-be first model call without
-    touching the API. ``--stream`` emits each trace event as a JSON line while
-    the run progresses — the embedding interface for other programs. Exit codes:
-    0 success, 1 verify failed, 2 guardrail halt, 4 runtime error.
+    ``--dry-run`` resolves hooks and prints the would-be first model call
+    without calling the model API; declared MCP servers are still contacted
+    for tool discovery. ``--stream`` emits each trace event as a JSON line
+    while the run progresses — the embedding interface for other programs.
+    Exit codes: 0 success, 1 verify failed, 2 guardrail halt, 4 runtime error.
     """
     from hiveloom import runner
     from hiveloom import trust as trust_mod
@@ -759,7 +762,8 @@ def generate(
     """Generate a harness for a task (a strong model drives the construction API).
 
     Sugar over the construct commands: explore → init → add/set → validate, with
-    a validate/repair loop. Needs ANTHROPIC_API_KEY.
+    a validate/repair loop. Needs credentials for the configured provider when
+    that provider requires them.
     """
     from hiveloom.generate.generator import generate as run_generate
     from hiveloom.generate.llm import build_strong_model
@@ -895,8 +899,9 @@ def _make_approve_code(
     and ``proposals apply`` both use.
     """
     from hiveloom.evolve import resolve_code_change_path
+    from hiveloom.evolve.evolver import CodeChange
 
-    def approve(change: Any) -> bool:
+    def approve(change: CodeChange) -> bool:
         if change.file in (allowlist or ()):
             return True
         if json_output:

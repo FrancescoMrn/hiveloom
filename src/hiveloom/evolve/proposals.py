@@ -105,6 +105,8 @@ def create_proposal(
 
     proposal = evolver.propose(spec, report, model)
     gate_result = evolver.gate(spec, proposal)
+    if not gate_result.accepted and not gate_result.code_changes:
+        raise ProposalQueueError("proposal has no applicable changes after gating")
 
     row = {
         "id": f"prop_{uuid4().hex[:16]}",

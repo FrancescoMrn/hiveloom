@@ -1,12 +1,13 @@
 # Extending hiveloom
 
-hiveloom's catalog is open: everything a spec can reference — tools,
-guardrails, validators, loop policies, compaction methods, event hooks, model
-providers — is a **catalog entry**, and extensions register new entries through
-one API. A registered entry shows up in `hiveloom catalog`, validates in specs
-like a builtin, and appears in the generator's meta-prompt — so
-`hiveloom generate` can weave harnesses with a capability the moment its pack
-is installed.
+hiveloom's catalog is open: tools, guardrails, validators, loop policies,
+compaction methods, event hooks, and model providers are **catalog entries**,
+and extensions register new entries through one API. A registered entry shows
+up in `hiveloom catalog`, validates in specs like a builtin, and appears in the
+generator's meta-prompt — so `hiveloom generate` can weave harnesses with a
+capability the moment its pack is installed. MCP tools are the dynamic
+exception: they come from declared servers at run time and appear in
+`hiveloom mcp list-tools`, not `hiveloom catalog`.
 
 ## Writing an extension
 
@@ -121,6 +122,12 @@ mlx_lm.server `http://localhost:8080/v1`. Reasoning-style models (the
 DeepSeek-R1 family and similar) are supported: a reasoning-only turn is
 normalized from the response's `reasoning`/`reasoning_content` field when
 `content` is empty.
+
+Run, generate, and evolve need credentials for the configured provider when
+that provider requires them: `ANTHROPIC_API_KEY` is the default Anthropic case;
+hosted OpenAI-compatible providers use the environment variable named by
+`api_key_env` (for example `OPENROUTER_API_KEY`), while local vLLM, Ollama, or
+mlx_lm.server deployments may require no credential.
 
 **Programmatically** — `hive.register_provider(name, factory, models=[...])`
 with a factory returning a `ModelProvider`. Model pricing lives in the

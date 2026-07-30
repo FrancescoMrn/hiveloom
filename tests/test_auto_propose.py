@@ -152,3 +152,30 @@ def test_successful_run_result_short_circuits(tmp_path: Path):
     with Hive(hive_path) as hive:
         assert hive.list_proposals(harness_name="demo") == []
     assert model.prompts == []
+
+
+def test_schema_invalid_auto_proposal_does_not_burn_dedup_or_cooldown(tmp_path: Path):
+    harness = _harness(tmp_path, min_failures=1, cooldown_hours=24.0)
+    hive_path = tmp_path / "hive.db"
+    _write_failure(
+        hive_path,
+        tmp_path,
+        "run_bad",
+        "same issue",
+        datetime.now(UTC).isoformat(),
+    )
+    invalid_payload = json.dumps(
+        {
+            "rationale": "switch policy",
+            "yaml_changes": [{"path": "loop.policy", "value": "sequential_steps"}],
+        }
+    )
+    model = FakeStrongModel([invalid_payload, invalid_payload])
+    spec = load_spec(harness)
+
+    _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
+    _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
+
+    with Hive(hive_path) as hive:
+        assert hive.list_proposals(harness_name="demo") == []
+    assert len(model.prompts) == 2

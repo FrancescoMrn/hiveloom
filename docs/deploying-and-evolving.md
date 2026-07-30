@@ -21,10 +21,12 @@ The running deployment does **not** evolve itself:
 - **Running** uses a small, cheap executor model in the hot path.
 - **Evolving** uses a strong model plus human approval for any code change — off
   the hot path, and never in production latency or cost.
-- Evolution is a **gated, versioned, auditable mutation**, not silent drift. The
-  evolver can never change `guardrails`, `model`, or `logging.redact`; regenerated
-  code hooks require explicit y/n approval; every applied change bumps an
-  `# evolved: N` counter and records old→new version hashes in the Hive.
+- Evolution is a **gated, versioned, auditable mutation**, not silent drift.
+  The evolver can never change `guardrails`, `model`, `logging.redact`,
+  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`;
+  regenerated code hooks require explicit y/n approval; every applied change
+  bumps an `# evolved: N` counter and records old→new version hashes in the
+  Hive.
 
 "Still evolving" therefore means the harness *emits the signal* (traces) wherever
 it runs, and you close the loop deliberately — not that it mutates live.

@@ -11,10 +11,12 @@ description: >-
 
 # Extending hiveloom
 
-Everything a spec references is a **catalog entry**, and the catalog is open.
-A registered entry validates in specs, lists in `hiveloom catalog`, and flows
-into the generator meta-prompt — install a pack and `hiveloom generate` can
-immediately use it. Check what's loaded (and any load errors) with:
+Builtin and extension-registered capabilities are **catalog entries**, and the
+catalog is open. A registered entry validates in specs, lists in
+`hiveloom catalog`, and flows into the generator meta-prompt — install a pack
+and `hiveloom generate` can immediately use it. MCP tools are discovered
+dynamically and list under `hiveloom mcp list-tools` instead. Check what's
+loaded (and any load errors) with:
 
 ```bash
 hiveloom extensions
@@ -123,9 +125,10 @@ A stdio server is arbitrary local exec — trust-gated like any code hook.
 
 ## Rules that never bend
 
-Extensions **widen choice, never the evolution gate**: `model`, `guardrails`,
-`logging.redact`, `extensions`, and `mcp_servers` stay frozen from evolution,
-and foreign harness folders stay trust-gated before their code loads.
+Extensions **widen choice, never the evolution gate**: `guardrails`, `model`,
+`logging.redact`, `extensions`, `hooks`, `mcp_servers`, and
+`evolution.auto_propose` stay frozen from evolution, and foreign harness
+folders stay trust-gated before their code loads.
 
 Full reference (deferred tools, tool ergonomics, `$HIVELOOM_HOME`, SDK):
 `docs/extending.md`.

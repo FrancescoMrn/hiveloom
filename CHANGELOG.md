@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A Hive-backed evolution proposal queue with create/list/show/apply/reject
+  flows in the CLI and HTTP control plane.
+- The `sequential_steps` loop policy for executing declared `loop.steps` in a
+  fixed order.
+- Opt-in post-run `evolution.auto_propose` drafting with failure thresholds,
+  cooldowns, and proposal deduplication; proposals are never auto-applied.
+- MCP server declarations, construction commands, dynamic tool discovery,
+  runtime dispatch, and `hiveloom mcp list-tools`.
+- A bearer-authenticated, non-production HTTP control plane with ed25519 key
+  generation, authorization, signing, bounded run concurrency, and
+  run/evolve/proposal endpoints.
+- Typed-package metadata (`py.typed`) and SPDX license metadata for PyPI.
+
+### Changed
+
+- Proposal records expose typed proposal/gate/apply-result accessors; queue
+  deduplication happens before the strong-model call, and proposal application
+  claims are concurrency-safe and retryable.
+- The HTTP mutation boundary is derived from `ALWAYS_FROZEN`, and remove
+  checks derive list-section roots from the construct API.
+- Starlette, Uvicorn, PyJWT with crypto support, and cryptography are direct
+  runtime dependencies for the control plane.
+
+### Fixed
+
+- OpenAI-compatible responses now preserve reasoning-only text, never
+  re-serialize empty assistant turns as `content: null`, tolerate dict-shaped
+  tool-call arguments, fall back across usage-token field names, and map
+  `content_filter` termination.
+- Loop-policy dependency injection again distinguishes an omitted policy from
+  an explicitly supplied one.
+- Auto-propose cooldowns have a real one-minute minimum instead of accepting
+  functionally disabled near-zero values.
+- MCP transport declares its HTTP dependency, bounds initialization time, and
+  rejects tool-name collisions introduced by sanitization.
+- The HTTP control plane fails closed on corrupted authorized-key rows and
+  blocks sensitive input-file reads, case-variant path bypasses, custom trace
+  directory leaks, and mutation access to frozen configuration.
+- Proposal queue review fixes cover trust checks, stale specs, confirmation
+  ordering, code-path approval, apply claims, and harness-bound HTTP access.
+
 ## [0.2.0] - 2026-07-21
 
 ### Added

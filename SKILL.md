@@ -60,7 +60,8 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    `add skill <name> --description "..."` (progressive-disclosure SKILL.md the
    executor reads on demand — pair with the `file_read` tool).
 3. **Finish**: `hiveloom validate ./h` then `hiveloom run ./h --input FILE --dry-run`
-   (assembles the first model call, no API use).
+   (assembles the first model call without calling the model API; declared MCP
+   servers are still contacted for eager tool discovery).
 
 Or let a strong model do all of the above in one shot:
 `hiveloom generate "task description" -o ./h` (it drives the same construct
@@ -75,20 +76,22 @@ Interpret the **exit code**: `0` success, `1` verify failed, `2` guardrail halt,
 `3` spec/validation error, `4` runtime error. Traces land in
 `./h/.hiveloom/traces/<run_id>.jsonl`; inspect with `hiveloom trace <run_id>` and
 aggregate with `hiveloom stats ./h` (success rate / cost / turns **per version
-hash**). Running needs `ANTHROPIC_API_KEY` (loaded from the harness `.env`).
+hash**). Running needs credentials for the configured provider when required
+(for example, `ANTHROPIC_API_KEY` for the default provider, loaded from the
+harness `.env`).
 
 ## Improving a harness — use evolve, not the editor
 
 When asked to improve a failing harness, **do not** hand-edit it — and never
-touch the `guardrails`, `model`, or `logging.redact` blocks at all. Run:
+touch `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
+`mcp_servers`, or `evolution.auto_propose` through evolution. Run:
 ```bash
 hiveloom evolve ./h            # analyze Hive failures → propose a gated mutation
 ```
-The evolver enforces in code that guardrails/model/redaction are never weakened,
-that changes stay within the harness's `mutable` set, and that any regenerated
-code hook needs explicit y/n approval. Applied changes bump an `# evolved: N`
-counter and are recorded in the Hive so `hiveloom stats` can prove the mutation
-helped.
+The evolver enforces that always-frozen set in code, requires changes to stay
+within the harness's `mutable` set, and requires explicit y/n approval for any
+regenerated code hook. Applied changes bump an `# evolved: N` counter and are
+recorded in the Hive so `hiveloom stats` can prove the mutation helped.
 
 ## Shipping
 

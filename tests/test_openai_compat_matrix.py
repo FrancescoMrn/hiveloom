@@ -52,6 +52,26 @@ vllm_dict_arguments = {
     "usage": {"prompt_tokens": 30, "completion_tokens": 8},
 }
 
+vllm_list_arguments = {
+    "choices": [
+        {
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_list",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": ["Rome"]},
+                    }
+                ],
+            },
+        }
+    ],
+    "usage": {"prompt_tokens": 30, "completion_tokens": 8},
+}
+
 groq_standard = {
     "choices": [
         {"finish_reason": "stop", "message": {"role": "assistant", "content": "The answer is 4."}}
@@ -92,6 +112,7 @@ mlx_lm_standard = {
 _FIXTURES = {
     "openrouter_reasoning": openrouter_reasoning,
     "vllm_dict_arguments": vllm_dict_arguments,
+    "vllm_list_arguments": vllm_list_arguments,
     "groq_standard": groq_standard,
     "together_standard": together_standard,
     "ollama_standard": ollama_standard,

@@ -44,10 +44,10 @@ hiveloom add tool --builtin file_read --dir ./summarizer
 hiveloom add validator --builtin regex_match --pattern '"summary"' --dir ./summarizer
 hiveloom validate ./summarizer
 
-# 3. Dry-run to see the first model call assembled — still no API use
+# 3. Dry-run — no model-API call (declared MCP servers are still contacted)
 hiveloom run ./summarizer --input notes.txt --dry-run
 
-# 4. Run for real (needs ANTHROPIC_API_KEY; the small executor model runs inside)
+# 4. Run for real (the default provider needs ANTHROPIC_API_KEY)
 echo "ANTHROPIC_API_KEY=sk-..." > ./summarizer/.env
 hiveloom run ./summarizer --input notes.txt --json
 
@@ -109,14 +109,16 @@ hiveloom remove file_read --dir ./my-harness
 
 ```bash
 hiveloom run ./my-harness --input notes.txt          # runs the agent loop
-hiveloom run ./my-harness --input notes.txt --dry-run # assemble first call, no API use
+hiveloom run ./my-harness --input notes.txt --dry-run # no model call; MCP discovery does I/O
 hiveloom run ./my-harness --input notes.txt --json    # machine-readable result
 hiveloom run ./my-harness --input notes.txt --stream  # trace events as JSONL (embedding)
 ```
 
-`run` needs `ANTHROPIC_API_KEY` (loaded from the harness `.env` if present). Traces are
-written to the harness's `.hiveloom/traces/<run_id>.jsonl`. The small executor model
-(default `claude-haiku-4-5`) runs inside the harness; guardrails and verification gate it.
+`run` needs credentials for the configured provider when it requires them (for
+example, `ANTHROPIC_API_KEY` for the default provider, loaded from the harness
+`.env` if present). Traces are written to the harness's
+`.hiveloom/traces/<run_id>.jsonl`. The small executor model (default
+`claude-haiku-4-5`) runs inside the harness; guardrails and verification gate it.
 
 **Inspect memory**
 
@@ -145,11 +147,13 @@ hiveloom proposals list ./recon    # review, then `proposals apply` / `proposals
 `generate` is sugar: a strong model produces a construction *plan* that hiveloom replays
 through the same validated `init`/`add`/`set` functions (with a validate/repair loop), so
 there is one code path for building harnesses. `evolve` reads the Hive's clustered failures,
-asks a strong model for a minimal mutation, and **gates it in code**: `guardrails`, `model`,
-and `logging.redact` can never be changed, changes must fall within the harness's `mutable`
-set, and regenerated code hooks always require explicit approval. Applied mutations bump an
-`# evolved: N` counter and are recorded in the Hive under a new version hash. Both need
-`ANTHROPIC_API_KEY`.
+asks a strong model for a minimal mutation, and **gates it in code**:
+`guardrails`, `model`, `logging.redact`, `extensions`, `hooks`, `mcp_servers`,
+and `evolution.auto_propose` can never be changed, changes must fall within the
+harness's `mutable` set, and regenerated code hooks always require explicit
+approval. Applied mutations bump an `# evolved: N` counter and are recorded in
+the Hive under a new version hash. Both need credentials for the configured
+provider when it requires them.
 
 **Serve over HTTP (non-production)**
 
@@ -176,12 +180,13 @@ Exit codes: `0` ok, `1` verify failed, `2` guardrail halt, `3` spec/validation e
 
 ## Extending (the open catalog)
 
-Everything a spec references is a **catalog entry**, and the catalog is open:
-extensions register new tools, guardrails, validators, loop policies,
-compaction methods, event hooks, and model providers through one API
+Builtin and extension-registered capabilities are **catalog entries**, and the
+catalog is open: extensions register new tools, guardrails, validators, loop
+policies, compaction methods, event hooks, and model providers through one API
 (`hiveloom.ext.ExtensionAPI`). Registered entries validate in specs, list in
 `hiveloom catalog`, and flow into the generator meta-prompt — install a pack
-and `hiveloom generate` can immediately weave harnesses with it.
+and `hiveloom generate` can immediately weave harnesses with it. MCP tools are
+discovered dynamically instead; inspect them with `hiveloom mcp list-tools`.
 
 ```bash
 hiveloom extensions                                   # what's loaded, from where
@@ -217,7 +222,8 @@ harness trust model.
 
 ## Safety invariants
 
-* The evolver may never modify `guardrails`, `model`, `logging.redact`, or `extensions`.
+* The evolver may never modify `guardrails`, `model`, `logging.redact`,
+  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
 * The cost guardrail defaults **on** (`max_cost_usd: 1.00`) even if omitted.
 * `shell` is allowlist-only and disabled unless the spec enables it.
 * Redaction patterns are applied before any trace is persisted.

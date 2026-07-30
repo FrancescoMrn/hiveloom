@@ -95,9 +95,9 @@ triggers, and the N most recent failed traces with their verifier feedback.
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
 minimal mutation, then **gates it in code**:
 
-- `guardrails`, `model`, `logging.redact`, and `extensions`
-  (`schema.ALWAYS_FROZEN`) — plus any path the harness lists as `frozen` — can
-  **never** be changed;
+- `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
+  `mcp_servers`, and `evolution.auto_propose` (`schema.ALWAYS_FROZEN`) — plus
+  any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;
 - regenerated code hooks always require explicit human approval.
 

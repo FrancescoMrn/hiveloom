@@ -67,6 +67,25 @@ def test_second_create_with_same_failure_state_dedups_without_calling_model(tmp_
     assert len(model.prompts) == 1  # the strong model was never called a second time
 
 
+def test_create_does_not_queue_a_schema_invalid_gated_batch(tmp_path: Path):
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+    payload = json.dumps(
+        {
+            "rationale": "switch policy",
+            "yaml_changes": [{"path": "loop.policy", "value": "sequential_steps"}],
+        }
+    )
+    model = FakeStrongModel([payload])
+
+    with Hive(tmp_path / "hive.db") as hive:
+        with pytest.raises(ProposalQueueError, match="no applicable changes"):
+            create_proposal(hive, spec, harness, _report(), model, trigger="manual")
+        assert hive.list_proposals() == []
+
+    assert len(model.prompts) == 1
+
+
 # --------------------------------------------------------------------------- #
 # list_proposals / get_proposal
 # --------------------------------------------------------------------------- #

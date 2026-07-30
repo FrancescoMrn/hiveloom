@@ -118,10 +118,10 @@ result), setting `logging.redact` could strip redaction so secrets land in
 traces in cleartext, setting `guardrails` could remove the cost cap
 entirely. So `/set`, every `/add/{kind}`, and `/remove` refuse any of
 `ALWAYS_FROZEN`'s roots — `guardrails`, `model`, `logging.redact`,
-`extensions`, `hooks`, `evolution.auto_propose`, and (from the moment a
-harness spec gains it) `mcp_servers` — with **403**, not 400: this is "your
-scope does not permit that," not "your request was malformed." The local
-CLI is completely unaffected; this check lives entirely in the HTTP layer
+`extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` — with
+**403**, not 400: this is "your scope does not permit that," not "your request
+was malformed." The local CLI is completely unaffected; this check lives
+entirely in the HTTP layer
 (`serve/app.py`), derived from `ALWAYS_FROZEN` itself rather than a
 hand-maintained parallel list, so it never drifts from what the evolver
 already refuses to touch.
@@ -183,8 +183,8 @@ HTTP:
   it points at anything `package.py` already treats as "never leaves the
   harness": `.hiveloom/` (the trust store, construction log, and — for a
   served harness — its own `authorized_keys.json` and every prior run's
-  trace), `.env*` (a deployed harness routinely holds a live
-  `ANTHROPIC_API_KEY` there), or the configured `logging.trace_dir` even
+  trace), `.env*` (a deployed harness may hold live provider credentials such
+  as `ANTHROPIC_API_KEY` there), or the configured `logging.trace_dir` even
   when it's been moved outside `.hiveloom/`. Staying inside the harness
   directory is necessary but not sufficient; both checks share one
   definition (`hiveloom.package.is_sensitive_path`, matched case-insensitively
