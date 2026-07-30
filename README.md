@@ -15,6 +15,16 @@ The harness — not the conversation — is the durable, versionable, improvable
 ## Install
 
 ```bash
+uv pip install hiveloom        # or: pip install hiveloom
+```
+
+hiveloom is published to PyPI starting with its first tagged release; see
+[CHANGELOG.md](CHANGELOG.md) for release history.
+
+**Contributing or running unreleased code:** install from source in editable
+mode instead:
+
+```bash
 uv pip install -e ".[dev]"     # or: pip install -e ".[dev]"
 ```
 

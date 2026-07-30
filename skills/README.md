@@ -23,6 +23,15 @@ progressive disclosure per lifecycle stage.
 cp -r skills/hiveloom-* /path/to/project/.claude/skills/
 ```
 
+**For other coding agents:** hiveloom is agent-agnostic — [AGENTS.md](../AGENTS.md)
+is the entry point regardless of which agent drives it, and each skill is
+plain markdown with YAML frontmatter, not a Claude-Code-specific format. An
+agent without a native skills mechanism can simply be pointed at `AGENTS.md`
+and the relevant `SKILL.md` files directly. An agent with its own rules or
+context conventions (an `AGENTS.md` reader like Codex, a Cursor rules file,
+etc.) can reference or copy these files into whatever location that
+convention expects.
+
 > Not to be confused with a *harness's own* `skills/` folder
 > (`hiveloom add skill …`), which holds progressive-disclosure instructions for
 > the small executor model *inside* a harness. The skills here are for the
