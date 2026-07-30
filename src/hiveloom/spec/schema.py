@@ -331,6 +331,26 @@ class LoopConfig(BaseModel):
             valid = ", ".join(sorted(catalog.POLICIES))
             raise ValueError(f"unknown loop policy '{value}' (valid: {valid})")
         return value
+
+    steps: list[str] = Field(
+        default_factory=list,
+        description="Ordered objectives for the sequential_steps policy; each is injected "
+        "as the current objective in turn and the loop refuses completion "
+        "until every step is consumed. Ignored by other policies.",
+    )
+
+    @model_validator(mode="after")
+    def _check_sequential_steps(self) -> LoopConfig:
+        # Deliberately one-directional: only reject sequential_steps with empty
+        # steps, never the reverse. Every `hiveloom set` commits and fully
+        # re-validates immediately (see construct._commit), so a two-directional
+        # check would make the natural workflow `hiveloom set loop.steps
+        # '[...]'` then `hiveloom set loop.policy sequential_steps` fail on the
+        # first command. Non-empty steps with any other policy are allowed.
+        if self.policy == "sequential_steps" and not self.steps:
+            raise ValueError("loop.policy 'sequential_steps' requires a non-empty loop.steps")
+        return self
+
     max_turns: int = Field(
         default=20, gt=0, le=1_000, description="Max loop turns before stopping."
     )

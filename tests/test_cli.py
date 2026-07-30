@@ -55,6 +55,19 @@ def test_explain_json():
     assert _json(r)["path"] == "context.compaction"
 
 
+def test_catalog_policies_lists_sequential_steps():
+    r = runner.invoke(app, ["catalog", "policies", "--json"])
+    assert r.exit_code == ExitCode.OK
+    names = [e["name"] for e in _json(r)["entries"]]
+    assert "sequential_steps" in names
+
+
+def test_explain_loop_steps():
+    r = runner.invoke(app, ["explain", "loop.steps", "--json"])
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["path"] == "loop.steps"
+
+
 def test_add_and_remove_tool(tmp_path: Path):
     directory = str(tmp_path / "h")
     runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])

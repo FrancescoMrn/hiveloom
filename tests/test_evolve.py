@@ -104,6 +104,30 @@ def test_gate_rejects_non_mutable_path(tmp_path: Path):
     assert result.rejected[0]["reason"] == "not in the mutable set"
 
 
+def test_gate_rejects_loop_steps_by_default(tmp_path: Path):
+    # loop.steps rewrites what the harness does, and in what order — a bigger
+    # behavioral mutation than tuning max_turns or the system prompt — so it
+    # is deliberately excluded from the default mutable set.
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(yaml_changes=[{"path": "loop.steps", "value": ["a", "b"]}])
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == "not in the mutable set"
+
+
+def test_gate_accepts_loop_steps_when_harness_opts_in(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.set_field(
+        harness,
+        "evolution.mutable",
+        '[system_prompt, loop.max_turns, loop.policy, context.strategy, tools, loop.steps]',
+    )
+    spec = load_spec(harness)
+    proposal = MutationProposal(yaml_changes=[{"path": "loop.steps", "value": ["a", "b"]}])
+    result = gate(spec, proposal)
+    assert {c.path for c in result.accepted} == {"loop.steps"}
+
+
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
     _system, user = build_evolve_prompt(load_spec(_harness(tmp_path)), _report())
 
