@@ -442,6 +442,14 @@ def run(
     approve: bool = typer.Option(
         False, "--approve", "-a", help="Trust the harness folder without prompting."
     ),
+    sync: bool = typer.Option(
+        False,
+        "--sync",
+        help=(
+            "Linked mode: pull the latest version before the run and push the "
+            "traces after (requires `hiveloom cloud link`)."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Run a harness on an input.
@@ -455,6 +463,12 @@ def run(
     from hiveloom import trust as trust_mod
 
     with _guard(json_output):
+        if sync:
+            from hiveloom import cloud as cloud_mod
+
+            pulled = cloud_mod.pull(harness_dir)
+            if pulled["changed"] and not (json_output or stream):
+                _console.print(f"[green]pulled[/green] @ {pulled['version_hash']}")
         if approve:
             trust_mod.record_trust(harness_dir)
         if dry_run:
@@ -503,6 +517,14 @@ def run(
                 _console.print(result.output)
             if result.reason:
                 _console.print(f"reason: {result.reason}")
+        if sync:
+            from hiveloom import cloud as cloud_mod
+
+            pushed = cloud_mod.push(harness_dir)
+            if not (json_output or stream):
+                _console.print(
+                    f"[green]pushed[/green] {pushed['uploaded']} trace file(s) to the cloud"
+                )
         raise typer.Exit(_RUN_STATUS_EXIT.get(result.status, ExitCode.RUNTIME_ERROR))
 
 
@@ -888,6 +910,98 @@ def _terse(entry: dict[str, Any]) -> str:
     """Render a guardrail entry's params (everything but its name) for a message."""
     params = {k: v for k, v in entry.items() if k != "builtin"}
     return ", ".join(f"{k}={v}" for k, v in params.items()) or "no params"
+
+
+# --------------------------------------------------------------------------- #
+# cloud — linked mode against a hiveloom-cloud harness
+# --------------------------------------------------------------------------- #
+cloud_app = typer.Typer(
+    help="Pair a local folder with a hiveloom-cloud harness and keep the two in sync."
+)
+app.add_typer(cloud_app, name="cloud")
+
+
+@cloud_app.command("link")
+def cloud_link(
+    url: str = typer.Argument(..., help="The hiveloom-cloud origin, e.g. https://app.example.com"),
+    token: str = typer.Argument(..., help="The harness's link token (hl_link_…) from the web UI."),
+    directory: str | None = typer.Option(
+        None, "--dir", help="Target directory (defaults to the harness slug)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Pair a directory with a remote harness and pull it."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.link_harness(url, token, directory)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        else:
+            _console.print(
+                f"[green]linked[/green] {result['dir']} → {result['slug']} "
+                f"@ {result['version_hash']}"
+            )
+
+
+@cloud_app.command("pull")
+def cloud_pull(
+    harness_dir: str = typer.Argument(".", help="Linked harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Fetch the latest harness version when the remote hash moved."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.pull(harness_dir)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        elif result["changed"]:
+            _console.print(f"[green]pulled[/green] @ {result['version_hash']}")
+        else:
+            _console.print(f"already up to date @ {result['version_hash']}")
+
+
+@cloud_app.command("push")
+def cloud_push(
+    harness_dir: str = typer.Argument(".", help="Linked harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Upload local run traces so the web harness can evolve from them."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.push(harness_dir)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        else:
+            _console.print(
+                f"[green]pushed[/green] {result['uploaded']} trace file(s), "
+                f"{result['run_count']} run(s)"
+            )
+
+
+@cloud_app.command("sync")
+def cloud_sync(
+    harness_dir: str = typer.Argument(".", help="Linked harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Push local traces, then pull the latest version."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.sync(harness_dir)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        else:
+            _console.print(
+                f"[green]synced[/green] pushed {result['uploaded']} trace file(s); "
+                + (
+                    f"pulled @ {result['version_hash']}"
+                    if result["changed"]
+                    else f"already up to date @ {result['version_hash']}"
+                )
+            )
 
 
 if __name__ == "__main__":
