@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import jwt
@@ -303,6 +304,69 @@ def test_verify_bearer_non_string_public_key_is_authentication_error(tmp_path: P
 
     with pytest.raises(AuthenticationError):
         auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_verify_bearer_row_missing_key_id_is_authentication_error(tmp_path: Path):
+    """A store row without a `key_id` must not KeyError out of the kid-index
+    build (an unhandled 500); the malformed row is skipped and the lookup fails
+    closed as a typed 401."""
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    token = keys_mod.sign_token(
+        private_pem, key_id=key_id, subject="dana", scope="*", ttl_seconds=900
+    )
+    _delete_row_field(path, "key_id")
+    with pytest.raises(AuthenticationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_verify_bearer_non_dict_row_is_authentication_error(tmp_path: Path):
+    """A non-dict element in the store's `keys` array must not TypeError out of
+    the index build; it is skipped and the lookup fails closed as a 401."""
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    token = keys_mod.sign_token(
+        private_pem, key_id=key_id, subject="dana", scope="*", ttl_seconds=900
+    )
+    data = json.loads(path.read_text())
+    data["keys"].append("not-a-dict")
+    path.write_text(json.dumps(data))
+    # The good row is now shadowed by nothing, but the bad element must not crash
+    # index construction; delete the good row's key_id too so the lookup misses.
+    _delete_row_field(path, "key_id")
+    with pytest.raises(AuthenticationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_verify_bearer_rejects_token_lifetime_over_ceiling(tmp_path: Path):
+    """A token whose lifetime exceeds the server-side MAX_TTL_SECONDS ceiling is
+    rejected even though its signature is valid and it has not yet expired —
+    the deploy box, not the minter, bounds the replay window."""
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    # Mint an over-long token directly (bypassing sign_token's mint-side cap) to
+    # exercise the verify-side ceiling specifically — a real over-long token as
+    # any minter could produce.
+    now = datetime.now(UTC)
+    claims = {
+        "kid": key_id,
+        "sub": "dana",
+        "scope": "*",
+        "iat": now,
+        "exp": now + timedelta(seconds=keys_mod.MAX_TTL_SECONDS + 3600),
+    }
+    token = jwt.encode(claims, private_pem, algorithm="EdDSA", headers={"kid": key_id})
+    with pytest.raises(AuthenticationError, match="lifetime"):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_sign_token_refuses_ttl_over_ceiling(tmp_path: Path):
+    _, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    with pytest.raises(ValueError, match="exceeds the maximum"):
+        keys_mod.sign_token(
+            private_pem,
+            key_id=key_id,
+            subject="dana",
+            scope="run",
+            ttl_seconds=keys_mod.MAX_TTL_SECONDS + 1,
+        )
 
 
 def test_verify_bearer_scopes_as_bare_string_does_not_char_split(tmp_path: Path):

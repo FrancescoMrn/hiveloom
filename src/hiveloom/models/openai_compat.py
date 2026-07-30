@@ -205,6 +205,10 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
                 arguments = json.loads(raw_arguments or "{}")
             except (json.JSONDecodeError, TypeError):
                 arguments = {}
+        # A lenient backend can emit arguments that parse to a valid-but-non-object
+        # JSON value (`"null"`, `"[1]"`, `"42"`); ToolCall.input requires a dict.
+        if not isinstance(arguments, dict):
+            arguments = {}
         call = ToolCall(id=raw_call.get("id", ""), name=function.get("name", ""), input=arguments)
         tool_calls.append(call)
         content_blocks.append(
@@ -213,17 +217,23 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
 
     raw_usage = data.get("usage")
     raw_usage = raw_usage if isinstance(raw_usage, dict) else {}
-    if "prompt_tokens" in raw_usage:
-        input_tokens = int(raw_usage["prompt_tokens"])
-    elif "input_tokens" in raw_usage:
-        input_tokens = int(raw_usage["input_tokens"])
-    else:
+
+    def _usage(key: str) -> int | None:
+        # Some backends (vLLM/LM Studio) emit an explicit null token count;
+        # treat null/missing/non-numeric identically as "absent", so int() of
+        # None never raises and the estimate fallback kicks in.
+        value = raw_usage.get(key)
+        return int(value) if isinstance(value, (int, float)) else None
+
+    input_tokens = _usage("prompt_tokens")
+    if input_tokens is None:
+        input_tokens = _usage("input_tokens")
+    if input_tokens is None:
         input_tokens = estimated_input_tokens
-    if "completion_tokens" in raw_usage:
-        output_tokens = int(raw_usage["completion_tokens"])
-    elif "output_tokens" in raw_usage:
-        output_tokens = int(raw_usage["output_tokens"])
-    else:
+    output_tokens = _usage("completion_tokens")
+    if output_tokens is None:
+        output_tokens = _usage("output_tokens")
+    if output_tokens is None:
         output_tokens = estimate_tokens(text or json.dumps(message.get("tool_calls") or []))
     usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
     finish = choice.get("finish_reason") or "stop"

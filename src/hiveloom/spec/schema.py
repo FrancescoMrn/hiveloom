@@ -221,6 +221,16 @@ def _check_mcp_server_name(value: str) -> str:
             f"mcp server name {value!r} must match [a-zA-Z0-9_-]+ (it becomes "
             "the mcp__<name>__<tool> prefix on every tool it exposes)"
         )
+    # `__` is the delimiter in `mcp__<name>__<tool>`. If a server name may
+    # contain it, the prefix is no longer injective — server `a__b` tool `c`
+    # and server `a` tool `b__c` both flatten to `mcp__a__b__c`, and one
+    # silently shadows the other in the registry. Forbid it so the mapping
+    # stays one-to-one.
+    if "__" in value:
+        raise ValueError(
+            f"mcp server name {value!r} must not contain '__' (it is the "
+            "delimiter in the mcp__<name>__<tool> tool prefix)"
+        )
     return value
 
 

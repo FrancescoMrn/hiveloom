@@ -196,6 +196,45 @@ def test_openai_compat_tool_call_arguments_malformed_string_falls_back_to_empty_
     assert result.tool_calls[0].input == {}
 
 
+@pytest.mark.parametrize("arguments", ["null", "42", '"hi"', "[1, 2]"])
+def test_openai_compat_tool_call_arguments_valid_json_non_object_falls_back(arguments):
+    """A lenient backend can emit arguments that parse to a valid-but-non-object
+    JSON value; ToolCall.input requires a dict, so these must coerce to {} rather
+    than raise a pydantic ValidationError."""
+    response = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_x",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": arguments},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    result = _normalize(response)
+    assert result.tool_calls[0].input == {}
+
+
+def test_openai_compat_null_usage_counts_do_not_crash():
+    """Some backends emit explicit null token counts; int(None) must not raise —
+    the estimate fallback should kick in instead."""
+    response = {
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": None, "completion_tokens": None},
+    }
+    result = _normalize(response, estimated_input_tokens=123)
+    assert result.usage.input_tokens == 123
+    assert result.usage.output_tokens > 0
+
+
 # --------------------------------------------------------------------------- #
 # Usage fallback: input_tokens/output_tokens when prompt_tokens/completion_tokens absent
 # --------------------------------------------------------------------------- #

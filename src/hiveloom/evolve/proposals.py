@@ -86,6 +86,7 @@ def create_proposal(
     model: StrongModel,
     *,
     trigger: str,
+    record_empty_as_rejected: bool = False,
 ) -> ProposalRecord:
     """Propose + gate a harness mutation from a failure report and queue it.
 
@@ -93,6 +94,15 @@ def create_proposal(
     slot is checked *before* calling ``model`` so a colliding request never
     triggers a second (paid) strong-model call — it returns the existing
     pending proposal instead.
+
+    ``record_empty_as_rejected`` (the auto-trigger passes it) records a
+    terminal ``rejected`` row when gating leaves nothing to queue, instead of
+    raising. Without it the auto-trigger would insert no row, so
+    ``last_auto_proposal_at`` never advanced and the cooldown never engaged —
+    every subsequent failing run re-paid a strong-model call. A rejected row is
+    terminal (not a can-never-apply pending row), and its ``created_at`` is what
+    the cooldown/failure-window keys off. Manual and HTTP callers keep the
+    raise, so their UX is unchanged.
     """
     trust_mod.ensure_trusted(harness_dir)
     base = harness_path(harness_dir).parent
@@ -105,22 +115,28 @@ def create_proposal(
 
     proposal = evolver.propose(spec, report, model)
     gate_result = evolver.gate(spec, proposal)
-    if not gate_result.accepted and not gate_result.code_changes:
+    queueable = bool(gate_result.accepted or gate_result.code_changes)
+    if not queueable and not record_empty_as_rejected:
         raise ProposalQueueError("proposal has no applicable changes after gating")
 
+    now = datetime.now(UTC).isoformat()
     row = {
         "id": f"prop_{uuid4().hex[:16]}",
         "harness_name": spec.name,
         "spec_version_hash": version_hash,
         "dedup_key": dedup_key,
-        "status": "pending",
+        "status": "pending" if queueable else "rejected",
         "trigger": trigger,
         "rationale": proposal.rationale,
         "proposal_json": proposal.model_dump_json(),
         "gate_json": gate_result.model_dump_json(),
-        "apply_result_json": None,
-        "created_at": datetime.now(UTC).isoformat(),
-        "resolved_at": None,
+        "apply_result_json": (
+            None
+            if queueable
+            else json.dumps({"reason": "no applicable changes after gating"})
+        ),
+        "created_at": now,
+        "resolved_at": None if queueable else now,
     }
     stored = hive.insert_proposal(row)
     return ProposalRecord.model_validate(stored)

@@ -154,16 +154,13 @@ def test_successful_run_result_short_circuits(tmp_path: Path):
     assert model.prompts == []
 
 
-def test_schema_invalid_auto_proposal_does_not_burn_dedup_or_cooldown(tmp_path: Path):
+def test_ungateable_auto_proposal_records_attempt_and_is_not_repaid(tmp_path: Path):
+    """When an auto-draft gates to nothing, a terminal `rejected` row is still
+    recorded so the cooldown/failure-window advances — otherwise every failing
+    run past min_failures re-pays a strong-model call with no throttle."""
     harness = _harness(tmp_path, min_failures=1, cooldown_hours=24.0)
     hive_path = tmp_path / "hive.db"
-    _write_failure(
-        hive_path,
-        tmp_path,
-        "run_bad",
-        "same issue",
-        datetime.now(UTC).isoformat(),
-    )
+    _write_failure(hive_path, tmp_path, "run_bad", "same issue", datetime.now(UTC).isoformat())
     invalid_payload = json.dumps(
         {
             "rationale": "switch policy",
@@ -173,9 +170,18 @@ def test_schema_invalid_auto_proposal_does_not_burn_dedup_or_cooldown(tmp_path: 
     model = FakeStrongModel([invalid_payload, invalid_payload])
     spec = load_spec(harness)
 
+    # First failing run: the draft gates to nothing (sequential_steps needs a
+    # non-empty loop.steps), but the attempt is persisted as a terminal
+    # `rejected` row — not a can-never-apply pending row, and not nothing.
     _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
-    _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
-
     with Hive(hive_path) as hive:
-        assert hive.list_proposals(harness_name="demo") == []
-    assert len(model.prompts) == 2
+        rows = hive.list_proposals(harness_name="demo")
+    assert len(rows) == 1
+    assert rows[0]["status"] == "rejected"
+    assert rows[0]["trigger"] == "auto"
+    assert len(model.prompts) == 1
+
+    # A second failing run inside the 24h cooldown must NOT re-pay the model.
+    _write_failure(hive_path, tmp_path, "run_bad2", "same issue", datetime.now(UTC).isoformat())
+    _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
+    assert len(model.prompts) == 1

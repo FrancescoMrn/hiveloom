@@ -25,7 +25,7 @@ from pathlib import Path
 import jwt
 
 from hiveloom.errors import AuthenticationError, AuthorizationError, SpecError
-from hiveloom.serve.keys import decode_token, key_id_for, unverified_key_id
+from hiveloom.serve.keys import MAX_TTL_SECONDS, decode_token, key_id_for, unverified_key_id
 from hiveloom.spec.loader import atomic_write_text
 
 _ENV_VAR = "HIVELOOM_AUTHORIZED_KEYS"
@@ -154,7 +154,16 @@ def verify_bearer(
     kid = unverified_key_id(token)
     if kid is None:
         raise AuthenticationError("token has no key id")
-    rows = {row["key_id"]: row for row in list_keys(keys_path)}
+    # The store is a hand-editable JSON file: a row could be a non-dict element
+    # or lack a string `key_id`. Skip malformed rows rather than KeyError/
+    # TypeError out of the index build — an unmatchable row just falls through
+    # to the "unknown key id" 401 below, which is the correct fail-closed
+    # outcome (deny), not a 500 with a traceback.
+    rows = {
+        row["key_id"]: row
+        for row in list_keys(keys_path)
+        if isinstance(row, dict) and isinstance(row.get("key_id"), str)
+    }
     row = rows.get(kid)
     if row is None:
         raise AuthenticationError(f"unknown key id '{kid}'")
@@ -171,6 +180,20 @@ def verify_bearer(
 
     if row.get("revoked", False):
         raise AuthenticationError(f"key '{kid}' has been revoked")
+
+    # Server-side lifetime ceiling: a member mints their own tokens, so the
+    # deploy box — not the minter — is where the maximum replay window is
+    # enforced. jwt already rejected an expired token; this rejects one whose
+    # total lifetime (exp - iat) exceeds the cap. iat is always present on
+    # tokens sign_token minted; if a foreign minter omitted it, fall back to
+    # bounding the remaining lifetime against now.
+    exp, iat = claims.get("exp"), claims.get("iat")
+    if exp is not None:
+        lifetime = exp - iat if iat is not None else exp - datetime.now(UTC).timestamp()
+        if lifetime > MAX_TTL_SECONDS + 30:  # 30s slack for clock skew / leeway
+            raise AuthenticationError(
+                f"token lifetime exceeds the server maximum of {MAX_TTL_SECONDS}s"
+            )
 
     raw_scopes = row.get("scopes", [])
     # A hand-edited store could set `scopes` to a bare string; `set()` on a

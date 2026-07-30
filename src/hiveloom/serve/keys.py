@@ -34,6 +34,13 @@ _ALGORITHM = "EdDSA"
 # captured token is replayable until it expires. 15 minutes bounds that.
 DEFAULT_TTL_SECONDS = 900
 
+# Server-side ceiling on a token's lifetime. A member mints their own tokens,
+# so the default TTL is advisory; this is the invariant the deploy box enforces
+# at verify time (see auth.verify_bearer), bounding how long any single captured
+# token stays replayable regardless of what --ttl the minter chose. Generous —
+# it constrains no legitimate short-lived token — but caps a 10-year token.
+MAX_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 
 def generate_keypair() -> tuple[str, str]:
     """Generate an Ed25519 keypair: ``(private_key_pem, public_key_b64)``.
@@ -92,7 +99,17 @@ def sign_token(
     scope: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
 ) -> str:
-    """Mint a compact EdDSA JWT with claims ``{kid, sub, scope, iat, exp}``."""
+    """Mint a compact EdDSA JWT with claims ``{kid, sub, scope, iat, exp}``.
+
+    A non-positive ``ttl_seconds`` is allowed (it mints an already-expired
+    token, which every verifier rejects) so tests can produce expired tokens
+    without sleeping; only the upper bound is a real constraint.
+    """
+    if ttl_seconds > MAX_TTL_SECONDS:
+        raise ValueError(
+            f"token ttl {ttl_seconds}s exceeds the maximum {MAX_TTL_SECONDS}s "
+            f"({MAX_TTL_SECONDS // 86400} days); the server would reject it"
+        )
     now = datetime.now(UTC)
     claims = {
         "kid": key_id,

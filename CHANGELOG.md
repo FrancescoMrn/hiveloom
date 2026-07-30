@@ -31,13 +31,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks derive list-section roots from the construct API.
 - Starlette, Uvicorn, PyJWT with crypto support, and cryptography are direct
   runtime dependencies for the control plane.
+- `hiveloom keys authorize` now requires an explicit `--scope` (no `*` default),
+  so a key is never granted broad scope by omission.
+- Bearer tokens have a 7-day server-side lifetime ceiling enforced at verify
+  time, in addition to the 15-minute default TTL.
 
 ### Fixed
 
 - OpenAI-compatible responses now preserve reasoning-only text, never
   re-serialize empty assistant turns as `content: null`, tolerate dict-shaped
   tool-call arguments, fall back across usage-token field names, and map
-  `content_filter` termination.
+  `content_filter` termination. Tool-call arguments that are valid-but-non-object
+  JSON (`"null"`, `"[1]"`) and explicit null usage counts no longer crash
+  normalization.
+- The HTTP control plane freezes the code-execution roots `tools` and
+  `verify.validators` and the `name` root over `mutate` scope (closing a remote
+  code-execution and a cross-harness rebinding path), and refuses writes to a
+  parent of any frozen leaf.
+- MCP server names may not contain `__`, keeping the `mcp__<name>__<tool>` tool
+  prefix injective so tools from different servers cannot silently collide.
+- Auto-propose records a terminal attempt when a draft gates to nothing, so the
+  cooldown advances and a failing run no longer re-pays a strong-model call.
+- `authorized_keys.json` rows that are non-dict or missing `key_id` fail closed
+  as a typed 401 instead of an unhandled 500.
+- `hatchling` is pinned to `>=1.27` for the SPDX license metadata it emits.
 - Loop-policy dependency injection again distinguishes an omitted policy from
   an explicitly supplied one.
 - Auto-propose cooldowns have a real one-minute minimum instead of accepting

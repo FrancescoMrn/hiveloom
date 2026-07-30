@@ -237,7 +237,13 @@ def _maybe_auto_propose(
 
             model = strong_model or build_strong_model(auto.model, base)
             report = analyze(hive, spec.name)
-            create_proposal(hive, spec, base, report, model, trigger="auto")
+            # record_empty_as_rejected: even when the draft gates to nothing,
+            # persist a terminal auto row so the cooldown timestamp advances —
+            # otherwise every failing run past min_failures re-pays a
+            # strong-model call with no throttle.
+            create_proposal(
+                hive, spec, base, report, model, trigger="auto", record_empty_as_rejected=True
+            )
     except Exception as exc:  # noqa: BLE001 - see docstring: never fail a completed run
         log.warning(
             "auto_propose_failed",

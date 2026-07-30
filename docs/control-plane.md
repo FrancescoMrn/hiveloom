@@ -41,8 +41,8 @@ relying on it for anything that matters.
 | Command | Runs on | Effect |
 | --- | --- | --- |
 | `keys generate <name> [--out-dir ~/.hiveloom/keys]` | member's machine | Writes `<name>.pem` (0600, refuses to overwrite); prints the public key and its key_id. |
-| `keys sign --key <path> [--subject] [--scope] [--ttl]` | member's machine | Mints a bearer token (default TTL 900s / 15 min). |
-| `keys authorize <name> <public-key> --harness <dir> [--scope ...]` | deploy box | Authorizes a public key. Idempotent on key_id: re-authorizing un-revokes and updates scopes. |
+| `keys sign --key <path> [--subject] [--scope] [--ttl]` | member's machine | Mints a bearer token (default TTL 900s / 15 min; `--ttl` is capped at a 7-day server-side ceiling — a longer one is refused at mint and at verify). |
+| `keys authorize <name> <public-key> --harness <dir> --scope <s> ...` | deploy box | Authorizes a public key. `--scope` is **required** (no default) — a key is never granted broad scope by omission; pass `--scope '*'` only for a fully-trusted admin key. Idempotent on key_id: re-authorizing un-revokes and updates scopes. |
 | `keys revoke <key-id> --harness <dir>` | deploy box | Marks a key revoked. The row is kept, not deleted (audit trail). |
 | `keys list --harness <dir>` | deploy box | Lists authorized keys (including revoked ones). |
 
@@ -219,7 +219,9 @@ HTTP:
   already trusted.
 - **No replay/nonce cache.** A captured token is replayable by anyone who
   captures it, until it expires — hence the short 900-second (15 minute)
-  default TTL.
+  default TTL, and a hard 7-day ceiling (`keys.MAX_TTL_SECONDS`) the deploy box
+  enforces at verify time so no single captured token stays replayable
+  indefinitely regardless of the `--ttl` its minter chose.
 - **No revocation propagation *beyond this one store*.** Within this store,
   revocation IS immediate: `verify_bearer` reads `authorized_keys.json`
   fresh on every request (no caching), so a revoked key's tokens are

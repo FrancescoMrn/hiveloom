@@ -1370,7 +1370,11 @@ def keys_authorize_cmd(
     public_key: str = typer.Argument(..., help="The public key printed by `keys generate`."),
     harness: str = typer.Option(..., "--harness", help="Harness directory to authorize into."),
     scope: list[str] = typer.Option(
-        ["*"], "--scope", help="Repeatable; scopes this key may use."
+        ...,
+        "--scope",
+        help="Repeatable; scopes this key may use (required — e.g. --scope run). "
+        "Pass --scope '*' only for a fully-trusted admin key; there is no default, "
+        "so a key is never granted broad scope by omission.",
     ),
     authorized_keys: str | None = typer.Option(
         None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."

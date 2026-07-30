@@ -107,6 +107,16 @@ def test_mcp_server_name_rejects_unsafe_charset():
         )
 
 
+def test_mcp_server_name_rejects_double_underscore():
+    """`__` is the delimiter in the mcp__<name>__<tool> prefix; allowing it in a
+    server name makes the prefix non-injective (server `a__b`/tool `c` collides
+    with server `a`/tool `b__c`), so it must be rejected."""
+    with pytest.raises(ValidationError, match="__"):
+        HarnessSpec.model_validate(
+            _minimal(mcp_servers=[{"name": "a__b", "transport": "stdio", "command": "x"}])
+        )
+
+
 def test_mcp_server_names_must_be_unique():
     with pytest.raises(ValidationError, match="duplicate"):
         HarnessSpec.model_validate(
