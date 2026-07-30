@@ -45,3 +45,24 @@ class ProposalQueueError(SpecError):
     Distinct from :class:`hiveloom.evolve.evolver.ProposalError`, which is
     raised when the *model's* proposal content is malformed.
     """
+
+
+class AuthenticationError(HiveloomError):
+    """Raised when a bearer token fails to authenticate.
+
+    Covers a missing/malformed ``Authorization`` header, an unknown key id,
+    an invalid signature, an expired token, or a revoked key. Used by
+    :mod:`hiveloom.serve.auth`; the control-plane server (next task) maps
+    this to HTTP 401. Distinct from :class:`AuthorizationError` below.
+    """
+
+
+class AuthorizationError(HiveloomError):
+    """Raised when an authenticated bearer token lacks a required scope.
+
+    A caller can present a validly-signed, non-revoked token and still be
+    refused here if neither its authorized key's scopes nor its own
+    ``scope`` claim cover what was requested. Kept distinct from
+    :class:`AuthenticationError` because the control-plane server (next
+    task) maps this to HTTP 403 versus 401 for authentication failures.
+    """

@@ -16,6 +16,7 @@ Milestone M1 implements the explore (``schema``/``catalog``/``explain``/
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,10 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+keys_app = typer.Typer(
+    help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
+)
+app.add_typer(keys_app, name="keys")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -991,6 +996,178 @@ def package(
             )
             if result["dockerfile"]:
                 _console.print("  wrote Dockerfile")
+
+
+# --------------------------------------------------------------------------- #
+# Keys: ed25519 identity + bearer tokens for the (non-production) control plane
+# --------------------------------------------------------------------------- #
+# Custody model: a member runs `generate` (and later `sign`) on THEIR OWN
+# machine — the private key never leaves it. The operator runs `authorize` on
+# the deploy box using the member's public key. See docs/control-plane.md for
+# the full limitations list (no TLS, no replay cache, no revocation propagation).
+@keys_app.command("generate")
+def keys_generate_cmd(
+    name: str = typer.Argument(..., help="Key name; written as <name>.pem."),
+    out_dir: str = typer.Option(
+        "~/.hiveloom/keys", "--out-dir", help="Directory to write the private key into."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Generate an ed25519 keypair on THIS machine; the private key never leaves it.
+
+    Writes ``<out-dir>/<name>.pem`` (mode 0600, refusing to overwrite) and
+    prints the public key — send that to the harness operator for
+    ``keys authorize`` — and its key_id.
+    """
+    from hiveloom.serve import keys as keys_mod
+
+    with _guard(json_output):
+        directory = Path(out_dir).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+        key_path = directory / f"{name}.pem"
+        private_pem, public_key = keys_mod.generate_keypair()
+        try:
+            fd = os.open(key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise SpecError(f"{key_path} already exists; refusing to overwrite") from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(private_pem)
+        key_id = keys_mod.key_id_for(public_key)
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "private_key_path": str(key_path),
+                    "public_key": public_key,
+                    "key_id": key_id,
+                }
+            )
+        else:
+            _console.print(f"[green]generated[/green] {key_path} (0600)")
+            _console.print(f"public key: {public_key}")
+            _console.print(f"key_id: {key_id}")
+
+
+@keys_app.command("authorize")
+def keys_authorize_cmd(
+    name: str = typer.Argument(..., help="Human-readable name for this key (e.g. a person)."),
+    public_key: str = typer.Argument(..., help="The public key printed by `keys generate`."),
+    harness: str = typer.Option(..., "--harness", help="Harness directory to authorize into."),
+    scope: list[str] = typer.Option(
+        ["*"], "--scope", help="Repeatable; scopes this key may use."
+    ),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Authorize a member's public key for a harness (run on the deploy box).
+
+    Idempotent on key_id: re-authorizing an already-known public key
+    un-revokes it and replaces its scopes.
+    """
+    from hiveloom.serve import auth as auth_mod
+
+    with _guard(json_output):
+        path = auth_mod.authorized_keys_path(harness, override=authorized_keys)
+        row = auth_mod.authorize_key(path, name=name, public_key_b64=public_key, scopes=scope)
+        if json_output:
+            _emit_json({"ok": True, **row})
+        else:
+            _console.print(
+                f"[green]authorized[/green] {row['key_id']} ({name}) scopes={row['scopes']}"
+            )
+
+
+@keys_app.command("revoke")
+def keys_revoke_cmd(
+    key_id: str = typer.Argument(..., help="Key id to revoke (see `keys list`)."),
+    harness: str = typer.Option(..., "--harness", help="Harness directory."),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Revoke a key. The row is kept (not deleted) as an audit trail."""
+    from hiveloom.serve import auth as auth_mod
+
+    with _guard(json_output):
+        path = auth_mod.authorized_keys_path(harness, override=authorized_keys)
+        auth_mod.revoke_key(path, key_id)
+        if json_output:
+            _emit_json({"ok": True, "key_id": key_id, "revoked": True})
+        else:
+            _console.print(f"[yellow]revoked[/yellow] {key_id}")
+
+
+@keys_app.command("list")
+def keys_list_cmd(
+    harness: str = typer.Option(..., "--harness", help="Harness directory."),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the store path ($HIVELOOM_AUTHORIZED_KEYS)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List authorized keys for a harness (revoked rows are kept and shown)."""
+    from hiveloom.serve import auth as auth_mod
+
+    with _guard(json_output):
+        path = auth_mod.authorized_keys_path(harness, override=authorized_keys)
+        rows = auth_mod.list_keys(path)
+        if json_output:
+            _emit_json({"ok": True, "keys": rows})
+            return
+        if not rows:
+            _console.print("[green]no authorized keys[/green]")
+            return
+        table = Table()
+        table.add_column("key_id")
+        table.add_column("name")
+        table.add_column("scopes")
+        table.add_column("revoked")
+        table.add_column("added_at")
+        for row in rows:
+            table.add_row(
+                row["key_id"],
+                row["name"],
+                ", ".join(row["scopes"]),
+                str(row["revoked"]),
+                row["added_at"],
+            )
+        _console.print(table)
+
+
+@keys_app.command("sign")
+def keys_sign_cmd(
+    key: str = typer.Option(..., "--key", help="Path to the private key PEM from `keys generate`."),
+    subject: str | None = typer.Option(
+        None, "--subject", help="Subject claim (defaults to the key file's stem)."
+    ),
+    scope: str = typer.Option("*", "--scope", help="Scope this token requests."),
+    ttl: int = typer.Option(900, "--ttl", help="Token lifetime in seconds (default 900 = 15 min)."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Mint a bearer token on YOUR OWN machine, using your private key.
+
+    Prints the token (or ``{"token": ...}`` with ``--json``). The 900s
+    default TTL is short by design — there is no revocation-propagation or
+    replay cache, so mint a fresh token whenever you need one.
+    """
+    from hiveloom.serve import keys as keys_mod
+
+    with _guard(json_output):
+        key_path = Path(key)
+        private_pem = key_path.read_text(encoding="utf-8")
+        public_key = keys_mod.public_key_b64_for(private_pem)
+        key_id = keys_mod.key_id_for(public_key)
+        token = keys_mod.sign_token(
+            private_pem, key_id=key_id, subject=subject or key_path.stem, scope=scope,
+            ttl_seconds=ttl,
+        )
+        if json_output:
+            _emit_json({"ok": True, "token": token, "key_id": key_id})
+        else:
+            _console.print(token)
 
 
 def _added(json_output: bool, kind: str, ident: str | None) -> None:

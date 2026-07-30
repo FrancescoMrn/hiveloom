@@ -181,6 +181,7 @@ installable Agent Skills (build / run / evolve / extend / ship); the root
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.
 - [Extending hiveloom](docs/extending.md) — extension packs, providers, hooks, and SDK embedding.
 - [Deploying and evolving](docs/deploying-and-evolving.md) — portable artifacts and the production feedback loop.
+- [Control plane](docs/control-plane.md) — ed25519 keys and bearer-token auth (stub; the HTTP server follows in a later task).
 - [Examples](harnesses/) — summarization, market analysis, and HN extraction harnesses.
 
 ## Contributing and security
