@@ -88,6 +88,36 @@ Hive / A/B runner discussion below anticipates — proposals live in the same
 Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
 can populate the same queue without changing this review step.
 
+## Auto-DRAFT (opt-in) — auto-APPLY still does not exist
+
+A harness can opt in to drafting proposals automatically, right after a
+failing run, via `evolution.auto_propose` in `harness.yaml`:
+
+```yaml
+evolution:
+  auto_propose:
+    enabled: true        # off by default
+    min_failures: 5       # non-success runs required (since the last auto-proposal)
+    cooldown_hours: 24.0  # minimum gap between auto-drafted proposals
+    model: null            # strong-model override; else the CLI/env default
+```
+
+This is a synchronous check at the tail of every completed `hiveloom run` —
+no daemon, no scheduler, no background thread. It costs nothing for the
+(default, disabled) common case: a single boolean check, no Hive query. When
+enabled and a run fails, it counts recent failures, checks the cooldown, and —
+if both pass — analyzes the Hive and drafts a gated proposal with
+`trigger="auto"`, deduped exactly like `--propose` (a second failing run
+against the same failure state never pays for a second strong-model call).
+**It only ever drafts.** Applying still requires `hiveloom proposals apply`.
+A failure here (no API key, no network, a malformed model response) never
+fails the run itself — same discipline as trace ingestion.
+
+If you'd rather not pay this tail latency inside every run, leave
+`auto_propose` off and instead schedule `hiveloom evolve <dir> --propose`
+from cron (or your platform's scheduler) against the deployed harness — same
+queue, same dedup, just triggered on your own cadence instead of per-run.
+
 ## Deployment topologies
 
 - **Same box** — deploy the folder; runs ingest into the local Hive

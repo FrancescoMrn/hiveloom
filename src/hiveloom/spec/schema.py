@@ -401,6 +401,29 @@ def _default_frozen() -> list[str]:
     return ["guardrails", "model"]
 
 
+class AutoProposeConfig(BaseModel):
+    """Opt-in: draft (never apply) an evolution proposal after a failing run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Draft a gated proposal after a failing run. Never auto-applies.",
+    )
+    min_failures: int = Field(
+        default=5, ge=1,
+        description="Non-success runs required (since the last auto-proposal) before drafting.",
+    )
+    cooldown_hours: float = Field(
+        default=24.0, gt=0,
+        description="Minimum gap between auto-drafted proposals for this harness.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Strong-model override for auto-drafted proposals; else the CLI/env default.",
+    )
+
+
 class EvolutionConfig(BaseModel):
     """What the evolver may and may not change."""
 
@@ -414,6 +437,10 @@ class EvolutionConfig(BaseModel):
     frozen: list[str] = Field(
         default_factory=_default_frozen,
         description="Spec paths the evolver must NEVER change.",
+    )
+    auto_propose: AutoProposeConfig = Field(
+        default_factory=AutoProposeConfig,
+        description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
 
 

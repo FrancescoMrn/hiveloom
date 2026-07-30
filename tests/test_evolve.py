@@ -108,6 +108,17 @@ def test_gate_rejects_non_mutable_path(tmp_path: Path):
     assert result.rejected[0]["reason"] == "not in the mutable set"
 
 
+def test_gate_rejects_evolution_auto_propose_touching(tmp_path: Path):
+    """Evolution must not tune its own auto-propose trigger under the default mutable list."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "evolution.auto_propose.enabled", "value": True}]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == "not in the mutable set"
+
+
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
     _system, user = build_evolve_prompt(load_spec(_harness(tmp_path)), _report())
 
@@ -243,7 +254,11 @@ def _seed_failure(tmp_path: Path, name: str = "demo") -> None:
 
 
 def _fake_model(monkeypatch, *responses: str) -> None:
-    monkeypatch.setattr(cli, "_strong_model", lambda *a, **k: FakeStrongModel(list(responses)))
+    from hiveloom.generate import llm as llm_mod
+
+    monkeypatch.setattr(
+        llm_mod, "build_strong_model", lambda *a, **k: FakeStrongModel(list(responses))
+    )
 
 
 def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch):

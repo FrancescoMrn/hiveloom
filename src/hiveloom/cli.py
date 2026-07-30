@@ -621,39 +621,6 @@ def _status_colour(status: str) -> str:
     return "green" if status == "success" else "yellow"
 
 
-def _strong_model(model_id: str | None, base: Path | None = None):
-    """Build the strong generation/evolution model.
-
-    ``--model provider/model-id`` (e.g. ``ollama/qwen3:32b``) routes through the
-    provider registry when the prefix names a registered provider; anything else
-    is a Claude model id.
-    """
-    import os
-
-    from hiveloom import ext
-    from hiveloom.generate.llm import (
-        DEFAULT_STRONG_MODEL,
-        ClaudeStrongModel,
-        ProviderStrongModel,
-    )
-
-    if model_id and "/" in model_id:
-        prefix, rest = model_id.split("/", 1)
-        if prefix in ext.provider_names():
-            return ProviderStrongModel(ext.build_provider(prefix, base), rest)
-
-    if base is not None and (base / ".env").exists():
-        try:
-            from dotenv import load_dotenv
-
-            load_dotenv(base / ".env")
-        except ImportError:  # pragma: no cover
-            pass
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SpecError("ANTHROPIC_API_KEY is not set (needed for generate/evolve).")
-    return ClaudeStrongModel(model_id or DEFAULT_STRONG_MODEL)
-
-
 @app.command()
 def generate(
     task: str = typer.Argument(..., help="Task description to build a harness for."),
@@ -674,9 +641,10 @@ def generate(
     a validate/repair loop. Needs ANTHROPIC_API_KEY.
     """
     from hiveloom.generate.generator import generate as run_generate
+    from hiveloom.generate.llm import build_strong_model
 
     with _guard(json_output):
-        model = _strong_model(model_id)
+        model = build_strong_model(model_id)
         spec = run_generate(task, output, model, blueprint=blueprint)
         if json_output:
             _emit_json({"ok": True, "directory": output, "name": spec.name})
@@ -709,12 +677,13 @@ def evolve(
     from hiveloom import runner
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
+    from hiveloom.generate.llm import build_strong_model
     from hiveloom.logging.hive import Hive
 
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         base = Path(harness_dir)
-        model = _strong_model(model_id, base if base.is_dir() else base.parent)
+        model = build_strong_model(model_id, base if base.is_dir() else base.parent)
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
             report = evolve_mod.analyze(hive, name)

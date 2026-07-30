@@ -9,6 +9,9 @@ must not send sampling params that newer strong models reject.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
+
+from hiveloom.errors import SpecError
 
 # The build spec names ``claude-sonnet-4-6`` as the generator default. That model
 # is still active; ``claude-sonnet-5`` is its current drop-in replacement. Kept
@@ -79,3 +82,35 @@ class FakeStrongModel(StrongModel):
         if not self._responses:
             raise RuntimeError("FakeStrongModel ran out of scripted responses")
         return self._responses.pop(0)
+
+
+def build_strong_model(model_id: str | None, base: Path | None = None) -> StrongModel:
+    """Build the strong generation/evolution model.
+
+    ``provider/model-id`` (e.g. ``ollama/qwen3:32b``) routes through the
+    provider registry when the prefix names a registered provider; anything
+    else is a Claude model id. Shared by the CLI (``generate``/``evolve``) and
+    the runner's auto-propose trigger, so both resolve a strong model the same
+    way. Imports ``hiveloom.ext``/``anthropic``/``dotenv`` lazily so importing
+    this module (or starting the CLI) never pays for them unless a strong
+    model is actually requested.
+    """
+    import os
+
+    from hiveloom import ext
+
+    if model_id and "/" in model_id:
+        prefix, rest = model_id.split("/", 1)
+        if prefix in ext.provider_names():
+            return ProviderStrongModel(ext.build_provider(prefix, base), rest)
+
+    if base is not None and (base / ".env").exists():
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(base / ".env")
+        except ImportError:  # pragma: no cover
+            pass
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise SpecError("ANTHROPIC_API_KEY is not set (needed for generate/evolve).")
+    return ClaudeStrongModel(model_id or DEFAULT_STRONG_MODEL)

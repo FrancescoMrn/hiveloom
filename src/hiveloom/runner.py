@@ -9,18 +9,21 @@ any API use.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from hiveloom import trust
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
+from hiveloom.generate.llm import StrongModel
 from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.models.provider import ModelProvider
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
+from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import build_registry
 from hiveloom.verify.builtin import build_verifiers
 
@@ -82,14 +85,19 @@ def run_harness(
     hive_path: str | Path | None = None,
     on_event=None,
     approve_trust=None,
+    strong_model: StrongModel | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
     Unless ``ingest`` is false, the completed run's trace is ingested into the
-    Hive so ``hiveloom trace``/``stats`` see it immediately. ``on_event``
+    Hive so ``hiveloom trace``/``stats`` see it immediately, and (if the spec
+    opts in via ``evolution.auto_propose``) a failing run may auto-draft a
+    gated evolution proposal — see :func:`_maybe_auto_propose`. ``on_event``
     receives every :class:`TraceEvent` as it is emitted (the in-process
     equivalent of ``hiveloom run --stream``). ``approve_trust`` is asked once
-    when the harness folder is not yet trusted on this machine.
+    when the harness folder is not yet trusted on this machine. ``strong_model``
+    is a test seam: when given, auto-propose uses it instead of resolving one
+    (so tests never need ``ANTHROPIC_API_KEY``).
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -138,6 +146,7 @@ def run_harness(
 
     if ingest:
         _ingest_trace(trace.path, hive_path)
+        _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
     return result
 
 
@@ -149,6 +158,59 @@ def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> None:
         with Hive(hive_path) as hive:
             hive.ingest_trace_file(trace_path)
     except Exception:  # noqa: BLE001 - ingestion must never fail a completed run
+        pass
+
+
+def _maybe_auto_propose(
+    spec: HarnessSpec,
+    base: Path,
+    result: RunResult,
+    hive_path: str | Path | None,
+    *,
+    strong_model: StrongModel | None = None,
+) -> None:
+    """Best-effort auto-draft (never auto-apply) of an evolution proposal.
+
+    Opt-in via ``evolution.auto_propose.enabled``. Guards are ordered
+    cheapest-first so the default (disabled) case costs nothing: no Hive
+    query, no network, for virtually every harness and every run.
+
+    No daemon/scheduler — this runs synchronously at the tail of a completed
+    run, exactly like the trace-ingest step above, and shares its
+    never-fail-a-completed-run discipline: this one doubly so, since it may
+    touch the network and needs an API key the run's executor may not have.
+
+    Trust: ``run_harness`` already called ``trust.ensure_trusted`` for this
+    harness dir at its top (and ``proposals.create_proposal`` re-checks it
+    internally regardless) — no additional trust check belongs here.
+    """
+    try:
+        auto = spec.evolution.auto_propose
+        if not auto.enabled:
+            return
+        if result.status == "success":
+            return
+
+        from hiveloom.evolve.analyzer import analyze
+        from hiveloom.evolve.proposals import create_proposal, last_auto_proposal_at
+        from hiveloom.generate.llm import build_strong_model
+        from hiveloom.logging.hive import Hive
+
+        with Hive(hive_path) as hive:
+            since = last_auto_proposal_at(hive, spec.name)
+            if hive.failure_count(spec.name, since=since) < auto.min_failures:
+                return
+            if since is not None:
+                elapsed_hours = (
+                    datetime.now(UTC) - datetime.fromisoformat(since)
+                ).total_seconds() / 3600
+                if elapsed_hours < auto.cooldown_hours:
+                    return
+
+            model = strong_model or build_strong_model(auto.model, base)
+            report = analyze(hive, spec.name)
+            create_proposal(hive, spec, base, report, model, trigger="auto")
+    except Exception:  # noqa: BLE001 - see docstring: must never fail a completed run
         pass
 
 

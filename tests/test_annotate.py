@@ -54,6 +54,21 @@ def test_explain_object_field_lists_subfields():
     assert "trigger_at_pct" in info["fields"]
 
 
+def test_explain_evolution_auto_propose_lists_subfields():
+    """The generic model walker picks up nested models with no special-casing
+    needed — same mechanism `context.compaction` already exercises above."""
+    info = annotate.explain("evolution.auto_propose")
+    assert "fields" in info
+    assert set(info["fields"]) == {"enabled", "min_failures", "cooldown_hours", "model"}
+
+
+def test_annotated_template_surfaces_auto_propose():
+    template = annotate.annotated_template()
+    assert "auto_propose:" in template
+    assert "min_failures:" in template
+    assert "cooldown_hours:" in template
+
+
 def test_explain_literal_choices():
     info = annotate.explain("loop.on_tool_error")
     assert set(info["choices"]) == {"retry_once", "surface_to_model", "abort"}

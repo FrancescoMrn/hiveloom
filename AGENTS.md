@@ -40,6 +40,11 @@ variant is the root [`SKILL.md`](SKILL.md).
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
+A harness with `evolution.auto_propose.enabled: true` may already have queued a
+`trigger=auto` proposal after a failing `run` — check `proposals list` before
+assuming you need to run `evolve --propose` yourself. It only ever drafts;
+applying still needs an explicit `proposals apply`.
+
 ## Reference docs
 
 - [docs/spec.md](docs/spec.md) — the spec contract and builtins (the live

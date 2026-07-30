@@ -134,6 +134,19 @@ def list_proposals(
     ]
 
 
+def last_auto_proposal_at(hive: Hive, harness_name: str) -> str | None:
+    """``created_at`` of the most recent auto-triggered proposal for this harness.
+
+    ``None`` if there isn't one yet. Used by the runner's post-run trigger both
+    to window the failure count (only failures since the last auto-proposal
+    matter) and to enforce the cooldown between auto-drafted proposals.
+    """
+    for row in hive.list_proposals(harness_name=harness_name):
+        if row["trigger"] == "auto":
+            return row["created_at"]
+    return None
+
+
 def get_proposal(hive: Hive, proposal_id: str) -> ProposalRecord | None:
     """Fetch a single proposal by id, or ``None`` if unknown."""
     row = hive.get_proposal(proposal_id)
