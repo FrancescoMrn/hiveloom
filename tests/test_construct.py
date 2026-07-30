@@ -226,6 +226,94 @@ def test_remove_nonexistent_raises(harness_dir: Path):
         construct.remove_item(harness_dir, "not-a-thing")
 
 
+# --------------------------------------------------------------------------- #
+# add_mcp_server
+# --------------------------------------------------------------------------- #
+def test_add_mcp_server_stdio(harness_dir: Path):
+    construct.add_mcp_server(
+        harness_dir,
+        name="echo",
+        stdio_command="npx",
+        stdio_args=["-y", "@foo/mcp"],
+        stdio_env={"FOO": "bar"},
+        stdio_env_from_host={"TOKEN": "HOST_TOKEN"},
+        stdio_cwd="sub",
+    )
+    spec = load_spec(harness_dir)
+    assert len(spec.mcp_servers) == 1
+    server = spec.mcp_servers[0]
+    assert server.name == "echo"
+    assert server.transport == "stdio"
+    assert server.command == "npx"
+    assert server.args == ["-y", "@foo/mcp"]
+    assert server.env == {"FOO": "bar"}
+    assert server.env_from_host_env == {"TOKEN": "HOST_TOKEN"}
+    assert server.cwd == "sub"
+
+
+def test_add_mcp_server_http(harness_dir: Path):
+    construct.add_mcp_server(
+        harness_dir,
+        name="jira",
+        url="https://mcp.acme.com/mcp",
+        headers={"X-Foo": "bar"},
+        header_env={"Authorization": "TOKEN_VAR"},
+        tools=["search_issues"],
+        deferred=True,
+    )
+    spec = load_spec(harness_dir)
+    server = spec.mcp_servers[0]
+    assert server.transport == "http"
+    assert server.url == "https://mcp.acme.com/mcp"
+    assert server.headers == {"X-Foo": "bar"}
+    assert server.header_env == {"Authorization": "TOKEN_VAR"}
+    assert server.tools == ["search_issues"]
+    assert server.deferred is True
+
+
+def test_add_mcp_server_requires_exactly_one_of_command_or_url(harness_dir: Path):
+    with pytest.raises(SpecError, match="--stdio-command"):
+        construct.add_mcp_server(harness_dir, name="x")
+    with pytest.raises(SpecError, match="--stdio-command"):
+        construct.add_mcp_server(
+            harness_dir, name="x", stdio_command="npx", url="https://x.invalid"
+        )
+
+
+def test_add_mcp_server_omits_empty_optionals(harness_dir: Path):
+    construct.add_mcp_server(harness_dir, name="echo", stdio_command="npx")
+    raw = loader.load_raw(harness_dir)
+    entry = raw["mcp_servers"][0]
+    # cwd/tools default to None on the model, so exclude_none drops them.
+    assert "cwd" not in entry
+    assert "tools" not in entry
+    # env/env_from_host_env/deferred default to {}/{}/False (not None) on
+    # Task 5's landed schema, so _commit's full-spec re-dump always writes
+    # them explicitly regardless of what add_mcp_server itself omits here --
+    # a partial divergence from the brief's "omit empty optional keys" ask,
+    # documented in task-6-report.md.
+    assert entry["env"] == {}
+    assert entry["env_from_host_env"] == {}
+    assert entry["deferred"] is False
+
+
+def test_add_mcp_server_round_trips_through_remove(harness_dir: Path):
+    construct.add_mcp_server(harness_dir, name="echo", stdio_command="npx")
+    spec = load_spec(harness_dir)
+    assert any(s.name == "echo" for s in spec.mcp_servers)
+
+    construct.remove_item(harness_dir, "echo")
+    spec = load_spec(harness_dir)
+    assert not spec.mcp_servers
+
+
+def test_add_mcp_server_rolls_back_malformed_entry(harness_dir: Path):
+    before = (harness_dir / "harness.yaml").read_text()
+    with pytest.raises(SpecError, match="a-zA-Z0-9_-"):
+        construct.add_mcp_server(harness_dir, name="bad name!", stdio_command="npx")
+    assert (harness_dir / "harness.yaml").read_text() == before
+
+
 def test_construction_events_logged(harness_dir: Path):
     construct.set_field(harness_dir, "loop.max_turns", value="15")
     log = harness_dir / ".hiveloom" / "traces" / "construction.jsonl"

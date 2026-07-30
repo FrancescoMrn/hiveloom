@@ -345,7 +345,7 @@ def test_initialize_timeout_raises_mcp_error_and_tears_down(harness_dir: Path, m
     """
 
     async def _hang(self) -> None:
-        await anyio.sleep(999)
+        await anyio.sleep(8)
 
     monkeypatch.setattr(mcp.ClientSession, "initialize", _hang)
 

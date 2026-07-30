@@ -479,6 +479,65 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
     return _commit(directory, raw, created, "add_skill", {"name": name})
 
 
+def add_mcp_server(
+    directory: str | Path,
+    *,
+    name: str,
+    stdio_command: str | None = None,
+    stdio_args: list[str] | None = None,
+    stdio_env: dict[str, str] | None = None,
+    stdio_env_from_host: dict[str, str] | None = None,
+    stdio_cwd: str | None = None,
+    url: str | None = None,
+    headers: dict[str, str] | None = None,
+    header_env: dict[str, str] | None = None,
+    tools: list[str] | None = None,
+    deferred: bool = False,
+) -> HarnessSpec:
+    """Add an MCP server (a stdio subprocess or a Streamable HTTP endpoint).
+
+    Exactly one of ``stdio_command`` / ``url`` must be given.
+
+    Unlike ``add tool --code``, there is no local file to import and validate
+    here, so this makes NO live connection — a typo in the command or URL only
+    surfaces later, at ``run``/``dry-run`` (which discover eagerly) or
+    ``hiveloom mcp list-tools``.
+    """
+    if (stdio_command is None) == (url is None):
+        raise SpecError("add mcp-server requires exactly one of --stdio-command or --url")
+
+    directory = Path(directory)
+    entry: dict[str, Any] = {"name": name}
+    if stdio_command is not None:
+        entry["transport"] = "stdio"
+        entry["command"] = stdio_command
+        if stdio_args:
+            entry["args"] = list(stdio_args)
+        if stdio_env:
+            entry["env"] = dict(stdio_env)
+        if stdio_env_from_host:
+            entry["env_from_host_env"] = dict(stdio_env_from_host)
+        if stdio_cwd is not None:
+            entry["cwd"] = stdio_cwd
+    else:
+        entry["transport"] = "http"
+        entry["url"] = url
+        if headers:
+            entry["headers"] = dict(headers)
+        if header_env:
+            entry["header_env"] = dict(header_env)
+    if tools:
+        entry["tools"] = list(tools)
+    if deferred:
+        entry["deferred"] = True
+
+    raw = load_raw(directory)
+    raw.setdefault("mcp_servers", []).append(entry)
+    return _commit(
+        directory, raw, [], "add_mcp_server", {"name": name, "transport": entry["transport"]}
+    )
+
+
 def _make_ref(
     directory: Path,
     kind: str,
@@ -512,6 +571,7 @@ _LIST_SECTIONS = {
     "validators": ("verify", "validators"),
     "hooks": ("hooks",),
     "skills": ("skills",),
+    "mcp_servers": ("mcp_servers",),
 }
 
 
@@ -559,7 +619,13 @@ def _ref_matches(item: Any, target: str) -> bool:
         return item == target
     if not isinstance(item, dict):
         return False
-    return item.get("builtin") == target or item.get("code") == target
+    # mcp_servers entries key on `name` rather than `builtin`/`code`; no other
+    # list section uses that key, so checking it here is unambiguous.
+    return (
+        item.get("builtin") == target
+        or item.get("code") == target
+        or item.get("name") == target
+    )
 
 
 def _delete_path(raw: dict[str, Any], path: str) -> bool:
