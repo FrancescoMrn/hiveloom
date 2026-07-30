@@ -50,6 +50,11 @@ class BuildContext:
 
     base: Path | None = None
     tool_registry: Any = None
+    # The harness's configured trace directory, relative to `base` (or None
+    # if unconfigured/external) — only `build_registry` currently populates
+    # this (it has the spec loaded); every other factory ignores it via this
+    # default, so adding it here does not ripple into unrelated builders.
+    trace_dir: Path | None = None
 
 
 class ModelInfo(BaseModel):

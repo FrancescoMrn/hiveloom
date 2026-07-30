@@ -39,8 +39,9 @@ credentials or network access.
 
 The project uses semantic versioning. Update the project version in
 `pyproject.toml`; `src/hiveloom/__init__.py` exposes the matching runtime
-version. Build release artifacts with `uv build` and validate a harness package
-before publishing.
+version. Record notable changes in [CHANGELOG.md](CHANGELOG.md) under an
+`[Unreleased]` heading as part of the same pull request. Build release
+artifacts with `uv build` and validate a harness package before publishing.
 
 Security-sensitive issues should follow [SECURITY.md](SECURITY.md), not be
 reported in a public issue.

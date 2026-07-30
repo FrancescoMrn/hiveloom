@@ -13,3 +13,13 @@ hive.db
 # env
 .env
 .token.*
+
+# local credentials — never commit
+anthropic.token
+*.token
+
+# macOS
+.DS_Store
+
+# Internal design artifacts, never part of the distribution.
+.superpowers/

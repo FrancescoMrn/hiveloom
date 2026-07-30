@@ -218,6 +218,12 @@ POLICIES: dict[str, CatalogEntry] = _entries(
         description="One planning turn produces a pinned step list, then react over it.",
         tags=["loop"],
     ),
+    CatalogEntry(
+        name="sequential_steps",
+        description="Walk a fixed, ordered list of objectives (loop.steps), refusing "
+        "completion until each is done in order.",
+        tags=["loop"],
+    ),
 )
 
 

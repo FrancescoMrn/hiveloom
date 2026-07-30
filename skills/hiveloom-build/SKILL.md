@@ -34,8 +34,9 @@ hiveloom explain context.compaction  # field-level docs for any spec path
 hiveloom extensions                # loaded packs/providers — the catalog may be extended
 ```
 
-Everything a spec can reference is a catalog entry; if `catalog` doesn't show
-it, it doesn't exist.
+Builtin and extension-registered entries must appear in `catalog`; MCP tools
+are discovered dynamically from declared servers and instead appear in
+`hiveloom mcp list-tools`.
 
 ## Step 2 — construct incrementally
 
@@ -47,6 +48,16 @@ hiveloom add tool --builtin file_read --dir ./h
 hiveloom add validator --builtin output_schema --schema-file ./schemas/output.json --dir ./h
 hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
 hiveloom remove file_read --dir ./h      # remove by identifier, or delete a field path
+```
+
+To dictate a fixed, ordered list of objectives instead of free-form react,
+set `loop.steps` **before** switching `loop.policy` to `sequential_steps`
+(each `set` fully re-validates, and an empty-steps `sequential_steps` is
+rejected):
+
+```bash
+hiveloom set loop.steps '["extract fields", "validate schema", "write report"]' --dir ./h
+hiveloom set loop.policy sequential_steps --dir ./h
 ```
 
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
@@ -81,7 +92,7 @@ pair it with the `file_read` tool.
 
 ```bash
 hiveloom validate ./h                              # spec + code-hook import/signature checks
-hiveloom run ./h --input sample.txt --dry-run      # assembles the first model call; no API use
+hiveloom run ./h --input sample.txt --dry-run      # no model call; MCP discovery still does I/O
 ```
 
 Read the dry-run output: does the system prompt, tool list, and input framing
@@ -90,7 +101,7 @@ look like what the executor needs?
 ## One-shot alternative
 
 ```bash
-hiveloom generate "task description" -o ./h            # needs ANTHROPIC_API_KEY
+hiveloom generate "task description" -o ./h            # needs configured-provider credentials
 hiveloom generate "task" -o ./h --blueprint scraper    # apply a house-style blueprint
 ```
 

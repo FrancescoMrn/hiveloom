@@ -1,36 +1,74 @@
 [project]
 name = "hiveloom"
-version = "0.2.0"
+version = "0.3.0"
 description = "Generate, run, and evolve agent harnesses on the fly so small models reliably perform company tasks."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "hiveloom contributors" }]
 keywords = ["agents", "llm", "harness", "anthropic", "claude", "evolution"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
-    "typer>=0.12",
+    "typer>=0.27.0",
     "rich>=13.0",
     "structlog>=24.1",
-    "anthropic>=0.40",
-    "mcp>=1.0",
+    "anthropic>=0.120.1",
+    "anyio>=4.0",
+    "httpx2>=2.9",
+    "mcp>=2.0.0",
     "python-dotenv>=1.0",
     "jsonschema>=4.0",
+    "starlette>=1.0",
+    "uvicorn>=0.30",
+    "pyjwt[crypto]>=2.8",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.16.0"]
 
 [project.scripts]
 hiveloom = "hiveloom.cli:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hiveloom"]
+
+# The agent guidance ships with the runtime so `hiveloom guide` works from a
+# plain `pip install`, with no repository checkout. The repo-root files stay the
+# single source of truth — the build copies them in, it does not duplicate them.
+[tool.hatch.build.targets.wheel.force-include]
+"AGENTS.md" = "hiveloom/agent_docs/AGENTS.md"
+"SKILL.md" = "hiveloom/agent_docs/SKILL.md"
+"skills" = "hiveloom/agent_docs/skills"
+
+# The distribution carries what is needed to run the library, the example
+# harnesses, and the agent guidance — nothing else. Development material —
+# tests, docs, evals, CI config — stays in the repository.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/hiveloom",
+    "harnesses",
+    "skills",
+    "AGENTS.md",
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+]
 
 [tool.ruff]
 line-length = 100

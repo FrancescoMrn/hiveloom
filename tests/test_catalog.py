@@ -16,6 +16,7 @@ def test_known_builtins_present():
     assert "max_cost_usd" in catalog.BUILTIN_GUARDRAILS
     assert "output_schema" in catalog.BUILTIN_VALIDATORS
     assert "react" in catalog.POLICIES
+    assert "sequential_steps" in catalog.POLICIES
 
 
 def test_validate_params_accepts_valid():

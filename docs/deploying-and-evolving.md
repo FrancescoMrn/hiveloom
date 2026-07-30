@@ -21,10 +21,12 @@ The running deployment does **not** evolve itself:
 - **Running** uses a small, cheap executor model in the hot path.
 - **Evolving** uses a strong model plus human approval for any code change — off
   the hot path, and never in production latency or cost.
-- Evolution is a **gated, versioned, auditable mutation**, not silent drift. The
-  evolver can never change `guardrails`, `model`, or `logging.redact`; regenerated
-  code hooks require explicit y/n approval; every applied change bumps an
-  `# evolved: N` counter and records old→new version hashes in the Hive.
+- Evolution is a **gated, versioned, auditable mutation**, not silent drift.
+  The evolver can never change `guardrails`, `model`, `logging.redact`,
+  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`;
+  regenerated code hooks require explicit y/n approval; every applied change
+  bumps an `# evolved: N` counter and records old→new version hashes in the
+  Hive.
 
 "Still evolving" therefore means the harness *emits the signal* (traces) wherever
 it runs, and you close the loop deliberately — not that it mutates live.
@@ -64,6 +66,66 @@ Step by step:
    folder to the previous `harness.yaml` (git makes this a one-liner); the version
    hash keeps the before/after comparable.
 
+## Queuing proposals instead of applying them
+
+`hiveloom evolve <dir> --propose` runs the same analyze → propose → gate
+pipeline but queues the gated result in the Hive instead of applying it —
+"auto-propose, human applies." A proposal is deduped by harness, spec version,
+and failure signature, so re-running `--propose` against the same failure
+state never pays for a second strong-model call; it just returns the existing
+pending proposal.
+
+```
+hiveloom evolve ./harness --propose --json    # queue a gated proposal
+hiveloom proposals list ./harness             # review what's pending
+hiveloom proposals show ./harness <id>        # inspect rationale + gate result
+hiveloom proposals apply ./harness <id>       # apply it (re-checks the harness
+                                               # hasn't changed since drafting)
+hiveloom proposals reject ./harness <id> --reason "not worth it"
+```
+
+There is no auto-apply: a human always calls `proposals apply` or
+`proposals reject`. This is the additive extension the trace sink / networked
+Hive / A/B runner discussion below anticipates — proposals live in the same
+Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
+can populate the same queue without changing this review step.
+
+## Auto-DRAFT (opt-in) — auto-APPLY still does not exist
+
+A harness can opt in to drafting proposals automatically, right after a
+failing run, via `evolution.auto_propose` in `harness.yaml`:
+
+```yaml
+evolution:
+  auto_propose:
+    enabled: true        # off by default
+    min_failures: 5       # non-success runs required (since the last auto-proposal)
+    cooldown_hours: 24.0  # minimum gap between auto-drafted proposals
+    model: null            # strong-model override; else the CLI/env default
+```
+
+This is a synchronous check at the tail of every completed `hiveloom run` —
+no daemon, no scheduler, no background thread. It costs nothing for the
+(default, disabled) common case: a single boolean check, no Hive query. When
+enabled and a run fails, it counts recent failures, checks the cooldown, and —
+if both pass — analyzes the Hive and drafts a gated proposal with
+`trigger="auto"`, deduped exactly like `--propose` (a second failing run
+against the same failure state never pays for a second strong-model call).
+**It only ever drafts.** Applying still requires `hiveloom proposals apply`.
+A failure here (no API key, no network, a malformed model response) never
+fails the run itself — same discipline as trace ingestion.
+
+`cooldown_hours` cannot be removed: values below one minute are rejected, so
+there's always a real floor on how often a harness can auto-draft. Each
+qualifying failing run costs a strong-model call unless the dedup pre-check
+catches it, so this is partly a spend guard; `min_failures` is the
+complementary throttle if you want a different shape of restraint.
+
+If you'd rather not pay this tail latency inside every run, leave
+`auto_propose` off and instead schedule `hiveloom evolve <dir> --propose`
+from cron (or your platform's scheduler) against the deployed harness — same
+queue, same dedup, just triggered on your own cadence instead of per-run.
+
 ## Deployment topologies
 
 - **Same box** — deploy the folder; runs ingest into the local Hive
@@ -82,6 +144,18 @@ Step by step:
   build context. This embeds hiveloom itself; a fully air-gapped image also needs a
   wheelhouse for its third-party dependencies. Mount `.hiveloom/traces` to a shared
   volume so every replica feeds the same trace pool.
+- **HTTP service** — `hiveloom package --docker --serve` builds the same image with
+  `hiveloom serve` as the entrypoint: a long-lived container answering
+  `POST /runs` (`{"input": "...", "stream": true}` streams trace events as NDJSON,
+  final `run_result` line last) with `GET /healthz` for probes. Set
+  `HIVELOOM_API_KEY` to require a `Bearer`/`X-API-Key` header on `/runs` — but treat
+  that as defense in depth and put real authentication in your gateway. Run inputs
+  over HTTP are always literal text, never file paths, so remote callers cannot read
+  files out of the container. Because the harness executes model-written code hooks,
+  the container *is* the sandbox: no docker socket, read-only filesystem outside the
+  harness dir, and an egress policy. Traces still land in `.hiveloom/traces/`
+  in-container, so the evolve loop works unchanged — or capture the `/runs` stream at
+  your gateway and ship events wherever you like.
 - **Git-backed harness** — keep `harness.yaml` + hooks in git (traces are
   gitignored by `init`). Evolution produces a clean diff (the `# evolved` counter
   and version hash); commit it and redeploy. Rollback = `git revert`.

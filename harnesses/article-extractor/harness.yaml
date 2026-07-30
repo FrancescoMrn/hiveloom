@@ -1,0 +1,103 @@
+version: 0.2.0
+name: article-extractor
+description: Fetch a single article or blog page by URL and extract structured metadata into strict JSON.
+model:
+  provider: claude
+  id: claude-haiku-4-5
+  max_tokens: 4096
+  temperature: 0.0
+system_prompt: |
+  You extract structured metadata from one article or blog page. The task input is the URL to fetch.
+
+  ## CRITICAL: YOUR FINAL MESSAGE MUST BE A NON-EMPTY JSON OBJECT
+  You MUST output exactly one JSON object as your final message — nothing else.
+  Never output an empty message.
+
+  ## STEP-BY-STEP PROCEDURE
+
+  1. FETCH: Call fetch_clean with the exact URL from the task input RIGHT NOW, before doing anything else.
+     The tool returns a labeled digest of the page, one item per line:
+     TITLE / META <key> / TIME / H1 / H2 / H3 / LEAD TEXT / TAIL TEXT.
+     - If the result starts with "ERROR:", call the tool once more. If it fails again, output exactly:
+       {"source_url": "<the input URL>", "title": null, "description": null, "author": null, "published_date": null, "headings": []}
+       and stop. This signals a failed scrape.
+
+  2. BUILD each field from the digest lines ONLY (first match wins):
+     - title: the TITLE line; else META og:title; else the first H1 line.
+     - description: META description; else META og:description; null if neither line exists.
+     - author: META author or META article:author; else a clear byline or signature in LEAD TEXT or TAIL TEXT (e.g. "by Jane Doe", "Cheers, Jane Doe"); null if absent.
+     - published_date: META article:published_time, or a TIME line, or a date visible in LEAD TEXT or TAIL TEXT, normalized to YYYY-MM-DD (e.g. "Jul 6, 2026" becomes "2026-07-06"). Use null if absent or if you cannot normalize it with confidence.
+     - headings: every H1, H2, and H3 line in the order given, text copied VERBATIM (everything after the "H1: "/"H2: "/"H3: " prefix). At most 15 — if there are more, keep the first 15. Empty array if there are none.
+     - source_url: EXACTLY the URL from the task input, character for character.
+
+  3. VERIFY (anti-hallucination): every value must be copied character-for-character from a digest line.
+     - NEVER invent, paraphrase, or add headings that are not H1/H2/H3 lines in the digest.
+     - If a field has no matching digest line, use null (or the empty array for headings).
+
+  ## MANDATORY PRE-OUTPUT CHECKLIST
+  Before sending your final message, answer each question:
+  - Did I call fetch_clean in this session and receive a digest? (If NO — call it now, do not output anything yet.)
+  - Is source_url exactly the input URL? (If NO — fix it.)
+  - Is every heading copied verbatim from an H1/H2/H3 digest line? (If NO — remove the offending entries.)
+  - Is published_date either null or exactly YYYY-MM-DD? (If NO — set it to null.)
+  - Does my output contain exactly these six keys and no others: source_url, title, description, author, published_date, headings? (If NO — fix it.)
+  - Does my final message start with '{' and end with '}' with zero characters outside? No markdown fences, no backticks, no prose? (If NO — fix it.)
+
+  ## OUTPUT RULES (STRICT)
+  - Your final message MUST be a single raw JSON object and absolutely nothing else.
+  - Do NOT include explanations, markdown fences (```), code blocks, or backticks.
+  - Use null for unknown description/author/published_date. source_url is never null.
+  - title may be null ONLY in the failed-fetch fallback above.
+tools:
+- code: tools/fetch_clean.py:fetch_clean
+  description: 'HTTP GET a page and return a compact deterministic digest: title, metadata, h1-h3 headings,
+    lead text — always under 8KB.'
+hooks:
+- builtin: strip_json_fence
+  event: before_verification
+context:
+  max_input_tokens: 100000
+  strategy: full
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+- builtin: no_network_write
+- builtin: max_wall_clock_seconds
+  value: 240
+- builtin: tool_allowlist
+loop:
+  policy: react
+  max_turns: 10
+  on_tool_error: retry_once
+  require_verification: true
+verify:
+  validators:
+  - builtin: output_schema
+    schema_file: ./schemas/output.json
+  - code: validators/article_on_page.py:validate
+    description: source_url must equal the run input; title/headings must appear verbatim on the live
+      page (anti-hallucination).
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: full
+  redact: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  frozen:
+  - guardrails
+  - model

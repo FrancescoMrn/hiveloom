@@ -15,6 +15,16 @@ The harness — not the conversation — is the durable, versionable, improvable
 ## Install
 
 ```bash
+uv pip install hiveloom        # or: pip install hiveloom
+```
+
+hiveloom is published to PyPI starting with its first tagged release; see
+[CHANGELOG.md](CHANGELOG.md) for release history.
+
+**Contributing or running unreleased code:** install from source in editable
+mode instead:
+
+```bash
 uv pip install -e ".[dev]"     # or: pip install -e ".[dev]"
 ```
 
@@ -34,10 +44,10 @@ hiveloom add tool --builtin file_read --dir ./summarizer
 hiveloom add validator --builtin regex_match --pattern '"summary"' --dir ./summarizer
 hiveloom validate ./summarizer
 
-# 3. Dry-run to see the first model call assembled — still no API use
+# 3. Dry-run — no model-API call (declared MCP servers are still contacted)
 hiveloom run ./summarizer --input notes.txt --dry-run
 
-# 4. Run for real (needs ANTHROPIC_API_KEY; the small executor model runs inside)
+# 4. Run for real (the default provider needs ANTHROPIC_API_KEY)
 echo "ANTHROPIC_API_KEY=sk-..." > ./summarizer/.env
 hiveloom run ./summarizer --input notes.txt --json
 
@@ -99,14 +109,33 @@ hiveloom remove file_read --dir ./my-harness
 
 ```bash
 hiveloom run ./my-harness --input notes.txt          # runs the agent loop
-hiveloom run ./my-harness --input notes.txt --dry-run # assemble first call, no API use
+hiveloom run ./my-harness --input notes.txt --dry-run # no model call; MCP discovery does I/O
 hiveloom run ./my-harness --input notes.txt --json    # machine-readable result
 hiveloom run ./my-harness --input notes.txt --stream  # trace events as JSONL (embedding)
 ```
 
-`run` needs `ANTHROPIC_API_KEY` (loaded from the harness `.env` if present). Traces are
-written to the harness's `.hiveloom/traces/<run_id>.jsonl`. The small executor model
-(default `claude-haiku-4-5`) runs inside the harness; guardrails and verification gate it.
+`run` needs credentials for the configured provider when it requires them (for
+example, `ANTHROPIC_API_KEY` for the default provider, loaded from the harness
+`.env` if present). Traces are written to the harness's
+`.hiveloom/traces/<run_id>.jsonl`. The small executor model (default
+`claude-haiku-4-5`) runs inside the harness; guardrails and verification gate it.
+
+**Serve (long-lived HTTP deployment)**
+
+```bash
+hiveloom serve ./my-harness                    # http://127.0.0.1:8080, stdlib-only
+hiveloom serve ./my-harness --host 0.0.0.0 --port 8080 --concurrency 4
+HIVELOOM_API_KEY=sekret hiveloom serve .       # require Bearer / X-API-Key on /runs
+```
+
+`run` is one-shot; `serve` keeps the harness up behind two endpoints: `GET /healthz`
+(always unauthenticated, for orchestrator probes) and `POST /runs` with
+`{"input": "...", "stream": true|false}` — non-stream responses match `run --json`,
+streamed responses are NDJSON trace events with a final `run_result` line, exactly like
+`run --stream`. Inputs over HTTP are always literal text (never file paths), extra
+requests beyond `--concurrency` get `429`, and no new dependencies are involved — the
+server is standard library only. `hiveloom package --docker --serve` emits a Dockerfile
+whose container serves on `:8080` instead of running once.
 
 **Inspect memory**
 
@@ -128,16 +157,35 @@ harness mutation actually helped.
 hiveloom generate "Reconcile invoices against PO numbers" -o ./recon   # strong model builds it
 hiveloom evolve ./recon            # analyze Hive failures, propose a gated mutation
 hiveloom evolve ./recon --yes      # auto-apply YAML changes (code always needs y/n)
+hiveloom evolve ./recon --propose  # queue the gated proposal instead of applying it
+hiveloom proposals list ./recon    # review, then `proposals apply` / `proposals reject`
 ```
 
 `generate` is sugar: a strong model produces a construction *plan* that hiveloom replays
 through the same validated `init`/`add`/`set` functions (with a validate/repair loop), so
 there is one code path for building harnesses. `evolve` reads the Hive's clustered failures,
-asks a strong model for a minimal mutation, and **gates it in code**: `guardrails`, `model`,
-and `logging.redact` can never be changed, changes must fall within the harness's `mutable`
-set, and regenerated code hooks always require explicit approval. Applied mutations bump an
-`# evolved: N` counter and are recorded in the Hive under a new version hash. Both need
-`ANTHROPIC_API_KEY`.
+asks a strong model for a minimal mutation, and **gates it in code**:
+`guardrails`, `model`, `logging.redact`, `extensions`, `hooks`, `mcp_servers`,
+and `evolution.auto_propose` can never be changed, changes must fall within the
+harness's `mutable` set, and regenerated code hooks always require explicit
+approval. Applied mutations bump an `# evolved: N` counter and are recorded in
+the Hive under a new version hash. Both need credentials for the configured
+provider when it requires them.
+
+**Serve over HTTP (non-production)**
+
+```bash
+hiveloom keys generate rinaldo                          # on your own machine; the key stays there
+hiveloom keys authorize rinaldo <public-key> --harness ./recon --scope run
+hiveloom control-plane ./recon                          # binds 127.0.0.1:8420 by default
+hiveloom keys sign --key ~/.hiveloom/keys/rinaldo.pem --scope run   # mint a bearer token
+```
+
+`control-plane` exposes a deployed harness's full CLI surface (run/stats/trace/set/add/remove/
+evolve/proposals) over HTTP, bearer-authenticated with ed25519 keys. It's explicitly
+non-production: no TLS, no replay cache, one harness per process. See
+[`docs/control-plane.md`](docs/control-plane.md) for the endpoint table, the custody
+model, and the full limitations list before pointing it at anything that matters.
 
 **The deploy-anywhere-keep-evolving loop:** a harness runs wherever you put it (cheap model),
 writes traces in-folder, and is evolved deliberately on a dev/CI box (strong model + human
@@ -149,12 +197,13 @@ Exit codes: `0` ok, `1` verify failed, `2` guardrail halt, `3` spec/validation e
 
 ## Extending (the open catalog)
 
-Everything a spec references is a **catalog entry**, and the catalog is open:
-extensions register new tools, guardrails, validators, loop policies,
-compaction methods, event hooks, and model providers through one API
+Builtin and extension-registered capabilities are **catalog entries**, and the
+catalog is open: extensions register new tools, guardrails, validators, loop
+policies, compaction methods, event hooks, and model providers through one API
 (`hiveloom.ext.ExtensionAPI`). Registered entries validate in specs, list in
 `hiveloom catalog`, and flow into the generator meta-prompt — install a pack
-and `hiveloom generate` can immediately weave harnesses with it.
+and `hiveloom generate` can immediately weave harnesses with it. MCP tools are
+discovered dynamically instead; inspect them with `hiveloom mcp list-tools`.
 
 ```bash
 hiveloom extensions                                   # what's loaded, from where
@@ -173,12 +222,15 @@ Custom LLM providers (Ollama, vLLM, any OpenAI-compatible server) are one
 **For agents:** [AGENTS.md](AGENTS.md) is the entry point — ground rules, exit
 codes, and a task→skill map. [skills/](skills/README.md) holds a series of
 installable Agent Skills (build / run / evolve / extend / ship); the root
-[SKILL.md](SKILL.md) is the compact all-in-one variant.
+[SKILL.md](SKILL.md) is the compact all-in-one variant. All of it ships inside
+the package — after `pip install hiveloom`, `hiveloom guide --list` and
+`hiveloom guide <topic>` print it without a checkout of this repository.
 
 - [Architecture](docs/architecture.md) — components, data flow, and invariants.
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.
 - [Extending hiveloom](docs/extending.md) — extension packs, providers, hooks, and SDK embedding.
 - [Deploying and evolving](docs/deploying-and-evolving.md) — portable artifacts and the production feedback loop.
+- [Control plane](docs/control-plane.md) — `hiveloom control-plane`'s endpoints, ed25519 keys/bearer-token auth, and the non-production limitations.
 - [Examples](harnesses/) — summarization, market analysis, and HN extraction harnesses.
 
 ## Contributing and security
@@ -189,7 +241,8 @@ harness trust model.
 
 ## Safety invariants
 
-* The evolver may never modify `guardrails`, `model`, `logging.redact`, or `extensions`.
+* The evolver may never modify `guardrails`, `model`, `logging.redact`,
+  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
 * The cost guardrail defaults **on** (`max_cost_usd: 1.00`) even if omitted.
 * `shell` is allowlist-only and disabled unless the spec enables it.
 * Redaction patterns are applied before any trace is persisted.

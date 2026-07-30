@@ -1,12 +1,13 @@
 # Extending hiveloom
 
-hiveloom's catalog is open: everything a spec can reference — tools,
-guardrails, validators, loop policies, compaction methods, event hooks, model
-providers — is a **catalog entry**, and extensions register new entries through
-one API. A registered entry shows up in `hiveloom catalog`, validates in specs
-like a builtin, and appears in the generator's meta-prompt — so
-`hiveloom generate` can weave harnesses with a capability the moment its pack
-is installed.
+hiveloom's catalog is open: tools, guardrails, validators, loop policies,
+compaction methods, event hooks, and model providers are **catalog entries**,
+and extensions register new entries through one API. A registered entry shows
+up in `hiveloom catalog`, validates in specs like a builtin, and appears in the
+generator's meta-prompt — so `hiveloom generate` can weave harnesses with a
+capability the moment its pack is installed. MCP tools are the dynamic
+exception: they come from declared servers at run time and appear in
+`hiveloom mcp list-tools`, not `hiveloom catalog`.
 
 ## Writing an extension
 
@@ -99,6 +100,35 @@ providers:
         output_cost_per_mtok: 0
 ```
 
+The same `openai_compat` provider works against hosted third-party endpoints,
+e.g. OpenRouter:
+
+```yaml
+providers:
+  openrouter:
+    api: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    models:
+      - id: deepseek/deepseek-r1
+        input_cost_per_mtok: 0.55
+        output_cost_per_mtok: 2.19
+```
+
+Other servers speaking the same API — typical defaults, confirm against your
+deployment: Groq `https://api.groq.com/openai/v1`, Together
+`https://api.together.xyz/v1`, vLLM `http://localhost:8000/v1`,
+mlx_lm.server `http://localhost:8080/v1`. Reasoning-style models (the
+DeepSeek-R1 family and similar) are supported: a reasoning-only turn is
+normalized from the response's `reasoning`/`reasoning_content` field when
+`content` is empty.
+
+Run, generate, and evolve need credentials for the configured provider when
+that provider requires them: `ANTHROPIC_API_KEY` is the default Anthropic case;
+hosted OpenAI-compatible providers use the environment variable named by
+`api_key_env` (for example `OPENROUTER_API_KEY`), while local vLLM, Ollama, or
+mlx_lm.server deployments may require no credential.
+
 **Programmatically** — `hive.register_provider(name, factory, models=[...])`
 with a factory returning a `ModelProvider`. Model pricing lives in the
 registry; unknown models fall back to Haiku-class pricing so cost guardrails
@@ -107,6 +137,30 @@ stay conservative.
 Generate/evolve can use any provider too: `--model ollama/qwen3:32b`
 (`provider/model-id`). Note `model` stays in `ALWAYS_FROZEN` — the registry
 widens what a human or generator may choose, never what evolution can mutate.
+
+## MCP servers
+
+A harness can declare `mcp_servers`; their tools join the loop as ordinary
+tools (`mcp__<server-name>__<tool>`), discovered eagerly when the tool
+registry is built (including `run --dry-run`):
+
+```bash
+hiveloom add mcp-server --name search --stdio-command npx \
+  --stdio-arg -y --stdio-arg @foo/mcp-search \
+  --env-from-host API_KEY=FOO_SEARCH_API_KEY --dir ./h
+
+hiveloom add mcp-server --name jira --url https://mcp.acme.com/mcp \
+  --header-env 'Authorization=ACME_MCP_TOKEN' --tool search_issues --dir ./h
+
+hiveloom mcp list-tools --dir ./h   # see what a declared server actually exposes
+```
+
+A stdio server (`--stdio-command`) is **arbitrary local exec** — the same
+trust boundary as any other code hook. `mcp_servers` is **always frozen** from
+evolution, the same risk class as `extensions`. A remote tool's own
+`annotations` (e.g. `readOnlyHint`/`destructiveHint`) are **self-reported by
+an untrusted server and are never a security boundary** — the real boundaries
+are the always-frozen set plus harness trust gating.
 
 ## Lifecycle event hooks
 

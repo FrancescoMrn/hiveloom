@@ -21,15 +21,16 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
 | `tools` | Tools available to the loop | list of `{builtin: name}` or `{code: path.py:fn, description: ...}` |
+| `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |
 | `extensions` | Harness-local extension modules | paths/modules loaded before validation; **always frozen** |
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned` |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
-| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`), `max_turns`, `on_tool_error`, `require_verification` |
+| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `logging` | Trace policy | `trace_dir` (in-folder by default), `level`, `redact` (regexes; **frozen**) |
-| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change) |
+| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change), `auto_propose.{enabled,min_failures,cooldown_hours,model}` (opt-in post-run DRAFT trigger — never auto-applies; `auto_propose` itself is never mutable) |
 
 ## Builtins
 
@@ -45,7 +46,8 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
   `regex_output_filter` composes as a list — one entry per pattern.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
   `file_exists`, `command_succeeds` (exit 0 = pass).
-- **Policies:** `react`, `plan_then_act`.
+- **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
+  ordered `loop.steps` list, refusing completion until each is done in order).
 - **Compaction:** `summarize`, `truncate_oldest`.
 - **Hooks:** `strip_json_fence` (an opt-in final-output normalizer).
 
@@ -55,9 +57,50 @@ hook is any `@hiveloom.tools.tool`-decorated function (its JSON input schema is
 derived from type hints). `hiveloom add …/--code` scaffolds a correctly-signed
 stub.
 
+## MCP servers
+
+A harness can declare MCP servers; their tools become ordinary dispatchable
+tools inside the loop, named `mcp__<server-name>__<tool>`. Discovery is
+**eager** — it happens when the tool registry is built, which includes
+`run --dry-run`. Dry-run never calls the model API, but a harness with
+`mcp_servers` genuinely performs local/network I/O to discover their tools
+(see AGENTS.md rule 5). `mcp_servers` is **always frozen** from evolution —
+the same risk class as `extensions` (arbitrary code/process).
+
+A stdio entry launches a local subprocess — **arbitrary local exec** —
+gated by the same harness-trust boundary as any other code hook (see
+`hiveloom trust`):
+
+```yaml
+mcp_servers:
+  - name: search
+    transport: stdio
+    command: npx
+    args: ["-y", "@foo/mcp-search"]
+    env_from_host_env:
+      API_KEY: FOO_SEARCH_API_KEY   # resolved from the host env at connect time
+```
+
+An http entry reaches a Streamable HTTP endpoint:
+
+```yaml
+mcp_servers:
+  - name: jira
+    transport: http
+    url: https://mcp.acme.com/mcp
+    header_env:
+      Authorization: ACME_MCP_TOKEN
+    tools: [search_issues, create_issue]   # allowlist; omit to expose all
+```
+
+Add one with `hiveloom add mcp-server` (see `hiveloom add mcp-server --help`);
+inspect what a harness's declared servers actually expose with
+`hiveloom mcp list-tools --dir ./h`.
+
 ## Safety invariants (enforced in code)
 
-1. The evolver can never modify `guardrails`, `model`, or `logging.redact`.
+1. The evolver can never modify `guardrails`, `model`, `logging.redact`,
+   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
 2. Code-hook regeneration always requires explicit human approval.
 3. `shell` is allowlist-only and disabled unless the spec enables it.
 4. Redaction patterns are applied before any trace is persisted.

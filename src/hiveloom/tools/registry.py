@@ -23,6 +23,7 @@ from pydantic import BaseModel, create_model
 
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
+from hiveloom.package import trace_dir_relative_to
 from hiveloom.spec.loader import _import_hook
 from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
@@ -124,6 +125,22 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._active: set[str] = set()
+        self._closers: list[Callable[[], None]] = []
+
+    def add_closer(self, fn: Callable[[], None]) -> None:
+        """Register generic resource teardown (not MCP-specific), run by :meth:`close`."""
+        self._closers.append(fn)
+
+    def close(self) -> None:
+        """Run registered closers in reverse order, swallowing exceptions.
+
+        Never masks a run's real outcome.
+        """
+        for closer in reversed(self._closers):
+            try:
+                closer()
+            except Exception:  # noqa: BLE001 - teardown must never raise
+                pass
 
     def register(self, tool: Tool, *, active: bool = True) -> None:
         self._tools[tool.name] = tool
@@ -244,6 +261,11 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
     base = Path(base_dir)
     if base.is_file():
         base = base.parent
+    # So file_read/file_write can refuse the configured trace directory too,
+    # not just the .hiveloom/.env* coverage they get regardless — the same
+    # protection the HTTP control plane's input_file and the evolver's
+    # code-change containment get when they have a spec loaded.
+    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
 
     registry = ToolRegistry()
     has_deferred = False
@@ -251,7 +273,8 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
         active = not bool(tool_ref.deferred)
         has_deferred = has_deferred or not active
         if isinstance(tool_ref, BuiltinToolRef):
-            registry.register(builtin.make_builtin_tool(tool_ref, base), active=active)
+            tool = builtin.make_builtin_tool(tool_ref, base, trace_dir=trace_dir)
+            registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):
             func = _import_hook(tool_ref.code, base)
             meta = getattr(func, "__hiveloom_tool__", {})
@@ -265,6 +288,24 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
                 ),
                 active=active,
             )
+
+    if spec.mcp_servers:
+        from hiveloom.tools.mcp import McpBridge, connect_mcp_server  # local import to avoid cycles
+
+        bridge = McpBridge()
+        registry.add_closer(bridge.close)
+        try:
+            for server_ref in spec.mcp_servers:
+                active = not server_ref.deferred
+                has_deferred = has_deferred or not active
+                for adapter in connect_mcp_server(server_ref, base, bridge):
+                    registry.register(adapter, active=active)
+        except Exception:
+            # A later server failing to connect must not leak an earlier
+            # server's already-open session/subprocess or portal thread.
+            registry.close()
+            raise
+
     if has_deferred:
         registry.register(SearchToolsTool(registry))
     return registry

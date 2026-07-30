@@ -6,7 +6,9 @@ from hiveloom.evolve.evolver import (
     MutationProposal,
     apply_proposal,
     gate,
+    preview_yaml_changes,
     propose,
+    resolve_code_change_path,
 )
 
 __all__ = [
@@ -16,5 +18,7 @@ __all__ = [
     "analyze",
     "apply_proposal",
     "gate",
+    "preview_yaml_changes",
     "propose",
+    "resolve_code_change_path",
 ]

@@ -308,6 +308,93 @@ def test_unknown_policy_rejected():
         LoopConfig(policy="who-dis")
 
 
+def test_sequential_steps_requires_non_empty_steps():
+    with pytest.raises(ValueError, match="requires a non-empty loop.steps"):
+        LoopConfig(policy="sequential_steps")
+
+
+def test_non_empty_steps_with_other_policy_is_allowed():
+    # Deliberately one-directional (see LoopConfig._check_sequential_steps):
+    # `hiveloom set loop.steps '[...]'` then `hiveloom set loop.policy
+    # sequential_steps` each fully re-validate on their own, so rejecting
+    # steps set before switching policy would break that natural two-step
+    # workflow on the first command.
+    config = LoopConfig(policy="react", steps=["a", "b"])
+    assert config.steps == ["a", "b"]
+
+
+def test_loop_config_extra_field_forbidden():
+    with pytest.raises(ValueError):
+        LoopConfig(unexpected="boom")
+
+
+def test_build_policy_ignores_params_for_backward_compatibility():
+    from hiveloom.loop.policies import build_policy
+
+    assert build_policy("react", {"steps": ["a", "b"]}).name == "react"
+    assert build_policy("plan_then_act", {"steps": ["a", "b"]}).name == "plan_then_act"
+
+
+def test_set_loop_steps_then_policy_through_construct(harness_dir: Path):
+    # Exercises the real `set` path (used by `hiveloom set` in the CLI):
+    # steps first, then policy, is the order that works (see §6/§7).
+    construct.set_field(harness_dir, "loop.steps", '["one", "two"]')
+    spec = construct.set_field(harness_dir, "loop.policy", "sequential_steps")
+    assert spec.loop.policy == "sequential_steps"
+    assert spec.loop.steps == ["one", "two"]
+
+
+def test_sequential_steps_refuses_completion_until_last_step(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.set_field(harness_dir, "loop.steps", '["one", "two", "three"]')
+    construct.set_field(harness_dir, "loop.policy", "sequential_steps")
+    provider = FakeModelProvider(
+        [text_response("did one"), text_response("did two"), text_response("did three")]
+    )
+
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    assert result.output == "did three"
+    assert len(provider.calls) == 3
+    user_texts = [
+        m["content"]
+        for m in provider.calls[-1]["messages"]
+        if m["role"] == "user" and isinstance(m["content"], str)
+    ]
+    assert any("two" in t for t in user_texts)
+    assert any("three" in t for t in user_texts)
+
+
+def test_sequential_steps_pins_current_step_in_context(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.set_field(harness_dir, "loop.steps", '["one", "two"]')
+    construct.set_field(harness_dir, "loop.policy", "sequential_steps")
+    provider = FakeModelProvider([text_response("did one"), text_response("did two")])
+
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    first_system, second_system = provider.calls[0]["system"], provider.calls[1]["system"]
+    assert "1. [current] one" in first_system
+    assert "2. [pending] two" in first_system
+    assert "1. [done] one" in second_system
+    assert "2. [current] two" in second_system
+
+
+def test_sequential_steps_max_turns_exhaustion_finishes_cleanly(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.set_field(harness_dir, "loop.steps", '["one", "two", "three"]')
+    construct.set_field(harness_dir, "loop.policy", "sequential_steps")
+    construct.set_field(harness_dir, "loop.max_turns", "2")
+    provider = FakeModelProvider([text_response("did one"), text_response("did two")])
+
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "max_turns"
+    assert result.turns == 2
+
+
 def test_unknown_compaction_method_rejected():
     with pytest.raises(ValueError, match="unknown compaction method"):
         CompactionConfig(method="who-dis")

@@ -17,8 +17,8 @@ jobs:
     name: Lint & consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Check lockfile is up to date
@@ -52,8 +52,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -67,9 +67,14 @@ jobs:
   harnesses:
     name: Validate example harnesses
     runs-on: ubuntu-latest
+    # validate/run resolve code hooks, so both are trust-gated; with no TTY the
+    # prompt aborts (exit 4). These harnesses are this repo's own checkout, so
+    # the documented CI policy applies.
+    env:
+      HIVELOOM_TRUST: always
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Install project
@@ -88,8 +93,8 @@ jobs:
     name: Build & install smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Build sdist and wheel
@@ -113,7 +118,32 @@ jobs:
             exit 1
           fi
           echo "sdist clean"
-      - uses: actions/upload-artifact@v4
+      - name: Ensure the sdist ships only runtime, harnesses, and agent guidance
+        run: |
+          SDIST=$(ls dist/*.tar.gz)
+          # Development material (tests, docs, evals, CI config) stays in the
+          # repository — see [tool.hatch.build.targets.sdist].
+          if tar -tzf "$SDIST" | sed 's|^[^/]*/||' \
+            | grep -E '^(tests|docs|evals|\.github|\.claude)/'; then
+            echo "::error::sdist contains development-only material"
+            exit 1
+          fi
+          echo "sdist scope clean"
+      - name: Ensure the agent guidance is packaged in the wheel
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          # `hiveloom guide` must work from a plain install, with no checkout.
+          for doc in hiveloom/agent_docs/AGENTS.md hiveloom/agent_docs/SKILL.md; do
+            unzip -l "$WHEEL" | grep -q "$doc" || {
+              echo "::error::$doc missing from the wheel"; exit 1; }
+          done
+          TOPICS=$(uv run --isolated --no-project --with "$WHEEL" -- hiveloom guide --list --json)
+          for topic in agents all build run evolve extend ship; do
+            echo "$TOPICS" | grep -q "\"name\": \"$topic\"" || {
+              echo "::error::guide topic '$topic' missing from the installed wheel"; exit 1; }
+          done
+          echo "guide ships every topic"
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/

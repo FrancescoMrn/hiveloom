@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish the built distribution to PyPI (needs a configured trusted publisher)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -12,8 +18,8 @@ jobs:
     name: Verify tag, tests, harnesses
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Check tag matches project version
@@ -30,6 +36,10 @@ jobs:
       - name: Run tests
         run: uv run pytest
       - name: Validate example harnesses
+        # Trust-gated like the CI job; scoped to this step so pytest above still
+        # runs with an unset policy.
+        env:
+          HIVELOOM_TRUST: always
         run: |
           for harness in harnesses/*/; do
             uv run hiveloom validate "$harness"
@@ -40,15 +50,15 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Build sdist and wheel
         run: uv build
       - name: Check distribution metadata
         run: uvx twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -58,16 +68,21 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    # Requires a PyPI "trusted publisher" configured for this repo/workflow
-    # and a GitHub environment named "pypi" (add required reviewers there to
-    # gate releases manually).
+    # Publishing is a DELIBERATE, MANUAL action, never automatic on a tag push:
+    # run this workflow via "Run workflow" (workflow_dispatch) with
+    # `publish_pypi=true`. A plain `v*` tag builds and cuts a GitHub Release but
+    # does not publish, so tagging for history never risks an unintended upload.
+    # Requires a PyPI "trusted publisher" configured for this repo/workflow and
+    # the GitHub environment named "pypi" below (add required reviewers there to
+    # gate publishing further).
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi }}
     environment:
       name: pypi
       url: https://pypi.org/p/hiveloom
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -80,8 +95,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/

@@ -14,7 +14,7 @@ When asked to improve a failing harness, **do not hand-edit it** — run the
 evolve flow so the change is minimal, gated, versioned, and provable:
 
 ```bash
-hiveloom evolve ./h              # needs ANTHROPIC_API_KEY (strong model proposes)
+hiveloom evolve ./h              # needs configured-provider credentials when required
 hiveloom evolve ./h --yes        # auto-apply YAML changes; code ALWAYS needs y/n
 hiveloom evolve ./h --model provider/model-id   # choose the proposing model
 ```
@@ -25,10 +25,11 @@ gates it **in code**.
 
 ## Hard rules (enforced by the tool — don't fight them)
 
-- `guardrails`, `model`, `logging.redact`, and `extensions` can **never** be
-  changed by evolution. Don't try to weaken them by other means either; if a
-  guardrail is genuinely wrong, change it deliberately via
-  `hiveloom add guardrail` / `hiveloom set` and say so.
+- `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
+  `mcp_servers`, and `evolution.auto_propose` can **never** be changed by
+  evolution. Don't try to weaken them by other means either; if a guardrail is
+  genuinely wrong, change it deliberately via `hiveloom add guardrail` /
+  `hiveloom set` and say so.
 - Changes must fall within the harness's `evolution.mutable` set.
 - Regenerated code hooks always require explicit human approval — never
   auto-approve on the user's behalf.

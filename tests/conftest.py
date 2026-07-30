@@ -26,6 +26,10 @@ def _isolated_extensions(tmp_path_factory, monkeypatch) -> None:
     monkeypatch.setenv("HIVELOOM_HOME", str(home))
     # Bypass the harness trust prompt; dedicated trust tests override this.
     monkeypatch.setenv("HIVELOOM_TRUST", "always")
+    # A real $HIVELOOM_AUTHORIZED_KEYS in the developer/CI environment must
+    # never leak into the suite — auth tests would read or write it instead
+    # of a throwaway store.
+    monkeypatch.delenv("HIVELOOM_AUTHORIZED_KEYS", raising=False)
     monkeypatch.setattr(ext, "_iter_entry_points", lambda: [])
     ext.reset()
     yield

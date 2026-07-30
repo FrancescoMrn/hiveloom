@@ -29,7 +29,8 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                                                                     │
   │  runtime:                                                           │
   │    models/        ModelProvider ABC → Claude | OpenAI-compat | Fake │
-  │    tools/         registry (active/deferred) + sandboxed builtins   │
+  │    tools/         registry (active/deferred) + sandboxed builtins; │
+  │                   ToolRegistry owns the MCP sync/async bridge       │
   │    context/       assembly, budgeting, pluggable compaction, skills │
   │    guardrails/    Allow/Block/Halt hooks (frozen from evolution)    │
   │    events.py      lifecycle event bus (spec `hooks:` + ambient)     │
@@ -37,13 +38,24 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │    loop/          engine + pluggable policies (react | plan | …)    │
   │    skills.py      progressive-disclosure SKILL.md folders           │
   │    runner.py      assemble + drive a run; `hiveloom run [--stream]` │
+  │    serve.py       stdlib HTTP wrapper: POST /runs, GET /healthz     │
   │                                                                     │
   │  logging/         trace.py (append-only JSONL) + hive.py (SQLite)   │
   │                                                                     │
   │  generate/        strong model → construction plan → construct.py   │
   │                   (+ blueprints: house-style prompt fragments)      │
   │  evolve/          analyzer (Hive) → propose → gate → apply          │
+  │    proposals.py   queue: create/list/get/apply/reject (Hive-backed) │
   │  package.py       portable <name>-<hash>.zip (+ Dockerfile, packs)  │
+  │  serve/           HTTP surfaces (non-production)                    │
+  │    simple.py      `hiveloom serve`: stdlib /runs + /healthz         │
+  │                   — the rest is `hiveloom control-plane`, see       │
+  │                   docs/control-plane.md:                            │
+  │    keys.py        ed25519 keypairs, compact-JWT sign/verify         │
+  │    auth.py        authorized-keys store, bearer verification        │
+  │    runslots.py    bounded run concurrency for POST /run             │
+  │    app.py         Starlette app: auth + spec lock + endpoints       │
+  │  guide.py         AGENTS.md + skills/, packaged; `hiveloom guide`   │
   │  cli.py           Typer CLI over all of the above                   │
   └────────────────────────────────────────────────────────────────┘
 ```
@@ -87,9 +99,9 @@ triggers, and the N most recent failed traces with their verifier feedback.
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
 minimal mutation, then **gates it in code**:
 
-- `guardrails`, `model`, `logging.redact`, and `extensions`
-  (`schema.ALWAYS_FROZEN`) — plus any path the harness lists as `frozen` — can
-  **never** be changed;
+- `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
+  `mcp_servers`, and `evolution.auto_propose` (`schema.ALWAYS_FROZEN`) — plus
+  any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;
 - regenerated code hooks always require explicit human approval.
 
