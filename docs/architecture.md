@@ -45,6 +45,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                   (+ blueprints: house-style prompt fragments)      │
   │  evolve/          analyzer (Hive) → propose → gate → apply          │
   │  package.py       portable <name>-<hash>.zip (+ Dockerfile, packs)  │
+  │  guide.py         AGENTS.md + skills/, packaged; `hiveloom guide`   │
   │  cli.py           Typer CLI over all of the above                   │
   └────────────────────────────────────────────────────────────────┘
 ```

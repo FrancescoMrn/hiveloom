@@ -215,6 +215,45 @@ def extensions(
 
 
 @app.command()
+def guide(
+    topic: str = typer.Argument(
+        "agents", help="Topic to print: agents (default), all, or a skill name."
+    ),
+    list_topics: bool = typer.Option(False, "--list", help="List the topics instead."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Print the agent guidance that ships with the package.
+
+    ``AGENTS.md`` and the lifecycle skills are packaged, so an agent that only
+    ran ``pip install hiveloom`` can read the ground rules without a repository
+    checkout. Free: this never touches the API.
+    """
+    from hiveloom import guide as guide_mod
+
+    with _guard(json_output):
+        if list_topics:
+            topics = guide_mod.list_topics()
+            if json_output:
+                _emit_json({"ok": True, "topics": topics})
+                return
+            table = Table(title="guide topics")
+            table.add_column("topic", style="bold cyan")
+            table.add_column("covers")
+            for entry in topics:
+                table.add_row(entry["name"], entry["description"])
+            _console.print(table)
+            return
+
+        text = guide_mod.read_topic(topic)
+        if json_output:
+            _emit_json({"ok": True, "topic": topic, "markdown": text})
+            return
+        # Raw markdown, not rendered: the reader is usually an agent piping it
+        # into its own context, and rich would reflow and recolour the text.
+        print(text)
+
+
+@app.command()
 def validate(
     harness_dir: str = typer.Argument(".", help="Harness directory to validate."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
