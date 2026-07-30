@@ -9,8 +9,10 @@ import pytest
 
 # Reuse the Hive trace-writing helper from the Hive tests (tests dir is on sys.path).
 from test_hive import _write_trace
+from typer.testing import CliRunner
 
-from hiveloom import construct
+from hiveloom import cli, construct
+from hiveloom.errors import ExitCode
 from hiveloom.evolve.analyzer import FailureCluster, FailureReport, analyze
 from hiveloom.evolve.evolver import (
     MutationProposal,
@@ -25,6 +27,8 @@ from hiveloom.evolve.evolver import (
 from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.spec.loader import load_spec
+
+cli_runner = CliRunner()
 
 
 def _harness(tmp_path: Path) -> Path:
@@ -219,3 +223,68 @@ def test_propose_parses_model_json(tmp_path: Path):
 def test_parse_proposal_rejects_bad_json():
     with pytest.raises(Exception, match="not valid JSON"):
         parse_proposal("definitely not json")
+
+
+# --------------------------------------------------------------------------- #
+# CLI: evolve --propose (queues instead of applying)
+# --------------------------------------------------------------------------- #
+_PROPOSAL_PAYLOAD = json.dumps(
+    {"rationale": "clarify", "yaml_changes": [{"path": "loop.max_turns", "value": 25}]}
+)
+
+
+def _seed_failure(tmp_path: Path, name: str = "demo") -> None:
+    trace = _write_trace(
+        tmp_path, "run_a", name=name, status="verify_failed",
+        verifications=[(False, "not valid JSON")],
+    )
+    with Hive() as hive:  # the autouse conftest fixture points this at a throwaway db
+        hive.ingest_trace_file(trace)
+
+
+def _fake_model(monkeypatch, *responses: str) -> None:
+    monkeypatch.setattr(cli, "_strong_model", lambda *a, **k: FakeStrongModel(list(responses)))
+
+
+def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--propose", "--json"])
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["status"] == "pending"
+    assert payload["id"].startswith("prop_")
+    assert not (harness / "harness.yaml").read_text().startswith("# evolved")
+
+
+def test_cli_evolve_propose_ignores_yes(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(
+        cli.app, ["evolve", str(harness), "--propose", "--yes", "--json"]
+    )
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    assert json.loads(result.stdout)["status"] == "pending"
+    assert not (harness / "harness.yaml").read_text().startswith("# evolved")
+
+
+def test_cli_evolve_without_propose_is_unchanged(tmp_path: Path, monkeypatch):
+    """Regression: plain `hiveloom evolve <dir>` still applies directly, no queue."""
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--yes", "--json"])
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["changed"] is True
+    assert (harness / "harness.yaml").read_text().startswith("# evolved: 1")

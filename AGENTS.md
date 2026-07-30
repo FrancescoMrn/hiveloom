@@ -36,7 +36,7 @@ variant is the root [`SKILL.md`](SKILL.md).
 |---|---|---|
 | Create a harness for a task | [`skills/hiveloom-build`](skills/hiveloom-build/SKILL.md) | `schema --annotated`, `catalog`, `init`, `add`, `set`, `validate`, `run --dry-run`, `generate` |
 | Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run]`, `trace`, `stats` |
-| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes]`, `stats` |
+| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `stats` |
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 

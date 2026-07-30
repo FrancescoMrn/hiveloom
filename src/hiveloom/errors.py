@@ -31,3 +31,17 @@ class SpecError(HiveloomError):
 
 class CatalogError(HiveloomError):
     """Raised when a referenced builtin (tool/guardrail/validator/policy) is unknown."""
+
+
+class ProposalQueueError(SpecError):
+    """Raised for a caller mistake against the proposal queue.
+
+    Covers an unknown proposal id, a proposal that is no longer pending, or a
+    proposal whose stored ``spec_version_hash`` no longer matches the live
+    harness (the harness changed since the proposal was drafted — regenerate
+    it). Subclasses :class:`SpecError` so the CLI's ``_guard`` maps it to
+    :class:`ExitCode.SPEC_ERROR`, same as other actionable caller errors.
+
+    Distinct from :class:`hiveloom.evolve.evolver.ProposalError`, which is
+    raised when the *model's* proposal content is malformed.
+    """

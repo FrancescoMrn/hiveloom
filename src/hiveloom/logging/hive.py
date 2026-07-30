@@ -58,10 +58,27 @@ CREATE TABLE IF NOT EXISTS evolutions (
     rationale TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS proposals (
+    id TEXT PRIMARY KEY,
+    harness_name TEXT,
+    spec_version_hash TEXT,
+    dedup_key TEXT,
+    status TEXT,
+    trigger TEXT,
+    rationale TEXT,
+    proposal_json TEXT,
+    gate_json TEXT,
+    apply_result_json TEXT,
+    created_at TEXT,
+    resolved_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
+CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
+    ON proposals(harness_name, spec_version_hash, dedup_key) WHERE status='pending';
 """
 
 
@@ -377,6 +394,92 @@ class Hive:
             (harness_name,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def failure_count(self, harness_name: str, *, since: str | None = None) -> int:
+        """COUNT(*) of non-success runs, optionally since an ISO timestamp."""
+        query = "SELECT COUNT(*) AS n FROM runs WHERE harness_name=? AND status != 'success'"
+        params: list[Any] = [harness_name]
+        if since is not None:
+            query += " AND finished_at >= ?"
+            params.append(since)
+        row = self._conn.execute(query, params).fetchone()
+        return row["n"] or 0
+
+    # ------------------------------------------------------------------ #
+    # Proposals queue
+    # ------------------------------------------------------------------ #
+    def insert_proposal(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Insert a pending proposal row.
+
+        The partial unique index on ``(harness_name, spec_version_hash,
+        dedup_key) WHERE status='pending'`` is the dedup mechanism: if a
+        pending proposal already occupies this slot, the collision is caught
+        here and that existing row is returned instead of raising — dedup by
+        construction, safe even under a race with another inserter.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO proposals (id, harness_name, spec_version_hash, dedup_key, "
+                "status, trigger, rationale, proposal_json, gate_json, apply_result_json, "
+                "created_at, resolved_at) VALUES (:id, :harness_name, :spec_version_hash, "
+                ":dedup_key, :status, :trigger, :rationale, :proposal_json, :gate_json, "
+                ":apply_result_json, :created_at, :resolved_at)",
+                row,
+            )
+            self._conn.commit()
+            return dict(row)
+        except sqlite3.IntegrityError:
+            existing = self.find_pending_proposal(
+                row["harness_name"], row["spec_version_hash"], row["dedup_key"]
+            )
+            if existing is None:
+                raise
+            return existing
+
+    def find_pending_proposal(
+        self, harness_name: str, spec_version_hash: str, dedup_key: str
+    ) -> dict[str, Any] | None:
+        """The pending proposal occupying this dedup slot, if any."""
+        row = self._conn.execute(
+            "SELECT * FROM proposals WHERE harness_name=? AND spec_version_hash=? "
+            "AND dedup_key=? AND status='pending'",
+            (harness_name, spec_version_hash, dedup_key),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        """Fetch a single proposal row by id."""
+        row = self._conn.execute(
+            "SELECT * FROM proposals WHERE id=?", (proposal_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_proposals(
+        self, harness_name: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List proposals, optionally filtered by harness and/or status, newest first."""
+        query = "SELECT * FROM proposals WHERE 1=1"
+        params: list[Any] = []
+        if harness_name is not None:
+            query += " AND harness_name=?"
+            params.append(harness_name)
+        if status is not None:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY created_at DESC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_proposal(self, proposal_id: str, **fields: Any) -> None:
+        """Update selected columns of a proposal row (e.g. status, resolved_at)."""
+        if not fields:
+            return
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self._conn.execute(
+            f"UPDATE proposals SET {assignments} WHERE id=?",
+            (*fields.values(), proposal_id),
+        )
+        self._conn.commit()
 
     def summary(self, harness_name: str) -> dict[str, Any]:
         """A rolled-up stats view for one harness (all versions + per version)."""

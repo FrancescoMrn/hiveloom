@@ -128,6 +128,8 @@ harness mutation actually helped.
 hiveloom generate "Reconcile invoices against PO numbers" -o ./recon   # strong model builds it
 hiveloom evolve ./recon            # analyze Hive failures, propose a gated mutation
 hiveloom evolve ./recon --yes      # auto-apply YAML changes (code always needs y/n)
+hiveloom evolve ./recon --propose  # queue the gated proposal instead of applying it
+hiveloom proposals list ./recon    # review, then `proposals apply` / `proposals reject`
 ```
 
 `generate` is sugar: a strong model produces a construction *plan* that hiveloom replays

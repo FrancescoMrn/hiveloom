@@ -64,6 +64,30 @@ Step by step:
    folder to the previous `harness.yaml` (git makes this a one-liner); the version
    hash keeps the before/after comparable.
 
+## Queuing proposals instead of applying them
+
+`hiveloom evolve <dir> --propose` runs the same analyze → propose → gate
+pipeline but queues the gated result in the Hive instead of applying it —
+"auto-propose, human applies." A proposal is deduped by harness, spec version,
+and failure signature, so re-running `--propose` against the same failure
+state never pays for a second strong-model call; it just returns the existing
+pending proposal.
+
+```
+hiveloom evolve ./harness --propose --json    # queue a gated proposal
+hiveloom proposals list ./harness             # review what's pending
+hiveloom proposals show ./harness <id>        # inspect rationale + gate result
+hiveloom proposals apply ./harness <id>       # apply it (re-checks the harness
+                                               # hasn't changed since drafting)
+hiveloom proposals reject ./harness <id> --reason "not worth it"
+```
+
+There is no auto-apply: a human always calls `proposals apply` or
+`proposals reject`. This is the additive extension the trace sink / networked
+Hive / A/B runner discussion below anticipates — proposals live in the same
+Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
+can populate the same queue without changing this review step.
+
 ## Deployment topologies
 
 - **Same box** — deploy the folder; runs ingest into the local Hive
