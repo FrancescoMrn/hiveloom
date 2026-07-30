@@ -90,6 +90,12 @@ Then `hiveloom set model.provider ollama` / `set model.id qwen3:8b`, or
 `hive.register_provider(name, factory, models=[...])`. Unknown models fall
 back to Haiku-class pricing so cost guardrails stay conservative.
 
+The same provider works against hosted endpoints, e.g. OpenRouter:
+`base_url: https://openrouter.ai/api/v1`, `api_key_env: OPENROUTER_API_KEY`
+(Groq/Together/vLLM/mlx_lm.server work the same way — see `docs/extending.md`
+for typical base URLs). Reasoning-style models (DeepSeek-R1 family etc.) are
+supported.
+
 ## Event hooks (middleware, not guardrails)
 
 Attach with `hiveloom add hook --on <event> --code|--builtin …`. Handlers get
