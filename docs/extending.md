@@ -99,6 +99,29 @@ providers:
         output_cost_per_mtok: 0
 ```
 
+The same `openai_compat` provider works against hosted third-party endpoints,
+e.g. OpenRouter:
+
+```yaml
+providers:
+  openrouter:
+    api: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    models:
+      - id: deepseek/deepseek-r1
+        input_cost_per_mtok: 0.55
+        output_cost_per_mtok: 2.19
+```
+
+Other servers speaking the same API — typical defaults, confirm against your
+deployment: Groq `https://api.groq.com/openai/v1`, Together
+`https://api.together.xyz/v1`, vLLM `http://localhost:8000/v1`,
+mlx_lm.server `http://localhost:8080/v1`. Reasoning-style models (the
+DeepSeek-R1 family and similar) are supported: a reasoning-only turn is
+normalized from the response's `reasoning`/`reasoning_content` field when
+`content` is empty.
+
 **Programmatically** — `hive.register_provider(name, factory, models=[...])`
 with a factory returning a `ModelProvider`. Model pricing lives in the
 registry; unknown models fall back to Haiku-class pricing so cost guardrails
