@@ -31,3 +31,12 @@ class SpecError(HiveloomError):
 
 class CatalogError(HiveloomError):
     """Raised when a referenced builtin (tool/guardrail/validator/policy) is unknown."""
+
+
+class McpError(HiveloomError):
+    """Raised when a declared MCP server is unavailable or misbehaves at runtime.
+
+    The spec reference validated fine; this is a runtime failure (exit 4) —
+    connecting to the declared server, or the process/network behind it,
+    failed.
+    """

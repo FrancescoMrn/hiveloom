@@ -57,20 +57,23 @@ def dry_run(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
     registry = build_registry(spec, base)
-    run_input = _resolve_input(base, input_value)
+    try:
+        run_input = _resolve_input(base, input_value)
 
-    from hiveloom.models.provider import _estimate_messages_tokens
+        from hiveloom.models.provider import _estimate_messages_tokens
 
-    system = spec.system_prompt
-    messages = [{"role": "user", "content": run_input}]
-    return {
-        "name": spec.name,
-        "model": spec.model.id,
-        "system": system,
-        "messages": messages,
-        "tools": registry.anthropic_payload(),
-        "estimated_input_tokens": _estimate_messages_tokens(system, messages),
-    }
+        system = spec.system_prompt
+        messages = [{"role": "user", "content": run_input}]
+        return {
+            "name": spec.name,
+            "model": spec.model.id,
+            "system": system,
+            "messages": messages,
+            "tools": registry.anthropic_payload(),
+            "estimated_input_tokens": _estimate_messages_tokens(system, messages),
+        }
+    finally:
+        registry.close()
 
 
 def run_harness(
@@ -99,42 +102,45 @@ def run_harness(
 
     run_input = _resolve_input(base, input_value)
     registry = build_registry(spec, base)
-    guardrails = build_guardrails(spec, registry, base)
-    verifiers = build_verifiers(spec, base)
-    skills = load_skills(spec, base)
+    try:
+        guardrails = build_guardrails(spec, registry, base)
+        verifiers = build_verifiers(spec, base)
+        skills = load_skills(spec, base)
 
-    if provider is None:
-        provider = _default_provider(base, spec.model.provider)
+        if provider is None:
+            provider = _default_provider(base, spec.model.provider)
 
-    version_hash = spec_version_hash(spec, base)
-    run_id = _new_run_id()
-    trace = TraceWriter(
-        _resolve_trace_dir(base, spec.logging.trace_dir),
-        run_id=run_id,
-        harness_name=spec.name,
-        version_hash=version_hash,
-        redact_patterns=spec.logging.redact,
-        level=spec.logging.level,
-        on_event=on_event,
-    )
-    events = build_event_bus(spec, base, trace)
-    context = ContextManager(
-        spec, provider, trace, events=events, registry=registry, skills=skills
-    )
-    loop = AgentLoop(
-        spec=spec,
-        base_dir=base,
-        provider=provider,
-        registry=registry,
-        guardrails=guardrails,
-        verifiers=verifiers,
-        context=context,
-        trace=trace,
-        run_input=run_input,
-        run_id=run_id,
-        events=events,
-    )
-    result = loop.run()
+        version_hash = spec_version_hash(spec, base)
+        run_id = _new_run_id()
+        trace = TraceWriter(
+            _resolve_trace_dir(base, spec.logging.trace_dir),
+            run_id=run_id,
+            harness_name=spec.name,
+            version_hash=version_hash,
+            redact_patterns=spec.logging.redact,
+            level=spec.logging.level,
+            on_event=on_event,
+        )
+        events = build_event_bus(spec, base, trace)
+        context = ContextManager(
+            spec, provider, trace, events=events, registry=registry, skills=skills
+        )
+        loop = AgentLoop(
+            spec=spec,
+            base_dir=base,
+            provider=provider,
+            registry=registry,
+            guardrails=guardrails,
+            verifiers=verifiers,
+            context=context,
+            trace=trace,
+            run_input=run_input,
+            run_id=run_id,
+            events=events,
+        )
+        result = loop.run()
+    finally:
+        registry.close()
 
     if ingest:
         _ingest_trace(trace.path, hive_path)

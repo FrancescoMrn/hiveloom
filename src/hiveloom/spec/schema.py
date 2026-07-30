@@ -12,6 +12,7 @@ carry company-specific logic.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
@@ -206,6 +207,154 @@ HookRef = Annotated[
     Annotated[BuiltinHookRef, Tag("builtin")] | Annotated[CodeHookRef, Tag("code")],
     Discriminator(_ref_kind),
 ]
+
+
+# --------------------------------------------------------------------------- #
+# MCP server references (stdio | http union, discriminated on `transport`)
+# --------------------------------------------------------------------------- #
+_MCP_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _check_mcp_server_name(value: str) -> str:
+    if not _MCP_NAME_RE.match(value):
+        raise ValueError(
+            f"mcp server name {value!r} must match [a-zA-Z0-9_-]+ (it becomes "
+            "the mcp__<name>__<tool> prefix on every tool it exposes)"
+        )
+    return value
+
+
+class McpStdioServerRef(BaseModel):
+    """An MCP server launched as a local subprocess and spoken to over stdio.
+
+    ARBITRARY LOCAL EXEC: ``command`` runs with the harness's own permissions
+    the moment its tool registry is built (``build_registry`` connects
+    eagerly, including for ``run --dry-run``). Same risk class as
+    ``extensions`` — see ``ALWAYS_FROZEN``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        description=(
+            "Unique identifier for this server; becomes the mcp__<name>__<tool> "
+            "prefix on every tool it exposes. Must match [a-zA-Z0-9_-]+."
+        )
+    )
+    transport: Literal["stdio"] = Field(
+        default="stdio",
+        description=(
+            "Discriminates this variant from `McpHttpServerRef`. Must be written "
+            "explicitly as `transport: stdio` in YAML — the union dispatches on "
+            "this literal tag before field defaults apply."
+        ),
+    )
+    command: str = Field(
+        description=(
+            "Executable to launch. ARBITRARY LOCAL EXEC — runs with the "
+            "harness's permissions. Use `hiveloom add mcp-server` to add one."
+        )
+    )
+    args: list[str] = Field(
+        default_factory=list, description="Command-line arguments passed to `command`."
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Literal environment variables merged into a minimal safe env for "
+            "the subprocess — NOT a full host environment passthrough."
+        ),
+    )
+    env_from_host_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "target-var -> host env-var name, resolved from this process's "
+            "environment at connect time (for secrets that must not live in YAML)."
+        ),
+    )
+    cwd: str | None = Field(
+        default=None,
+        description="Working directory for the subprocess, relative to the harness directory.",
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Allowlist of remote tool names to expose; omit to expose every "
+            "tool the server reports."
+        ),
+    )
+    deferred: bool = Field(
+        default=False,
+        description=(
+            "Register discovered tools inactive; the auto-added search_tools "
+            "tool activates them on demand."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="Timeout in seconds for connect/initialize and for each tool call.",
+    )
+
+    _check_name = field_validator("name")(_check_mcp_server_name)
+
+
+class McpHttpServerRef(BaseModel):
+    """An MCP server reached over the Streamable HTTP transport."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        description=(
+            "Unique identifier for this server; becomes the mcp__<name>__<tool> "
+            "prefix on every tool it exposes. Must match [a-zA-Z0-9_-]+."
+        )
+    )
+    transport: Literal["http"] = Field(
+        default="http",
+        description=(
+            "Discriminates this variant from `McpStdioServerRef`. Must be written "
+            "explicitly as `transport: http` in YAML — the union dispatches on "
+            "this literal tag before field defaults apply."
+        ),
+    )
+    url: str = Field(description="Base URL of the server's Streamable HTTP endpoint.")
+    headers: dict[str, str] = Field(
+        default_factory=dict, description="Literal HTTP headers sent with every request."
+    )
+    header_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "header-name -> host env-var name, resolved from this process's "
+            "environment at connect time (e.g. Authorization -> ACME_MCP_TOKEN)."
+        ),
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Allowlist of remote tool names to expose; omit to expose every "
+            "tool the server reports."
+        ),
+    )
+    deferred: bool = Field(
+        default=False,
+        description=(
+            "Register discovered tools inactive; the auto-added search_tools "
+            "tool activates them on demand."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="Timeout in seconds for connect/initialize and for each tool call.",
+    )
+
+    _check_name = field_validator("name")(_check_mcp_server_name)
+
+
+McpServerRef = Annotated[McpStdioServerRef | McpHttpServerRef, Field(discriminator="transport")]
 
 
 # --------------------------------------------------------------------------- #
@@ -422,13 +571,15 @@ class EvolutionConfig(BaseModel):
 # `extensions` load arbitrary code, so evolution can never add or change them.
 # Hooks can transform tool inputs/results and final output, placing them
 # upstream of guardrails. They therefore share the non-negotiable evolution
-# boundary with guardrails themselves.
+# boundary with guardrails themselves. `mcp_servers` is the same risk class as
+# `extensions` (arbitrary local exec / arbitrary network endpoint).
 ALWAYS_FROZEN: tuple[str, ...] = (
     "guardrails",
     "model",
     "logging.redact",
     "extensions",
     "hooks",
+    "mcp_servers",
 )
 
 
@@ -454,6 +605,17 @@ class HarnessSpec(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig, description="Model config.")
     system_prompt: str = Field(description="System prompt for the harness model.")
     tools: list[ToolRef] = Field(default_factory=list, description="Tools available to the loop.")
+    mcp_servers: list[McpServerRef] = Field(
+        default_factory=list,
+        description=(
+            "MCP servers whose tools become ordinary dispatchable tools inside "
+            "the loop (mcp__<name>__<tool>). Discovered eagerly when the tool "
+            "registry is built — including for `run --dry-run` — and frozen "
+            "from evolution: same risk class as `extensions` (arbitrary "
+            "code/process). stdio servers are arbitrary local exec. Use "
+            "`hiveloom add mcp-server` to add one."
+        ),
+    )
     skills: list[str] = Field(
         default_factory=list,
         description=(
@@ -520,4 +682,13 @@ class HarnessSpec(BaseModel):
                     f"{guardrail.builtin}.value must be greater than 0 and at most "
                     f"{limits[guardrail.builtin]}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_mcp_server_names_unique(self) -> HarnessSpec:
+        seen: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in seen:
+                raise ValueError(f"duplicate mcp server name '{server.name}'")
+            seen.add(server.name)
         return self
