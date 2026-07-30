@@ -74,6 +74,9 @@ Or one arm at a time — see `scripts/run_all_arms.sh` for the individual
 
 - Live URLs can drift; every run stamps the dataset git hash and the pre-flight
   drift report. Goldens carry a `fingerprint` + `verified_at` for detection.
+  The 2026-07-30 pre-flight found one known drift: `s20` kept the same article
+  title and 14/15 headings, while GitHub Blog rotated the final related-post
+  heading. Re-verify or replace that sample before the next scored sweep.
 - The local arms report ~$0 cost (local inference has no API cost, and hiveloom
   counts usage-less openai-compat responses as free, so the number is not a
   measurement). Latency is their resource proxy.
