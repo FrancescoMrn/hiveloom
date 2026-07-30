@@ -421,6 +421,43 @@ def _default_frozen() -> list[str]:
     return ["guardrails", "model"]
 
 
+# A bare `gt=0` bound on cooldown_hours would still accept e.g. 1e-9, which is
+# functionally "no cooldown" (no two runs complete within nanoseconds of each
+# other) — that would make the "cannot be disabled" claim below false. One
+# minute is generous enough to constrain no legitimate configuration while
+# making the floor real. No ceiling: an unusually large cooldown just means
+# less auto-proposing, the safe direction (unlike a cost guardrail's ceiling).
+MIN_COOLDOWN_HOURS = 1 / 60
+
+
+class AutoProposeConfig(BaseModel):
+    """Opt-in: draft (never apply) an evolution proposal after a failing run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Draft a gated proposal after a failing run. Never auto-applies.",
+    )
+    min_failures: int = Field(
+        default=5, ge=1,
+        description="Non-success runs required (since the last auto-proposal) before drafting.",
+    )
+    cooldown_hours: float = Field(
+        default=24.0, ge=MIN_COOLDOWN_HOURS,
+        description=(
+            "Minimum gap between auto-drafted proposals for this harness. Cannot be "
+            "removed: values below one minute are rejected. Each qualifying failing run "
+            "costs a strong-model call unless the dedup pre-check catches it, so this is "
+            "partly a spend guard; use `min_failures` for a different shape of restraint."
+        ),
+    )
+    model: str | None = Field(
+        default=None,
+        description="Strong-model override for auto-drafted proposals; else the CLI/env default.",
+    )
+
+
 class EvolutionConfig(BaseModel):
     """What the evolver may and may not change."""
 
@@ -435,6 +472,10 @@ class EvolutionConfig(BaseModel):
         default_factory=_default_frozen,
         description="Spec paths the evolver must NEVER change.",
     )
+    auto_propose: AutoProposeConfig = Field(
+        default_factory=AutoProposeConfig,
+        description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
+    )
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
@@ -442,13 +483,17 @@ class EvolutionConfig(BaseModel):
 # `extensions` load arbitrary code, so evolution can never add or change them.
 # Hooks can transform tool inputs/results and final output, placing them
 # upstream of guardrails. They therefore share the non-negotiable evolution
-# boundary with guardrails themselves.
+# boundary with guardrails themselves. `evolution.auto_propose` is its own
+# paid, post-run trigger — a harness must never be able to enable that
+# trigger via evolution itself (docs/spec.md already documents it as never
+# mutable; this is what makes that claim true).
 ALWAYS_FROZEN: tuple[str, ...] = (
     "guardrails",
     "model",
     "logging.redact",
     "extensions",
     "hooks",
+    "evolution.auto_propose",
 )
 
 

@@ -138,6 +138,8 @@ harness mutation actually helped.
 hiveloom generate "Reconcile invoices against PO numbers" -o ./recon   # strong model builds it
 hiveloom evolve ./recon            # analyze Hive failures, propose a gated mutation
 hiveloom evolve ./recon --yes      # auto-apply YAML changes (code always needs y/n)
+hiveloom evolve ./recon --propose  # queue the gated proposal instead of applying it
+hiveloom proposals list ./recon    # review, then `proposals apply` / `proposals reject`
 ```
 
 `generate` is sugar: a strong model produces a construction *plan* that hiveloom replays
@@ -148,6 +150,21 @@ and `logging.redact` can never be changed, changes must fall within the harness'
 set, and regenerated code hooks always require explicit approval. Applied mutations bump an
 `# evolved: N` counter and are recorded in the Hive under a new version hash. Both need
 `ANTHROPIC_API_KEY`.
+
+**Serve over HTTP (non-production)**
+
+```bash
+hiveloom keys generate rinaldo                          # on your own machine; the key stays there
+hiveloom keys authorize rinaldo <public-key> --harness ./recon --scope run
+hiveloom serve ./recon                                  # binds 127.0.0.1:8420 by default
+hiveloom keys sign --key ~/.hiveloom/keys/rinaldo.pem --scope run   # mint a bearer token
+```
+
+`serve` exposes a deployed harness's full CLI surface (run/stats/trace/set/add/remove/
+evolve/proposals) over HTTP, bearer-authenticated with ed25519 keys. It's explicitly
+non-production: no TLS, no replay cache, one harness per process. See
+[`docs/control-plane.md`](docs/control-plane.md) for the endpoint table, the custody
+model, and the full limitations list before pointing it at anything that matters.
 
 **The deploy-anywhere-keep-evolving loop:** a harness runs wherever you put it (cheap model),
 writes traces in-folder, and is evolved deliberately on a dev/CI box (strong model + human
@@ -189,6 +206,7 @@ installable Agent Skills (build / run / evolve / extend / ship); the root
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.
 - [Extending hiveloom](docs/extending.md) — extension packs, providers, hooks, and SDK embedding.
 - [Deploying and evolving](docs/deploying-and-evolving.md) — portable artifacts and the production feedback loop.
+- [Control plane](docs/control-plane.md) — `hiveloom serve`'s endpoints, ed25519 keys/bearer-token auth, and the non-production limitations.
 - [Examples](harnesses/) — summarization, market analysis, and HN extraction harnesses.
 
 ## Contributing and security

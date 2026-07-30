@@ -9,8 +9,10 @@ import pytest
 
 # Reuse the Hive trace-writing helper from the Hive tests (tests dir is on sys.path).
 from test_hive import _write_trace
+from typer.testing import CliRunner
 
-from hiveloom import construct
+from hiveloom import cli, construct
+from hiveloom.errors import ExitCode
 from hiveloom.evolve.analyzer import FailureCluster, FailureReport, analyze
 from hiveloom.evolve.evolver import (
     MutationProposal,
@@ -25,6 +27,8 @@ from hiveloom.evolve.evolver import (
 from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.spec.loader import load_spec
+
+cli_runner = CliRunner()
 
 
 def _harness(tmp_path: Path) -> Path:
@@ -126,6 +130,57 @@ def test_gate_accepts_loop_steps_when_harness_opts_in(tmp_path: Path):
     proposal = MutationProposal(yaml_changes=[{"path": "loop.steps", "value": ["a", "b"]}])
     result = gate(spec, proposal)
     assert {c.path for c in result.accepted} == {"loop.steps"}
+def test_gate_rejects_evolution_auto_propose_touching(tmp_path: Path):
+    """Evolution must not tune its own auto-propose trigger. It's in
+    ALWAYS_FROZEN (fix-round-4 regression), so this is rejected as a frozen
+    path — a stronger guarantee than merely being absent from the default
+    `mutable` list, which a harness could otherwise override (see below).
+    """
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "evolution.auto_propose.enabled", "value": True}]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == "frozen path"
+
+
+def test_gate_rejects_evolution_auto_propose_even_with_custom_mutable_list(tmp_path: Path):
+    """A harness must not be able to enable its own auto_propose trigger by
+    explicitly listing it in a CUSTOM `evolution.mutable` — ALWAYS_FROZEN is
+    checked before the mutable set, so this can't be overridden per harness.
+    """
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "evolution.mutable", ["evolution.auto_propose"])
+    spec = load_spec(harness)
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "evolution.auto_propose.enabled", "value": True}]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == "frozen path"
+
+
+def test_gate_rejects_case_variant_frozen_paths(tmp_path: Path):
+    """Fix-round-5 regression: `_covered`'s comparison must be
+    case-insensitive — a case-variant path like `"Model"` or
+    `"logging.Redact"` must be rejected as frozen on its own, not merely
+    because the mismatched-case write that would otherwise follow creates
+    an unrecognized key `_commit`'s pydantic validation rejects anyway
+    (that's an unrelated backstop, not this check working).
+    """
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "Model", "value": {}},
+            {"path": "logging.Redact", "value": []},
+            {"path": "GUARDRAILS", "value": []},
+        ]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert all(r["reason"] == "frozen path" for r in result.rejected)
+    assert len(result.rejected) == 3
 
 
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
@@ -218,6 +273,27 @@ def test_apply_code_change_cannot_escape_harness(tmp_path: Path):
     assert not outside.exists()
 
 
+def test_apply_code_change_refuses_configured_trace_dir(tmp_path: Path):
+    """Fix-round-3 regression: a code change may not target the harness's
+    OWN (possibly reconfigured, non-default) trace directory either — the
+    same protection file_read/file_write and the HTTP control plane's
+    input_file get.
+    """
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "logging.trace_dir", "run_logs")
+    (harness / "run_logs").mkdir()
+    proposal = MutationProposal(
+        code_changes=[
+            {"file": "run_logs/evil.py", "source": "raise RuntimeError\n", "rationale": "bad"}
+        ]
+    )
+
+    with pytest.raises(ProposalError, match="outside the harness"):
+        apply_proposal(harness, proposal, approve_code=lambda _change: True)
+
+    assert not (harness / "run_logs" / "evil.py").exists()
+
+
 def test_apply_records_evolution_in_hive(tmp_path: Path):
     harness = _harness(tmp_path)
     proposal = MutationProposal(
@@ -243,3 +319,72 @@ def test_propose_parses_model_json(tmp_path: Path):
 def test_parse_proposal_rejects_bad_json():
     with pytest.raises(Exception, match="not valid JSON"):
         parse_proposal("definitely not json")
+
+
+# --------------------------------------------------------------------------- #
+# CLI: evolve --propose (queues instead of applying)
+# --------------------------------------------------------------------------- #
+_PROPOSAL_PAYLOAD = json.dumps(
+    {"rationale": "clarify", "yaml_changes": [{"path": "loop.max_turns", "value": 25}]}
+)
+
+
+def _seed_failure(tmp_path: Path, name: str = "demo") -> None:
+    trace = _write_trace(
+        tmp_path, "run_a", name=name, status="verify_failed",
+        verifications=[(False, "not valid JSON")],
+    )
+    with Hive() as hive:  # the autouse conftest fixture points this at a throwaway db
+        hive.ingest_trace_file(trace)
+
+
+def _fake_model(monkeypatch, *responses: str) -> None:
+    from hiveloom.generate import llm as llm_mod
+
+    monkeypatch.setattr(
+        llm_mod, "build_strong_model", lambda *a, **k: FakeStrongModel(list(responses))
+    )
+
+
+def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--propose", "--json"])
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["status"] == "pending"
+    assert payload["id"].startswith("prop_")
+    assert not (harness / "harness.yaml").read_text().startswith("# evolved")
+
+
+def test_cli_evolve_propose_ignores_yes(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(
+        cli.app, ["evolve", str(harness), "--propose", "--yes", "--json"]
+    )
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    assert json.loads(result.stdout)["status"] == "pending"
+    assert not (harness / "harness.yaml").read_text().startswith("# evolved")
+
+
+def test_cli_evolve_without_propose_is_unchanged(tmp_path: Path, monkeypatch):
+    """Regression: plain `hiveloom evolve <dir>` still applies directly, no queue."""
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--yes", "--json"])
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["changed"] is True
+    assert (harness / "harness.yaml").read_text().startswith("# evolved: 1")

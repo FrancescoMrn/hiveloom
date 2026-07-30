@@ -31,3 +31,46 @@ class SpecError(HiveloomError):
 
 class CatalogError(HiveloomError):
     """Raised when a referenced builtin (tool/guardrail/validator/policy) is unknown."""
+
+
+class ProposalQueueError(SpecError):
+    """Raised for a caller mistake against the proposal queue.
+
+    Covers an unknown proposal id, a proposal that is no longer pending, or a
+    proposal whose stored ``spec_version_hash`` no longer matches the live
+    harness (the harness changed since the proposal was drafted — regenerate
+    it). Subclasses :class:`SpecError` so the CLI's ``_guard`` maps it to
+    :class:`ExitCode.SPEC_ERROR`, same as other actionable caller errors.
+
+    Distinct from :class:`hiveloom.evolve.evolver.ProposalError`, which is
+    raised when the *model's* proposal content is malformed.
+    """
+
+
+class AuthenticationError(HiveloomError):
+    """Raised when a bearer token fails to authenticate.
+
+    Covers a missing/malformed ``Authorization`` header, an unknown key id,
+    an invalid signature, an expired token, or a revoked key. Used by
+    :mod:`hiveloom.serve.auth`; the control-plane server (next task) maps
+    this to HTTP 401. Distinct from :class:`AuthorizationError` below.
+    """
+
+
+class AuthorizationError(HiveloomError):
+    """Raised when an authenticated bearer token lacks a required scope.
+
+    A caller can present a validly-signed, non-revoked token and still be
+    refused here if neither its authorized key's scopes nor its own
+    ``scope`` claim cover what was requested. Kept distinct from
+    :class:`AuthenticationError` because the control-plane server (next
+    task) maps this to HTTP 403 versus 401 for authentication failures.
+    """
+
+
+class NotFoundError(HiveloomError):
+    """Raised when an HTTP-addressable resource (a run, a proposal) doesn't exist.
+
+    Distinct from :class:`SpecError` (a caller mistake, mapped to 400): this
+    is "the id you asked for isn't there", mapped by the control plane to 404.
+    """

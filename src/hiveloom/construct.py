@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -534,8 +535,8 @@ def remove_item(directory: str | Path, target: str) -> HarnessSpec:
     return _commit(directory, raw, [], "remove", {"target": target})
 
 
-def _remove_from_lists(raw: dict[str, Any], target: str) -> bool:
-    removed = False
+def _iter_list_sections(raw: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any], str]]:
+    """Yield ``(dotted_root, container, key)`` per list section present in ``raw``."""
     for keys in _LIST_SECTIONS.values():
         container: Any = raw
         for key in keys[:-1]:
@@ -544,12 +545,33 @@ def _remove_from_lists(raw: dict[str, Any], target: str) -> bool:
                 break
         if not isinstance(container, dict):
             continue
-        items = container.get(keys[-1])
-        if not isinstance(items, list):
-            continue
+        if isinstance(container.get(keys[-1]), list):
+            yield ".".join(keys), container, keys[-1]
+
+
+def matching_roots(raw: dict[str, Any], target: str) -> set[str]:
+    """The spec roots :func:`remove_item` would remove a ``target`` entry from.
+
+    Callers that gate removal on a spec path (the HTTP control plane refuses
+    frozen roots) need to know what a bare name resolves to. Sharing
+    ``_iter_list_sections`` with the removal itself means a new list section is
+    covered the moment it is added to ``_LIST_SECTIONS`` — a caller cannot
+    drift out of step with what removal actually touches.
+    """
+    return {
+        root
+        for root, container, key in _iter_list_sections(raw)
+        if any(_ref_matches(item, target) for item in container[key])
+    }
+
+
+def _remove_from_lists(raw: dict[str, Any], target: str) -> bool:
+    removed = False
+    for _root, container, key in _iter_list_sections(raw):
+        items = container[key]
         kept = [it for it in items if not _ref_matches(it, target)]
         if len(kept) != len(items):
-            container[keys[-1]] = kept
+            container[key] = kept
             removed = True
     return removed
 

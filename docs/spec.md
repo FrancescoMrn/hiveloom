@@ -29,7 +29,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `logging` | Trace policy | `trace_dir` (in-folder by default), `level`, `redact` (regexes; **frozen**) |
-| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change) |
+| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change), `auto_propose.{enabled,min_failures,cooldown_hours,model}` (opt-in post-run DRAFT trigger — never auto-applies; `auto_propose` itself is never mutable) |
 
 ## Builtins
 

@@ -26,6 +26,7 @@ from hiveloom.evolve.analyzer import FailureReport
 from hiveloom.generate.llm import StrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
+from hiveloom.package import trace_dir_relative_to
 from hiveloom.spec.loader import (
     atomic_write_text,
     dump_spec,
@@ -132,7 +133,21 @@ def propose(spec: HarnessSpec, report: FailureReport, model: StrongModel) -> Mut
 # Gate (frozen-path enforcement)
 # --------------------------------------------------------------------------- #
 def _covered(path: str, patterns: set[str]) -> bool:
-    return any(path == p or path.startswith(p + ".") for p in patterns)
+    """True if ``path`` equals, or is a dotted sub-path of, one of ``patterns``.
+
+    Case-insensitive, unconditionally — same principle and same reason as
+    `hiveloom.package.is_sensitive_path`'s casefold fix: a case-variant path
+    (``"Model"``, ``"logging.Redact"``) must not slip past this check. It
+    happens to be harmless *today* only because the mismatched-case write
+    that would follow creates an unrecognized key `_commit`'s pydantic
+    validation then rejects — an unrelated backstop, not this check working.
+    Shared by `gate()` for both the ALWAYS_FROZEN check and the mutable-set
+    check, so both become case-insensitive; a case-variant mutable path
+    still can't actually reach the real field for the same reason above, so
+    this loses nothing there.
+    """
+    path_cf = path.casefold()
+    return any(path_cf == p.casefold() or path_cf.startswith(p.casefold() + ".") for p in patterns)
 
 
 def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
@@ -217,10 +232,15 @@ def preview_yaml_changes(harness_dir: str | Path, proposal: MutationProposal) ->
     )
 
 
-def resolve_code_change_path(base: Path, file: str) -> Path:
-    """Resolve an evolved code target and reject paths outside its harness."""
+def resolve_code_change_path(
+    base: Path, file: str, *, trace_dir: Path | None = None
+) -> Path:
+    """Resolve an evolved code target and reject paths outside its harness
+    (or one of the paths `_safe_path` never allows regardless — the trust
+    store, credentials, and, when supplied, the configured trace directory).
+    """
     try:
-        return _safe_path(base, file)
+        return _safe_path(base, file, trace_dir=trace_dir)
     except ToolError as exc:
         raise ProposalError(f"code change path is outside the harness: {file}") from exc
 
@@ -256,8 +276,13 @@ def apply_proposal(
 
     # Validate every target before modifying any file, so a malicious later
     # proposal entry cannot leave an earlier approved one half-applied.
+    # trace_dir is passed through so a code change can't target a
+    # reconfigured (non-default) trace directory either — the same
+    # protection _safe_path's other callers get when they have it available.
+    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
     code_targets = [
-        (change, resolve_code_change_path(base, change.file)) for change in result.code_changes
+        (change, resolve_code_change_path(base, change.file, trace_dir=trace_dir))
+        for change in result.code_changes
     ]
     applied_code: list[str] = []
     pending_code: list[str] = []

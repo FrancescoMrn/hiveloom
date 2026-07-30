@@ -58,10 +58,27 @@ CREATE TABLE IF NOT EXISTS evolutions (
     rationale TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS proposals (
+    id TEXT PRIMARY KEY,
+    harness_name TEXT,
+    spec_version_hash TEXT,
+    dedup_key TEXT,
+    status TEXT,
+    trigger TEXT,
+    rationale TEXT,
+    proposal_json TEXT,
+    gate_json TEXT,
+    apply_result_json TEXT,
+    created_at TEXT,
+    resolved_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
+CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
+    ON proposals(harness_name, spec_version_hash, dedup_key) WHERE status='pending';
 """
 
 
@@ -377,6 +394,135 @@ class Hive:
             (harness_name,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def failure_count(self, harness_name: str, *, since: str | None = None) -> int:
+        """COUNT(*) of non-success runs, optionally since an ISO timestamp."""
+        query = "SELECT COUNT(*) AS n FROM runs WHERE harness_name=? AND status != 'success'"
+        params: list[Any] = [harness_name]
+        if since is not None:
+            query += " AND finished_at >= ?"
+            params.append(since)
+        row = self._conn.execute(query, params).fetchone()
+        return row["n"] or 0
+
+    # ------------------------------------------------------------------ #
+    # Proposals queue
+    # ------------------------------------------------------------------ #
+    def insert_proposal(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Insert a pending proposal row.
+
+        The partial unique index on ``(harness_name, spec_version_hash,
+        dedup_key) WHERE status='pending'`` is the dedup mechanism: if a
+        pending proposal already occupies this slot, the collision is caught
+        here and that existing row is returned instead of raising — dedup by
+        construction, safe even under a race with another inserter.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO proposals (id, harness_name, spec_version_hash, dedup_key, "
+                "status, trigger, rationale, proposal_json, gate_json, apply_result_json, "
+                "created_at, resolved_at) VALUES (:id, :harness_name, :spec_version_hash, "
+                ":dedup_key, :status, :trigger, :rationale, :proposal_json, :gate_json, "
+                ":apply_result_json, :created_at, :resolved_at)",
+                row,
+            )
+            self._conn.commit()
+            return dict(row)
+        except sqlite3.IntegrityError:
+            # The failed INSERT opened a transaction in sqlite3's default
+            # non-autocommit mode. End it before the lookup so this connection
+            # does not keep a needless write lock after the expected collision.
+            self._conn.rollback()
+            existing = self.find_pending_proposal(
+                row["harness_name"], row["spec_version_hash"], row["dedup_key"]
+            )
+            if existing is None:
+                raise
+            return existing
+
+    def find_pending_proposal(
+        self, harness_name: str, spec_version_hash: str, dedup_key: str
+    ) -> dict[str, Any] | None:
+        """The pending proposal occupying this dedup slot, if any."""
+        row = self._conn.execute(
+            "SELECT * FROM proposals WHERE harness_name=? AND spec_version_hash=? "
+            "AND dedup_key=? AND status='pending'",
+            (harness_name, spec_version_hash, dedup_key),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        """Fetch a single proposal row by id."""
+        row = self._conn.execute(
+            "SELECT * FROM proposals WHERE id=?", (proposal_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_proposals(
+        self, harness_name: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List proposals, optionally filtered by harness and/or status, newest first."""
+        query = "SELECT * FROM proposals WHERE 1=1"
+        params: list[Any] = []
+        if harness_name is not None:
+            query += " AND harness_name=?"
+            params.append(harness_name)
+        if status is not None:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY created_at DESC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def last_auto_proposal_at(self, harness_name: str) -> str | None:
+        """Creation timestamp of this harness's newest auto-triggered proposal."""
+        row = self._conn.execute(
+            "SELECT created_at FROM proposals "
+            "WHERE harness_name=? AND trigger='auto' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (harness_name,),
+        ).fetchone()
+        return row["created_at"] if row else None
+
+    def claim_pending_proposal(self, proposal_id: str) -> bool:
+        """Atomically move a pending proposal into the transient applying state."""
+        cursor = self._conn.execute(
+            "UPDATE proposals SET status='applying' WHERE id=? AND status='pending'",
+            (proposal_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def release_proposal_claim(self, proposal_id: str) -> None:
+        """Return a failed apply's claimed proposal to pending for a retry.
+
+        Best-effort by design. The dedup index is partial on ``status='pending'``,
+        so a claimed proposal's slot is momentarily free and a concurrent
+        ``create_proposal`` can queue a fresh row for the same failure cluster.
+        Restoring this one would then collide on that index — and since this
+        runs inside the failed apply's exception handler, raising would mask the
+        real error. The colliding row already represents the same work, so
+        leaving this one claimed loses nothing.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE proposals SET status='pending' WHERE id=? AND status='applying'",
+                (proposal_id,),
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError:
+            self._conn.rollback()
+
+    def update_proposal(self, proposal_id: str, **fields: Any) -> None:
+        """Update selected columns of a proposal row (e.g. status, resolved_at)."""
+        if not fields:
+            return
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self._conn.execute(
+            f"UPDATE proposals SET {assignments} WHERE id=?",
+            (*fields.values(), proposal_id),
+        )
+        self._conn.commit()
 
     def summary(self, harness_name: str) -> dict[str, Any]:
         """A rolled-up stats view for one harness (all versions + per version)."""

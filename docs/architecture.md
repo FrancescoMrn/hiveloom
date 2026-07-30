@@ -43,7 +43,14 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │  generate/        strong model → construction plan → construct.py   │
   │                   (+ blueprints: house-style prompt fragments)      │
   │  evolve/          analyzer (Hive) → propose → gate → apply          │
+  │    proposals.py   queue: create/list/get/apply/reject (Hive-backed) │
   │  package.py       portable <name>-<hash>.zip (+ Dockerfile, packs)  │
+  │  serve/           HTTP control plane (non-production); see          │
+  │                   docs/control-plane.md                             │
+  │    keys.py        ed25519 keypairs, compact-JWT sign/verify         │
+  │    auth.py        authorized-keys store, bearer verification        │
+  │    runslots.py    bounded run concurrency for POST /run             │
+  │    app.py         Starlette app: auth + spec lock + endpoints       │
   │  cli.py           Typer CLI over all of the above                   │
   └────────────────────────────────────────────────────────────────┘
 ```

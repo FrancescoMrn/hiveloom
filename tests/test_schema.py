@@ -101,3 +101,53 @@ def test_extra_top_level_field_forbidden():
 def test_max_turns_must_be_positive():
     with pytest.raises(ValidationError):
         HarnessSpec.model_validate(_minimal(loop={"max_turns": 0}))
+
+
+# --------------------------------------------------------------------------- #
+# evolution.auto_propose
+# --------------------------------------------------------------------------- #
+def test_auto_propose_defaults():
+    spec = HarnessSpec.model_validate(_minimal())
+    auto = spec.evolution.auto_propose
+    assert auto.enabled is False
+    assert auto.min_failures == 5
+    assert auto.cooldown_hours == 24.0
+    assert auto.model is None
+
+
+def test_auto_propose_min_failures_must_be_at_least_one():
+    with pytest.raises(ValidationError):
+        HarnessSpec.model_validate(
+            _minimal(evolution={"auto_propose": {"min_failures": 0}})
+        )
+
+
+def test_auto_propose_cooldown_hours_rejects_zero_and_negative():
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            HarnessSpec.model_validate(
+                _minimal(evolution={"auto_propose": {"cooldown_hours": bad}})
+            )
+
+
+def test_auto_propose_cooldown_hours_rejects_sub_minute_values():
+    """A bare gt=0 bound would accept e.g. 1e-9, which is functionally "no
+    cooldown" — no two runs complete within nanoseconds of each other. The
+    one-minute floor (MIN_COOLDOWN_HOURS) is what makes "cannot be removed"
+    actually true; this is the assertion that catches a regression to gt=0."""
+    with pytest.raises(ValidationError):
+        HarnessSpec.model_validate(
+            _minimal(evolution={"auto_propose": {"cooldown_hours": 1e-9}})
+        )
+    # A whole minute itself is the floor, not excluded by it.
+    spec = HarnessSpec.model_validate(
+        _minimal(evolution={"auto_propose": {"cooldown_hours": 1 / 60}})
+    )
+    assert spec.evolution.auto_propose.cooldown_hours == 1 / 60
+
+
+def test_auto_propose_forbids_extra_fields():
+    with pytest.raises(ValidationError):
+        HarnessSpec.model_validate(
+            _minimal(evolution={"auto_propose": {"unexpected": True}})
+        )

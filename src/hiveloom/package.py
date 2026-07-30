@@ -6,7 +6,9 @@ it also emits a ``Dockerfile`` so the artifact becomes a runnable container.
 
 Secrets and local run memory are never packaged: ``.env*`` files, the configured
 trace directory, and ``__pycache__`` are excluded (a deployment starts fresh;
-``.env.example`` ships).
+``.env.example`` ships). ``is_sensitive_path`` is that exclusion predicate,
+public and reused by the HTTP control plane's ``POST /run`` ``input_file``
+handling — one definition of "never leaves the harness" for both.
 """
 
 from __future__ import annotations
@@ -50,9 +52,11 @@ __pycache__/
 
 _EXCLUDE_DIRS = {"__pycache__", ".hiveloom", ".git"}
 _ENV_TEMPLATES = {".env.example", ".env.template"}
+_EXCLUDE_DIRS_CF = {name.casefold() for name in _EXCLUDE_DIRS}
+_ENV_TEMPLATES_CF = {name.casefold() for name in _ENV_TEMPLATES}
 
 
-def _trace_dir_relative_to(base: Path, trace_dir: str) -> Path | None:
+def trace_dir_relative_to(base: Path, trace_dir: str) -> Path | None:
     """Return the configured trace directory when it lives inside ``base``."""
     configured = Path(trace_dir)
     resolved = configured.resolve() if configured.is_absolute() else (base / configured).resolve()
@@ -63,14 +67,41 @@ def _trace_dir_relative_to(base: Path, trace_dir: str) -> Path | None:
         return None
 
 
-def _should_skip(rel: Path, *, trace_dir: Path | None = None) -> bool:
-    if any(part in _EXCLUDE_DIRS for part in rel.parts):
+def _cf_parts(path: Path) -> tuple[str, ...]:
+    return tuple(part.casefold() for part in path.parts)
+
+
+def is_sensitive_path(rel: Path, *, trace_dir: Path | None = None) -> bool:
+    """The canonical "never leaves the harness" predicate for a path relative
+    to a harness directory: local run/auth state (``.hiveloom/``, which holds
+    the trust store, construction log, and — for a served harness —
+    ``authorized_keys.json``), credentials (``.env*``, except the checked-in
+    templates), VCS/cache noise, and the configured trace directory (which
+    may live outside ``.hiveloom/`` if reconfigured).
+
+    Every comparison is case-insensitive, unconditionally. ``.resolve()``
+    does not correct a caller's casing to the on-disk name on a
+    case-insensitive-but-case-preserving filesystem (macOS APFS, most
+    Windows filesystems) — the OS still opens ``.HIVELOOM/...`` as
+    ``.hiveloom/...`` while an exact-case comparison would wave it through.
+    Under-blocking here leaks secrets; over-blocking a legitimately-named
+    file that merely resembles ``.ENV`` is a trivially smaller cost.
+
+    Public and reused verbatim by both ``package_harness`` (never zip these)
+    and the HTTP control plane's ``POST /run``/tool-call path handling
+    (never read or write these) — one definition, so packaging and serving
+    can never disagree about what is sensitive.
+    """
+    rel_parts = _cf_parts(rel)
+    if any(part in _EXCLUDE_DIRS_CF for part in rel_parts):
         return True
-    if trace_dir is not None and (rel == trace_dir or trace_dir in rel.parents):
-        return True
-    if (
-        (rel.name.startswith(".env") and rel.name not in _ENV_TEMPLATES)
-        or rel.suffix in {".pyc", ".zip"}
+    if trace_dir is not None:
+        trace_parts = _cf_parts(trace_dir)
+        if rel_parts[: len(trace_parts)] == trace_parts:
+            return True
+    name_cf = rel.name.casefold()
+    if (name_cf.startswith(".env") and name_cf not in _ENV_TEMPLATES_CF) or (
+        rel.suffix.casefold() in {".pyc", ".zip"}
     ):
         return True
     return False
@@ -83,7 +114,7 @@ def _zip_dir(base: Path, zip_path: Path, top: str, *, trace_dir: Path | None) ->
             if not path.is_file():
                 continue
             rel = path.relative_to(base)
-            if _should_skip(rel, trace_dir=trace_dir):
+            if is_sensitive_path(rel, trace_dir=trace_dir):
                 continue
             arcname = f"{top}/{rel.as_posix()}"
             archive.write(path, arcname)
@@ -106,7 +137,7 @@ def package_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)  # never package an invalid harness
     version_hash = spec_version_hash(spec, base)
-    trace_dir = _trace_dir_relative_to(base, spec.logging.trace_dir)
+    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
     if trace_dir == Path("."):
         raise SpecError(
             "logging.trace_dir cannot be the harness root when packaging; "

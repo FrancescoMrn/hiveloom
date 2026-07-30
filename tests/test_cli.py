@@ -36,6 +36,21 @@ def test_set_invalid_returns_spec_error_code(tmp_path: Path):
     assert _json(r)["ok"] is False
 
 
+def test_set_frozen_root_still_works_locally(tmp_path: Path):
+    """Fix-round-4: the HTTP control plane refuses ALWAYS_FROZEN roots
+    (guardrails/model/logging.redact/extensions/hooks/evolution.auto_propose)
+    for a remote `mutate`-scoped caller — that check lives entirely in
+    serve/app.py. The local CLI, backed directly by construct.set_value,
+    must keep working exactly as before for every field, frozen or not:
+    construct IS the sanctioned way to edit a spec locally.
+    """
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(app, ["set", "model.id", "claude-sonnet-5", "--dir", directory, "--json"])
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["ok"] is True
+
+
 def test_catalog_json(tmp_path: Path):
     r = runner.invoke(app, ["catalog", "tools", "--json"])
     assert r.exit_code == ExitCode.OK

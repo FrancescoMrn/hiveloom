@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hiveloom import runner
+from structlog.testing import capture_logs
+
+from hiveloom import construct, runner
+from hiveloom.generate.llm import FakeStrongModel, StrongModel
+from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 
 EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
@@ -108,3 +113,156 @@ def test_dry_run_uses_no_provider(tmp_path: Path):
     assert info["name"] == "example-summarizer"
     assert "file_read" in [t["name"] for t in info["tools"]]
     assert info["estimated_input_tokens"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# The post-run auto-propose trigger (opt-in `evolution.auto_propose`)
+# --------------------------------------------------------------------------- #
+_AUTO_PROPOSAL_PAYLOAD = json.dumps(
+    {"rationale": "tighten", "yaml_changes": [{"path": "loop.max_turns", "value": 10}]}
+)
+
+
+def _auto_harness(
+    tmp_path: Path,
+    *,
+    name: str = "auto-demo",
+    min_failures: int = 1,
+    cooldown_hours: float = 24.0,
+) -> Path:
+    """A freshly-constructed harness with auto_propose opted in."""
+    target = tmp_path / name
+    construct.init_harness(target, name=name, task="Do a small thing.")
+    construct.set_value(target, "evolution.auto_propose.enabled", True)
+    construct.set_value(target, "evolution.auto_propose.min_failures", min_failures)
+    construct.set_value(target, "evolution.auto_propose.cooldown_hours", cooldown_hours)
+    return target
+
+
+def _failing_provider() -> FakeModelProvider:
+    # 300k output tokens at the $5/1M fallback rate = $1.50, over the default
+    # $1.00 max_cost_usd guardrail every freshly constructed harness gets.
+    return FakeModelProvider([text_response("x", output_tokens=300_000)])
+
+
+class _RaisingStrongModel(StrongModel):
+    """Simulates a network/API failure resolving the strong model."""
+
+    def generate(self, *, system: str, user: str, max_tokens: int = 4096) -> str:
+        raise RuntimeError("boom: no network in tests")
+
+
+def test_auto_propose_drafts_after_one_failing_run(tmp_path: Path):
+    harness = _auto_harness(tmp_path, min_failures=1)
+    model = FakeStrongModel([_AUTO_PROPOSAL_PAYLOAD])
+
+    result = runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+
+    assert result.status == "guardrail_halt"
+    with Hive() as hive:
+        proposals = hive.list_proposals(harness_name="auto-demo")
+    assert len(proposals) == 1
+    assert proposals[0]["status"] == "pending"
+    assert proposals[0]["trigger"] == "auto"
+
+
+def test_auto_propose_second_failure_dedups_and_skips_the_model(tmp_path: Path):
+    """The auto path benefits from the same dedup-before-model-call ordering
+    as `evolve --propose`: a second failing run must not pay for a second
+    strong-model call just because it re-attempts create_proposal."""
+    harness = _auto_harness(tmp_path, min_failures=1, cooldown_hours=24.0)
+    model = FakeStrongModel([_AUTO_PROPOSAL_PAYLOAD])  # only ONE response scripted
+
+    runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+    with Hive() as hive:
+        first = hive.list_proposals(harness_name="auto-demo")
+        assert len(first) == 1
+        # Force the cooldown window open regardless of real elapsed wall-clock
+        # time between the two run_harness() calls below, so the second run
+        # reaches create_proposal's dedup pre-check instead of being blocked
+        # by the cooldown guard first (which would prove nothing about dedup).
+        hive.update_proposal(
+            first[0]["id"], created_at=(datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        )
+
+    runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+
+    with Hive() as hive:
+        after = hive.list_proposals(harness_name="auto-demo")
+    assert len(after) == 1  # dedup held — no duplicate proposal
+    assert len(model.prompts) == 1  # the strong model was never called a second time
+
+
+def test_auto_propose_successful_run_creates_nothing(tmp_path: Path):
+    harness = _auto_harness(tmp_path, min_failures=1)
+    model = FakeStrongModel([])
+
+    result = runner.run_harness(
+        harness, "x", provider=FakeModelProvider([text_response("done")]), strong_model=model
+    )
+
+    assert result.status == "success"
+    with Hive() as hive:
+        assert hive.list_proposals(harness_name="auto-demo") == []
+    assert model.prompts == []
+
+
+def test_auto_propose_default_disabled_makes_no_hive_proposals_query(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "plain"
+    construct.init_harness(target, name="plain-demo", task="Do a small thing.")
+    # evolution.auto_propose.enabled defaults to False — left untouched on purpose.
+
+    calls: list[str] = []
+    original = Hive.failure_count
+
+    def spy(self, *args, **kwargs):
+        calls.append("failure_count")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Hive, "failure_count", spy)
+
+    result = runner.run_harness(
+        target, "x", provider=_failing_provider(), strong_model=FakeStrongModel([])
+    )
+
+    assert result.status == "guardrail_halt"
+    assert calls == []  # disabled short-circuits before any Hive proposals query
+    with Hive() as hive:
+        assert hive.list_proposals(harness_name="plain-demo") == []
+
+
+def test_auto_propose_raising_strong_model_does_not_fail_the_run(tmp_path: Path):
+    harness = _auto_harness(tmp_path, min_failures=1)
+
+    with capture_logs() as logs:
+        result = runner.run_harness(
+            harness, "x", provider=_failing_provider(), strong_model=_RaisingStrongModel()
+        )
+
+    assert result.status == "guardrail_halt"  # unaffected by the auto-propose crash
+    assert logs == [
+        {
+            "event": "auto_propose_failed",
+            "harness_name": "auto-demo",
+            "error": "boom: no network in tests",
+            "error_type": "RuntimeError",
+            "log_level": "warning",
+        }
+    ]
+    with Hive() as hive:
+        assert hive.list_proposals(harness_name="auto-demo") == []
+
+
+def test_auto_propose_malformed_model_output_does_not_fail_the_run(tmp_path: Path):
+    """A raising create_proposal (here: evolver.propose chokes on bad JSON) must
+    not fail the run either — same never-fail discipline as trace-ingest."""
+    harness = _auto_harness(tmp_path, min_failures=1)
+    model = FakeStrongModel(["not valid json at all"])
+
+    result = runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+
+    assert result.status == "guardrail_halt"
+    with Hive() as hive:
+        assert hive.list_proposals(harness_name="auto-demo") == []
