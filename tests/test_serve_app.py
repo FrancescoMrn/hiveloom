@@ -117,6 +117,23 @@ def test_stats_correct_scope_succeeds(tmp_path: Path):
     assert r.json()["harness_name"] == "srv"
 
 
+def test_non_utf8_authorized_keys_store_fails_closed_not_crash(tmp_path: Path):
+    """Fix-round regression: a store file with invalid UTF-8 bytes used to
+    raise a raw UnicodeDecodeError, surfacing as an unhandled 500 text/plain
+    error page instead of the documented {"ok": false, ...} JSON shape on
+    every authenticated endpoint.
+    """
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    key_id, token = _authorize(harness, ["read"])
+    auth_mod.authorized_keys_path(harness).write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+
+    with TestClient(app) as client:
+        r = client.get("/stats", headers=_bearer(token))
+    assert r.status_code == 401
+    assert r.json()["ok"] is False
+
+
 # --------------------------------------------------------------------------- #
 # /run — sync
 # --------------------------------------------------------------------------- #
@@ -218,6 +235,82 @@ def test_run_input_file_within_harness_dir_is_read(tmp_path: Path):
         )
     assert r.status_code == 200
     assert captured[0].calls[0]["messages"][0]["content"] == "from the file"
+
+
+def test_run_input_file_refuses_authorized_keys_json(tmp_path: Path):
+    """CRITICAL fix-round regression: staying inside the harness dir isn't
+    enough — .hiveloom/ (which holds this harness's OWN auth store) lives
+    inside it. A run-scoped caller must never be able to read it.
+    """
+    harness = _harness(tmp_path)
+    _, token = _authorize(harness, ["run"])  # this call writes .hiveloom/authorized_keys.json
+    captured: list[FakeModelProvider] = []
+
+    def factory(base):
+        provider = FakeModelProvider([text_response("HELLO")])
+        captured.append(provider)
+        return provider
+
+    app = create_app(harness, provider_factory=factory)
+    with TestClient(app) as client:
+        r = client.post(
+            "/run", json={"input_file": ".hiveloom/authorized_keys.json"}, headers=_bearer(token)
+        )
+    assert r.status_code == 400
+    assert captured == []  # never even reached run_harness/the model
+
+
+def test_run_input_file_refuses_another_runs_trace(tmp_path: Path):
+    """A run-scoped caller must not be able to read a PRIOR run's full
+    transcript out of .hiveloom/traces/ — that's what /trace and its `read`
+    scope exist to gate; `run` scope must not grant broader data access.
+    """
+    harness = _harness(tmp_path)
+    _, token = _authorize(harness, ["run"])
+    app = create_app(
+        harness, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    with TestClient(app) as client:
+        first = client.post("/run", json={"input": "hi"}, headers=_bearer(token))
+        assert first.status_code == 200
+        trace_path = Path(first.json()["trace_path"])
+        rel_trace = trace_path.relative_to(harness.resolve()).as_posix()
+
+        r = client.post("/run", json={"input_file": rel_trace}, headers=_bearer(token))
+    assert r.status_code == 400
+
+
+def test_run_input_file_refuses_dotenv(tmp_path: Path):
+    """A deployed harness routinely holds a live ANTHROPIC_API_KEY in .env
+    (ext.py loads it from there) — input_file must never forward it.
+    """
+    harness = _harness(tmp_path)
+    (harness / ".env").write_text("ANTHROPIC_API_KEY=super-secret-value\n")
+    _, token = _authorize(harness, ["run"])
+    app = create_app(
+        harness, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    with TestClient(app) as client:
+        r = client.post("/run", json={"input_file": ".env"}, headers=_bearer(token))
+    assert r.status_code == 400
+
+
+def test_run_input_file_refuses_custom_trace_dir(tmp_path: Path):
+    """The sensitivity check must cover the configured trace_dir even when
+    it is NOT the default `.hiveloom/traces` (and so wouldn't be caught by
+    the `.hiveloom/` exclusion alone).
+    """
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "logging.trace_dir", "logs")
+    (harness / "logs").mkdir()
+    (harness / "logs" / "run_x.jsonl").write_text('{"type": "run_started"}\n')
+    _, token = _authorize(harness, ["run"])
+    app = create_app(
+        harness, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    with TestClient(app) as client:
+        r = client.post("/run", json={"input_file": "logs/run_x.jsonl"}, headers=_bearer(token))
+    assert r.status_code == 400
 
 
 # --------------------------------------------------------------------------- #

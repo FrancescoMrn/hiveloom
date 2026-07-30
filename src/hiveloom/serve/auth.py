@@ -53,7 +53,11 @@ def load_authorized_keys(path: str | Path) -> dict:
         return {"keys": []}
     try:
         data = json.loads(resolved.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
+        # ValueError covers json.JSONDecodeError (already a ValueError
+        # subclass) AND UnicodeDecodeError from a non-UTF-8 store file — both
+        # are "corrupt", same as an OSError reading it; every malformed-store
+        # shape must fail the same way (an empty store, not a raw traceback).
         return {"keys": []}
     if not isinstance(data, dict) or not isinstance(data.get("keys"), list):
         return {"keys": []}

@@ -135,7 +135,16 @@ HTTP:
   read.
 - An optional, separate `input_file` field is resolved relative to the
   harness directory and rejected if it would escape it (the same
-  containment helper the evolver uses for code-change paths).
+  containment helper the evolver uses for code-change paths) — **and**
+  rejected if it points at anything package.py already treats as "never
+  leaves the harness": `.hiveloom/` (the trust store, construction log, and
+  — for a served harness — its own `authorized_keys.json` and every prior
+  run's trace), `.env*` (a deployed harness routinely holds a live
+  `ANTHROPIC_API_KEY` there), or the configured `logging.trace_dir` even
+  when it's been moved outside `.hiveloom/`. Staying inside the harness
+  directory is necessary but not sufficient; both checks share one
+  definition (`hiveloom.package.is_sensitive_path`) so packaging and serving
+  can never disagree about what counts as sensitive.
 
 ## Limitations (loud, on purpose)
 

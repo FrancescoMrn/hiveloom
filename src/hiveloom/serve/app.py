@@ -50,6 +50,7 @@ from hiveloom.generate.llm import StrongModel, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.models.provider import ModelProvider
+from hiveloom.package import is_sensitive_path, trace_dir_relative_to
 from hiveloom.serve import auth as auth_mod
 from hiveloom.serve.runslots import (
     DEFAULT_MAX_CONCURRENT_RUNS,
@@ -299,6 +300,20 @@ def create_app(
                 resolved = await asyncio.to_thread(_safe_path, base, input_file)
             except ToolError as exc:
                 return _error_response(SpecError(str(exc)))
+            # Staying inside the harness dir isn't enough on its own: .env*
+            # (credentials — a deployed harness routinely holds a live
+            # ANTHROPIC_API_KEY there) and .hiveloom/ (the trust store,
+            # construction log, and — for a served harness — its own
+            # authorized_keys.json and every prior run's trace) both live
+            # INSIDE it. Reuse package.py's canonical "never leaves the
+            # harness" predicate rather than a second, divergence-prone list.
+            spec = await asyncio.to_thread(load_spec, harness_dir)
+            trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
+            rel = resolved.relative_to(base.resolve())
+            if is_sensitive_path(rel, trace_dir=trace_dir):
+                return _error_response(
+                    SpecError(f"input_file '{input_file}' is not readable over the control plane")
+                )
             if not resolved.is_file():
                 return _error_response(SpecError(f"input_file not found: {input_file}"))
             run_input = await asyncio.to_thread(resolved.read_text, encoding="utf-8")

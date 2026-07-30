@@ -322,6 +322,29 @@ def test_verify_bearer_scopes_as_bare_string_does_not_char_split(tmp_path: Path)
         auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="r")
 
 
+def test_load_authorized_keys_survives_non_utf8_file(tmp_path: Path):
+    """Fix-round regression: `UnicodeDecodeError` subclasses `ValueError` but
+    was not in the original `except (json.JSONDecodeError, OSError)` tuple,
+    so a store file with invalid UTF-8 bytes raised a raw exception instead
+    of being treated as corrupt (empty), same as any other malformed store.
+    """
+    path = tmp_path / "authorized_keys.json"
+    path.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+
+    assert auth_mod.load_authorized_keys(path) == {"keys": []}
+
+
+def test_verify_bearer_survives_non_utf8_store_file(tmp_path: Path):
+    path = tmp_path / "authorized_keys.json"
+    path.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    private_pem, public_b64 = keys_mod.generate_keypair()
+    key_id = keys_mod.key_id_for(public_b64)
+    token = keys_mod.sign_token(private_pem, key_id=key_id, subject="x", scope="run")
+
+    with pytest.raises(AuthenticationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
 # --------------------------------------------------------------------------- #
 # CLI: `hiveloom keys ...`
 # --------------------------------------------------------------------------- #
