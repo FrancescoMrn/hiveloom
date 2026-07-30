@@ -41,20 +41,29 @@ not prompt engineering.
 uv sync
 cp .env.example .env          # fill ANTHROPIC_API_KEY
 ollama pull qwen3:4b-instruct
+ollama pull gemma4:12b-mlx
 python dataset/check_dataset_urls.py   # pre-flight: URL liveness + drift
 ```
+
+The two local `ollama` arms need the native Ollama app on
+`127.0.0.1:11434`; the `mlx` arm needs `mlx_lm.server` already serving
+`mlx-community/Qwen3.6-35B-A3B-8bit` on `:8081` (`run_all_arms.sh` hard-fails
+if it is not reachable). Both providers must be registered in
+`~/.hiveloom/models.yaml` for the harness arms — see
+[docs/extending.md](../../docs/extending.md).
 
 The per-arm harness dirs under `harnesses/` are generated (not committed) from
 the canonical `../../harnesses/article-extractor` by
 `./scripts/setup_harnesses.sh` — run_all_arms.sh calls it automatically. Only
 the `model:` block differs per arm (verify with
 `diff harnesses/harness-haiku/harness.yaml harnesses/harness-qwen/harness.yaml`);
-the script trusts each dir at build time.
+the script trusts each dir at build time and sets every arm's model explicitly,
+so the canonical harness's own model never leaks into an arm.
 
 ## Run
 
 ```bash
-./scripts/run_all_arms.sh              # all 4 arms, 3 epochs
+./scripts/run_all_arms.sh              # all 9 arms, 3 epochs
 python scripts/aggregate_results.py logs/* --out RESULTS.md
 ```
 
@@ -65,9 +74,9 @@ Or one arm at a time — see `scripts/run_all_arms.sh` for the individual
 
 - Live URLs can drift; every run stamps the dataset git hash and the pre-flight
   drift report. Goldens carry a `fingerprint` + `verified_at` for detection.
-- qwen arm reports ~$0 cost (local inference has no API cost, but hiveloom
-  counts usage-less openai-compat responses as free — see AUDIT.md). Latency is
-  its resource proxy.
+- The local arms report ~$0 cost (local inference has no API cost, and hiveloom
+  counts usage-less openai-compat responses as free, so the number is not a
+  measurement). Latency is their resource proxy.
 - Sonnet 5 intro pricing ($2/$10 per Mtok) expires 2026-08-31; the pricing
   table used is dated in every report.
 - The scorer strips one markdown fence layer for all arms (the harness has a

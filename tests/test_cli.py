@@ -110,6 +110,41 @@ def test_unexpected_error_uses_runtime_exit_and_json(tmp_path: Path, monkeypatch
     assert _json(r) == {"ok": False, "error": "boom"}
 
 
+def test_json_output_is_plain_under_forced_colour(tmp_path: Path):
+    """`--json` is a machine contract: no ANSI, even when the shell forces colour.
+
+    CI runners and agent shells export FORCE_COLOR/CLICOLOR_FORCE; routing the
+    payload through rich would then inject escape codes and break json.loads
+    for every caller of the CLI. CliRunner cannot see this — rich decides on the
+    real stdout — so this one goes through a subprocess.
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "FORCE_COLOR": "1", "CLICOLOR_FORCE": "1"}
+    env.pop("NO_COLOR", None)
+    def run(args: list[str]):
+        return subprocess.run(
+            [sys.executable, "-c", "from hiveloom.cli import app; app()", *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tmp_path,
+            check=False,
+        )
+
+    ok = run(["catalog", "tools", "--json"])
+    assert ok.returncode == ExitCode.OK
+    assert "\x1b" not in ok.stdout
+    assert json.loads(ok.stdout)["ok"] is True
+
+    err = run(["validate", str(tmp_path / "nope"), "--json"])
+    assert err.returncode == ExitCode.SPEC_ERROR
+    assert "\x1b" not in err.stdout
+    assert json.loads(err.stdout)["ok"] is False
+
+
 def test_schema_annotated_is_raw_yaml():
     r = runner.invoke(app, ["schema", "--annotated"])
     assert r.exit_code == ExitCode.OK

@@ -15,7 +15,6 @@ import json
 from collections import Counter
 
 import jsonschema
-
 from inspect_ai.scorer import CORRECT, INCORRECT, Score, Target, accuracy, scorer, stderr
 from inspect_ai.solver import TaskState
 
