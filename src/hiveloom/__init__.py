@@ -17,7 +17,7 @@ SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 ``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from hiveloom.spec.schema import HarnessSpec
 
