@@ -12,7 +12,11 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hiveloom import construct
+# Reuse the harness-builder helper from the run-integration tests (tests dir
+# is on sys.path), mirroring the existing cross-file test-helper precedent
+# (e.g. test_evolve.py importing _write_trace from test_hive.py).
+from test_run_integration import _auto_harness
+
 from hiveloom.evolve.proposals import create_proposal
 from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
@@ -26,12 +30,9 @@ _PAYLOAD = json.dumps(
 
 
 def _harness(tmp_path: Path, *, min_failures: int = 1, cooldown_hours: float = 24.0) -> Path:
-    target = tmp_path / "h"
-    construct.init_harness(target, name="demo", task="Do a thing.")
-    construct.set_value(target, "evolution.auto_propose.enabled", True)
-    construct.set_value(target, "evolution.auto_propose.min_failures", min_failures)
-    construct.set_value(target, "evolution.auto_propose.cooldown_hours", cooldown_hours)
-    return target
+    return _auto_harness(
+        tmp_path, name="demo", min_failures=min_failures, cooldown_hours=cooldown_hours
+    )
 
 
 def _write_failure(hive_path: Path, tmp_path: Path, run_id: str, feedback: str, at: str) -> None:

@@ -122,11 +122,15 @@ _AUTO_PROPOSAL_PAYLOAD = json.dumps(
 
 
 def _auto_harness(
-    tmp_path: Path, *, min_failures: int = 1, cooldown_hours: float = 24.0
+    tmp_path: Path,
+    *,
+    name: str = "auto-demo",
+    min_failures: int = 1,
+    cooldown_hours: float = 24.0,
 ) -> Path:
     """A freshly-constructed harness with auto_propose opted in."""
-    target = tmp_path / "auto"
-    construct.init_harness(target, name="auto-demo", task="Do a small thing.")
+    target = tmp_path / name
+    construct.init_harness(target, name=name, task="Do a small thing.")
     construct.set_value(target, "evolution.auto_propose.enabled", True)
     construct.set_value(target, "evolution.auto_propose.min_failures", min_failures)
     construct.set_value(target, "evolution.auto_propose.cooldown_hours", cooldown_hours)
