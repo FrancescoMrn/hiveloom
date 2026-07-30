@@ -21,6 +21,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
 | `tools` | Tools available to the loop | list of `{builtin: name}` or `{code: path.py:fn, description: ...}` |
+| `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |
 | `extensions` | Harness-local extension modules | paths/modules loaded before validation; **always frozen** |
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
@@ -55,6 +56,45 @@ Code hooks are the primary extension point. A validator hook has the signature
 hook is any `@hiveloom.tools.tool`-decorated function (its JSON input schema is
 derived from type hints). `hiveloom add …/--code` scaffolds a correctly-signed
 stub.
+
+## MCP servers
+
+A harness can declare MCP servers; their tools become ordinary dispatchable
+tools inside the loop, named `mcp__<server-name>__<tool>`. Discovery is
+**eager** — it happens when the tool registry is built, which includes
+`run --dry-run` (a harness with `mcp_servers` genuinely performs local/network
+I/O on dry-run; see AGENTS.md rule 5). `mcp_servers` is **always frozen** from
+evolution — the same risk class as `extensions` (arbitrary code/process).
+
+A stdio entry launches a local subprocess — **arbitrary local exec** —
+gated by the same harness-trust boundary as any other code hook (see
+`hiveloom trust`):
+
+```yaml
+mcp_servers:
+  - name: search
+    transport: stdio
+    command: npx
+    args: ["-y", "@foo/mcp-search"]
+    env_from_host_env:
+      API_KEY: FOO_SEARCH_API_KEY   # resolved from the host env at connect time
+```
+
+An http entry reaches a Streamable HTTP endpoint:
+
+```yaml
+mcp_servers:
+  - name: jira
+    transport: http
+    url: https://mcp.acme.com/mcp
+    header_env:
+      Authorization: ACME_MCP_TOKEN
+    tools: [search_issues, create_issue]   # allowlist; omit to expose all
+```
+
+Add one with `hiveloom add mcp-server` (see `hiveloom add mcp-server --help`);
+inspect what a harness's declared servers actually expose with
+`hiveloom mcp list-tools --dir ./h`.
 
 ## Safety invariants (enforced in code)
 

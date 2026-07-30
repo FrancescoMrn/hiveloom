@@ -53,6 +53,8 @@ keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
 app.add_typer(keys_app, name="keys")
+mcp_app = typer.Typer(help="Introspect the MCP servers declared by a harness.")
+app.add_typer(mcp_app, name="mcp")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -380,6 +382,71 @@ def add_skill_cmd(
         _added(json_output, "skill", name)
 
 
+@add_app.command("mcp-server")
+def add_mcp_server_cmd(
+    name: str = typer.Option(
+        ..., "--name", help="Server name; becomes the mcp__<name>__<tool> prefix."
+    ),
+    stdio_command: str | None = typer.Option(
+        None, "--stdio-command", help="Executable to launch (stdio transport)."
+    ),
+    stdio_arg: list[str] = typer.Option(
+        [], "--stdio-arg", help="Argument for --stdio-command (repeatable)."
+    ),
+    env: list[str] = typer.Option(
+        [], "--env", help="Literal env var as KEY=VALUE (repeatable, stdio only)."
+    ),
+    env_from_host: list[str] = typer.Option(
+        [],
+        "--env-from-host",
+        help="Env var resolved from the host as TARGET=HOST_VAR (repeatable, stdio only).",
+    ),
+    cwd: str | None = typer.Option(
+        None, "--cwd", help="Subprocess working dir, relative to the harness (stdio only)."
+    ),
+    url: str | None = typer.Option(
+        None, "--url", help="Streamable HTTP endpoint (http transport)."
+    ),
+    header: list[str] = typer.Option(
+        [], "--header", help="Literal HTTP header as 'Name: value' (repeatable, http only)."
+    ),
+    header_env: list[str] = typer.Option(
+        [],
+        "--header-env",
+        help="HTTP header resolved from the host as Name=HOST_VAR (repeatable, http only).",
+    ),
+    tool: list[str] = typer.Option(
+        [], "--tool", help="Allowlist a remote tool name (repeatable; omit to expose all)."
+    ),
+    deferred: bool = typer.Option(
+        False, "--deferred", help="Register discovered tools inactive until search_tools."
+    ),
+    directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Add an MCP server. Exactly one of --stdio-command / --url.
+
+    Makes no live connection — a typo in the command or URL only surfaces at
+    ``run``/``dry-run``/``mcp list-tools``.
+    """
+    with _guard(json_output):
+        construct.add_mcp_server(
+            directory,
+            name=name,
+            stdio_command=stdio_command,
+            stdio_args=stdio_arg or None,
+            stdio_env=_parse_kv_pairs(env, "--env") or None,
+            stdio_env_from_host=_parse_kv_pairs(env_from_host, "--env-from-host") or None,
+            stdio_cwd=cwd,
+            url=url,
+            headers=_parse_header_pairs(header) or None,
+            header_env=_parse_kv_pairs(header_env, "--header-env") or None,
+            tools=tool or None,
+            deferred=deferred,
+        )
+        _added(json_output, "mcp-server", name)
+
+
 @app.command()
 def remove(
     target: str = typer.Argument(..., help="Builtin name, code ref, or dotted field path."),
@@ -435,6 +502,64 @@ def trust(
             _emit_json({"ok": True, "directory": harness_dir, "action": verb})
         else:
             _console.print(f"[green]{verb}[/green] {harness_dir}")
+
+
+@mcp_app.command("list-tools")
+def mcp_list_tools_cmd(
+    directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Connect to every declared MCP server, discover its tools, then disconnect.
+
+    The dynamic analogue of ``catalog`` for server-defined tools: unlike
+    builtins, an MCP server's tools aren't known until it's actually reached.
+    A stdio server is arbitrary local exec, so this enforces the same trust
+    gate as ``run``/``dry-run`` before connecting (reuses build_registry's
+    bridge and closer — no second connection path).
+    """
+    from hiveloom import trust as trust_mod
+    from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
+    from hiveloom.tools.registry import build_registry
+
+    with _guard(json_output):
+        yaml_path = harness_path(directory)
+        base = yaml_path.parent
+        trust_mod.ensure_trusted(base, _trust_prompt(json_output))
+        spec = load_spec(yaml_path)
+        resolve_hooks(spec, base)
+
+        registry = build_registry(spec, base)
+        try:
+            tools = [
+                registry.get(n) for n in registry.names() if "mcp" in registry.get(n).tags
+            ]
+        finally:
+            registry.close()
+
+        payload = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "tags": t.tags,
+                "input_schema": t.input_schema,
+            }
+            for t in tools
+        ]
+        if json_output:
+            _emit_json({"ok": True, "tools": payload})
+            return
+        if not payload:
+            _console.print("no mcp tools (mcp_servers is empty)")
+            return
+        table = Table(title="mcp tools")
+        table.add_column("name", style="bold cyan")
+        table.add_column("description")
+        table.add_column("tags", style="green")
+        table.add_column("input", style="yellow")
+        for t in payload:
+            props = ", ".join((t["input_schema"] or {}).get("properties", {})) or "-"
+            table.add_row(t["name"], t["description"], ", ".join(t["tags"]), props)
+        _console.print(table)
 
 
 @app.command()
@@ -1264,6 +1389,29 @@ def _terse(entry: dict[str, Any]) -> str:
     """Render a guardrail entry's params (everything but its name) for a message."""
     params = {k: v for k, v in entry.items() if k != "builtin"}
     return ", ".join(f"{k}={v}" for k, v in params.items()) or "no params"
+
+
+def _parse_kv_pairs(values: list[str], flag: str) -> dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` option values into a dict."""
+    result: dict[str, str] = {}
+    for raw in values:
+        key, sep, value = raw.partition("=")
+        if not sep or not key:
+            raise SpecError(f"{flag} expects KEY=VALUE (got {raw!r})")
+        result[key] = value
+    return result
+
+
+def _parse_header_pairs(values: list[str]) -> dict[str, str]:
+    """Parse repeated ``Name: value`` option values into a dict."""
+    result: dict[str, str] = {}
+    for raw in values:
+        name, sep, value = raw.partition(":")
+        name, value = name.strip(), value.strip()
+        if not sep or not name:
+            raise SpecError(f"--header expects 'Name: value' (got {raw!r})")
+        result[name] = value
+    return result
 
 
 if __name__ == "__main__":

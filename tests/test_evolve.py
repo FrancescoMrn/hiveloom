@@ -100,6 +100,22 @@ def test_gate_rejects_dangerous_tool_changes(tmp_path: Path):
     )
 
 
+def test_gate_rejects_mcp_servers_regardless_of_harness_mutable_list(tmp_path: Path):
+    """ALWAYS_FROZEN must win even if a harness declares mcp_servers mutable."""
+    directory = _harness(tmp_path)
+    construct.set_field(directory, "evolution.mutable", '["mcp_servers"]')
+    spec = load_spec(directory)
+    assert "mcp_servers" in spec.evolution.mutable
+    assert "mcp_servers" not in spec.evolution.frozen
+
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "mcp_servers", "value": [{"name": "x", "command": "y"}]}]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert result.rejected == [{"path": "mcp_servers", "reason": "frozen path"}]
+
+
 def test_gate_rejects_non_mutable_path(tmp_path: Path):
     spec = load_spec(_harness(tmp_path))
     proposal = MutationProposal(yaml_changes=[{"path": "verify.on_fail.max_retries", "value": 9}])

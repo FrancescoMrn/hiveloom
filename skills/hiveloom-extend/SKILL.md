@@ -108,11 +108,24 @@ YAML boolean. Handlers must not raise; a raising handler is logged as
 `hook_error` and skipped. Guardrails remain the frozen safety layer and always
 run first.
 
+## MCP servers
+
+`mcp_servers` tools join the loop as ordinary tools (`mcp__<name>__<tool>`),
+discovered eagerly (including on `run --dry-run`):
+
+```bash
+hiveloom add mcp-server --name search --stdio-command npx \
+  --stdio-arg -y --stdio-arg @foo/mcp-search --dir ./h
+hiveloom mcp list-tools --dir ./h   # see what it actually exposes
+```
+
+A stdio server is arbitrary local exec — trust-gated like any code hook.
+
 ## Rules that never bend
 
 Extensions **widen choice, never the evolution gate**: `model`, `guardrails`,
-`logging.redact`, and `extensions` stay frozen from evolution, and foreign
-harness folders stay trust-gated before their code loads.
+`logging.redact`, `extensions`, and `mcp_servers` stay frozen from evolution,
+and foreign harness folders stay trust-gated before their code loads.
 
 Full reference (deferred tools, tool ergonomics, `$HIVELOOM_HOME`, SDK):
 `docs/extending.md`.

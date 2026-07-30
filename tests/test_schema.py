@@ -6,10 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from hiveloom.spec.schema import (
+    ALWAYS_FROZEN,
     BuiltinGuardrailRef,
     BuiltinToolRef,
     CodeToolRef,
     HarnessSpec,
+    McpHttpServerRef,
+    McpStdioServerRef,
 )
 
 
@@ -77,6 +80,58 @@ def test_builtin_param_unknown_rejected():
         HarnessSpec.model_validate(
             _minimal(guardrails=[{"builtin": "tool_allowlist", "value": 1}])
         )
+
+
+def test_mcp_server_ref_discrimination():
+    # The union dispatches on the literal `transport` tag, so it must be
+    # explicit in raw data even though the field itself has a default (that
+    # default only helps direct construction of the concrete class).
+    spec = HarnessSpec.model_validate(
+        _minimal(
+            mcp_servers=[
+                {"name": "s1", "transport": "stdio", "command": "prog"},
+                {"name": "s2", "transport": "http", "url": "https://example.invalid/mcp"},
+            ]
+        )
+    )
+    assert isinstance(spec.mcp_servers[0], McpStdioServerRef)
+    assert spec.mcp_servers[0].transport == "stdio"
+    assert isinstance(spec.mcp_servers[1], McpHttpServerRef)
+    assert spec.mcp_servers[1].transport == "http"
+
+
+def test_mcp_server_name_rejects_unsafe_charset():
+    with pytest.raises(ValidationError, match=r"a-zA-Z0-9_-"):
+        HarnessSpec.model_validate(
+            _minimal(mcp_servers=[{"name": "bad name!", "transport": "stdio", "command": "x"}])
+        )
+
+
+def test_mcp_server_names_must_be_unique():
+    with pytest.raises(ValidationError, match="duplicate"):
+        HarnessSpec.model_validate(
+            _minimal(
+                mcp_servers=[
+                    {"name": "dup", "transport": "stdio", "command": "a"},
+                    {"name": "dup", "transport": "http", "url": "https://example.invalid"},
+                ]
+            )
+        )
+
+
+def test_mcp_servers_extra_fields_forbidden():
+    with pytest.raises(ValidationError, match="not_a_field"):
+        HarnessSpec.model_validate(
+            _minimal(
+                mcp_servers=[
+                    {"name": "s", "transport": "stdio", "command": "x", "not_a_field": 1}
+                ]
+            )
+        )
+
+
+def test_mcp_servers_is_always_frozen():
+    assert "mcp_servers" in ALWAYS_FROZEN
 
 
 def test_builtin_required_param_missing_rejected():

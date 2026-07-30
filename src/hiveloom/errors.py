@@ -74,3 +74,12 @@ class NotFoundError(HiveloomError):
     Distinct from :class:`SpecError` (a caller mistake, mapped to 400): this
     is "the id you asked for isn't there", mapped by the control plane to 404.
     """
+
+
+class McpError(HiveloomError):
+    """Raised when a declared MCP server is unavailable or misbehaves at runtime.
+
+    The spec reference validated fine; this is a runtime failure (exit 4) —
+    connecting to the declared server, or the process/network behind it,
+    failed.
+    """

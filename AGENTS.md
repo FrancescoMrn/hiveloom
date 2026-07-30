@@ -20,12 +20,16 @@ the library; humans should start at [README.md](README.md).
    it doesn't exist. Check `hiveloom extensions` — installed packs may have
    widened the catalog.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
-   and `extensions` are frozen from evolution; the cost guardrail defaults on;
-   `shell` is allowlist-only; foreign harness folders are trust-gated before
-   their code loads. Don't route around any of this on a user's behalf.
+   `extensions`, and `mcp_servers` are frozen from evolution; the cost
+   guardrail defaults on; `shell` is allowlist-only; foreign harness folders
+   are trust-gated before their code loads. Don't route around any of this on
+   a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
-   `extensions`, and `run --dry-run` never touch the API. `run`, `generate`,
-   and `evolve` need `ANTHROPIC_API_KEY`.
+   `extensions`, and `run --dry-run` never call the model API. A harness with
+   `mcp_servers` is the one exception to "free": its tools are discovered
+   eagerly, so `run --dry-run` does perform real local/network I/O against
+   those declared servers (see `docs/spec.md`). `run`, `generate`, and
+   `evolve` need `ANTHROPIC_API_KEY`.
 
 ## Task → skill map
 

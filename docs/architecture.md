@@ -29,7 +29,8 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                                                                     │
   │  runtime:                                                           │
   │    models/        ModelProvider ABC → Claude | OpenAI-compat | Fake │
-  │    tools/         registry (active/deferred) + sandboxed builtins   │
+  │    tools/         registry (active/deferred) + sandboxed builtins; │
+  │                   ToolRegistry owns the MCP sync/async bridge       │
   │    context/       assembly, budgeting, pluggable compaction, skills │
   │    guardrails/    Allow/Block/Halt hooks (frozen from evolution)    │
   │    events.py      lifecycle event bus (spec `hooks:` + ambient)     │

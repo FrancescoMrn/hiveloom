@@ -131,6 +131,30 @@ Generate/evolve can use any provider too: `--model ollama/qwen3:32b`
 (`provider/model-id`). Note `model` stays in `ALWAYS_FROZEN` — the registry
 widens what a human or generator may choose, never what evolution can mutate.
 
+## MCP servers
+
+A harness can declare `mcp_servers`; their tools join the loop as ordinary
+tools (`mcp__<server-name>__<tool>`), discovered eagerly when the tool
+registry is built (including `run --dry-run`):
+
+```bash
+hiveloom add mcp-server --name search --stdio-command npx \
+  --stdio-arg -y --stdio-arg @foo/mcp-search \
+  --env-from-host API_KEY=FOO_SEARCH_API_KEY --dir ./h
+
+hiveloom add mcp-server --name jira --url https://mcp.acme.com/mcp \
+  --header-env 'Authorization=ACME_MCP_TOKEN' --tool search_issues --dir ./h
+
+hiveloom mcp list-tools --dir ./h   # see what a declared server actually exposes
+```
+
+A stdio server (`--stdio-command`) is **arbitrary local exec** — the same
+trust boundary as any other code hook. `mcp_servers` is **always frozen** from
+evolution, the same risk class as `extensions`. A remote tool's own
+`annotations` (e.g. `readOnlyHint`/`destructiveHint`) are **self-reported by
+an untrusted server and are never a security boundary** — the real boundaries
+are the always-frozen set plus harness trust gating.
+
 ## Lifecycle event hooks
 
 One event taxonomy serves the spec's `hooks:` section, ambient `hive.on(...)`
