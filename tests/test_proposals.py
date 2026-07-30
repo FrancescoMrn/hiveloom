@@ -12,7 +12,8 @@ import pytest
 from test_evolve import _PROPOSAL_PAYLOAD, _fake_model, _harness, _report, _seed_failure, cli_runner
 
 from hiveloom import cli
-from hiveloom.errors import ExitCode, ProposalQueueError
+from hiveloom import trust as trust_mod
+from hiveloom.errors import ExitCode, ProposalQueueError, SpecError
 from hiveloom.evolve.evolver import MutationProposal
 from hiveloom.evolve.evolver import apply_proposal as evolver_apply_proposal
 from hiveloom.evolve.proposals import (
@@ -84,6 +85,46 @@ def test_list_and_get_filtering(tmp_path: Path):
         assert list_proposals(hive, harness_name="other") == []
         assert [r.id for r in list_proposals(hive, status="pending")] == [created.id]
         assert list_proposals(hive, status="applied") == []
+
+
+# --------------------------------------------------------------------------- #
+# Trust enforcement (a past CRITICAL audit finding was a spec-loading path
+# that skipped trust; the autouse conftest fixture sets HIVELOOM_TRUST=always,
+# so these tests must override it to actually exercise the refusal).
+# --------------------------------------------------------------------------- #
+def test_create_proposal_refuses_when_untrusted(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)  # construct.init_harness auto-trusts locally-built harnesses
+    trust_mod.revoke_trust(harness)
+    monkeypatch.setenv("HIVELOOM_TRUST", "never")
+
+    spec = load_spec(harness)
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
+    with Hive(tmp_path / "hive.db") as hive:
+        with pytest.raises(SpecError, match="not trusted"):
+            create_proposal(hive, spec, harness, _report(), model, trigger="manual")
+
+        assert model.prompts == []  # never reached the strong model call
+        assert hive.list_proposals() == []  # nothing was persisted
+
+
+def test_apply_proposal_by_id_refuses_when_untrusted(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
+
+    with Hive(tmp_path / "hive.db") as hive:
+        created = create_proposal(hive, spec, harness, _report(), model, trigger="manual")
+
+        trust_mod.revoke_trust(harness)
+        monkeypatch.setenv("HIVELOOM_TRUST", "never")
+
+        yaml_path = harness / "harness.yaml"
+        before = yaml_path.read_text()
+        with pytest.raises(SpecError, match="not trusted"):
+            apply_proposal_by_id(hive, harness, created.id, apply_yaml=True)
+
+        assert yaml_path.read_text() == before  # never touched disk
+        assert get_proposal(hive, created.id).status == "pending"  # untouched
 
 
 # --------------------------------------------------------------------------- #
@@ -204,17 +245,34 @@ def test_cli_proposals_list_and_show(tmp_path: Path, monkeypatch):
 
     listed = cli_runner.invoke(cli.app, ["proposals", "list", str(harness), "--json"])
     assert listed.exit_code == ExitCode.OK, listed.stdout
-    ids = [p["id"] for p in json.loads(listed.stdout)["proposals"]]
-    assert ids == [proposal_id]
+    listed_proposals = json.loads(listed.stdout)["proposals"]
+    assert [p["id"] for p in listed_proposals] == [proposal_id]
+    # list --json and show --json expand the same JSON-text columns identically.
+    assert listed_proposals[0]["gate"]["accepted"][0]["path"] == "loop.max_turns"
+    assert listed_proposals[0]["proposal"]["rationale"] == "clarify"
 
     shown = cli_runner.invoke(cli.app, ["proposals", "show", str(harness), proposal_id, "--json"])
     assert shown.exit_code == ExitCode.OK, shown.stdout
     payload = json.loads(shown.stdout)
     assert payload["id"] == proposal_id
-    assert payload["gate"]["accepted"][0]["path"] == "loop.max_turns"
+    assert payload["gate"] == listed_proposals[0]["gate"]
 
     missing = cli_runner.invoke(cli.app, ["proposals", "show", str(harness), "nope", "--json"])
     assert missing.exit_code == ExitCode.SPEC_ERROR
+
+
+def test_cli_proposals_apply_never_prompts_for_an_unknown_id(tmp_path: Path):
+    """Regression: the YAML-apply confirm must fire only after validation.
+
+    Invoked with no --yes/--json/piped input on purpose: if the confirm were
+    still computed before apply_proposal_by_id's trust/existence/staleness
+    checks (the pre-fix ordering bug), typer.confirm would hit EOF on the
+    empty stdin and abort outside `_guard`, producing something other than
+    the clean SPEC_ERROR a caller-mistake (unknown id) should produce.
+    """
+    harness = _harness(tmp_path)
+    result = cli_runner.invoke(cli.app, ["proposals", "apply", str(harness), "prop_nope"])
+    assert result.exit_code == ExitCode.SPEC_ERROR, result.output
 
 
 def test_cli_proposals_apply_then_reject_on_resolved_fails(tmp_path: Path, monkeypatch):
@@ -246,3 +304,28 @@ def test_cli_proposals_reject(tmp_path: Path, monkeypatch):
     assert rejected.exit_code == ExitCode.OK, rejected.stdout
     assert json.loads(rejected.stdout)["status"] == "rejected"
     assert (harness / "harness.yaml").read_text() == before
+
+
+# --------------------------------------------------------------------------- #
+# cli._make_approve_code (shared by `evolve` and `proposals apply`)
+# --------------------------------------------------------------------------- #
+def test_make_approve_code_allowlist_json_and_interactive_modes(tmp_path: Path, monkeypatch):
+    from hiveloom.cli import _make_approve_code
+    from hiveloom.evolve.evolver import CodeChange
+
+    harness = _harness(tmp_path)
+    change = CodeChange(file="validators/check.py", source="x", rationale="r")
+
+    # An allowlisted path auto-approves without prompting.
+    approve = _make_approve_code(harness, json_output=False, allowlist={"validators/check.py"})
+    assert approve(change) is True
+
+    # --json mode never prompts; unapproved changes are rejected.
+    approve = _make_approve_code(harness, json_output=True)
+    assert approve(change) is False
+
+    # Interactive mode resolves the display path via resolve_code_change_path
+    # (matching `evolve`'s own closure) and honors the confirm answer.
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+    approve = _make_approve_code(harness, json_output=False)
+    assert approve(change) is True

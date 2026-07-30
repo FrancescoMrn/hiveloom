@@ -28,7 +28,7 @@ from hiveloom import trust as trust_mod
 from hiveloom.errors import ProposalQueueError
 from hiveloom.evolve import evolver
 from hiveloom.evolve.analyzer import FailureReport
-from hiveloom.evolve.evolver import ApplyResult, CodeChange, MutationProposal
+from hiveloom.evolve.evolver import ApplyResult, CodeChange, GateResult, MutationProposal
 from hiveloom.generate.llm import StrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
@@ -51,6 +51,21 @@ class ProposalRecord(BaseModel):
     apply_result_json: str | None = None
     created_at: str
     resolved_at: str | None = None
+
+    @property
+    def proposal(self) -> MutationProposal:
+        """The stored ``proposal_json``, parsed."""
+        return MutationProposal.model_validate_json(self.proposal_json)
+
+    @property
+    def gate(self) -> GateResult:
+        """The stored ``gate_json``, parsed."""
+        return GateResult.model_validate_json(self.gate_json)
+
+    @property
+    def apply_result(self) -> dict[str, Any] | None:
+        """The stored ``apply_result_json``, parsed, or ``None`` if unresolved."""
+        return json.loads(self.apply_result_json) if self.apply_result_json else None
 
 
 def _dedup_key(report: FailureReport) -> str:
@@ -141,6 +156,7 @@ def apply_proposal_by_id(
     *,
     approve_code: Callable[[CodeChange], bool] | None = None,
     apply_yaml: bool = True,
+    confirm_apply_yaml: Callable[[], bool] | None = None,
 ) -> ApplyResult:
     """Apply a queued proposal, delegating gate+apply to :mod:`evolver` unchanged.
 
@@ -149,6 +165,12 @@ def apply_proposal_by_id(
     :class:`ProposalQueueError` without touching disk. A matching hash means
     the harness is byte-identical to what was gated, so re-gating inside
     ``evolver.apply_proposal`` reproduces the same accepted/rejected split.
+
+    ``confirm_apply_yaml``, when given, is called *after* the trust/existence/
+    staleness checks above pass — and overrides ``apply_yaml`` with its
+    result — so an interactive caller's confirmation prompt (like
+    ``approve_code``'s, per code change) never fires for a proposal that was
+    going to be rejected anyway.
     """
     trust_mod.ensure_trusted(harness_dir)
     row = _require_pending(hive, proposal_id)
@@ -161,6 +183,9 @@ def apply_proposal_by_id(
             f"harness has changed since proposal '{proposal_id}' was drafted "
             f"({row['spec_version_hash']} -> {live_hash}); regenerate"
         )
+
+    if confirm_apply_yaml is not None:
+        apply_yaml = confirm_apply_yaml()
 
     proposal = MutationProposal.model_validate_json(row["proposal_json"])
     result = evolver.apply_proposal(

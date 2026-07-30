@@ -709,7 +709,6 @@ def evolve(
     from hiveloom import runner
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
-    from hiveloom.evolve.evolver import CodeChange
     from hiveloom.logging.hive import Hive
 
     with _guard(json_output):
@@ -739,23 +738,16 @@ def evolve(
             proposal = evolve_mod.propose(spec, report, model)
             yaml_diff = evolve_mod.preview_yaml_changes(harness_dir, proposal)
 
-            def approve(change: CodeChange) -> bool:
-                if json_output:
-                    return False
-                resolved = evolve_mod.resolve_code_change_path(base, change.file)
-                _console.print(f"[yellow]code change[/yellow] {resolved}: {change.rationale}")
-                _console.print(change.source)
-                return typer.confirm(f"Apply regenerated code to {resolved}?", default=False)
-
             if yaml_diff and not json_output:
                 _console.print("[yellow]proposed YAML diff[/yellow]")
                 _console.print(yaml_diff)
-            apply_yaml = yes or (
-                not json_output
-                and typer.confirm("Apply the proposed YAML changes?", default=False)
-            )
+            apply_yaml = _confirm_apply_yaml(yes, json_output)
             result = evolve_mod.apply_proposal(
-                harness_dir, proposal, hive=hive, approve_code=approve, apply_yaml=apply_yaml
+                harness_dir,
+                proposal,
+                hive=hive,
+                approve_code=_make_approve_code(base, json_output=json_output),
+                apply_yaml=apply_yaml,
             )
 
         if json_output:
@@ -768,10 +760,7 @@ def evolve(
                 )
             else:
                 _console.print("[yellow]no changes applied[/yellow]")
-            for rej in result.rejected:
-                _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
-            for pending in result.pending_code:
-                _console.print(f"  [dim]pending code approval[/dim] {pending}")
+            _print_apply_leftovers(result)
 
 
 def load_spec_for(harness_dir: str):
@@ -786,24 +775,59 @@ def load_spec_for(harness_dir: str):
 def _proposal_payload(record: Any) -> dict[str, Any]:
     """Expand a ProposalRecord's JSON-text columns into nested objects for output."""
     payload = record.model_dump()
-    payload["proposal"] = json.loads(record.proposal_json)
-    payload["gate"] = json.loads(record.gate_json)
-    payload["apply_result"] = (
-        json.loads(record.apply_result_json) if record.apply_result_json else None
-    )
+    payload["proposal"] = record.proposal.model_dump()
+    payload["gate"] = record.gate.model_dump()
+    payload["apply_result"] = record.apply_result
     return payload
 
 
 def _emit_proposal_created(record: Any, json_output: bool) -> None:
-    gate = json.loads(record.gate_json)
     if json_output:
         _emit_json({"ok": True, **_proposal_payload(record)})
         return
+    gate = record.gate
     _console.print(
         f"[green]queued[/green] proposal {record.id} — "
-        f"{len(gate['accepted'])} accepted, {len(gate['rejected'])} rejected, "
-        f"{len(gate['code_changes'])} code change(s) pending review"
+        f"{len(gate.accepted)} accepted, {len(gate.rejected)} rejected, "
+        f"{len(gate.code_changes)} code change(s) pending review"
     )
+
+
+def _confirm_apply_yaml(yes: bool, json_output: bool) -> bool:
+    """Whether to apply gated YAML changes: ``--yes``, or an interactive y/n."""
+    return yes or (
+        not json_output and typer.confirm("Apply the proposed YAML changes?", default=False)
+    )
+
+
+def _print_apply_leftovers(result: Any) -> None:
+    """Print an ApplyResult's rejected paths and any code changes still awaiting approval."""
+    for rej in result.rejected:
+        _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
+    for pending in result.pending_code:
+        _console.print(f"  [dim]pending code approval[/dim] {pending}")
+
+
+def _make_approve_code(
+    harness_dir: Path, *, json_output: bool, allowlist: set[str] | None = None
+) -> Any:
+    """Build a code-change approval callback: auto-approve ``allowlist`` paths,
+    else interactive y/n (never in ``--json`` mode) — the same flow ``evolve``
+    and ``proposals apply`` both use.
+    """
+    from hiveloom.evolve import resolve_code_change_path
+
+    def approve(change: Any) -> bool:
+        if change.file in (allowlist or ()):
+            return True
+        if json_output:
+            return False
+        resolved = resolve_code_change_path(harness_dir, change.file)
+        _console.print(f"[yellow]code change[/yellow] {resolved}: {change.rationale}")
+        _console.print(change.source)
+        return typer.confirm(f"Apply regenerated code to {resolved}?", default=False)
+
+    return approve
 
 
 @proposals_app.command("list")
@@ -824,7 +848,7 @@ def proposals_list_cmd(
             name = runner.resolve_and_ingest(harness_dir, hive)
             records = proposals_mod.list_proposals(hive, harness_name=name, status=status)
         if json_output:
-            _emit_json({"ok": True, "proposals": [r.model_dump() for r in records]})
+            _emit_json({"ok": True, "proposals": [_proposal_payload(r) for r in records]})
             return
         if not records:
             _console.print("[green]no proposals[/green]")
@@ -842,45 +866,44 @@ def proposals_list_cmd(
 
 @proposals_app.command("show")
 def proposals_show_cmd(
-    harness_dir: str = typer.Argument(..., help="Harness name or directory."),
+    harness_dir: str = typer.Argument(
+        ..., help="Harness dir (kept for CLI-shape parity; ids are looked up directly)."
+    ),
     proposal_id: str = typer.Argument(..., help="Proposal id (e.g. prop_abc123)."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show a queued proposal: its rationale, gate result, and any apply result."""
-    from hiveloom import runner
     from hiveloom.evolve import proposals as proposals_mod
     from hiveloom.logging.hive import Hive
 
     with _guard(json_output):
         with Hive() as hive:
-            runner.resolve_and_ingest(harness_dir, hive)
             record = proposals_mod.get_proposal(hive, proposal_id)
         if record is None:
             raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
 
-        payload = _proposal_payload(record)
         if json_output:
-            _emit_json({"ok": True, **payload})
+            _emit_json({"ok": True, **_proposal_payload(record)})
             return
-        gate = payload["gate"]
+
+        gate = record.gate
         _console.print(
             f"[bold]{record.id}[/bold] — {record.harness_name} @ {record.spec_version_hash} "
             f"[{record.status}] (trigger={record.trigger})"
         )
         _console.print(f"rationale: {record.rationale}")
         _console.print(
-            f"gate: {len(gate['accepted'])} accepted, {len(gate['rejected'])} rejected, "
-            f"{len(gate['code_changes'])} code change(s)"
+            f"gate: {len(gate.accepted)} accepted, {len(gate.rejected)} rejected, "
+            f"{len(gate.code_changes)} code change(s)"
         )
-        for rej in gate["rejected"]:
+        for rej in gate.rejected:
             _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
-        for change in gate["code_changes"]:
-            _console.print(
-                f"  [yellow]code change[/yellow] {change['file']}: {change['rationale']}"
-            )
-        if payload["apply_result"] is not None:
+        for change in gate.code_changes:
+            _console.print(f"  [yellow]code change[/yellow] {change.file}: {change.rationale}")
+        apply_result = record.apply_result
+        if apply_result is not None:
             _console.print(f"resolved_at: {record.resolved_at}")
-            _console.print(json.dumps(payload["apply_result"], indent=2))
+            _console.print(json.dumps(apply_result, indent=2))
 
 
 @proposals_app.command("apply")
@@ -901,35 +924,28 @@ def proposals_apply_cmd(
     the proposal was drafted against, it fails without touching disk (the
     harness changed — regenerate). Review with ``proposals show`` first: YAML
     changes apply with ``--yes`` or interactive confirmation, same as
-    ``evolve``; code changes need per-file ``--approve-code`` or interactive
-    y/n, fed from the proposal's stored gate result rather than a fresh
-    propose.
+    ``evolve`` (asked only after the trust/existence/staleness checks above
+    pass); code changes need per-file ``--approve-code`` or interactive y/n,
+    fed from the proposal's stored gate result rather than a fresh propose.
     """
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
-    from hiveloom.evolve.evolver import CodeChange
     from hiveloom.logging.hive import Hive
 
-    approved_files = set(approve_code_arg.split(",")) if approve_code_arg else set()
-
-    def approve(change: CodeChange) -> bool:
-        if change.file in approved_files:
-            return True
-        if json_output:
-            return False
-        _console.print(f"[yellow]code change[/yellow] {change.file}: {change.rationale}")
-        _console.print(change.source)
-        return typer.confirm(f"Apply regenerated code to {change.file}?", default=False)
-
-    apply_yaml = yes or (
-        not json_output and typer.confirm("Apply the proposed YAML changes?", default=False)
+    approved_files = set(approve_code_arg.split(",")) if approve_code_arg else None
+    approve = _make_approve_code(
+        Path(harness_dir), json_output=json_output, allowlist=approved_files
     )
 
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         with Hive() as hive:
             result = proposals_mod.apply_proposal_by_id(
-                hive, harness_dir, proposal_id, approve_code=approve, apply_yaml=apply_yaml
+                hive,
+                harness_dir,
+                proposal_id,
+                approve_code=approve,
+                confirm_apply_yaml=lambda: _confirm_apply_yaml(yes, json_output),
             )
         if json_output:
             _emit_json({"ok": True, "proposal_id": proposal_id, **result.model_dump()})
@@ -941,10 +957,7 @@ def proposals_apply_cmd(
                 )
             else:
                 _console.print(f"[yellow]no changes applied[/yellow] for proposal {proposal_id}")
-            for rej in result.rejected:
-                _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
-            for pending in result.pending_code:
-                _console.print(f"  [dim]pending code approval[/dim] {pending}")
+            _print_apply_leftovers(result)
 
 
 @proposals_app.command("reject")
