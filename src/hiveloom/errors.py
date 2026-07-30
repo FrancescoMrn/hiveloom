@@ -66,3 +66,11 @@ class AuthorizationError(HiveloomError):
     :class:`AuthenticationError` because the control-plane server (next
     task) maps this to HTTP 403 versus 401 for authentication failures.
     """
+
+
+class NotFoundError(HiveloomError):
+    """Raised when an HTTP-addressable resource (a run, a proposal) doesn't exist.
+
+    Distinct from :class:`SpecError` (a caller mistake, mapped to 400): this
+    is "the id you asked for isn't there", mapped by the control plane to 404.
+    """

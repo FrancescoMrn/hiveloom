@@ -214,6 +214,19 @@ def apply_proposal_by_id(
     return result
 
 
+def proposal_payload(record: ProposalRecord) -> dict[str, Any]:
+    """Expand a ``ProposalRecord``'s JSON-text columns into nested objects.
+
+    Shared by the CLI and the HTTP control plane so both callers build the
+    exact same JSON shape for a proposal — one place to keep it correct.
+    """
+    payload = record.model_dump()
+    payload["proposal"] = record.proposal.model_dump()
+    payload["gate"] = record.gate.model_dump()
+    payload["apply_result"] = record.apply_result
+    return payload
+
+
 def reject_proposal(hive: Hive, proposal_id: str, reason: str) -> None:
     """Reject a pending proposal, recording the reason. Never touches harness.yaml."""
     _require_pending(hive, proposal_id)

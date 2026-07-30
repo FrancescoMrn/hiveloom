@@ -141,6 +141,21 @@ set, and regenerated code hooks always require explicit approval. Applied mutati
 `# evolved: N` counter and are recorded in the Hive under a new version hash. Both need
 `ANTHROPIC_API_KEY`.
 
+**Serve over HTTP (non-production)**
+
+```bash
+hiveloom keys generate rinaldo                          # on your own machine; the key stays there
+hiveloom keys authorize rinaldo <public-key> --harness ./recon --scope run
+hiveloom serve ./recon                                  # binds 127.0.0.1:8420 by default
+hiveloom keys sign --key ~/.hiveloom/keys/rinaldo.pem --scope run   # mint a bearer token
+```
+
+`serve` exposes a deployed harness's full CLI surface (run/stats/trace/set/add/remove/
+evolve/proposals) over HTTP, bearer-authenticated with ed25519 keys. It's explicitly
+non-production: no TLS, no replay cache, one harness per process. See
+[`docs/control-plane.md`](docs/control-plane.md) for the endpoint table, the custody
+model, and the full limitations list before pointing it at anything that matters.
+
 **The deploy-anywhere-keep-evolving loop:** a harness runs wherever you put it (cheap model),
 writes traces in-folder, and is evolved deliberately on a dev/CI box (strong model + human
 gate) against the traces you collect back. See
@@ -181,7 +196,7 @@ installable Agent Skills (build / run / evolve / extend / ship); the root
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.
 - [Extending hiveloom](docs/extending.md) — extension packs, providers, hooks, and SDK embedding.
 - [Deploying and evolving](docs/deploying-and-evolving.md) — portable artifacts and the production feedback loop.
-- [Control plane](docs/control-plane.md) — ed25519 keys and bearer-token auth (stub; the HTTP server follows in a later task).
+- [Control plane](docs/control-plane.md) — `hiveloom serve`'s endpoints, ed25519 keys/bearer-token auth, and the non-production limitations.
 - [Examples](harnesses/) — summarization, market analysis, and HN extraction harnesses.
 
 ## Contributing and security

@@ -86,6 +86,7 @@ def run_harness(
     on_event=None,
     approve_trust=None,
     strong_model: StrongModel | None = None,
+    resolve_input: bool = True,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -98,6 +99,13 @@ def run_harness(
     when the harness folder is not yet trusted on this machine. ``strong_model``
     is a test seam: when given, auto-propose uses it instead of resolving one
     (so tests never need ``ANTHROPIC_API_KEY``).
+
+    ``resolve_input`` (default ``True``, the CLI's behavior) lets an existing
+    file path stand in for ``input_value``'s content — see
+    :func:`_resolve_input`. The HTTP control plane calls this with
+    ``resolve_input=False``: over HTTP, treating any caller-supplied string
+    that happens to name a file on the server as "read this file" would be an
+    arbitrary file read, so its ``input`` field is always literal text.
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -105,7 +113,7 @@ def run_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
 
-    run_input = _resolve_input(base, input_value)
+    run_input = _resolve_input(base, input_value) if resolve_input else input_value
     registry = build_registry(spec, base)
     guardrails = build_guardrails(spec, registry, base)
     verifiers = build_verifiers(spec, base)
@@ -212,6 +220,27 @@ def _maybe_auto_propose(
             create_proposal(hive, spec, base, report, model, trigger="auto")
     except Exception:  # noqa: BLE001 - see docstring: must never fail a completed run
         pass
+
+
+def run_result_payload(result: RunResult) -> dict[str, Any]:
+    """The JSON shape of a completed run, shared by the CLI and the HTTP control plane.
+
+    ``ok`` reflects only ``status == "success"`` — ``verify_failed``,
+    ``guardrail_halt``, ``max_turns``, and ``error`` are all completed runs
+    reported here, not raised exceptions, so both callers can never diverge
+    on what a finished run looks like.
+    """
+    return {
+        "ok": result.status == "success",
+        "status": result.status,
+        "output": result.output,
+        "turns": result.turns,
+        "cost_usd": result.cost_usd,
+        "duration_seconds": result.duration_seconds,
+        "run_id": result.run_id,
+        "trace_path": result.trace_path,
+        "reason": result.reason,
+    }
 
 
 def resolve_and_ingest(target: str | Path, hive) -> str:

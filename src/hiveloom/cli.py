@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -488,17 +489,7 @@ def run(
             on_event=on_event,
             approve_trust=_trust_prompt(json_output or stream),
         )
-        payload = {
-            "ok": result.status == "success",
-            "status": result.status,
-            "output": result.output,
-            "turns": result.turns,
-            "cost_usd": result.cost_usd,
-            "duration_seconds": result.duration_seconds,
-            "run_id": result.run_id,
-            "trace_path": result.trace_path,
-            "reason": result.reason,
-        }
+        payload = runner.run_result_payload(result)
         if stream:
             typer.echo(json.dumps({"type": "run_result", **payload}))
         elif json_output:
@@ -746,18 +737,11 @@ def load_spec_for(harness_dir: str):
 # --------------------------------------------------------------------------- #
 # Proposals queue
 # --------------------------------------------------------------------------- #
-def _proposal_payload(record: Any) -> dict[str, Any]:
-    """Expand a ProposalRecord's JSON-text columns into nested objects for output."""
-    payload = record.model_dump()
-    payload["proposal"] = record.proposal.model_dump()
-    payload["gate"] = record.gate.model_dump()
-    payload["apply_result"] = record.apply_result
-    return payload
-
-
 def _emit_proposal_created(record: Any, json_output: bool) -> None:
     if json_output:
-        _emit_json({"ok": True, **_proposal_payload(record)})
+        from hiveloom.evolve.proposals import proposal_payload
+
+        _emit_json({"ok": True, **proposal_payload(record)})
         return
     gate = record.gate
     _console.print(
@@ -822,7 +806,9 @@ def proposals_list_cmd(
             name = runner.resolve_and_ingest(harness_dir, hive)
             records = proposals_mod.list_proposals(hive, harness_name=name, status=status)
         if json_output:
-            _emit_json({"ok": True, "proposals": [_proposal_payload(r) for r in records]})
+            _emit_json(
+                {"ok": True, "proposals": [proposals_mod.proposal_payload(r) for r in records]}
+            )
             return
         if not records:
             _console.print("[green]no proposals[/green]")
@@ -857,7 +843,7 @@ def proposals_show_cmd(
             raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
 
         if json_output:
-            _emit_json({"ok": True, **_proposal_payload(record)})
+            _emit_json({"ok": True, **proposals_mod.proposal_payload(record)})
             return
 
         gate = record.gate
@@ -996,6 +982,69 @@ def package(
             )
             if result["dockerfile"]:
                 _console.print("  wrote Dockerfile")
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _serve_approve_callback():
+    """Interactive trust prompt for `serve`, or ``None`` when stdin isn't a
+    TTY — refuse to start rather than hang waiting for input that will never
+    come (a piped/CI/systemd invocation).
+    """
+    if not sys.stdin.isatty():
+        return None
+    return _trust_prompt(json_output=False)
+
+
+@app.command()
+def serve(
+    harness_dir: str = typer.Argument(..., help="Harness directory to serve."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
+    port: int = typer.Option(8420, "--port", help="Bind port."),
+    max_concurrent_runs: int = typer.Option(
+        1, "--max-concurrent-runs", help="How many runs may execute at once."
+    ),
+    max_queued_runs: int = typer.Option(
+        4, "--max-queued-runs", help="How many more runs may wait before /run returns 503."
+    ),
+    authorized_keys: str | None = typer.Option(
+        None, "--authorized-keys", help="Override the authorized-keys store path."
+    ),
+    approve: bool = typer.Option(
+        False, "--approve", "-a", help="Trust the harness folder without prompting."
+    ),
+) -> None:
+    """Serve a harness's CLI surface over HTTP to bearer-authorized members.
+
+    Non-production by design: no TLS, no replay cache, one harness per
+    process. See ``docs/control-plane.md`` for the endpoint table, the
+    ``hiveloom keys`` custody model, and the full limitations list. Trust is
+    checked once here, before the socket binds — never per request.
+    """
+    from hiveloom import trust as trust_mod
+    from hiveloom.serve.app import create_app
+
+    if approve:
+        trust_mod.record_trust(harness_dir)
+    trust_mod.ensure_trusted(harness_dir, _serve_approve_callback())
+
+    if host not in _LOOPBACK_HOSTS:
+        _err_console.print(
+            f"[red]warning:[/red] binding to '{host}' — there is no TLS, so bearer "
+            "tokens travel in cleartext over the network. Put a reverse proxy or "
+            "SSH tunnel in front, or bind to 127.0.0.1 instead."
+        )
+
+    import uvicorn
+
+    asgi_app = create_app(
+        harness_dir,
+        keys_path=authorized_keys,
+        max_concurrent_runs=max_concurrent_runs,
+        max_queued_runs=max_queued_runs,
+    )
+    uvicorn.run(asgi_app, host=host, port=port)
 
 
 # --------------------------------------------------------------------------- #
