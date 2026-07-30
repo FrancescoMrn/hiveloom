@@ -16,7 +16,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from inspect_ai.log import read_eval_log
-
 from inspect_evals._shared import EVAL_ROOT, PRICING_AS_OF, PRICING_PER_MTOK, wilson_ci
 
 SCORER_NAME = "article_extractor_scorer"
@@ -108,7 +107,9 @@ def summarize(name: str, arm: dict) -> dict:
         by_id.setdefault(r["id"], []).append(r["success"])
     pass_all = [all(v) for v in by_id.values()]
 
-    halluc = [not r["meta"]["hallucination_passed"] for r in rows if "hallucination_passed" in r["meta"]]
+    halluc = [
+        not r["meta"]["hallucination_passed"] for r in rows if "hallucination_passed" in r["meta"]
+    ]
 
     def q(p: float) -> str:
         if not latencies:
@@ -171,7 +172,8 @@ def main() -> None:
         ("Arm", "arm"), ("n", "n"), ("Task success (95% CI)", "success"),
         ("Halluc.", "halluc"), ("Title", "title"), ("Author", "author"), ("Date", "date"),
         ("Headings F1", "headings_f1"), ("Mean cost", "mean_cost"),
-        ("Cost/success", "cost_per_success"), ("p50/p90 lat (s)", "latency"), ("pass^k", "pass_all"),
+        ("Cost/success", "cost_per_success"), ("p50/p90 lat (s)", "latency"),
+        ("pass^k", "pass_all"),
     ]
     lines = [
         "# Results: article-extractor benchmark",
@@ -188,10 +190,12 @@ def main() -> None:
 
     lines += ["", "## Paired comparison", ""]
     if "haiku_harness" in arms and "sonnet_raw" in arms:
-        lines.append(f"**haiku_harness vs sonnet_raw**: {mcnemar(arms['haiku_harness'], arms['sonnet_raw'])}")
+        verdict = mcnemar(arms["haiku_harness"], arms["sonnet_raw"])
+        lines.append(f"**haiku_harness vs sonnet_raw**: {verdict}")
     if "haiku_harness" in arms and "haiku_raw" in arms:
+        verdict = mcnemar(arms["haiku_harness"], arms["haiku_raw"])
         lines.append("")
-        lines.append(f"**haiku_harness vs haiku_raw** (harness contribution): {mcnemar(arms['haiku_harness'], arms['haiku_raw'])}")
+        lines.append(f"**haiku_harness vs haiku_raw** (harness contribution): {verdict}")
 
     lines += [
         "",

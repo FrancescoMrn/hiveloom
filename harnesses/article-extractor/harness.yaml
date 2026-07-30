@@ -1,9 +1,9 @@
-version: 0.1.0
+version: 0.2.0
 name: article-extractor
 description: Fetch a single article or blog page by URL and extract structured metadata into strict JSON.
 model:
-  provider: ollama
-  id: qwen3:4b-instruct
+  provider: claude
+  id: claude-haiku-4-5
   max_tokens: 4096
   temperature: 0.0
 system_prompt: |

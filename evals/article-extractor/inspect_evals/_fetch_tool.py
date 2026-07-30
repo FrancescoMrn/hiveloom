@@ -18,7 +18,9 @@ _digest = load_digest_fn()
 @tool
 def fetch_clean():
     async def execute(url: str) -> str:
-        """HTTP GET a web page and return a compact deterministic digest: TITLE / META / TIME / H1 / H2 / H3 / LEAD TEXT lines, always under 8KB. On failure returns a line starting with 'ERROR:'.
+        """HTTP GET a web page and return a compact deterministic digest: TITLE /
+        META / TIME / H1 / H2 / H3 / LEAD TEXT lines, always under 8KB. On failure
+        returns a line starting with 'ERROR:'.
 
         Args:
             url: The URL to fetch.

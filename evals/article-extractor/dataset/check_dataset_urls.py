@@ -46,7 +46,7 @@ def main() -> None:
 
     print(f"{'id':<5} {'category':<10} {'status':<7} detail")
     problems = 0
-    for row, (status, detail) in zip(rows, results):
+    for row, (status, detail) in zip(rows, results, strict=True):
         problems += status != "OK"
         print(f"{row['id']:<5} {row['category']:<10} {status:<7} {detail}")
 
