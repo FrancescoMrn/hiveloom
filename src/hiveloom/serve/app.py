@@ -37,6 +37,7 @@ from starlette.routing import Route
 from hiveloom import construct
 from hiveloom import evolve as evolve_mod
 from hiveloom import runner as runner_mod
+from hiveloom.construct import _ref_matches
 from hiveloom.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -45,7 +46,7 @@ from hiveloom.errors import (
     SpecError,
 )
 from hiveloom.evolve import proposals as proposals_mod
-from hiveloom.evolve.evolver import _read_counter
+from hiveloom.evolve.evolver import _covered, _read_counter
 from hiveloom.generate.llm import StrongModel, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
@@ -58,11 +59,40 @@ from hiveloom.serve.runslots import (
     RunQueueFullError,
     RunSlots,
 )
-from hiveloom.spec.loader import harness_path, load_spec, validate_harness
+from hiveloom.spec.loader import harness_path, load_raw, load_spec, validate_harness
+from hiveloom.spec.schema import ALWAYS_FROZEN
 from hiveloom.tools.builtin import _safe_path
 from hiveloom.tools.registry import ToolError
 
 _SSE_DONE = object()
+
+# Security-sensitive spec roots a remote `mutate`-scoped caller may never
+# reach, even though the local `hiveloom set`/`add`/`remove` CLI legitimately
+# can (construct IS the sanctioned way to edit a spec locally — the whole
+# point of the construct API). Derived from ALWAYS_FROZEN itself, not a
+# hand-maintained parallel list, so a future addition there (e.g. ws2's
+# mcp_servers) is refused here automatically, with no further change to this
+# file — the same "one definition" discipline as `is_sensitive_path`.
+_FROZEN_ROOTS = set(ALWAYS_FROZEN)
+
+# Which spec root each `/add/{kind}` targets, so it can be checked against
+# _FROZEN_ROOTS exactly like a `/set` to that same root would be. `guardrail`
+# and `hook` map onto ALWAYS_FROZEN roots directly, so both kinds are always
+# refused over the control plane, full stop.
+_ADD_KIND_ROOTS = {
+    "tool": "tools",
+    "validator": "verify.validators",
+    "guardrail": "guardrails",
+    "hook": "hooks",
+    "skill": "skills",
+}
+
+# The two ALWAYS_FROZEN roots that are ALSO list sections `/remove` can
+# match an entry in by builtin/code-ref name rather than by dotted path
+# (construct.remove_item tries name/code-ref matching before falling back to
+# a dotted-path delete) — both happen to be top-level keys, so no nested
+# traversal is needed.
+_FROZEN_LIST_SECTIONS = ("guardrails", "hooks")
 
 
 # --------------------------------------------------------------------------- #
@@ -91,6 +121,8 @@ def _error_response(exc: Exception) -> JSONResponse:
         )
     if isinstance(exc, NotFoundError):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    if isinstance(exc, AuthorizationError):
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=403)
     if isinstance(exc, SpecError):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     if isinstance(exc, (KeyError, ValueError)):
@@ -98,6 +130,34 @@ def _error_response(exc: Exception) -> JSONResponse:
     if isinstance(exc, HiveloomError):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": False, "error": str(exc) or type(exc).__name__}, status_code=500)
+
+
+def _refuse_if_frozen(path: str) -> None:
+    """Raise :class:`AuthorizationError` if ``path`` falls within an
+    ALWAYS_FROZEN root — the deny-list for ``/set`` and ``/add/{kind}``
+    (via ``_ADD_KIND_ROOTS``). A 403, not a 400: this is "your scope does
+    not permit that", not "your request was malformed".
+    """
+    if _covered(path, _FROZEN_ROOTS):
+        raise AuthorizationError(
+            f"'{path}' cannot be changed over the control plane (frozen from remote mutation)"
+        )
+
+
+def _remove_target_is_frozen(raw: dict[str, Any], target: str) -> bool:
+    """True if ``target`` — as ``construct.remove_item`` would interpret it —
+    currently names an entry inside a frozen list section (``guardrails``,
+    ``hooks``), or is itself a dotted path under any ALWAYS_FROZEN root.
+    ``remove_item`` tries every list section's builtin/code-ref names before
+    falling back to a dotted-path delete, so both shapes need checking.
+    """
+    if _covered(target, _FROZEN_ROOTS):
+        return True
+    return any(
+        isinstance(raw.get(section), list)
+        and any(_ref_matches(item, target) for item in raw[section])
+        for section in _FROZEN_LIST_SECTIONS
+    )
 
 
 def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -171,12 +231,22 @@ def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> d
     raise SpecError(f"unknown add kind '{kind}' (expected tool/validator/guardrail/hook/skill)")
 
 
-def _require_proposal(hive: Hive, proposal_id: str) -> proposals_mod.ProposalRecord:
-    """Fetch a proposal or raise :class:`NotFoundError` — shared by every
-    ``/proposals/{id}...`` endpoint's existence check.
+def _require_proposal(
+    hive: Hive, proposal_id: str, *, harness_name: str
+) -> proposals_mod.ProposalRecord:
+    """Fetch a proposal belonging to ``harness_name``, or raise
+    :class:`NotFoundError` — shared by every ``/proposals/{id}...``
+    endpoint's existence check.
+
+    The Hive is global (``~/.hiveloom/hive.db``, shared across every
+    harness on the box), so an id alone is not enough: without this check a
+    caller authorized for harness A could read (confidentiality) or
+    reject/apply (authorization) harness B's proposals just by
+    guessing/enumerating an id. 404, not 403 — don't confirm that the id
+    exists under a different harness.
     """
     record = proposals_mod.get_proposal(hive, proposal_id)
-    if record is None:
+    if record is None or record.harness_name != harness_name:
         raise NotFoundError(f"no proposal with id '{proposal_id}'")
     return record
 
@@ -243,6 +313,13 @@ def create_app(
         except Exception as exc:  # noqa: BLE001 - _error_response is the single mapping point
             return _error_response(exc)
         return JSONResponse(payload, status_code=200)
+
+    def _harness_name() -> str:
+        """The served harness's current name, read fresh each call (never
+        cached) — used to bind Hive lookups (`/trace/{run_id}`, every
+        `/proposals/{id}...`) to this harness, since the Hive is global.
+        """
+        return load_spec(harness_dir).name
 
     def _run(run_input: str, *, on_event=None):
         """Build the provider (test seam or real) and call run_harness — the
@@ -382,9 +459,13 @@ def create_app(
         run_id = request.path_params["run_id"]
 
         def work() -> dict[str, Any]:
+            # The Hive is global (shared across every harness on the box);
+            # bind the lookup to THIS served harness so a caller authorized
+            # here can't read a different harness's run trace by id alone.
+            harness_name = _harness_name()
             with Hive() as hive:
                 run = hive.get_run(run_id)
-            if run is None:
+            if run is None or run.get("harness_name") != harness_name:
                 raise NotFoundError(f"run '{run_id}' not found in the Hive")
             events: list[dict[str, Any]] = []
             trace_file = Path(run.get("trace_path", ""))
@@ -416,6 +497,7 @@ def create_app(
             path = body.get("path")
             if not path:
                 raise SpecError("'path' is required")
+            _refuse_if_frozen(path)
             with spec_lock:
                 construct.set_value(harness_dir, path, body.get("value"))
             return {"ok": True, "path": path}
@@ -428,6 +510,9 @@ def create_app(
 
         def work() -> dict[str, Any]:
             body = _parse_body(raw)
+            root = _ADD_KIND_ROOTS.get(kind)
+            if root is not None:
+                _refuse_if_frozen(root)
             with spec_lock:
                 return _add_dispatch(harness_dir, kind, body)
 
@@ -442,6 +527,11 @@ def create_app(
             if not target:
                 raise SpecError("'target' is required")
             with spec_lock:
+                if _remove_target_is_frozen(load_raw(harness_dir), target):
+                    raise AuthorizationError(
+                        f"'{target}' cannot be changed over the control plane "
+                        "(frozen from remote mutation)"
+                    )
                 construct.remove_item(harness_dir, target)
             return {"ok": True, "removed": target}
 
@@ -484,8 +574,9 @@ def create_app(
         proposal_id = request.path_params["proposal_id"]
 
         def work() -> dict[str, Any]:
+            harness_name = _harness_name()
             with Hive() as hive:
-                record = _require_proposal(hive, proposal_id)
+                record = _require_proposal(hive, proposal_id, harness_name=harness_name)
             return {"ok": True, **proposals_mod.proposal_payload(record)}
 
         return await _handle(request, scope="read", work=work)
@@ -501,12 +592,13 @@ def create_app(
             def approve_code(change: Any) -> bool:
                 return change.file in approved_files
 
+            harness_name = _harness_name()
             # Also under the spec lock: apply_proposal_by_id may write
             # harness.yaml, the same read-modify-write race /set etc. guard
             # against. Not held for the whole request — just this call.
             with spec_lock:
                 with Hive() as hive:
-                    _require_proposal(hive, proposal_id)
+                    _require_proposal(hive, proposal_id, harness_name=harness_name)
                     result = proposals_mod.apply_proposal_by_id(
                         hive,
                         harness_dir,
@@ -524,8 +616,9 @@ def create_app(
 
         def work() -> dict[str, Any]:
             body = _parse_body(raw)
+            harness_name = _harness_name()
             with Hive() as hive:
-                _require_proposal(hive, proposal_id)
+                _require_proposal(hive, proposal_id, harness_name=harness_name)
                 proposals_mod.reject_proposal(hive, proposal_id, body.get("reason", ""))
             return {"ok": True, "proposal_id": proposal_id, "status": "rejected"}
 

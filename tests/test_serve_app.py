@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 # Reuse the Hive failure-seeding helper and a scripted proposal payload from
@@ -462,7 +463,11 @@ def test_add_validator_round_trips(tmp_path: Path):
     )
 
 
-def test_add_hook_round_trips(tmp_path: Path):
+def test_add_hook_refused_over_http_but_works_locally(tmp_path: Path):
+    """`hooks` is an ALWAYS_FROZEN root (fix-round-4): a remote `mutate`-
+    scoped caller must not be able to attach one, even though the local
+    construct API — the sanctioned way to edit a spec locally — still can.
+    """
     harness = _harness(tmp_path)
     app = create_app(harness)
     _, token = _authorize(harness, ["mutate"])
@@ -472,34 +477,38 @@ def test_add_hook_round_trips(tmp_path: Path):
             json={"on": "run_finished", "code": "hooks/my_hook.py:my_hook", "description": "log"},
             headers=_bearer(token),
         )
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "added": "hook", "ref": "run_finished:hooks/my_hook.py:my_hook"}
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    assert not (harness / "hooks" / "my_hook.py").exists()
+    assert load_spec(harness).hooks == []
+
+    construct.add_hook(
+        harness, on="run_finished", code="hooks/my_hook.py:my_hook", description="log"
+    )
     assert (harness / "hooks" / "my_hook.py").exists()
     assert any(getattr(h, "event", None) == "run_finished" for h in load_spec(harness).hooks)
 
 
-def test_add_guardrail_added_then_replaced(tmp_path: Path):
+def test_add_guardrail_refused_over_http_but_works_locally(tmp_path: Path):
+    """`guardrails` is an ALWAYS_FROZEN root (fix-round-4): same refusal as
+    hooks, same local-CLI exemption.
+    """
     harness = _harness(tmp_path)
     app = create_app(harness)
     _, token = _authorize(harness, ["mutate"])
     with TestClient(app) as client:
-        # max_wall_clock_seconds has no auto-injected default (unlike
-        # max_cost_usd), so the first call is a genuine "added".
-        r1 = client.post(
+        r = client.post(
             "/add/guardrail", json={"builtin": "max_wall_clock_seconds", "value": 60},
             headers=_bearer(token),
         )
-        assert r1.status_code == 200
-        assert r1.json() == {"ok": True, "added": "guardrail", "ref": "max_wall_clock_seconds"}
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    guardrail_builtins = [getattr(g, "builtin", None) for g in load_spec(harness).guardrails]
+    assert "max_wall_clock_seconds" not in guardrail_builtins
 
-        r2 = client.post(
-            "/add/guardrail", json={"builtin": "max_wall_clock_seconds", "value": 120},
-            headers=_bearer(token),
-        )
-    assert r2.status_code == 200
-    body = r2.json()
-    assert body["replaced"] == "guardrail"
-    assert body["after"]["value"] == 120
+    construct.add_guardrail(harness, builtin="max_wall_clock_seconds", value=60)
+    guardrail_builtins = [getattr(g, "builtin", None) for g in load_spec(harness).guardrails]
+    assert "max_wall_clock_seconds" in guardrail_builtins
 
 
 def test_add_skill_round_trips(tmp_path: Path):
@@ -537,6 +546,85 @@ def test_remove_round_trips(tmp_path: Path):
     assert load_spec(harness).tools == []
 
 
+# --------------------------------------------------------------------------- #
+# Fix-round-4 CRITICAL: ALWAYS_FROZEN roots refused over the control plane
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        # Every value here is independently valid for its field (confirmed
+        # against construct.set_value directly before this fix existed) —
+        # each one WOULD have been accepted (200) pre-fix. A placeholder
+        # like "x" would be rejected by ordinary type validation (a plain
+        # 400) regardless of this fix, which would make the test pass for
+        # the wrong reason.
+        ("guardrails", []),
+        ("model", {"provider": "claude", "id": "claude-sonnet-5", "max_tokens": 4096}),
+        ("model.id", "claude-sonnet-5"),
+        ("logging.redact", ["secret"]),
+        ("extensions", []),
+        ("hooks", []),
+        ("evolution.auto_propose", {}),
+        ("evolution.auto_propose.enabled", True),
+    ],
+)
+def test_set_refuses_every_always_frozen_root(tmp_path: Path, path: str, value):
+    """`mutate` scope must not reach any ALWAYS_FROZEN root: setting `model`
+    could repoint the executor at an attacker-controlled base_url, setting
+    `logging.redact` could strip redaction so secrets land in traces in
+    cleartext, setting `guardrails` could remove the cost cap entirely.
+    """
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/set", json={"path": path, "value": value}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+
+
+def test_set_ordinary_path_still_succeeds(tmp_path: Path):
+    """The deny-list must not overreach: an ordinary, non-frozen field is
+    unaffected."""
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post(
+            "/set", json={"path": "system_prompt", "value": "Be helpful."},
+            headers=_bearer(token),
+        )
+    assert r.status_code == 200
+    assert load_spec(harness).system_prompt == "Be helpful."
+
+
+def test_remove_refuses_dotted_path_under_frozen_root(tmp_path: Path):
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/remove", json={"target": "model"}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+
+
+def test_remove_refuses_named_entry_in_frozen_list_section(tmp_path: Path):
+    """A frozen root can also be touched by NAME, not just by dotted path:
+    `remove` matches an entry in the `guardrails` list by builtin name.
+    `init_harness` auto-injects a `max_cost_usd` guardrail, so one always
+    exists to target.
+    """
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/remove", json={"target": "max_cost_usd"}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+    guardrail_builtins = [getattr(g, "builtin", None) for g in load_spec(harness).guardrails]
+    assert "max_cost_usd" in guardrail_builtins
+
+
 def test_validate_endpoint(tmp_path: Path):
     harness = _harness(tmp_path)
     app = create_app(harness)
@@ -564,8 +652,12 @@ def test_set_concurrent_writes_never_lose_an_update(tmp_path: Path):
 
     def set_tokens(i: int):
         with TestClient(app) as client:
+            # context.max_input_tokens, not model.max_tokens: `model` is an
+            # ALWAYS_FROZEN root (fix-round-4) and is correctly refused
+            # over HTTP now — this test needs two DIFFERENT non-frozen
+            # fields, not a demonstration of that refusal.
             return client.post(
-                "/set", json={"path": "model.max_tokens", "value": 5000 + i},
+                "/set", json={"path": "context.max_input_tokens", "value": 5000 + i},
                 headers=_bearer(token),
             )
 
@@ -578,9 +670,9 @@ def test_set_concurrent_writes_never_lose_an_update(tmp_path: Path):
     spec = load_spec(harness)
     # Neither field's write was lost/reverted by the other's concurrent
     # read-modify-write cycle — each holds one of ITS OWN sent values, not
-    # the original default (20 / 4096).
+    # the original default (20 / 30000).
     assert spec.loop.max_turns in range(10, 10 + n)
-    assert spec.model.max_tokens in range(5000, 5000 + n)
+    assert spec.context.max_input_tokens in range(5000, 5000 + n)
 
 
 # --------------------------------------------------------------------------- #
@@ -652,3 +744,76 @@ def test_proposals_reject(tmp_path: Path):
         )
         # Already resolved -> a caller mistake, not a missing resource.
         assert r.status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# Fix-round-4 IMPORTANT: the Hive is global — direct-id lookups must bind to
+# the served harness, not trust an id alone (two harnesses, one shared Hive)
+# --------------------------------------------------------------------------- #
+def test_trace_endpoint_refuses_another_harnesss_run(tmp_path: Path):
+    harness_a = _harness(tmp_path, name="harness-a")
+    harness_b = _harness(tmp_path, name="harness-b")
+
+    app_b = create_app(
+        harness_b, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    _, token_b = _authorize(harness_b, ["run"])
+    with TestClient(app_b) as client_b:
+        r = client_b.post("/run", json={"input": "hi"}, headers=_bearer(token_b))
+    assert r.status_code == 200
+    run_id = r.json()["run_id"]
+
+    # Same Hive (the autouse fixture points HIVELOOM_DB at one throwaway
+    # file per test, not per harness) — a caller authorized for harness A
+    # must not be able to read harness B's run trace by id alone.
+    app_a = create_app(harness_a)
+    _, token_a = _authorize(harness_a, ["read"])
+    with TestClient(app_a) as client_a:
+        r = client_a.get(f"/trace/{run_id}", headers=_bearer(token_a))
+    assert r.status_code == 404
+
+    # And harness B's own caller can still read it.
+    _, token_b_read = _authorize(harness_b, ["read"])
+    with TestClient(app_b) as client_b:
+        r = client_b.get(f"/trace/{run_id}", headers=_bearer(token_b_read))
+    assert r.status_code == 200
+
+
+def test_proposals_endpoints_refuse_another_harnesss_proposal(tmp_path: Path):
+    harness_a = _harness(tmp_path, name="harness-a")
+    harness_b = _harness(tmp_path, name="harness-b")
+    _seed_failure(tmp_path, name="harness-b")
+
+    app_b = create_app(harness_b, strong_model=FakeStrongModel([_PROPOSAL_PAYLOAD]))
+    _, evolve_token_b = _authorize(harness_b, ["evolve"])
+    with TestClient(app_b) as client_b:
+        r = client_b.post("/evolve/propose", json={}, headers=_bearer(evolve_token_b))
+    assert r.status_code == 200
+    proposal_id = r.json()["id"]
+
+    app_a = create_app(harness_a)
+    _, read_token_a = _authorize(harness_a, ["read"])
+    _, evolve_token_a = _authorize(harness_a, ["evolve"])
+    with TestClient(app_a) as client_a:
+        r_show = client_a.get(f"/proposals/{proposal_id}", headers=_bearer(read_token_a))
+        assert r_show.status_code == 404
+
+        r_reject = client_a.post(
+            f"/proposals/{proposal_id}/reject", json={}, headers=_bearer(evolve_token_a)
+        )
+        assert r_reject.status_code == 404
+
+        r_apply = client_a.post(
+            f"/proposals/{proposal_id}/apply",
+            json={"apply_yaml": True},
+            headers=_bearer(evolve_token_a),
+        )
+        assert r_apply.status_code == 404
+
+    # None of harness A's attempts touched harness B's proposal: still pending.
+    with TestClient(app_b) as client_b:
+        r = client_b.get(
+            f"/proposals/{proposal_id}", headers=_bearer(_authorize(harness_b, ["read"])[1])
+        )
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"

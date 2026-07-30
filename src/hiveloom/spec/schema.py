@@ -463,13 +463,17 @@ class EvolutionConfig(BaseModel):
 # `extensions` load arbitrary code, so evolution can never add or change them.
 # Hooks can transform tool inputs/results and final output, placing them
 # upstream of guardrails. They therefore share the non-negotiable evolution
-# boundary with guardrails themselves.
+# boundary with guardrails themselves. `evolution.auto_propose` is its own
+# paid, post-run trigger — a harness must never be able to enable that
+# trigger via evolution itself (docs/spec.md already documents it as never
+# mutable; this is what makes that claim true).
 ALWAYS_FROZEN: tuple[str, ...] = (
     "guardrails",
     "model",
     "logging.redact",
     "extensions",
     "hooks",
+    "evolution.auto_propose",
 )
 
 

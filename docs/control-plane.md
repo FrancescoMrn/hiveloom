@@ -8,8 +8,14 @@
 > a reverse proxy or an SSH tunnel in front if you need this reachable from
 > off-box, and never expose it directly to the open internet.
 
-`hiveloom serve <harness-dir>` exposes a deployed harness's full CLI surface
-over HTTP, bearer-authenticated with the ed25519 keys described below.
+`hiveloom serve <harness-dir>` exposes a deployed harness's CLI surface over
+HTTP, bearer-authenticated with the ed25519 keys described below — a
+**selected operational subset**, not everything `hiveloom` can do. Some
+verbs are deliberately absent (`package`, `generate`, `trust`) and some
+spec roots can never be reached remotely at all regardless of scope — see
+below. MCP server administration in particular is local-only: `hiveloom
+set mcp_servers ...` and friends are a construct-API/CLI operation, never
+an HTTP one.
 
 ## Identity: ed25519 keys + bearer tokens
 
@@ -75,22 +81,52 @@ uses.
 | `GET /health` | none | Harness name, spec version hash, evolved counter. |
 | `POST /run` | `run` | `runner.run_harness`. `?stream=true` → SSE of trace events, ending in a `run_result` frame. |
 | `GET /stats` | `read` | Hive summary + recent failures. |
-| `GET /trace/{run_id}` | `read` | Hive lookup + trace read; 404 if unknown. |
+| `GET /trace/{run_id}` | `read` | Hive lookup + trace read, bound to the served harness; 404 if unknown *or if the run belongs to a different harness* (the Hive is global — see below). |
 | `POST /validate` | `read` | Full spec + code-hook validation. |
-| `POST /set` | `mutate` | Set one dotted field to an already-typed JSON value (`construct.set_value`). |
-| `POST /add/{tool,validator,guardrail,hook,skill}` | `mutate` | The matching `construct.add_*` function. |
-| `POST /remove` | `mutate` | `construct.remove_item`. |
+| `POST /set` | `mutate` | Set one dotted field to an already-typed JSON value (`construct.set_value`) — refused for any ALWAYS_FROZEN root; see below. |
+| `POST /add/{tool,validator,guardrail,hook,skill}` | `mutate` | The matching `construct.add_*` function. `guardrail` and `hook` are always refused — both map onto ALWAYS_FROZEN roots. |
+| `POST /remove` | `mutate` | `construct.remove_item` — refused for any ALWAYS_FROZEN root, whether named by dotted path or by an entry's builtin/code-ref name. |
 | `POST /evolve/propose` | `evolve` | Drafts and queues a proposal (`trigger="http"`); never applies. |
-| `GET /proposals` | `read` | List queued proposals (optional `?status=`). |
-| `GET /proposals/{id}` | `read` | Show one proposal. |
-| `POST /proposals/{id}/apply` | `evolve` | Apply a queued proposal. Body: `{"approve_code": [...], "apply_yaml": bool}` — the HTTP substitute for interactive y/n; anything not listed in `approve_code` stays pending. |
-| `POST /proposals/{id}/reject` | `evolve` | Reject a queued proposal. Body: `{"reason": "..."}`. |
+| `GET /proposals` | `read` | List queued proposals for this harness (optional `?status=`). |
+| `GET /proposals/{id}` | `read` | Show one proposal, bound to the served harness; 404 if unknown or if it belongs to a different harness. |
+| `POST /proposals/{id}/apply` | `evolve` | Apply a queued proposal (bound to the served harness). Body: `{"approve_code": [...], "apply_yaml": bool}` — the HTTP substitute for interactive y/n; anything not listed in `approve_code` stays pending. |
+| `POST /proposals/{id}/reject` | `evolve` | Reject a queued proposal, bound to the served harness. Body: `{"reason": "..."}`. |
 
 `POST /set`'s `value` is an already-typed JSON value (a number stays a
 number), not a YAML-scalar string like the CLI's positional argument — JSON
 already distinguishes types, so there's no ambiguity to resolve. `POST /run`
 never supports the CLI's `--file`-style server-side path reads; see the
 input-handling section below.
+
+### Frozen roots: what `mutate` scope can never reach
+
+`construct.set_value`/`add_*`/`remove_item` are the sanctioned way to edit a
+spec **locally** and deliberately ignore `ALWAYS_FROZEN` — that's the
+evolver's boundary, not construct's. Reachable over HTTP, the same freedom
+is a remote-configuration hole: setting `model` could repoint the executor
+at an attacker-controlled endpoint (exfiltrating every prompt and tool
+result), setting `logging.redact` could strip redaction so secrets land in
+traces in cleartext, setting `guardrails` could remove the cost cap
+entirely. So `/set`, every `/add/{kind}`, and `/remove` refuse any of
+`ALWAYS_FROZEN`'s roots — `guardrails`, `model`, `logging.redact`,
+`extensions`, `hooks`, `evolution.auto_propose`, and (from the moment a
+harness spec gains it) `mcp_servers` — with **403**, not 400: this is "your
+scope does not permit that," not "your request was malformed." The local
+CLI is completely unaffected; this check lives entirely in the HTTP layer
+(`serve/app.py`), derived from `ALWAYS_FROZEN` itself rather than a
+hand-maintained parallel list, so it never drifts from what the evolver
+already refuses to touch.
+
+### Proposals and traces are bound to the served harness
+
+The Hive (`~/.hiveloom/hive.db`) is global — every harness on the box
+shares it. `GET /trace/{run_id}` and the `/proposals/{id}...` endpoints
+look up by id, so without an explicit check a caller authorized for one
+harness could read another harness's run traces, or read/reject/apply
+another harness's proposals, just by guessing or enumerating an id. Every
+such lookup is bound to the harness this process was started against;
+anything belonging to a different harness comes back as a plain 404, not a
+403 — the response never confirms that an id exists elsewhere.
 
 ### Status-code mapping
 
@@ -99,8 +135,8 @@ input-handling section below.
 | A run completes — `success`, `verify_failed`, `guardrail_halt`, `max_turns`, or `error` are all valid *results*, not failures | 200 |
 | Bad input (`SpecError`, a malformed field) | 400 |
 | Missing/malformed/expired/revoked bearer token | 401 |
-| Valid token, wrong scope | 403 |
-| Unknown id (run, proposal) | 404 |
+| Valid token, wrong scope, or a `/set`/`/add`/`/remove` targeting an ALWAYS_FROZEN root | 403 |
+| Unknown id (run, proposal), or one that belongs to a different harness | 404 |
 | `/run` at `max-concurrent-runs + max-queued-runs` capacity | 503 + `Retry-After` |
 | Anything unhandled | 500 |
 
@@ -164,10 +200,14 @@ HTTP:
 - **No replay/nonce cache.** A captured token is replayable by anyone who
   captures it, until it expires — hence the short 900-second (15 minute)
   default TTL.
-- **No revocation propagation.** Revoking a key only updates the one
-  `authorized_keys.json` file it's checked against. A token already issued
-  under that key stays valid (subject to the TTL above) until it expires;
-  there is no live push of revocation state anywhere else.
+- **No revocation propagation *beyond this one store*.** Within this store,
+  revocation IS immediate: `verify_bearer` reads `authorized_keys.json`
+  fresh on every request (no caching), so a revoked key's tokens are
+  rejected starting with the very next request to this harness — no
+  waiting for a TTL to expire. What does NOT propagate: if the same public
+  key was separately authorized against a different harness (a different
+  `authorized_keys.json`), revoking it here leaves that other copy
+  untouched — there is no central registry linking them.
 - **One harness per process.** `hiveloom serve` serves exactly the directory
   it was started against. Running several harnesses means several
   processes (and, if exposed beyond loopback, several ports).

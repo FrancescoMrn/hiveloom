@@ -109,14 +109,34 @@ def test_gate_rejects_non_mutable_path(tmp_path: Path):
 
 
 def test_gate_rejects_evolution_auto_propose_touching(tmp_path: Path):
-    """Evolution must not tune its own auto-propose trigger under the default mutable list."""
+    """Evolution must not tune its own auto-propose trigger. It's in
+    ALWAYS_FROZEN (fix-round-4 regression), so this is rejected as a frozen
+    path — a stronger guarantee than merely being absent from the default
+    `mutable` list, which a harness could otherwise override (see below).
+    """
     spec = load_spec(_harness(tmp_path))
     proposal = MutationProposal(
         yaml_changes=[{"path": "evolution.auto_propose.enabled", "value": True}]
     )
     result = gate(spec, proposal)
     assert not result.accepted
-    assert result.rejected[0]["reason"] == "not in the mutable set"
+    assert result.rejected[0]["reason"] == "frozen path"
+
+
+def test_gate_rejects_evolution_auto_propose_even_with_custom_mutable_list(tmp_path: Path):
+    """A harness must not be able to enable its own auto_propose trigger by
+    explicitly listing it in a CUSTOM `evolution.mutable` — ALWAYS_FROZEN is
+    checked before the mutable set, so this can't be overridden per harness.
+    """
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "evolution.mutable", ["evolution.auto_propose"])
+    spec = load_spec(harness)
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "evolution.auto_propose.enabled", "value": True}]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == "frozen path"
 
 
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
