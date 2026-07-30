@@ -8,9 +8,8 @@ Design contract (build spec section 6):
 * Exit codes: 0 ok, 1 verify failed, 2 guardrail halt, 3 spec/validation error,
   4 runtime error.
 
-Milestone M1 implements the explore (``schema``/``catalog``/``explain``/
-``validate``) and construct (``init``/``set``/``add``/``remove``) commands.
-``run``/``trace``/``stats``/``evolve``/``generate``/``package`` arrive later.
+The same machine-readable and exit-code contracts apply across exploration,
+construction, execution, evolution, packaging, and serving commands.
 """
 
 from __future__ import annotations
@@ -879,12 +878,10 @@ def generate(
     a validate/repair loop. Needs credentials for the configured provider when
     that provider requires them.
     """
-    from hiveloom.generate.generator import generate as run_generate
-    from hiveloom.generate.llm import build_strong_model
+    from hiveloom.generate import generate_harness
 
     with _guard(json_output):
-        model = build_strong_model(model_id)
-        spec = run_generate(task, output, model, blueprint=blueprint)
+        spec = generate_harness(task, output, model_id=model_id, blueprint=blueprint)
         if json_output:
             _emit_json({"ok": True, "directory": output, "name": spec.name})
         else:
@@ -1281,6 +1278,9 @@ def control_plane(
     approve: bool = typer.Option(
         False, "--approve", "-a", help="Trust the harness folder without prompting."
     ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the startup line as JSON."
+    ),
 ) -> None:
     """Serve a harness's CLI surface over HTTP to bearer-authorized members.
 
@@ -1292,26 +1292,43 @@ def control_plane(
     from hiveloom import trust as trust_mod
     from hiveloom.serve.app import create_app
 
-    if approve:
-        trust_mod.record_trust(harness_dir)
-    trust_mod.ensure_trusted(harness_dir, _serve_approve_callback())
+    with _guard(json_output):
+        if approve:
+            trust_mod.record_trust(harness_dir)
+        trust_mod.ensure_trusted(harness_dir, _serve_approve_callback())
 
-    if host not in _LOOPBACK_HOSTS:
-        _err_console.print(
-            f"[red]warning:[/red] binding to '{host}' — there is no TLS, so bearer "
-            "tokens travel in cleartext over the network. Put a reverse proxy or "
-            "SSH tunnel in front, or bind to 127.0.0.1 instead."
+        if host not in _LOOPBACK_HOSTS:
+            _err_console.print(
+                f"[red]warning:[/red] binding to '{host}' — there is no TLS, so bearer "
+                "tokens travel in cleartext over the network. Put a reverse proxy or "
+                "SSH tunnel in front, or bind to 127.0.0.1 instead."
+            )
+
+        import uvicorn
+
+        asgi_app = create_app(
+            harness_dir,
+            keys_path=authorized_keys,
+            max_concurrent_runs=max_concurrent_runs,
+            max_queued_runs=max_queued_runs,
         )
-
-    import uvicorn
-
-    asgi_app = create_app(
-        harness_dir,
-        keys_path=authorized_keys,
-        max_concurrent_runs=max_concurrent_runs,
-        max_queued_runs=max_queued_runs,
-    )
-    uvicorn.run(asgi_app, host=host, port=port)
+        info = {
+            "ok": True,
+            "service": "control-plane",
+            "harness_dir": str(Path(harness_dir).resolve()),
+            "host": host,
+            "port": port,
+            "max_concurrent_runs": max_concurrent_runs,
+            "max_queued_runs": max_queued_runs,
+        }
+        if json_output:
+            _emit_json(info)
+        else:
+            _console.print(
+                f"[green]serving control plane[/green] for {harness_dir} "
+                f"on http://{host}:{port}"
+            )
+        uvicorn.run(asgi_app, host=host, port=port)
 
 
 # --------------------------------------------------------------------------- #

@@ -6,8 +6,8 @@ Two distinct surfaces live here:
   ``hiveloom serve`` (and the docker ``--serve`` entrypoint): ``GET /healthz``
   plus ``POST /runs``, optional ``HIVELOOM_API_KEY`` bearer auth.
 - ``app.py``/``keys.py``/``auth.py``/``runslots.py`` — the bearer-authorized
-  control plane behind ``hiveloom control-plane``: the full CLI surface over
-  HTTP with ed25519 keys and scoped tokens. See ``docs/control-plane.md``.
+  control plane behind ``hiveloom control-plane``: a scoped operational subset
+  of the CLI over HTTP. See ``docs/control-plane.md``.
 """
 
 from __future__ import annotations

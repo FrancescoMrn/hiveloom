@@ -132,6 +132,8 @@ def test_broken_on_event_consumer_does_not_kill_run(harness_dir: Path):
 def test_sdk_exports_resolve():
     assert callable(hiveloom.run_harness)
     assert callable(hiveloom.generate_harness)
+    assert "generate_harness" in dir(hiveloom)
+    assert hiveloom.generate_harness is hiveloom.generate_harness
     assert hiveloom.RunResult.__name__ == "RunResult"
     assert hiveloom.Hive is not None
     with pytest.raises(AttributeError):

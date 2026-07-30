@@ -61,8 +61,8 @@ jobs:
         run: uv sync --extra dev
       # No ANTHROPIC_API_KEY on purpose: tests must pass offline with fake
       # providers (CONTRIBUTING.md contract).
-      - name: Run tests
-        run: uv run pytest
+      - name: Run tests with branch coverage
+        run: uv run pytest --cov --cov-report=term-missing
 
   harnesses:
     name: Validate example harnesses
@@ -112,12 +112,21 @@ jobs:
           SDIST=$(ls dist/*.tar.gz)
           # .env.example templates are the one intentional exception.
           if tar -tzf "$SDIST" \
-            | grep -E '(^|/)\.env|(^|/)\.token\.|(^|/)traces/' \
+            | grep -E '(^|/)\.env|(^|/)\.token\.|(^|/)(traces|__pycache__)/|\.py[co]$' \
             | grep -v '\.env\.example$'; then
-            echo "::error::sdist contains files that must never ship (.env / .token.* / traces)"
+            echo "::error::sdist contains secrets, traces, or interpreter caches"
             exit 1
           fi
           echo "sdist clean"
+      - name: Ensure generated harness artifacts stay out of the sdist
+        run: |
+          SDIST=$(ls dist/*.tar.gz)
+          if tar -tzf "$SDIST" | sed 's|^[^/]*/||' \
+            | grep -E '^harnesses/[^/]+/(Dockerfile|\.dockerignore|hiveloom\.lock|runtime/)'; then
+            echo "::error::sdist contains generated harness deployment artifacts"
+            exit 1
+          fi
+          echo "generated harness artifacts excluded"
       - name: Ensure the sdist ships only runtime, harnesses, and agent guidance
         run: |
           SDIST=$(ls dist/*.tar.gz)

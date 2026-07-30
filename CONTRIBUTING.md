@@ -11,7 +11,7 @@ recommended workflow:
 
 ```bash
 uv sync --extra dev
-uv run pytest
+uv run pytest --cov --cov-report=term-missing
 uv run ruff check .
 uv build
 ```
@@ -24,8 +24,28 @@ uv run hiveloom validate harnesses/example-summarizer
 uv run hiveloom run harnesses/example-summarizer --input notes.txt --dry-run
 ```
 
-Live runs need `ANTHROPIC_API_KEY`; tests use fake providers and must not need
-credentials or network access.
+The unit and integration suite uses fake providers and must not need credentials
+or network access. Before release, also run the live QA that matches the
+provider or transport you changed:
+
+```bash
+# Anthropic end-to-end smoke through a real example harness
+ANTHROPIC_API_KEY=... HIVELOOM_TRUST=always \
+  uv run hiveloom run harnesses/example-summarizer --input notes.txt --json
+
+# OpenAI-compatible three-turn/tool-call smoke
+HIVELOOM_LIVE_SMOKE=1 uv run python scripts/smoke_openai_compat.py \
+  --base-url <url> --api-key-env <ENV_NAME> --model <model-id>
+
+# Live URL drift check and full comparative benchmark
+cd evals/article-extractor
+uv run python dataset/check_dataset_urls.py
+./scripts/run_all_arms.sh
+```
+
+Live QA is intentionally separate from CI because it needs credentials, network
+access, mutable web pages, or local model servers. Record the command, model,
+date, and outcome in the change handoff; never commit its credentials or logs.
 
 ## Pull requests
 

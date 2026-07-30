@@ -196,6 +196,38 @@ def test_run_dry_run_needs_no_api_key():
     assert _json(r)["dry_run"] is True
 
 
+def test_control_plane_json_startup_contract(tmp_path: Path, monkeypatch):
+    from hiveloom import construct
+
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="served", task="Serve a thing.")
+    asgi_app = object()
+    calls: list[tuple[object, str, int]] = []
+    monkeypatch.setattr("hiveloom.serve.app.create_app", lambda *a, **k: asgi_app)
+    monkeypatch.setattr(
+        "uvicorn.run", lambda app, *, host, port: calls.append((app, host, port))
+    )
+
+    r = runner.invoke(
+        app,
+        [
+            "control-plane",
+            str(directory),
+            "--approve",
+            "--port",
+            "9001",
+            "--json",
+        ],
+    )
+
+    assert r.exit_code == ExitCode.OK
+    payload = _json(r)
+    assert payload["service"] == "control-plane"
+    assert payload["harness_dir"] == str(directory.resolve())
+    assert payload["port"] == 9001
+    assert calls == [(asgi_app, "127.0.0.1", 9001)]
+
+
 # --------------------------------------------------------------------------- #
 # Packaged agent guidance
 # --------------------------------------------------------------------------- #

@@ -8,8 +8,14 @@ from pathlib import Path
 import pytest
 
 from hiveloom.errors import HiveloomError
-from hiveloom.generate.generator import build_meta_prompt, generate, parse_plan
-from hiveloom.generate.llm import FakeStrongModel
+from hiveloom.generate.generator import (
+    build_meta_prompt,
+    generate,
+    load_generated,
+    parse_plan,
+)
+from hiveloom.generate.llm import FakeStrongModel, build_strong_model
+from hiveloom.models.fake import FakeModelProvider, text_response
 from hiveloom.spec import annotate
 from hiveloom.spec.loader import validate_harness
 
@@ -44,6 +50,70 @@ def test_generate_builds_valid_harness(tmp_path: Path):
     assert spec.loop.max_turns == 8
     assert any(getattr(t, "builtin", None) == "file_read" for t in spec.tools)
     validate_harness(tmp_path / "h")  # fully valid
+    assert load_generated(tmp_path / "h") == spec
+
+
+def test_generate_resolves_default_model_for_sdk(tmp_path: Path, monkeypatch):
+    model = FakeStrongModel([json.dumps(_plan())])
+    seen: list[tuple[str | None, Path]] = []
+
+    def build(model_id, base):
+        seen.append((model_id, base))
+        return model
+
+    monkeypatch.setattr("hiveloom.generate.llm.build_strong_model", build)
+
+    spec = generate("Count lines.", tmp_path / "h")
+
+    assert spec.name == "line-counter"
+    assert seen == [(None, tmp_path / "h")]
+
+
+def test_generate_rejects_model_and_model_id_together(tmp_path: Path):
+    with pytest.raises(HiveloomError, match="either model or model_id"):
+        generate(
+            "Count lines.",
+            tmp_path / "h",
+            FakeStrongModel([json.dumps(_plan())]),
+            model_id="provider/model",
+        )
+
+
+def test_fake_strong_model_reports_exhaustion():
+    model = FakeStrongModel([])
+
+    with pytest.raises(RuntimeError, match="ran out of scripted responses"):
+        model.generate(system="s", user="u")
+
+
+def test_default_strong_model_requires_credentials(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(HiveloomError, match="ANTHROPIC_API_KEY is not set"):
+        build_strong_model(None)
+
+
+def test_strong_model_resolves_registered_provider(monkeypatch, tmp_path: Path):
+    from hiveloom import ext
+
+    provider = FakeModelProvider([text_response("generated plan")])
+    monkeypatch.setattr(ext, "provider_names", lambda: ["local"])
+    monkeypatch.setattr(ext, "build_provider", lambda name, base: provider)
+
+    model = build_strong_model("local/model-id", tmp_path)
+
+    assert model.generate(system="system", user="task") == "generated plan"
+
+
+def test_strong_model_loads_harness_env(monkeypatch, tmp_path: Path):
+    from hiveloom.generate import llm
+
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=test-only\n")
+    sentinel = FakeStrongModel([])
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(llm, "ClaudeStrongModel", lambda model_id: sentinel)
+
+    assert build_strong_model("claude-test", tmp_path) is sentinel
 
 
 def test_generate_repairs_after_bad_first_plan(tmp_path: Path):

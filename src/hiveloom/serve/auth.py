@@ -142,8 +142,8 @@ def verify_bearer(
        attacker could not forge a valid signature, but nothing before this
        point proves the ``kid`` in the header was genuine.
     5. Scope check last, and raising a DISTINCT error class from the
-       authentication failures above — the control-plane server (next task)
-       maps authentication failures to 401 and this to 403.
+       authentication failures above — the control-plane server maps
+       authentication failures to 401 and this to 403.
     """
     if not authorization_header or not authorization_header.startswith(_BEARER_PREFIX):
         raise AuthenticationError("missing or malformed Authorization header")

@@ -1,7 +1,7 @@
 """Incremental harness construction — the library behind the construct CLI.
 
-Both ``hiveloom init/set/add/remove`` and (in M4) ``hiveloom generate`` drive
-these functions, so there is one code path for building a harness. Every
+Both ``hiveloom init/set/add/remove`` and ``hiveloom generate`` drive these
+functions, so there is one code path for building a harness. Every
 mutating function:
 
 * applies the change to the raw YAML dict,

@@ -202,8 +202,9 @@ def _finalize(output_dir: Path) -> list[str]:
 def generate(
     task_description: str,
     output_dir: str | Path,
-    model: StrongModel,
+    model: StrongModel | None = None,
     *,
+    model_id: str | None = None,
     available_tools: list[str] | None = None,
     max_repairs: int = 2,
     blueprint: str | None = None,
@@ -211,11 +212,20 @@ def generate(
     """Generate a harness for ``task_description`` into ``output_dir``.
 
     A strong model produces a construction plan; hiveloom replays it through the
-    validated construction API. On failure the error is fed back to the model
-    for up to ``max_repairs`` self-corrections. ``blueprint`` names a reusable
-    house-style prompt fragment (``hiveloom generate --blueprint``).
+    validated construction API. Pass a ``model`` implementation for embedding
+    and tests, or let hiveloom resolve ``model_id`` (the default when omitted)
+    exactly as the CLI does. Supplying both is an error. On failure the error is
+    fed back to the model for up to ``max_repairs`` self-corrections.
+    ``blueprint`` names a reusable house-style prompt fragment
+    (``hiveloom generate --blueprint``).
     """
     directory = Path(output_dir)
+    if model is not None and model_id is not None:
+        raise PlanError("pass either model or model_id, not both")
+    if model is None:
+        from hiveloom.generate.llm import build_strong_model
+
+        model = build_strong_model(model_id, directory)
     blueprint_text = (
         resolve_blueprint(blueprint, task_description) if blueprint else None
     )
