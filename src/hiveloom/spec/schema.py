@@ -401,6 +401,15 @@ def _default_frozen() -> list[str]:
     return ["guardrails", "model"]
 
 
+# A bare `gt=0` bound on cooldown_hours would still accept e.g. 1e-9, which is
+# functionally "no cooldown" (no two runs complete within nanoseconds of each
+# other) — that would make the "cannot be disabled" claim below false. One
+# minute is generous enough to constrain no legitimate configuration while
+# making the floor real. No ceiling: an unusually large cooldown just means
+# less auto-proposing, the safe direction (unlike a cost guardrail's ceiling).
+MIN_COOLDOWN_HOURS = 1 / 60
+
+
 class AutoProposeConfig(BaseModel):
     """Opt-in: draft (never apply) an evolution proposal after a failing run."""
 
@@ -415,12 +424,12 @@ class AutoProposeConfig(BaseModel):
         description="Non-success runs required (since the last auto-proposal) before drafting.",
     )
     cooldown_hours: float = Field(
-        default=24.0, gt=0,
+        default=24.0, ge=MIN_COOLDOWN_HOURS,
         description=(
             "Minimum gap between auto-drafted proposals for this harness. Cannot be "
-            "disabled outright (always > 0) — deliberate, since each qualifying failing "
-            "run costs a strong-model call unless the dedup pre-check catches it; this is "
-            "partly a spend guard. Use `min_failures` for a different shape of restraint."
+            "removed: values below one minute are rejected. Each qualifying failing run "
+            "costs a strong-model call unless the dedup pre-check catches it, so this is "
+            "partly a spend guard; use `min_failures` for a different shape of restraint."
         ),
     )
     model: str | None = Field(

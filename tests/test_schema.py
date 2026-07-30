@@ -122,11 +122,28 @@ def test_auto_propose_min_failures_must_be_at_least_one():
         )
 
 
-def test_auto_propose_cooldown_hours_must_be_positive():
+def test_auto_propose_cooldown_hours_rejects_zero_and_negative():
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            HarnessSpec.model_validate(
+                _minimal(evolution={"auto_propose": {"cooldown_hours": bad}})
+            )
+
+
+def test_auto_propose_cooldown_hours_rejects_sub_minute_values():
+    """A bare gt=0 bound would accept e.g. 1e-9, which is functionally "no
+    cooldown" — no two runs complete within nanoseconds of each other. The
+    one-minute floor (MIN_COOLDOWN_HOURS) is what makes "cannot be removed"
+    actually true; this is the assertion that catches a regression to gt=0."""
     with pytest.raises(ValidationError):
         HarnessSpec.model_validate(
-            _minimal(evolution={"auto_propose": {"cooldown_hours": 0}})
+            _minimal(evolution={"auto_propose": {"cooldown_hours": 1e-9}})
         )
+    # A whole minute itself is the floor, not excluded by it.
+    spec = HarnessSpec.model_validate(
+        _minimal(evolution={"auto_propose": {"cooldown_hours": 1 / 60}})
+    )
+    assert spec.evolution.auto_propose.cooldown_hours == 1 / 60
 
 
 def test_auto_propose_forbids_extra_fields():
