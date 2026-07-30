@@ -13,3 +13,7 @@ hive.db
 # env
 .env
 .token.*
+
+# local credentials — never commit
+anthropic.token
+*.token
