@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-30
+
+### Changed
+
+- Simplified the Python generation SDK: `generate_harness(task, output)` now
+  resolves the default strong model like the CLI, while dependency injection
+  through `model=` remains supported.
+- Added the missing `--json` startup contract to `control-plane`, aligning the
+  long-running HTTP commands with the rest of the agent-facing CLI.
+- Replaced the single internal structured-logging dependency with the standard
+  library logger and added an 85% branch-coverage quality gate.
+- Tightened source-distribution exclusions so local traces, caches, generated
+  Docker artifacts, lock files, and embedded runtime wheels cannot ship.
+- Simplified the README around hiveloom's durable-harness moat and added the
+  reproducible article-extractor benchmark results.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added
