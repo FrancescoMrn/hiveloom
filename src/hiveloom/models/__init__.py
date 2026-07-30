@@ -1,8 +1,7 @@
-"""Model providers: the ModelProvider ABC and its implementations.
+"""Provider-neutral model interfaces.
 
-v0 ships a Claude implementation and a deterministic fake for tests. Anthropic
-types never leak out of ``claude.py`` — everything is normalized to hiveloom's
-own :class:`~hiveloom.models.provider.ModelResponse`.
+Provider SDK types never escape their adapters; every implementation normalizes
+responses to :class:`~hiveloom.models.provider.ModelResponse`.
 """
 
 from hiveloom.models.provider import (

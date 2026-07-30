@@ -1,6 +1,6 @@
 """Builtin guardrails and the factory that builds them from a spec.
 
-Guardrails are frozen from evolution by design (enforced in the evolver, M4).
+Guardrails are frozen from evolution by design and enforced by the evolver.
 """
 
 from __future__ import annotations

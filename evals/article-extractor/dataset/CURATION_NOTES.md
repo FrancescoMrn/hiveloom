@@ -195,3 +195,13 @@ scored it 3/3 correct against the old golden — see RESULTS.md). Replaced with
 the version-pinned `https://nodejs.org/docs/v22.0.0/api/fs.html`, identical
 page shape, frozen forever. Lesson for future samples: never use
 "latest"-aliased docs URLs.
+
+## Live QA amendment (2026-07-30)
+
+The next-day pre-flight found one drift: `s20` (GitHub Blog) retained the same
+article title and first 14 headings, but its fifteenth heading changed from
+"The cost of saying yes has changed" to "Tame Dependabot: Group your updates,
+slow the cadence, keep security fast." Both are cards in the rotating
+`Related posts` section, not article content. The historical `RESULTS.md`
+remains tied to dataset/repo hash `30b99e5`; replace or re-verify `s20` before
+the next scored sweep rather than silently rewriting that historical result.

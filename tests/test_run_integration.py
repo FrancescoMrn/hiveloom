@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-from structlog.testing import capture_logs
 
 from hiveloom import construct, runner
 from hiveloom.generate.llm import FakeStrongModel, StrongModel
@@ -233,23 +232,19 @@ def test_auto_propose_default_disabled_makes_no_hive_proposals_query(
         assert hive.list_proposals(harness_name="plain-demo") == []
 
 
-def test_auto_propose_raising_strong_model_does_not_fail_the_run(tmp_path: Path):
+def test_auto_propose_raising_strong_model_does_not_fail_the_run(
+    tmp_path: Path, caplog
+):
     harness = _auto_harness(tmp_path, min_failures=1)
 
-    with capture_logs() as logs:
+    with caplog.at_level(logging.WARNING, logger="hiveloom.runner"):
         result = runner.run_harness(
             harness, "x", provider=_failing_provider(), strong_model=_RaisingStrongModel()
         )
 
     assert result.status == "guardrail_halt"  # unaffected by the auto-propose crash
-    assert logs == [
-        {
-            "event": "auto_propose_failed",
-            "harness_name": "auto-demo",
-            "error": "boom: no network in tests",
-            "error_type": "RuntimeError",
-            "log_level": "warning",
-        }
+    assert caplog.messages == [
+        "auto-propose failed for harness auto-demo: RuntimeError: boom: no network in tests"
     ]
     with Hive() as hive:
         assert hive.list_proposals(harness_name="auto-demo") == []

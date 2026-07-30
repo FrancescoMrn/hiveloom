@@ -1,7 +1,4 @@
-"""Tool package. The registry and builtins land in M2; the ``@tool`` decorator
-lives here now because scaffolded code hooks import it and the loader resolves
-against it.
-"""
+"""Tools and the public ``@tool`` decorator used by code hooks."""
 
 from hiveloom.tools.decorators import tool
 

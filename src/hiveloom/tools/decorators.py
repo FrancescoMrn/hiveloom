@@ -1,8 +1,8 @@
 """The ``@tool`` decorator for user code hooks.
 
-In M1 this only attaches metadata and returns the original function unchanged,
-so ``inspect.signature`` (used by the loader's hook resolution) still sees the
-real signature. The M2 registry builds its Anthropic tool payload from the
+It attaches metadata and returns the original function unchanged, so
+``inspect.signature`` (used by the loader's hook resolution) still sees the
+real signature. The registry builds its provider-neutral tool payload from the
 attached metadata plus the function's type hints.
 """
 

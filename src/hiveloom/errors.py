@@ -52,8 +52,8 @@ class AuthenticationError(HiveloomError):
 
     Covers a missing/malformed ``Authorization`` header, an unknown key id,
     an invalid signature, an expired token, or a revoked key. Used by
-    :mod:`hiveloom.serve.auth`; the control-plane server (next task) maps
-    this to HTTP 401. Distinct from :class:`AuthorizationError` below.
+    :mod:`hiveloom.serve.auth`; the control-plane server maps this to HTTP 401.
+    Distinct from :class:`AuthorizationError` below.
     """
 
 
@@ -63,8 +63,8 @@ class AuthorizationError(HiveloomError):
     A caller can present a validly-signed, non-revoked token and still be
     refused here if neither its authorized key's scopes nor its own
     ``scope`` claim cover what was requested. Kept distinct from
-    :class:`AuthenticationError` because the control-plane server (next
-    task) maps this to HTTP 403 versus 401 for authentication failures.
+    :class:`AuthenticationError` because the control-plane server maps this to
+    HTTP 403 versus 401 for authentication failures.
     """
 
 
