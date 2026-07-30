@@ -15,6 +15,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import anyio
+import mcp
 import mcp.types as mcp_types
 import pytest
 
@@ -27,6 +29,7 @@ from hiveloom.spec.schema import McpHttpServerRef, McpStdioServerRef
 from hiveloom.tools.mcp import (
     McpBridge,
     McpToolAdapter,
+    _build_adapters,
     _flatten_call_tool_result,
     _list_all_tools,
     _resolve_env,
@@ -208,6 +211,24 @@ def test_pagination_exactly_500_is_fine():
     assert len(tools) == 500
 
 
+def test_intra_server_sanitize_collision_raises_mcp_error():
+    """Two remote tools from the SAME server sanitizing to the same adapter
+    name must raise rather than silently overwrite one another in the
+    registry (last-registered-wins would make one uncallable with no
+    indication anything went wrong)."""
+    ref = _stdio_ref()
+    remote_tools = [_tool("foo!"), _tool("foo?")]  # both sanitize to "foo_"
+    with pytest.raises(McpError, match="foo!.*foo\\?|foo\\?.*foo!"):
+        _build_adapters(ref, remote_tools, bridge=None, session=None, transport="stdio")
+
+
+def test_intra_server_distinct_names_do_not_collide():
+    ref = _stdio_ref()
+    remote_tools = [_tool("foo"), _tool("bar")]
+    adapters = _build_adapters(ref, remote_tools, bridge=None, session=None, transport="stdio")
+    assert {a.name for a in adapters} == {"mcp__echo__foo", "mcp__echo__bar"}
+
+
 def test_resolve_env_merges_literal_and_host_secrets(monkeypatch):
     monkeypatch.setenv("HL_TEST_SECRET", "shh")
     ref = _stdio_ref(env={"FOO": "bar"}, env_from_host_env={"TOKEN": "HL_TEST_SECRET"})
@@ -311,6 +332,47 @@ def test_partial_mcp_connect_failure_tears_down_earlier_servers(harness_dir: Pat
     spec = load_spec(harness_dir)
     with pytest.raises(McpError):
         build_registry(spec, harness_dir)
+    assert threading.active_count() == before
+
+
+def test_initialize_timeout_raises_mcp_error_and_tears_down(harness_dir: Path, monkeypatch):
+    """A hung session.initialize() must not block build_registry forever.
+
+    Exercises the actual cancellation-scope logic (anyio.fail_after inside
+    McpBridge._initialize, run through the real portal via `portal.call`) by
+    monkeypatching ClientSession.initialize to hang, rather than asserting
+    only that the code reads correctly.
+    """
+
+    async def _hang(self) -> None:
+        await anyio.sleep(999)
+
+    monkeypatch.setattr(mcp.ClientSession, "initialize", _hang)
+
+    construct.set_field(
+        harness_dir, "mcp_servers",
+        _mcp_servers_yaml(
+            [
+                {
+                    "name": "echo",
+                    "command": sys.executable,
+                    "args": [FIXTURE],
+                    "timeout_seconds": 0.2,
+                }
+            ]
+        ),
+    )
+    spec = load_spec(harness_dir)
+
+    before = threading.active_count()
+    start = time.monotonic()
+    with pytest.raises(McpError, match="did not initialize"):
+        build_registry(spec, harness_dir)
+    elapsed = time.monotonic() - start
+
+    # Honored roughly the configured 0.2s timeout -- not a silently-ignored
+    # default (e.g. the 30s spec default) and not an unbounded hang.
+    assert elapsed < 5.0
     assert threading.active_count() == before
 
 

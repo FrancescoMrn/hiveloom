@@ -274,7 +274,15 @@ class McpStdioServerRef(BaseModel):
     )
     cwd: str | None = Field(
         default=None,
-        description="Working directory for the subprocess, relative to the harness directory.",
+        description=(
+            "Working directory for the subprocess, resolved relative to the "
+            "harness directory (defaults to the harness directory itself when "
+            "unset). NOT a security boundary: unlike file_read/file_write, "
+            "traversal (e.g. '../..') is not constrained, and an absolute path "
+            "here overrides the harness directory entirely — `command` is "
+            "already arbitrary local exec, so sandboxing `cwd` alone would not "
+            "add a real boundary."
+        ),
     )
     tools: list[str] | None = Field(
         default=None,

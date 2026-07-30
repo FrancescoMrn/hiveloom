@@ -240,6 +240,51 @@ def _list_all_tools(bridge: McpBridge, session: ClientSession) -> list[mcp_types
     return tools
 
 
+def _build_adapters(
+    ref: McpServerRef,
+    remote_tools: list[mcp_types.Tool],
+    bridge: McpBridge,
+    session: ClientSession,
+    transport: str,
+) -> list[Tool]:
+    """Apply the `tools` allowlist and adapt each remaining remote tool.
+
+    Raises :class:`McpError` if two remote tools from the *same* server would
+    sanitize to the same adapter name (silent last-registered-wins overwrite
+    would otherwise make one of them uncallable with no indication anything
+    is wrong). Collisions across different servers can't happen — the
+    ``mcp__<server>__<tool>`` prefix already makes those collision-proof.
+    """
+    allowlist = set(ref.tools) if ref.tools is not None else None
+    adapters: list[Tool] = []
+    seen: dict[str, str] = {}
+    for remote in remote_tools:
+        if allowlist is not None and remote.name not in allowlist:
+            continue
+        sanitized = _sanitize(remote.name)
+        if sanitized in seen:
+            raise McpError(
+                f"mcp server '{ref.name}': remote tools '{seen[sanitized]}' and "
+                f"'{remote.name}' would both become 'mcp__{ref.name}__{sanitized}'; "
+                "rename one on the server or use `tools` to keep only one"
+            )
+        seen[sanitized] = remote.name
+        adapters.append(
+            McpToolAdapter(
+                bridge=bridge,
+                session=session,
+                server_name=ref.name,
+                remote_name=remote.name,
+                description=remote.description
+                or f"MCP tool '{remote.name}' from server '{ref.name}'.",
+                input_schema=remote.inputSchema or {"type": "object", "properties": {}},
+                transport=transport,
+                timeout=ref.timeout_seconds,
+            )
+        )
+    return adapters
+
+
 def connect_mcp_server(ref: McpServerRef, base_dir: Path, bridge: McpBridge) -> list[Tool]:
     """Connect to one declared MCP server and adapt its (allowlisted) tools.
 
@@ -268,22 +313,4 @@ def connect_mcp_server(ref: McpServerRef, base_dir: Path, bridge: McpBridge) -> 
             f"mcp server '{ref.name}' ({ref.transport}) failed to connect: {exc}"
         ) from exc
 
-    allowlist = set(ref.tools) if ref.tools is not None else None
-    adapters: list[Tool] = []
-    for remote in remote_tools:
-        if allowlist is not None and remote.name not in allowlist:
-            continue
-        adapters.append(
-            McpToolAdapter(
-                bridge=bridge,
-                session=session,
-                server_name=ref.name,
-                remote_name=remote.name,
-                description=remote.description
-                or f"MCP tool '{remote.name}' from server '{ref.name}'.",
-                input_schema=remote.inputSchema or {"type": "object", "properties": {}},
-                transport=transport,
-                timeout=ref.timeout_seconds,
-            )
-        )
-    return adapters
+    return _build_adapters(ref, remote_tools, bridge, session, transport)
