@@ -113,6 +113,12 @@ against the same failure state never pays for a second strong-model call).
 A failure here (no API key, no network, a malformed model response) never
 fails the run itself — same discipline as trace ingestion.
 
+`cooldown_hours` cannot be set to `0` — it is deliberately impossible to
+disable outright, the same way the cost guardrail is force-injected and not
+disableable. Each qualifying failing run costs a strong-model call unless the
+dedup pre-check catches it, so this is partly a spend guard; `min_failures`
+is the complementary throttle if you want a different shape of restraint.
+
 If you'd rather not pay this tail latency inside every run, leave
 `auto_propose` off and instead schedule `hiveloom evolve <dir> --propose`
 from cron (or your platform's scheduler) against the deployed harness — same

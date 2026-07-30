@@ -416,7 +416,12 @@ class AutoProposeConfig(BaseModel):
     )
     cooldown_hours: float = Field(
         default=24.0, gt=0,
-        description="Minimum gap between auto-drafted proposals for this harness.",
+        description=(
+            "Minimum gap between auto-drafted proposals for this harness. Cannot be "
+            "disabled outright (always > 0) — deliberate, since each qualifying failing "
+            "run costs a strong-model call unless the dedup pre-check catches it; this is "
+            "partly a spend guard. Use `min_failures` for a different shape of restraint."
+        ),
     )
     model: str | None = Field(
         default=None,
