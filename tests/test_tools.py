@@ -13,6 +13,7 @@ from hiveloom.tools.builtin import (
     FileWriteTool,
     HttpGetTool,
     ShellTool,
+    _safe_path,
     _validate_public_http_url,
 )
 from hiveloom.tools.registry import (
@@ -37,6 +38,74 @@ def test_file_read_rejects_path_traversal(tmp_path: Path):
     result = registry.dispatch(ToolCall(id="1", name="file_read", input={"path": "../secret"}))
     assert result.is_error
     assert "escapes" in result.content
+
+
+# --------------------------------------------------------------------------- #
+# file_read/file_write refuse harness-sensitive paths (auth store, .env)
+# --------------------------------------------------------------------------- #
+def test_file_read_refuses_authorized_keys_json(tmp_path: Path):
+    (tmp_path / ".hiveloom").mkdir()
+    (tmp_path / ".hiveloom" / "authorized_keys.json").write_text('{"keys": []}')
+    with pytest.raises(ToolError):
+        FileReadTool(tmp_path).run(path=".hiveloom/authorized_keys.json")
+
+
+def test_file_read_refuses_dotenv(tmp_path: Path):
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=super-secret-value\n")
+    with pytest.raises(ToolError):
+        FileReadTool(tmp_path).run(path=".env")
+
+
+def test_file_write_refuses_authorized_keys_json(tmp_path: Path):
+    """The write-side risk: a model must not be able to clobber (or plant
+    keys into) the auth store either.
+    """
+    (tmp_path / ".hiveloom").mkdir()
+    (tmp_path / ".hiveloom" / "authorized_keys.json").write_text('{"keys": []}')
+    with pytest.raises(ToolError):
+        FileWriteTool(tmp_path).run(path=".hiveloom/authorized_keys.json", content="{}")
+
+
+def test_file_read_refuses_case_variant_dotenv(tmp_path: Path):
+    """Case-insensitive filesystems (macOS APFS, most Windows filesystems)
+    don't correct a caller's casing to the on-disk name — `.ENV` must be
+    treated identically to `.env`.
+    """
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=super-secret-value\n")
+    with pytest.raises(ToolError):
+        FileReadTool(tmp_path).run(path=".ENV")
+
+
+def test_file_read_refuses_case_variant_hiveloom_dir(tmp_path: Path):
+    (tmp_path / ".hiveloom").mkdir()
+    (tmp_path / ".hiveloom" / "authorized_keys.json").write_text('{"keys": []}')
+    with pytest.raises(ToolError):
+        FileReadTool(tmp_path).run(path=".HIVELOOM/authorized_keys.json")
+
+
+def test_file_read_still_allows_env_example(tmp_path: Path):
+    """The checked-in template is explicitly exempt — only real `.env*`
+    credential files are refused.
+    """
+    (tmp_path / ".env.example").write_text("ANTHROPIC_API_KEY=\n")
+    assert FileReadTool(tmp_path).run(path=".env.example") == "ANTHROPIC_API_KEY=\n"
+
+
+def test_file_read_still_allows_ordinary_harness_files(tmp_path: Path):
+    (tmp_path / "notes.txt").write_text("ordinary data")
+    assert FileReadTool(tmp_path).run(path="notes.txt") == "ordinary data"
+
+
+def test_safe_path_refuses_configured_trace_dir_case_insensitively(tmp_path: Path):
+    """`trace_dir` is opt-in (only the HTTP control plane currently has a
+    spec loaded to supply it — file_read/file_write don't pass one, so they
+    fall back to the `.hiveloom/`-only coverage above), but `_safe_path`
+    itself must honor it correctly, case-insensitively, when given one.
+    """
+    (tmp_path / "MyLogs").mkdir()
+    (tmp_path / "MyLogs" / "run_x.jsonl").write_text('{"type": "run_started"}\n')
+    with pytest.raises(ToolError):
+        _safe_path(tmp_path, "mylogs/run_x.jsonl", trace_dir=Path("MyLogs"))
 
 
 def test_shell_disabled_without_allowlist(tmp_path: Path):

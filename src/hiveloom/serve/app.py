@@ -50,7 +50,7 @@ from hiveloom.generate.llm import StrongModel, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.models.provider import ModelProvider
-from hiveloom.package import is_sensitive_path, trace_dir_relative_to
+from hiveloom.package import trace_dir_relative_to
 from hiveloom.serve import auth as auth_mod
 from hiveloom.serve.runslots import (
     DEFAULT_MAX_CONCURRENT_RUNS,
@@ -292,28 +292,24 @@ def create_app(
             return _error_response(SpecError("provide 'input' or 'input_file'"))
 
         if input_file is not None:
-            # Contained to the harness dir — never an arbitrary server-side
-            # file read. `input` itself is ALWAYS literal text (below): a
-            # caller-supplied string that happens to name a real file on the
-            # server must never be silently read.
-            try:
-                resolved = await asyncio.to_thread(_safe_path, base, input_file)
-            except ToolError as exc:
-                return _error_response(SpecError(str(exc)))
-            # Staying inside the harness dir isn't enough on its own: .env*
-            # (credentials — a deployed harness routinely holds a live
-            # ANTHROPIC_API_KEY there) and .hiveloom/ (the trust store,
-            # construction log, and — for a served harness — its own
-            # authorized_keys.json and every prior run's trace) both live
-            # INSIDE it. Reuse package.py's canonical "never leaves the
-            # harness" predicate rather than a second, divergence-prone list.
+            # Contained to the harness dir AND not one of the paths that
+            # must never leave it (.hiveloom/, .env*, the trace dir) —
+            # `_safe_path` itself enforces both, the same chokepoint the
+            # file_read/file_write tools and the evolver's code-change
+            # containment already go through. `input` itself is ALWAYS
+            # literal text (below): a caller-supplied string that happens to
+            # name a real file on the server must never be silently read.
+            # Loading the spec fresh here (rather than trusting a value
+            # cached at server start) means a `logging.trace_dir` changed via
+            # `/set` since server start is still covered.
             spec = await asyncio.to_thread(load_spec, harness_dir)
             trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
-            rel = resolved.relative_to(base.resolve())
-            if is_sensitive_path(rel, trace_dir=trace_dir):
-                return _error_response(
-                    SpecError(f"input_file '{input_file}' is not readable over the control plane")
+            try:
+                resolved = await asyncio.to_thread(
+                    _safe_path, base, input_file, trace_dir=trace_dir
                 )
+            except ToolError as exc:
+                return _error_response(SpecError(str(exc)))
             if not resolved.is_file():
                 return _error_response(SpecError(f"input_file not found: {input_file}"))
             run_input = await asyncio.to_thread(resolved.read_text, encoding="utf-8")

@@ -2,6 +2,10 @@
 
 All builtins are sandboxed to the harness working directory (files) or an
 allowlist (shell). ``shell`` is disabled unless the spec provides an allowlist.
+``file_read``/``file_write`` are further refused ``package.py``'s "never
+leaves the harness" paths (``.hiveloom/``, ``.env*``, the trace dir) via
+``_safe_path`` — a model can no more read its own harness's auth store or
+credentials through a tool call than an HTTP caller can through `input_file`.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from urllib.parse import urlsplit
 
 from hiveloom import ext
 from hiveloom.catalog import BUILTIN_TOOLS
+from hiveloom.package import is_sensitive_path
 from hiveloom.spec.schema import BuiltinToolRef
 from hiveloom.tools.registry import Tool, ToolError
 
@@ -32,12 +37,33 @@ _EXTRA_ARGS_SAFE_BINARIES = {
 }
 
 
-def _safe_path(base: Path, path: str) -> Path:
-    """Resolve ``path`` and ensure it stays within ``base`` (no traversal)."""
+def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
+    """Resolve ``path``, ensure it stays within ``base`` (no traversal), and
+    refuse anything ``package.py`` would never ship either (``.hiveloom/``,
+    ``.env*`` except checked-in templates, VCS/cache noise, and — when the
+    caller supplies it — the configured trace directory).
+
+    Staying inside the harness directory is necessary but not sufficient:
+    ``.hiveloom/`` (the trust store, construction log, and — for a served
+    harness — its own auth store and every run's trace) and ``.env`` (a
+    live ``ANTHROPIC_API_KEY`` in any real deployment) both live INSIDE it.
+    This check is default-on here — the one chokepoint every caller
+    (``file_read``/``file_write`` below, the evolver's code-change
+    containment, the HTTP control plane's ``input_file``) already goes
+    through for containment — so nothing has to remember a second check.
+    ``trace_dir`` is optional because only a caller that already has the
+    harness's spec loaded (the HTTP control plane) can supply it; the file
+    tools and the evolver still get full ``.hiveloom/``/``.env*`` coverage
+    without it, since the default trace directory lives under ``.hiveloom/``
+    anyway.
+    """
     candidate = (base / path).resolve()
     base_resolved = base.resolve()
     if candidate != base_resolved and base_resolved not in candidate.parents:
         raise ToolError(f"path '{path}' escapes the working directory")
+    rel = candidate.relative_to(base_resolved)
+    if is_sensitive_path(rel, trace_dir=trace_dir):
+        raise ToolError(f"path '{path}' is protected harness state, not accessible here")
     return candidate
 
 

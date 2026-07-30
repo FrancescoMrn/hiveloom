@@ -134,17 +134,24 @@ HTTP:
   file on the server is sent to the model as that literal string, never
   read.
 - An optional, separate `input_file` field is resolved relative to the
-  harness directory and rejected if it would escape it (the same
-  containment helper the evolver uses for code-change paths) — **and**
-  rejected if it points at anything package.py already treats as "never
-  leaves the harness": `.hiveloom/` (the trust store, construction log, and
-  — for a served harness — its own `authorized_keys.json` and every prior
-  run's trace), `.env*` (a deployed harness routinely holds a live
+  harness directory and rejected if it would escape it — **and** rejected if
+  it points at anything `package.py` already treats as "never leaves the
+  harness": `.hiveloom/` (the trust store, construction log, and — for a
+  served harness — its own `authorized_keys.json` and every prior run's
+  trace), `.env*` (a deployed harness routinely holds a live
   `ANTHROPIC_API_KEY` there), or the configured `logging.trace_dir` even
   when it's been moved outside `.hiveloom/`. Staying inside the harness
   directory is necessary but not sufficient; both checks share one
-  definition (`hiveloom.package.is_sensitive_path`) so packaging and serving
-  can never disagree about what counts as sensitive.
+  definition (`hiveloom.package.is_sensitive_path`, matched case-insensitively
+  since a caller's casing isn't corrected to the on-disk name on a
+  case-insensitive filesystem) so packaging and serving can never disagree
+  about what counts as sensitive.
+- This is the SAME protection the harness's own `file_read`/`file_write`
+  tools get: both go through `_safe_path`, which now enforces the identical
+  sensitivity check for every caller, not just `input_file`. A harness with
+  `file_read` configured cannot read its own auth store or `.env` either —
+  `run` scope over HTTP never grants more filesystem reach than the model
+  already had running locally.
 
 ## Limitations (loud, on purpose)
 

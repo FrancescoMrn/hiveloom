@@ -313,6 +313,52 @@ def test_run_input_file_refuses_custom_trace_dir(tmp_path: Path):
     assert r.status_code == 400
 
 
+def test_run_input_file_refuses_case_variant_dotenv(tmp_path: Path):
+    """Fix-round-2 regression: case-insensitive filesystems (macOS APFS,
+    most Windows filesystems) don't correct a caller's casing to the on-disk
+    name — `.ENV` must be refused exactly like `.env`.
+    """
+    harness = _harness(tmp_path)
+    (harness / ".env").write_text("ANTHROPIC_API_KEY=super-secret-value\n")
+    _, token = _authorize(harness, ["run"])
+    app = create_app(
+        harness, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    with TestClient(app) as client:
+        r = client.post("/run", json={"input_file": ".ENV"}, headers=_bearer(token))
+    assert r.status_code == 400
+
+
+def test_run_input_file_refuses_case_variant_hiveloom_dir(tmp_path: Path):
+    harness = _harness(tmp_path)
+    _, token = _authorize(harness, ["run"])  # writes .hiveloom/authorized_keys.json
+    app = create_app(
+        harness, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    with TestClient(app) as client:
+        r = client.post(
+            "/run", json={"input_file": ".HIVELOOM/authorized_keys.json"}, headers=_bearer(token)
+        )
+    assert r.status_code == 400
+
+
+def test_run_input_file_refuses_custom_trace_dir_case_variant(tmp_path: Path):
+    """Same as the exact-case custom-trace-dir test above, but with a
+    caller-supplied path whose case differs from the configured trace_dir.
+    """
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "logging.trace_dir", "MyLogs")
+    (harness / "MyLogs").mkdir()
+    (harness / "MyLogs" / "run_x.jsonl").write_text('{"type": "run_started"}\n')
+    _, token = _authorize(harness, ["run"])
+    app = create_app(
+        harness, provider_factory=lambda base: FakeModelProvider([text_response("HELLO")])
+    )
+    with TestClient(app) as client:
+        r = client.post("/run", json={"input_file": "mylogs/run_x.jsonl"}, headers=_bearer(token))
+    assert r.status_code == 400
+
+
 # --------------------------------------------------------------------------- #
 # /run?stream=true
 # --------------------------------------------------------------------------- #
