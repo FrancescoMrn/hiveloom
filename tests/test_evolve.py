@@ -139,6 +139,28 @@ def test_gate_rejects_evolution_auto_propose_even_with_custom_mutable_list(tmp_p
     assert result.rejected[0]["reason"] == "frozen path"
 
 
+def test_gate_rejects_case_variant_frozen_paths(tmp_path: Path):
+    """Fix-round-5 regression: `_covered`'s comparison must be
+    case-insensitive — a case-variant path like `"Model"` or
+    `"logging.Redact"` must be rejected as frozen on its own, not merely
+    because the mismatched-case write that would otherwise follow creates
+    an unrecognized key `_commit`'s pydantic validation rejects anyway
+    (that's an unrelated backstop, not this check working).
+    """
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "Model", "value": {}},
+            {"path": "logging.Redact", "value": []},
+            {"path": "GUARDRAILS", "value": []},
+        ]
+    )
+    result = gate(spec, proposal)
+    assert not result.accepted
+    assert all(r["reason"] == "frozen path" for r in result.rejected)
+    assert len(result.rejected) == 3
+
+
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
     _system, user = build_evolve_prompt(load_spec(_harness(tmp_path)), _report())
 

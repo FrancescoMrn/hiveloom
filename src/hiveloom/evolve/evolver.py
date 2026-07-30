@@ -133,7 +133,21 @@ def propose(spec: HarnessSpec, report: FailureReport, model: StrongModel) -> Mut
 # Gate (frozen-path enforcement)
 # --------------------------------------------------------------------------- #
 def _covered(path: str, patterns: set[str]) -> bool:
-    return any(path == p or path.startswith(p + ".") for p in patterns)
+    """True if ``path`` equals, or is a dotted sub-path of, one of ``patterns``.
+
+    Case-insensitive, unconditionally — same principle and same reason as
+    `hiveloom.package.is_sensitive_path`'s casefold fix: a case-variant path
+    (``"Model"``, ``"logging.Redact"``) must not slip past this check. It
+    happens to be harmless *today* only because the mismatched-case write
+    that would follow creates an unrecognized key `_commit`'s pydantic
+    validation then rejects — an unrelated backstop, not this check working.
+    Shared by `gate()` for both the ALWAYS_FROZEN check and the mutable-set
+    check, so both become case-insensitive; a case-variant mutable path
+    still can't actually reach the real field for the same reason above, so
+    this loses nothing there.
+    """
+    path_cf = path.casefold()
+    return any(path_cf == p.casefold() or path_cf.startswith(p.casefold() + ".") for p in patterns)
 
 
 def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:

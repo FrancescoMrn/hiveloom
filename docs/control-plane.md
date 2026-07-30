@@ -50,6 +50,15 @@ All five support `--json`. The store path defaults to
 `<harness_dir>/.hiveloom/authorized_keys.json` and can be overridden with
 `--authorized-keys PATH` or `$HIVELOOM_AUTHORIZED_KEYS`.
 
+**A public key is base64url, whose alphabet includes `-`.** About 1 in 64
+freshly generated keys start with one, which a shell/CLI argument parser
+can misread as an option flag (`No such option: -a`) rather than the
+`<public-key>` value — this is a standard Click/argparse ambiguity, not
+specific to `hiveloom`. If `keys authorize` rejects an otherwise-correct
+invocation this way, put `--` before the positional arguments so the
+parser stops looking for options: `hiveloom keys authorize --harness
+<dir> --scope run -- <name> <public-key>`.
+
 Scopes are coarse by design — `run`, `read`, `mutate`, `evolve`, `*` — with no
 per-route ACLs. A token cannot grant more than its authorizing key holds:
 both the key's scopes and the token's own `scope` claim must cover whatever

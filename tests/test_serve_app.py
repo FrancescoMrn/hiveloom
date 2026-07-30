@@ -21,11 +21,12 @@ from starlette.testclient import TestClient
 from test_evolve import _PROPOSAL_PAYLOAD, _seed_failure
 
 from hiveloom import construct
+from hiveloom.errors import AuthorizationError
 from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.models.fake import FakeModelProvider, ModelProvider, text_response
 from hiveloom.serve import auth as auth_mod
 from hiveloom.serve import keys as keys_mod
-from hiveloom.serve.app import create_app
+from hiveloom.serve.app import _error_response, create_app
 from hiveloom.spec.loader import load_spec
 
 
@@ -70,6 +71,17 @@ class _BlockingProvider(ModelProvider):
     def complete(self, *, system, messages, tools, config):
         self._release.wait(timeout=5)
         return self._response
+
+
+# --------------------------------------------------------------------------- #
+# _error_response: every mapped exception type gets its own direct test —
+# independent of any endpoint, so the next type added to this mapping can't
+# silently fall through to 500 the way AuthorizationError did until this
+# branch introduced its first caller (fix-round-4/5).
+# --------------------------------------------------------------------------- #
+def test_error_response_maps_authorization_error_to_403():
+    response = _error_response(AuthorizationError("x"))
+    assert response.status_code == 403
 
 
 # --------------------------------------------------------------------------- #
@@ -579,6 +591,25 @@ def test_set_refuses_every_always_frozen_root(tmp_path: Path, path: str, value):
     _, token = _authorize(harness, ["mutate"])
     with TestClient(app) as client:
         r = client.post("/set", json={"path": path, "value": value}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+
+
+@pytest.mark.parametrize("path", ["Model", "logging.Redact", "GUARDRAILS"])
+def test_set_refuses_case_variant_frozen_root(tmp_path: Path, path: str):
+    """Fix-round-5 regression: before the `_covered` casefold fix, a
+    case-variant path like this was refused too, but only as an incidental
+    400 (an unrecognized top-level key rejected by pydantic's
+    `extra="forbid"`, since dotted-path lookup is itself case-sensitive) —
+    not because the frozen-root check actually caught it. Post-fix it must
+    be refused as 403 (an authorization failure), not merely happen to
+    fail for an unrelated reason.
+    """
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/set", json={"path": path, "value": []}, headers=_bearer(token))
     assert r.status_code == 403
     assert r.json()["ok"] is False
 
