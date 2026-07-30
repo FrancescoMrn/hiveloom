@@ -11,10 +11,10 @@ import pytest
 # mirroring how test_evolve.py itself reuses test_hive.py's _write_trace.
 from test_evolve import _PROPOSAL_PAYLOAD, _fake_model, _harness, _report, _seed_failure, cli_runner
 
-from hiveloom import cli
+from hiveloom import cli, construct
 from hiveloom import trust as trust_mod
 from hiveloom.errors import ExitCode, ProposalQueueError, SpecError
-from hiveloom.evolve.evolver import MutationProposal
+from hiveloom.evolve.evolver import ApplyResult, MutationProposal
 from hiveloom.evolve.evolver import apply_proposal as evolver_apply_proposal
 from hiveloom.evolve.proposals import (
     _dedup_key,
@@ -199,6 +199,86 @@ def test_apply_already_resolved_raises(tmp_path: Path):
             apply_proposal_by_id(hive, harness, created.id, apply_yaml=True)
 
 
+def test_apply_claim_blocks_a_second_caller_after_both_observed_pending(
+    tmp_path: Path, monkeypatch
+):
+    """Simulate two callers retaining the same pre-claim pending snapshot."""
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+
+    with Hive(tmp_path / "hive.db") as hive:
+        created = create_proposal(
+            hive,
+            spec,
+            harness,
+            _report(),
+            FakeStrongModel([_PROPOSAL_PAYLOAD]),
+            trigger="manual",
+        )
+        pending_snapshot = hive.get_proposal(created.id)
+        real_get = hive.get_proposal
+        stale_reads = 2
+
+        def stale_get(proposal_id: str):
+            nonlocal stale_reads
+            if stale_reads:
+                stale_reads -= 1
+                return dict(pending_snapshot)
+            return real_get(proposal_id)
+
+        apply_calls: list[str] = []
+
+        def fake_apply(*_args, **_kwargs):
+            apply_calls.append(created.id)
+            return ApplyResult(
+                changed=False,
+                old_version_hash=created.spec_version_hash,
+                new_version_hash=created.spec_version_hash,
+                counter=0,
+            )
+
+        monkeypatch.setattr(hive, "get_proposal", stale_get)
+        monkeypatch.setattr(
+            "hiveloom.evolve.proposals.evolver.apply_proposal", fake_apply
+        )
+
+        apply_proposal_by_id(hive, harness, created.id)
+        with pytest.raises(ProposalQueueError, match="already applied"):
+            apply_proposal_by_id(hive, harness, created.id)
+
+    assert apply_calls == [created.id]
+
+
+def test_apply_failure_releases_claim_for_retry(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+
+    with Hive(tmp_path / "hive.db") as hive:
+        created = create_proposal(
+            hive,
+            spec,
+            harness,
+            _report(),
+            FakeStrongModel([_PROPOSAL_PAYLOAD]),
+            trigger="manual",
+        )
+        statuses_during_apply: list[str] = []
+
+        def fail_apply(*_args, **_kwargs):
+            statuses_during_apply.append(hive.get_proposal(created.id)["status"])
+            raise RuntimeError("apply failed")
+
+        monkeypatch.setattr(
+            "hiveloom.evolve.proposals.evolver.apply_proposal", fail_apply
+        )
+
+        with pytest.raises(RuntimeError, match="apply failed"):
+            apply_proposal_by_id(hive, harness, created.id)
+
+        assert statuses_during_apply == ["applying"]
+        assert hive.get_proposal(created.id)["status"] == "pending"
+
+
 # --------------------------------------------------------------------------- #
 # reject_proposal
 # --------------------------------------------------------------------------- #
@@ -250,15 +330,82 @@ def test_cli_proposals_list_and_show(tmp_path: Path, monkeypatch):
     # list --json and show --json expand the same JSON-text columns identically.
     assert listed_proposals[0]["gate"]["accepted"][0]["path"] == "loop.max_turns"
     assert listed_proposals[0]["proposal"]["rationale"] == "clarify"
+    raw_keys = {"proposal_json", "gate_json", "apply_result_json"}
+    assert raw_keys.isdisjoint(listed_proposals[0])
 
     shown = cli_runner.invoke(cli.app, ["proposals", "show", str(harness), proposal_id, "--json"])
     assert shown.exit_code == ExitCode.OK, shown.stdout
     payload = json.loads(shown.stdout)
     assert payload["id"] == proposal_id
     assert payload["gate"] == listed_proposals[0]["gate"]
+    assert raw_keys.isdisjoint(payload)
 
     missing = cli_runner.invoke(cli.app, ["proposals", "show", str(harness), "nope", "--json"])
     assert missing.exit_code == ExitCode.SPEC_ERROR
+
+
+def _wrong_harness_for_queued_proposal(
+    tmp_path: Path, monkeypatch
+) -> tuple[Path, Path, str]:
+    harness, proposal_id = _queue_via_cli(tmp_path, monkeypatch)
+    wrong_harness = tmp_path / "wrong"
+    construct.init_harness(wrong_harness, name="wrong", task="Do another thing.")
+    return harness, wrong_harness, proposal_id
+
+
+def test_cli_proposals_show_rejects_a_mismatched_harness(tmp_path: Path, monkeypatch):
+    _harness_dir, wrong_harness, proposal_id = _wrong_harness_for_queued_proposal(
+        tmp_path, monkeypatch
+    )
+    listed = cli_runner.invoke(
+        cli.app, ["proposals", "list", str(wrong_harness), "--json"]
+    )
+    assert listed.exit_code == ExitCode.OK
+    assert json.loads(listed.stdout)["proposals"] == []
+
+    result = cli_runner.invoke(
+        cli.app,
+        ["proposals", "show", str(wrong_harness), proposal_id, "--json"],
+    )
+    assert result.exit_code == ExitCode.SPEC_ERROR, result.stdout
+    assert "belongs to harness 'demo', not 'wrong'" in json.loads(result.stdout)["error"]
+
+
+def test_cli_proposals_apply_rejects_a_mismatched_harness(tmp_path: Path, monkeypatch):
+    harness, wrong_harness, proposal_id = _wrong_harness_for_queued_proposal(
+        tmp_path, monkeypatch
+    )
+    result = cli_runner.invoke(
+        cli.app,
+        ["proposals", "apply", str(wrong_harness), proposal_id, "--yes", "--json"],
+    )
+    assert result.exit_code == ExitCode.SPEC_ERROR, result.stdout
+    assert "belongs to harness 'demo', not 'wrong'" in json.loads(result.stdout)["error"]
+    with Hive() as hive:
+        assert get_proposal(hive, proposal_id).status == "pending"
+    assert load_spec(harness).loop.max_turns != 25
+
+
+def test_cli_proposals_reject_rejects_a_mismatched_harness(tmp_path: Path, monkeypatch):
+    _harness_dir, wrong_harness, proposal_id = _wrong_harness_for_queued_proposal(
+        tmp_path, monkeypatch
+    )
+    result = cli_runner.invoke(
+        cli.app,
+        [
+            "proposals",
+            "reject",
+            str(wrong_harness),
+            proposal_id,
+            "--reason",
+            "wrong harness",
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.SPEC_ERROR, result.stdout
+    assert "belongs to harness 'demo', not 'wrong'" in json.loads(result.stdout)["error"]
+    with Hive() as hive:
+        assert get_proposal(hive, proposal_id).status == "pending"
 
 
 def test_cli_proposals_apply_never_prompts_for_an_unknown_id(tmp_path: Path):
@@ -329,3 +476,31 @@ def test_make_approve_code_allowlist_json_and_interactive_modes(tmp_path: Path, 
     monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
     approve = _make_approve_code(harness, json_output=False)
     assert approve(change) is True
+
+
+def test_cli_approve_code_strips_whitespace_and_drops_empty_entries(
+    tmp_path: Path, monkeypatch
+):
+    harness = _harness(tmp_path)
+    captured: list[set[str] | None] = []
+
+    def capture_allowlist(_harness_dir, *, json_output, allowlist=None):
+        captured.append(allowlist)
+        return lambda _change: False
+
+    monkeypatch.setattr(cli, "_make_approve_code", capture_allowlist)
+    result = cli_runner.invoke(
+        cli.app,
+        [
+            "proposals",
+            "apply",
+            str(harness),
+            "prop_nope",
+            "--approve-code",
+            "a.py, b.py, ,",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.SPEC_ERROR
+    assert captured == [{"a.py", "b.py"}]

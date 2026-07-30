@@ -8,24 +8,33 @@ any API use.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from hiveloom import trust
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
-from hiveloom.generate.llm import StrongModel
 from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.models.provider import ModelProvider
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
-from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import build_registry
 from hiveloom.verify.builtin import build_verifiers
+
+if TYPE_CHECKING:
+    from hiveloom.generate.llm import StrongModel
+    from hiveloom.spec.schema import HarnessSpec
+
+# Keep diagnostics off machine-readable command stdout when structlog has not
+# been configured by an embedding application.
+log = structlog.wrap_logger(logging.getLogger(__name__))
 
 
 def _resolve_input(base: Path, value: str) -> str:
@@ -218,8 +227,13 @@ def _maybe_auto_propose(
             model = strong_model or build_strong_model(auto.model, base)
             report = analyze(hive, spec.name)
             create_proposal(hive, spec, base, report, model, trigger="auto")
-    except Exception:  # noqa: BLE001 - see docstring: must never fail a completed run
-        pass
+    except Exception as exc:  # noqa: BLE001 - see docstring: never fail a completed run
+        log.warning(
+            "auto_propose_failed",
+            harness_name=spec.name,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
 
 
 def run_result_payload(result: RunResult) -> dict[str, Any]:
