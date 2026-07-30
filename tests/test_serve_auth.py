@@ -7,6 +7,7 @@ minting tokens with a deliberately negative TTL rather than sleeping.
 from __future__ import annotations
 
 import base64
+import json
 import sys
 from pathlib import Path
 
@@ -23,14 +24,25 @@ runner = CliRunner()
 
 
 def _json(result) -> dict:
-    import json
-
     return json.loads(result.stdout)
 
 
 def _raw_public_bytes(public_key_b64: str) -> bytes:
     padding = "=" * (-len(public_key_b64) % 4)
     return base64.urlsafe_b64decode(public_key_b64 + padding)
+
+
+def _corrupt_row(path: Path, **overrides) -> None:
+    """Hand-edit the store's first row, simulating a corrupted authorized_keys.json."""
+    data = json.loads(path.read_text())
+    data["keys"][0].update(overrides)
+    path.write_text(json.dumps(data))
+
+
+def _delete_row_field(path: Path, field: str) -> None:
+    data = json.loads(path.read_text())
+    del data["keys"][0][field]
+    path.write_text(json.dumps(data))
 
 
 # --------------------------------------------------------------------------- #
@@ -250,6 +262,64 @@ def test_verify_bearer_algorithm_confusion_rejected(tmp_path: Path):
     )
     with pytest.raises(AuthenticationError):
         auth_mod.verify_bearer(f"Bearer {forged}", keys_path=path, required_scope="run")
+
+
+# --------------------------------------------------------------------------- #
+# auth.py: corrupted/hand-edited store rows fail closed, not with a raw traceback
+# --------------------------------------------------------------------------- #
+def test_verify_bearer_corrupted_public_key_wrong_length_is_authentication_error(
+    tmp_path: Path,
+):
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    token = keys_mod.sign_token(
+        private_pem, key_id=key_id, subject="dana", scope="*", ttl_seconds=900
+    )
+    # Valid base64, but not 32 bytes: cryptography raises
+    # `ValueError: An Ed25519 public key is 32 bytes long`, not a jwt error.
+    short_key = base64.urlsafe_b64encode(b"0123456789").rstrip(b"=").decode("ascii")
+    _corrupt_row(path, public_key=short_key)
+
+    with pytest.raises(AuthenticationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_verify_bearer_missing_public_key_field_is_authentication_error(tmp_path: Path):
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    token = keys_mod.sign_token(
+        private_pem, key_id=key_id, subject="dana", scope="*", ttl_seconds=900
+    )
+    _delete_row_field(path, "public_key")  # raises KeyError, not a jwt error
+
+    with pytest.raises(AuthenticationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_verify_bearer_non_string_public_key_is_authentication_error(tmp_path: Path):
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    token = keys_mod.sign_token(
+        private_pem, key_id=key_id, subject="dana", scope="*", ttl_seconds=900
+    )
+    _corrupt_row(path, public_key=12345)  # raises TypeError, not a jwt error
+
+    with pytest.raises(AuthenticationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="run")
+
+
+def test_verify_bearer_scopes_as_bare_string_does_not_char_split(tmp_path: Path):
+    """A hand-corrupted row with `scopes: "read"` (a bare string instead of a
+    list) must not be treated as `{'r', 'e', 'a', 'd'}` via `set(...)` — that
+    would wrongly satisfy a single-character required_scope. The token itself
+    requests scope "r", isolating the key-scopes check: pre-fix, `"r" in
+    set("read")` is True and this test would NOT raise.
+    """
+    path, private_pem, key_id = _authorized(tmp_path, scopes=["*"])
+    _corrupt_row(path, scopes="read")
+    token = keys_mod.sign_token(
+        private_pem, key_id=key_id, subject="dana", scope="r", ttl_seconds=900
+    )
+
+    with pytest.raises(AuthorizationError):
+        auth_mod.verify_bearer(f"Bearer {token}", keys_path=path, required_scope="r")
 
 
 # --------------------------------------------------------------------------- #

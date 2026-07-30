@@ -126,7 +126,11 @@ def verify_bearer(
        check, since we merely need a public key to attempt verification.
     3. ``decode_token`` verifies the signature against that candidate's
        public key, with the hardcoded ``EdDSA`` allow-list. An invalid
-       signature or expired token fails here.
+       signature or expired token fails here — as does a corrupted store
+       row (a garbled, wrong-length, or missing ``public_key`` field):
+       those surface as ``ValueError``/``KeyError``/``TypeError`` rather
+       than a ``jwt`` exception, but must fail the same way — a typed
+       authentication error, never a raw traceback reaching a caller.
     4. Only AFTER the signature is verified do we trust anything read from
        the (until now unauthenticated) token or looked up via its claimed
        ``kid`` — including the key row's ``revoked`` flag. Checking
@@ -153,13 +157,23 @@ def verify_bearer(
 
     try:
         claims = decode_token(token, public_key_b64=row["public_key"])
-    except jwt.PyJWTError as exc:
-        raise AuthenticationError(f"invalid token: {exc}") from exc
+    except (jwt.PyJWTError, ValueError, KeyError, TypeError) as exc:
+        # ValueError/KeyError/TypeError cover a corrupted store row (a
+        # garbled, wrong-length, or missing `public_key` field) — the store
+        # is a hand-editable JSON file, so this is caller-reachable input,
+        # not just a jwt-level failure. Either way it must fail closed as a
+        # typed auth error, never leak a raw traceback to the caller.
+        raise AuthenticationError(f"invalid token or corrupted key record: {exc}") from exc
 
     if row.get("revoked", False):
         raise AuthenticationError(f"key '{kid}' has been revoked")
 
-    key_scopes = set(row.get("scopes", []))
+    raw_scopes = row.get("scopes", [])
+    # A hand-edited store could set `scopes` to a bare string; `set()` on a
+    # string silently splits it into characters (`set("read")` ==
+    # `{'r','e','a','d'}`), which could wrongly satisfy a single-character
+    # required_scope. Only a real list is meaningful here.
+    key_scopes = set(raw_scopes) if isinstance(raw_scopes, list) else set()
     token_scope = claims.get("scope", "")
     # A token cannot grant more than the key it was signed under holds: both
     # the key's authorized scopes AND the token's own scope claim must cover
