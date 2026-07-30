@@ -96,6 +96,25 @@ def test_file_read_still_allows_ordinary_harness_files(tmp_path: Path):
     assert FileReadTool(tmp_path).run(path="notes.txt") == "ordinary data"
 
 
+def test_file_read_refuses_configured_trace_dir(tmp_path: Path):
+    """Fix-round-3 regression: a reconfigured (non-default) trace directory
+    must be refused via file_read too, not just via the HTTP control
+    plane's input_file.
+    """
+    (tmp_path / "run_logs").mkdir()
+    (tmp_path / "run_logs" / "run_x.jsonl").write_text('{"type": "run_started"}\n')
+    tool = FileReadTool(tmp_path, trace_dir=Path("run_logs"))
+    with pytest.raises(ToolError):
+        tool.run(path="run_logs/run_x.jsonl")
+
+
+def test_file_write_refuses_configured_trace_dir(tmp_path: Path):
+    (tmp_path / "run_logs").mkdir()
+    tool = FileWriteTool(tmp_path, trace_dir=Path("run_logs"))
+    with pytest.raises(ToolError):
+        tool.run(path="run_logs/run_x.jsonl", content="forged trace entry")
+
+
 def test_safe_path_refuses_configured_trace_dir_case_insensitively(tmp_path: Path):
     """`trace_dir` is opt-in (only the HTTP control plane currently has a
     spec loaded to supply it — file_read/file_write don't pass one, so they
@@ -203,6 +222,33 @@ def test_build_registry_from_spec(tmp_path: Path):
     assert set(registry.names()) == {"file_read", "http_get"}
     payload = registry.anthropic_payload()
     assert all("input_schema" in t for t in payload)
+
+
+def test_build_registry_wires_trace_dir_into_file_read(tmp_path: Path):
+    """End-to-end: `build_registry` threads the spec's configured
+    `logging.trace_dir` through to `file_read` (not just the tool classes
+    directly), closing the gap where a reconfigured trace directory was
+    readable through a real, spec-driven tool call.
+    """
+    (tmp_path / "run_logs").mkdir()
+    (tmp_path / "run_logs" / "run_x.jsonl").write_text(
+        '{"type": "run_finished", "payload": {"output": "distinctive-secret"}}\n'
+    )
+    spec = HarnessSpec.model_validate(
+        {
+            "name": "t",
+            "description": "d",
+            "system_prompt": "sp",
+            "tools": [{"builtin": "file_read"}],
+            "logging": {"trace_dir": "run_logs"},
+        }
+    )
+    registry = build_registry(spec, tmp_path)
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_read", input={"path": "run_logs/run_x.jsonl"})
+    )
+    assert result.is_error
+    assert "distinctive-secret" not in result.content
 
 
 def test_no_network_write_tag_present_on_builtins(tmp_path: Path):

@@ -147,11 +147,14 @@ HTTP:
   case-insensitive filesystem) so packaging and serving can never disagree
   about what counts as sensitive.
 - This is the SAME protection the harness's own `file_read`/`file_write`
-  tools get: both go through `_safe_path`, which now enforces the identical
-  sensitivity check for every caller, not just `input_file`. A harness with
-  `file_read` configured cannot read its own auth store or `.env` either —
-  `run` scope over HTTP never grants more filesystem reach than the model
-  already had running locally.
+  tools get, and the evolver's code-change containment: all four callers go
+  through `_safe_path`, which now enforces the identical sensitivity check —
+  `.hiveloom/`, `.env*`, and the configured trace directory (default or
+  reconfigured) — for every one of them, not just `input_file`. A harness
+  with `file_read` configured cannot read its own auth store, `.env`, or a
+  reconfigured trace directory's contents either: `run` scope over HTTP
+  never grants more filesystem reach than the model already had running
+  locally.
 
 ## Limitations (loud, on purpose)
 

@@ -51,11 +51,11 @@ def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
     (``file_read``/``file_write`` below, the evolver's code-change
     containment, the HTTP control plane's ``input_file``) already goes
     through for containment — so nothing has to remember a second check.
-    ``trace_dir`` is optional because only a caller that already has the
-    harness's spec loaded (the HTTP control plane) can supply it; the file
-    tools and the evolver still get full ``.hiveloom/``/``.env*`` coverage
-    without it, since the default trace directory lives under ``.hiveloom/``
-    anyway.
+    ``trace_dir`` is optional only because a caller without a loaded spec
+    (there is none today, but ``_safe_path`` doesn't require one) has
+    nothing to pass; every current caller resolves and supplies it, so a
+    reconfigured (non-default) trace directory is covered everywhere, not
+    just the default location under ``.hiveloom/``.
     """
     candidate = (base / path).resolve()
     base_resolved = base.resolve()
@@ -70,8 +70,9 @@ def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
 class FileReadTool(Tool):
     """Read a UTF-8 text file from the working directory."""
 
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, *, trace_dir: Path | None = None):
         self._base = base
+        self._trace_dir = trace_dir
         entry = BUILTIN_TOOLS["file_read"]
         self.name = "file_read"
         self.description = entry.description
@@ -83,7 +84,7 @@ class FileReadTool(Tool):
         }
 
     def run(self, path: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path)
+        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
         if not target.exists():
             raise ToolError(f"file not found: {path}")
         return target.read_text(encoding="utf-8")
@@ -92,8 +93,9 @@ class FileReadTool(Tool):
 class FileWriteTool(Tool):
     """Write a UTF-8 text file within the working directory."""
 
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, *, trace_dir: Path | None = None):
         self._base = base
+        self._trace_dir = trace_dir
         entry = BUILTIN_TOOLS["file_write"]
         self.name = "file_write"
         self.description = entry.description
@@ -108,7 +110,7 @@ class FileWriteTool(Tool):
         }
 
     def run(self, path: str = "", content: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path)
+        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return f"wrote {len(content)} chars to {path}"
@@ -246,14 +248,20 @@ class _SafeRedirectHandler(urlrequest.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def make_builtin_tool(ref: BuiltinToolRef, base: Path) -> Tool:
+def make_builtin_tool(ref: BuiltinToolRef, base: Path, *, trace_dir: Path | None = None) -> Tool:
     """Instantiate the catalog tool named by ``ref`` (builtin or extension)."""
-    return ext.build("tools", ref.builtin, ref.params(), ext.BuildContext(base=base))
+    return ext.build(
+        "tools", ref.builtin, ref.params(), ext.BuildContext(base=base, trace_dir=trace_dir)
+    )
 
 
 def _register_factories() -> None:
-    ext.register_builtin_factory("tools", "file_read", lambda _p, ctx: FileReadTool(ctx.base))
-    ext.register_builtin_factory("tools", "file_write", lambda _p, ctx: FileWriteTool(ctx.base))
+    ext.register_builtin_factory(
+        "tools", "file_read", lambda _p, ctx: FileReadTool(ctx.base, trace_dir=ctx.trace_dir)
+    )
+    ext.register_builtin_factory(
+        "tools", "file_write", lambda _p, ctx: FileWriteTool(ctx.base, trace_dir=ctx.trace_dir)
+    )
     ext.register_builtin_factory(
         "tools", "shell", lambda p, ctx: ShellTool(ctx.base, list(p.get("commands", []) or []))
     )

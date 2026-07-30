@@ -23,6 +23,7 @@ from pydantic import BaseModel, create_model
 
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
+from hiveloom.package import trace_dir_relative_to
 from hiveloom.spec.loader import _import_hook
 from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
@@ -244,6 +245,11 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
     base = Path(base_dir)
     if base.is_file():
         base = base.parent
+    # So file_read/file_write can refuse the configured trace directory too,
+    # not just the .hiveloom/.env* coverage they get regardless — the same
+    # protection the HTTP control plane's input_file and the evolver's
+    # code-change containment get when they have a spec loaded.
+    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
 
     registry = ToolRegistry()
     has_deferred = False
@@ -251,7 +257,8 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
         active = not bool(tool_ref.deferred)
         has_deferred = has_deferred or not active
         if isinstance(tool_ref, BuiltinToolRef):
-            registry.register(builtin.make_builtin_tool(tool_ref, base), active=active)
+            tool = builtin.make_builtin_tool(tool_ref, base, trace_dir=trace_dir)
+            registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):
             func = _import_hook(tool_ref.code, base)
             meta = getattr(func, "__hiveloom_tool__", {})

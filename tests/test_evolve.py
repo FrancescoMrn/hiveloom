@@ -209,6 +209,27 @@ def test_apply_code_change_cannot_escape_harness(tmp_path: Path):
     assert not outside.exists()
 
 
+def test_apply_code_change_refuses_configured_trace_dir(tmp_path: Path):
+    """Fix-round-3 regression: a code change may not target the harness's
+    OWN (possibly reconfigured, non-default) trace directory either — the
+    same protection file_read/file_write and the HTTP control plane's
+    input_file get.
+    """
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "logging.trace_dir", "run_logs")
+    (harness / "run_logs").mkdir()
+    proposal = MutationProposal(
+        code_changes=[
+            {"file": "run_logs/evil.py", "source": "raise RuntimeError\n", "rationale": "bad"}
+        ]
+    )
+
+    with pytest.raises(ProposalError, match="outside the harness"):
+        apply_proposal(harness, proposal, approve_code=lambda _change: True)
+
+    assert not (harness / "run_logs" / "evil.py").exists()
+
+
 def test_apply_records_evolution_in_hive(tmp_path: Path):
     harness = _harness(tmp_path)
     proposal = MutationProposal(
