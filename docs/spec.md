@@ -26,7 +26,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned` |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
-| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`), `max_turns`, `on_tool_error`, `require_verification` |
+| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `logging` | Trace policy | `trace_dir` (in-folder by default), `level`, `redact` (regexes; **frozen**) |
 | `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change) |
@@ -45,7 +45,8 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
   `regex_output_filter` composes as a list — one entry per pattern.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
   `file_exists`, `command_succeeds` (exit 0 = pass).
-- **Policies:** `react`, `plan_then_act`.
+- **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
+  ordered `loop.steps` list, refusing completion until each is done in order).
 - **Compaction:** `summarize`, `truncate_oldest`.
 - **Hooks:** `strip_json_fence` (an opt-in final-output normalizer).
 

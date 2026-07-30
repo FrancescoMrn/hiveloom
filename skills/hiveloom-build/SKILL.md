@@ -49,6 +49,16 @@ hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
 hiveloom remove file_read --dir ./h      # remove by identifier, or delete a field path
 ```
 
+To dictate a fixed, ordered list of objectives instead of free-form react,
+set `loop.steps` **before** switching `loop.policy` to `sequential_steps`
+(each `set` fully re-validates, and an empty-steps `sequential_steps` is
+rejected):
+
+```bash
+hiveloom set loop.steps '["extract fields", "validate schema", "write report"]' --dir ./h
+hiveloom set loop.policy sequential_steps --dir ./h
+```
+
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`

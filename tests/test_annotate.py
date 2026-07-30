@@ -66,6 +66,12 @@ def test_explain_policy_is_open_string():
     assert "choices" not in info
 
 
+def test_explain_loop_steps_surfaces_field():
+    info = annotate.explain("loop.steps")
+    assert info["type"] == "list[str]"
+    assert info["default"] == []
+
+
 def test_explain_unknown_field_raises():
     try:
         annotate.explain("loop.nope")

@@ -80,7 +80,7 @@ class AgentLoop:
         self._run_input = run_input
         self._run_id = run_id
         self._events = events if events is not None else EventBus(trace=trace)
-        self._policy = policy if policy is not None else build_policy(spec.loop.policy)
+        self._policy = policy or build_policy(spec.loop.policy, {"steps": spec.loop.steps})
         self._model_config = ModelConfig(
             id=spec.model.id,
             max_tokens=spec.model.max_tokens,
