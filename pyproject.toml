@@ -4,9 +4,19 @@ version = "0.2.0"
 description = "Generate, run, and evolve agent harnesses on the fly so small models reliably perform company tasks."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "hiveloom contributors" }]
 keywords = ["agents", "llm", "harness", "anthropic", "claude", "evolution"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
