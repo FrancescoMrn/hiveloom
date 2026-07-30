@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish the built distribution to PyPI (needs a configured trusted publisher)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -62,9 +68,14 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    # Requires a PyPI "trusted publisher" configured for this repo/workflow
-    # and a GitHub environment named "pypi" (add required reviewers there to
-    # gate releases manually).
+    # Publishing is a DELIBERATE, MANUAL action, never automatic on a tag push:
+    # run this workflow via "Run workflow" (workflow_dispatch) with
+    # `publish_pypi=true`. A plain `v*` tag builds and cuts a GitHub Release but
+    # does not publish, so tagging for history never risks an unintended upload.
+    # Requires a PyPI "trusted publisher" configured for this repo/workflow and
+    # the GitHub environment named "pypi" below (add required reviewers there to
+    # gate publishing further).
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi }}
     environment:
       name: pypi
       url: https://pypi.org/p/hiveloom

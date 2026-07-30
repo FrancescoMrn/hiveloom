@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a key is never granted broad scope by omission.
 - Bearer tokens have a 7-day server-side lifetime ceiling enforced at verify
   time, in addition to the 15-minute default TTL.
+- The release workflow no longer publishes to PyPI automatically on a tag push;
+  a `v*` tag builds and cuts a GitHub Release, while publishing is a deliberate
+  manual `workflow_dispatch` with `publish_pypi=true`.
 
 ### Fixed
 
