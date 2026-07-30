@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+import yaml
 from starlette.testclient import TestClient
 
 # Reuse the Hive failure-seeding helper and a scripted proposal payload from
@@ -24,10 +25,12 @@ from hiveloom import construct
 from hiveloom.errors import AuthorizationError
 from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.models.fake import FakeModelProvider, ModelProvider, text_response
+from hiveloom.serve import app as app_mod
 from hiveloom.serve import auth as auth_mod
 from hiveloom.serve import keys as keys_mod
 from hiveloom.serve.app import _error_response, create_app
 from hiveloom.spec.loader import load_spec
+from hiveloom.spec.schema import ALWAYS_FROZEN
 
 
 # --------------------------------------------------------------------------- #
@@ -654,6 +657,33 @@ def test_remove_refuses_named_entry_in_frozen_list_section(tmp_path: Path):
     assert r.json()["ok"] is False
     guardrail_builtins = [getattr(g, "builtin", None) for g in load_spec(harness).guardrails]
     assert "max_cost_usd" in guardrail_builtins
+
+
+def test_remove_refuses_named_entry_in_a_frozen_section_app_never_heard_of(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The named-entry refusal must derive from construct's own section table,
+    not from a list maintained in `app.py`.
+
+    A branch adding a new frozen list section (`mcp_servers`) registers it in
+    `construct._LIST_SECTIONS` and in `ALWAYS_FROZEN` — and must be refused
+    here with no edit to `app.py`. Simulating that with a section this module
+    has never seen is the only way to prove the derivation rather than a
+    coincidence: a hardcoded tuple would let this removal through.
+    """
+    monkeypatch.setitem(construct._LIST_SECTIONS, "widgets", ("widgets",))
+    monkeypatch.setattr(app_mod, "_FROZEN_ROOTS", {*ALWAYS_FROZEN, "widgets"})
+    harness = _harness(tmp_path)
+    raw = construct.load_raw(harness)
+    raw["widgets"] = [{"builtin": "sharp_edge"}]
+    (harness / "harness.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/remove", json={"target": "sharp_edge"}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert construct.load_raw(harness)["widgets"] == [{"builtin": "sharp_edge"}]
 
 
 def test_validate_endpoint(tmp_path: Path):

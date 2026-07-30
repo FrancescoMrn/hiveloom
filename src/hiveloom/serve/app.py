@@ -37,7 +37,6 @@ from starlette.routing import Route
 from hiveloom import construct
 from hiveloom import evolve as evolve_mod
 from hiveloom import runner as runner_mod
-from hiveloom.construct import _ref_matches
 from hiveloom.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -87,12 +86,6 @@ _ADD_KIND_ROOTS = {
     "skill": "skills",
 }
 
-# The two ALWAYS_FROZEN roots that are ALSO list sections `/remove` can
-# match an entry in by builtin/code-ref name rather than by dotted path
-# (construct.remove_item tries name/code-ref matching before falling back to
-# a dotted-path delete) — both happen to be top-level keys, so no nested
-# traversal is needed.
-_FROZEN_LIST_SECTIONS = ("guardrails", "hooks")
 
 
 # --------------------------------------------------------------------------- #
@@ -146,18 +139,16 @@ def _refuse_if_frozen(path: str) -> None:
 
 def _remove_target_is_frozen(raw: dict[str, Any], target: str) -> bool:
     """True if ``target`` — as ``construct.remove_item`` would interpret it —
-    currently names an entry inside a frozen list section (``guardrails``,
-    ``hooks``), or is itself a dotted path under any ALWAYS_FROZEN root.
-    ``remove_item`` tries every list section's builtin/code-ref names before
-    falling back to a dotted-path delete, so both shapes need checking.
+    is a dotted path under an ALWAYS_FROZEN root, or names an entry inside a
+    frozen list section. ``remove_item`` tries every list section's
+    builtin/code-ref names before falling back to a dotted-path delete, so
+    both shapes need checking; ``construct.matching_roots`` answers the
+    name-shape question from the same table the removal itself walks, so this
+    cannot fall out of step with what removal would actually touch.
     """
     if _covered(target, _FROZEN_ROOTS):
         return True
-    return any(
-        isinstance(raw.get(section), list)
-        and any(_ref_matches(item, target) for item in raw[section])
-        for section in _FROZEN_LIST_SECTIONS
-    )
+    return any(_covered(root, _FROZEN_ROOTS) for root in construct.matching_roots(raw, target))
 
 
 def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> dict[str, Any]:
