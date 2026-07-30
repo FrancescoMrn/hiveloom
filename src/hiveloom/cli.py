@@ -899,10 +899,11 @@ def proposals_apply_cmd(
 
     Re-derives the harness's version hash first; if it no longer matches what
     the proposal was drafted against, it fails without touching disk (the
-    harness changed — regenerate). YAML changes apply with ``--yes`` or
-    interactive confirmation, same as ``evolve``; code changes need per-file
-    ``--approve-code`` or interactive y/n, fed from the proposal's stored gate
-    result rather than a fresh propose.
+    harness changed — regenerate). Review with ``proposals show`` first: YAML
+    changes apply with ``--yes`` or interactive confirmation, same as
+    ``evolve``; code changes need per-file ``--approve-code`` or interactive
+    y/n, fed from the proposal's stored gate result rather than a fresh
+    propose.
     """
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
@@ -920,21 +921,13 @@ def proposals_apply_cmd(
         _console.print(change.source)
         return typer.confirm(f"Apply regenerated code to {change.file}?", default=False)
 
+    apply_yaml = yes or (
+        not json_output and typer.confirm("Apply the proposed YAML changes?", default=False)
+    )
+
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         with Hive() as hive:
-            record = proposals_mod.get_proposal(hive, proposal_id)
-            if record is None:
-                raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
-            gate = json.loads(record.gate_json)
-            if gate["accepted"] and not json_output:
-                _console.print("[yellow]proposed YAML changes[/yellow]")
-                for change in gate["accepted"]:
-                    _console.print(f"  {change['path']} = {change['value']!r}")
-            apply_yaml = yes or (
-                not json_output
-                and typer.confirm("Apply the proposed YAML changes?", default=False)
-            )
             result = proposals_mod.apply_proposal_by_id(
                 hive, harness_dir, proposal_id, approve_code=approve, apply_yaml=apply_yaml
             )

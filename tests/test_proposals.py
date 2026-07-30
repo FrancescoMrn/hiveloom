@@ -7,13 +7,12 @@ from pathlib import Path
 
 import pytest
 
-# Reuse the Hive trace-writing helper from the Hive tests (tests dir is on sys.path).
-from test_hive import _write_trace
-from typer.testing import CliRunner
+# Reuse harness/report/CLI fixtures from the evolve tests (tests dir is on sys.path),
+# mirroring how test_evolve.py itself reuses test_hive.py's _write_trace.
+from test_evolve import _PROPOSAL_PAYLOAD, _fake_model, _harness, _report, _seed_failure, cli_runner
 
-from hiveloom import cli, construct
+from hiveloom import cli
 from hiveloom.errors import ExitCode, ProposalQueueError
-from hiveloom.evolve.analyzer import FailureCluster, FailureReport
 from hiveloom.evolve.evolver import MutationProposal
 from hiveloom.evolve.evolver import apply_proposal as evolver_apply_proposal
 from hiveloom.evolve.proposals import (
@@ -29,29 +28,6 @@ from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.spec.loader import load_spec
 
-cli_runner = CliRunner()
-
-
-def _harness(tmp_path: Path) -> Path:
-    directory = tmp_path / "h"
-    construct.init_harness(directory, name="demo", task="Do a thing.")
-    return directory
-
-
-def _report() -> FailureReport:
-    return FailureReport(
-        harness_name="demo",
-        total_runs=5,
-        success_rate=0.2,
-        clusters=[FailureCluster(kind="verdict", signature="not valid JSON", count=4)],
-    )
-
-
-def _proposal_payload() -> str:
-    return json.dumps(
-        {"rationale": "clarify", "yaml_changes": [{"path": "loop.max_turns", "value": 25}]}
-    )
-
 
 # --------------------------------------------------------------------------- #
 # create_proposal
@@ -60,7 +36,7 @@ def test_create_persists_row_with_dedup_key_and_version_hash(tmp_path: Path):
     harness = _harness(tmp_path)
     spec = load_spec(harness)
     report = _report()
-    model = FakeStrongModel([_proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
 
     with Hive(tmp_path / "hive.db") as hive:
         record = create_proposal(hive, spec, harness, report, model, trigger="manual")
@@ -80,7 +56,7 @@ def test_second_create_with_same_failure_state_dedups_without_calling_model(tmp_
     harness = _harness(tmp_path)
     spec = load_spec(harness)
     report = _report()
-    model = FakeStrongModel([_proposal_payload(), _proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD, _PROPOSAL_PAYLOAD])
 
     with Hive(tmp_path / "hive.db") as hive:
         first = create_proposal(hive, spec, harness, report, model, trigger="manual")
@@ -96,7 +72,7 @@ def test_second_create_with_same_failure_state_dedups_without_calling_model(tmp_
 def test_list_and_get_filtering(tmp_path: Path):
     harness = _harness(tmp_path)
     spec = load_spec(harness)
-    model = FakeStrongModel([_proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
 
     with Hive(tmp_path / "hive.db") as hive:
         created = create_proposal(hive, spec, harness, _report(), model, trigger="manual")
@@ -116,7 +92,7 @@ def test_list_and_get_filtering(tmp_path: Path):
 def test_apply_delegates_to_evolver_and_updates_status(tmp_path: Path):
     harness = _harness(tmp_path)
     spec = load_spec(harness)
-    model = FakeStrongModel([_proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
 
     with Hive(tmp_path / "hive.db") as hive:
         created = create_proposal(hive, spec, harness, _report(), model, trigger="manual")
@@ -143,7 +119,7 @@ def test_apply_unknown_id_raises(tmp_path: Path):
 def test_apply_stale_spec_hash_raises_without_touching_disk(tmp_path: Path):
     harness = _harness(tmp_path)
     spec = load_spec(harness)
-    model = FakeStrongModel([_proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
 
     with Hive(tmp_path / "hive.db") as hive:
         created = create_proposal(hive, spec, harness, _report(), model, trigger="manual")
@@ -172,7 +148,7 @@ def test_apply_stale_spec_hash_raises_without_touching_disk(tmp_path: Path):
 def test_apply_already_resolved_raises(tmp_path: Path):
     harness = _harness(tmp_path)
     spec = load_spec(harness)
-    model = FakeStrongModel([_proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
 
     with Hive(tmp_path / "hive.db") as hive:
         created = create_proposal(hive, spec, harness, _report(), model, trigger="manual")
@@ -188,7 +164,7 @@ def test_apply_already_resolved_raises(tmp_path: Path):
 def test_reject_records_reason_and_leaves_harness_untouched(tmp_path: Path):
     harness = _harness(tmp_path)
     spec = load_spec(harness)
-    model = FakeStrongModel([_proposal_payload()])
+    model = FakeStrongModel([_PROPOSAL_PAYLOAD])
     yaml_path = harness / "harness.yaml"
     before = yaml_path.read_text()
 
@@ -213,17 +189,10 @@ def test_reject_unknown_id_raises(tmp_path: Path):
 # CLI: `hiveloom proposals list|show|apply|reject`
 # --------------------------------------------------------------------------- #
 def _queue_via_cli(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
-    """Seed a failure, monkeypatch the strong model, and queue a proposal via the CLI."""
+    """Seed a failure, fake the strong model, and queue a proposal via the CLI."""
     harness = _harness(tmp_path)
-    trace = _write_trace(
-        tmp_path, "run_a", name="demo", status="verify_failed",
-        verifications=[(False, "not valid JSON")],
-    )
-    with Hive() as hive:  # the autouse conftest fixture points this at a throwaway db
-        hive.ingest_trace_file(trace)
-    monkeypatch.setattr(
-        cli, "_strong_model", lambda *a, **k: FakeStrongModel([_proposal_payload()])
-    )
+    _seed_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
 
     result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--propose", "--json"])
     assert result.exit_code == ExitCode.OK, result.stdout
