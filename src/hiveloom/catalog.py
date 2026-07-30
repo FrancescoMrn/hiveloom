@@ -221,7 +221,7 @@ POLICIES: dict[str, CatalogEntry] = _entries(
     CatalogEntry(
         name="sequential_steps",
         description="Walk a fixed, ordered list of objectives (loop.steps), refusing "
-                    "completion until each is done in order.",
+        "completion until each is done in order.",
         tags=["loop"],
     ),
 )
