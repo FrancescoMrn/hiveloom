@@ -32,6 +32,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hiveloom"]
 
+# The distribution carries what is needed to run the library and the example
+# harnesses, and nothing else. Development material — tests, docs, evals, agent
+# instructions, CI config — stays in the repository.
+[tool.hatch.build.targets.sdist]
+only-include = ["src/hiveloom", "harnesses", "README.md", "LICENSE"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
