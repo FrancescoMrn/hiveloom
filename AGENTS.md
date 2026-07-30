@@ -24,13 +24,15 @@ the library; humans should start at [README.md](README.md).
    `shell` is allowlist-only; foreign harness folders are trust-gated before
    their code loads. Don't route around any of this on a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
-   `extensions`, and `run --dry-run` never touch the API. `run`, `generate`,
-   and `evolve` need `ANTHROPIC_API_KEY`.
+   `extensions`, `guide`, and `run --dry-run` never touch the API. `run`,
+   `generate`, and `evolve` need `ANTHROPIC_API_KEY`.
 
 ## Task → skill map
 
 Focused skills live in [`skills/`](skills/README.md); the compact all-in-one
-variant is the root [`SKILL.md`](SKILL.md).
+variant is the root [`SKILL.md`](SKILL.md). Both ship inside the package, so
+without a checkout of this repository read them with `hiveloom guide --list`,
+then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file).
 
 | You are asked to… | Load | Core commands |
 |---|---|---|

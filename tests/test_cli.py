@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from hiveloom.cli import app
-from hiveloom.errors import ExitCode
+from hiveloom.errors import ExitCode, SpecError
 
 runner = CliRunner()
 
@@ -165,3 +166,55 @@ def test_run_dry_run_needs_no_api_key():
         r = runner.invoke(app, ["run", str(target), "--input", "notes.txt", "--dry-run", "--json"])
     assert r.exit_code == ExitCode.OK
     assert _json(r)["dry_run"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Packaged agent guidance
+# --------------------------------------------------------------------------- #
+def test_guide_lists_every_topic():
+    r = runner.invoke(app, ["guide", "--list", "--json"])
+    assert r.exit_code == ExitCode.OK
+    names = [t["name"] for t in _json(r)["topics"]]
+    assert names[:2] == ["agents", "all"]
+    # One topic per lifecycle skill, named without the hiveloom- prefix.
+    assert {"build", "run", "evolve", "extend", "ship"} <= set(names)
+    assert all(t["description"] for t in _json(r)["topics"])
+
+
+def test_guide_prints_raw_markdown():
+    r = runner.invoke(app, ["guide"])
+    assert r.exit_code == ExitCode.OK
+    assert r.stdout.startswith("# hiveloom for agents")
+
+    skill = runner.invoke(app, ["guide", "build"])
+    assert skill.exit_code == ExitCode.OK
+    assert "name: hiveloom-build" in skill.stdout
+
+
+def test_guide_unknown_topic_is_a_spec_error():
+    r = runner.invoke(app, ["guide", "nope", "--json"])
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "unknown guide topic" in _json(r)["error"]
+
+
+def test_guide_reads_the_packaged_copy_when_present(tmp_path: Path, monkeypatch):
+    """In a wheel there is no repo root — the docs come from hiveloom/agent_docs.
+
+    The build force-includes them there; this pins the resolution order so a
+    packaging change that drops them fails here rather than in a user's install.
+    """
+    from hiveloom import guide
+
+    packaged = Path(guide.__file__).resolve().parent / "agent_docs"
+    monkeypatch.setattr(guide, "__file__", str(tmp_path / "hiveloom" / "guide.py"))
+    assert not (tmp_path / "hiveloom" / "agent_docs").exists()
+
+    # No packaged copy and no repo root above the fake location: a clean error,
+    # never a traceback.
+    with pytest.raises(SpecError, match="agent guidance is not available"):
+        guide.agent_docs_dir()
+
+    (tmp_path / "hiveloom" / "agent_docs").mkdir(parents=True)
+    (tmp_path / "hiveloom" / "agent_docs" / "AGENTS.md").write_text("# packaged\n")
+    assert guide.agent_docs_dir() == tmp_path / "hiveloom" / "agent_docs"
+    assert packaged.name == "agent_docs"  # the real constant is unchanged

@@ -190,7 +190,9 @@ Custom LLM providers (Ollama, vLLM, any OpenAI-compatible server) are one
 **For agents:** [AGENTS.md](AGENTS.md) is the entry point — ground rules, exit
 codes, and a task→skill map. [skills/](skills/README.md) holds a series of
 installable Agent Skills (build / run / evolve / extend / ship); the root
-[SKILL.md](SKILL.md) is the compact all-in-one variant.
+[SKILL.md](SKILL.md) is the compact all-in-one variant. All of it ships inside
+the package — after `pip install hiveloom`, `hiveloom guide --list` and
+`hiveloom guide <topic>` print it without a checkout of this repository.
 
 - [Architecture](docs/architecture.md) — components, data flow, and invariants.
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.

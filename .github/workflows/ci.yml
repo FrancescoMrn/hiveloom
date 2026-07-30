@@ -118,17 +118,31 @@ jobs:
             exit 1
           fi
           echo "sdist clean"
-      - name: Ensure the sdist ships only the runtime and the example harnesses
+      - name: Ensure the sdist ships only runtime, harnesses, and agent guidance
         run: |
           SDIST=$(ls dist/*.tar.gz)
-          # Development material (tests, docs, evals, agent instructions, CI
-          # config) stays in the repository — see [tool.hatch.build.targets.sdist].
+          # Development material (tests, docs, evals, CI config) stays in the
+          # repository — see [tool.hatch.build.targets.sdist].
           if tar -tzf "$SDIST" | sed 's|^[^/]*/||' \
-            | grep -E '^(tests|docs|evals|skills|\.github|\.claude)/'; then
+            | grep -E '^(tests|docs|evals|\.github|\.claude)/'; then
             echo "::error::sdist contains development-only material"
             exit 1
           fi
           echo "sdist scope clean"
+      - name: Ensure the agent guidance is packaged in the wheel
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          # `hiveloom guide` must work from a plain install, with no checkout.
+          for doc in hiveloom/agent_docs/AGENTS.md hiveloom/agent_docs/SKILL.md; do
+            unzip -l "$WHEEL" | grep -q "$doc" || {
+              echo "::error::$doc missing from the wheel"; exit 1; }
+          done
+          TOPICS=$(uv run --isolated --no-project --with "$WHEEL" -- hiveloom guide --list --json)
+          for topic in agents all build run evolve extend ship; do
+            echo "$TOPICS" | grep -q "\"name\": \"$topic\"" || {
+              echo "::error::guide topic '$topic' missing from the installed wheel"; exit 1; }
+          done
+          echo "guide ships every topic"
       - uses: actions/upload-artifact@v7
         with:
           name: dist
