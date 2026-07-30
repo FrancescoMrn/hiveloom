@@ -118,6 +118,17 @@ jobs:
             exit 1
           fi
           echo "sdist clean"
+      - name: Ensure the sdist ships only the runtime and the example harnesses
+        run: |
+          SDIST=$(ls dist/*.tar.gz)
+          # Development material (tests, docs, evals, agent instructions, CI
+          # config) stays in the repository — see [tool.hatch.build.targets.sdist].
+          if tar -tzf "$SDIST" | sed 's|^[^/]*/||' \
+            | grep -E '^(tests|docs|evals|skills|\.github|\.claude)/'; then
+            echo "::error::sdist contains development-only material"
+            exit 1
+          fi
+          echo "sdist scope clean"
       - uses: actions/upload-artifact@v7
         with:
           name: dist
