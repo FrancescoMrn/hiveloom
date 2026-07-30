@@ -82,6 +82,7 @@ def run_harness(
     hive_path: str | Path | None = None,
     on_event=None,
     approve_trust=None,
+    literal_input: bool = False,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -90,6 +91,9 @@ def run_harness(
     receives every :class:`TraceEvent` as it is emitted (the in-process
     equivalent of ``hiveloom run --stream``). ``approve_trust`` is asked once
     when the harness folder is not yet trusted on this machine.
+    ``literal_input`` skips the input-names-a-file convenience — required when
+    the input comes from an untrusted caller (``hiveloom serve``), which must
+    not be able to read files out of the harness directory.
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -97,7 +101,7 @@ def run_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
 
-    run_input = _resolve_input(base, input_value)
+    run_input = input_value if literal_input else _resolve_input(base, input_value)
     registry = build_registry(spec, base)
     guardrails = build_guardrails(spec, registry, base)
     verifiers = build_verifiers(spec, base)

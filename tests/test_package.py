@@ -85,6 +85,22 @@ def test_package_docker_emits_dockerfile(tmp_path: Path):
     assert ".hiveloom/" in dockerignore
 
 
+def test_package_docker_serve_variant(tmp_path: Path):
+    harness = _harness(tmp_path)
+    result = package_harness(harness, docker=True, serve=True, output_dir=tmp_path / "dist")
+    assert result["serve"] is True
+    dockerfile = (harness / "Dockerfile").read_text()
+    assert 'ENTRYPOINT ["hiveloom", "serve", ".", "--host", "0.0.0.0"' in dockerfile
+    assert "EXPOSE 8080" in dockerfile
+    assert "ENV HIVELOOM_TRUST=always" in dockerfile
+
+
+def test_package_serve_requires_docker(tmp_path: Path):
+    harness = _harness(tmp_path)
+    with pytest.raises(SpecError, match="requires docker=True"):
+        package_harness(harness, serve=True)
+
+
 def test_package_docker_embeds_runtime_wheel(tmp_path: Path):
     harness = _harness(tmp_path)
     wheel = tmp_path / "hiveloom-0.1.0-py3-none-any.whl"

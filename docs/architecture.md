@@ -37,6 +37,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │    loop/          engine + pluggable policies (react | plan | …)    │
   │    skills.py      progressive-disclosure SKILL.md folders           │
   │    runner.py      assemble + drive a run; `hiveloom run [--stream]` │
+  │    serve.py       stdlib HTTP wrapper: POST /runs, GET /healthz     │
   │                                                                     │
   │  logging/         trace.py (append-only JSONL) + hive.py (SQLite)   │
   │                                                                     │

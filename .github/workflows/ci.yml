@@ -67,6 +67,11 @@ jobs:
   harnesses:
     name: Validate example harnesses
     runs-on: ubuntu-latest
+    # validate/run resolve code hooks, so both are trust-gated; with no TTY the
+    # prompt aborts (exit 4). These harnesses are this repo's own checkout, so
+    # the documented CI policy applies.
+    env:
+      HIVELOOM_TRUST: always
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
