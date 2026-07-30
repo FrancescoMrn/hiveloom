@@ -7,9 +7,9 @@ local server rather than a mock.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-mcp = FastMCP("echo")
+mcp = MCPServer("echo")
 
 
 @mcp.tool()

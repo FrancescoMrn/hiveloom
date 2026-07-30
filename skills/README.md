@@ -31,6 +31,10 @@ and the relevant `SKILL.md` files directly. An agent with its own rules or
 context conventions (an `AGENTS.md` reader like Codex, a Cursor rules file,
 etc.) can reference or copy these files into whatever location that
 convention expects.
+These files also ship inside the package, so an agent with hiveloom installed
+and no checkout can read them directly: `hiveloom guide --list`, then
+`hiveloom guide build` (or `run`/`evolve`/`extend`/`ship`, `all` for the
+compact variant).
 
 > Not to be confused with a *harness's own* `skills/` folder
 > (`hiveloom add skill …`), which holds progressive-disclosure instructions for

@@ -120,6 +120,23 @@ example, `ANTHROPIC_API_KEY` for the default provider, loaded from the harness
 `.hiveloom/traces/<run_id>.jsonl`. The small executor model (default
 `claude-haiku-4-5`) runs inside the harness; guardrails and verification gate it.
 
+**Serve (long-lived HTTP deployment)**
+
+```bash
+hiveloom serve ./my-harness                    # http://127.0.0.1:8080, stdlib-only
+hiveloom serve ./my-harness --host 0.0.0.0 --port 8080 --concurrency 4
+HIVELOOM_API_KEY=sekret hiveloom serve .       # require Bearer / X-API-Key on /runs
+```
+
+`run` is one-shot; `serve` keeps the harness up behind two endpoints: `GET /healthz`
+(always unauthenticated, for orchestrator probes) and `POST /runs` with
+`{"input": "...", "stream": true|false}` — non-stream responses match `run --json`,
+streamed responses are NDJSON trace events with a final `run_result` line, exactly like
+`run --stream`. Inputs over HTTP are always literal text (never file paths), extra
+requests beyond `--concurrency` get `429`, and no new dependencies are involved — the
+server is standard library only. `hiveloom package --docker --serve` emits a Dockerfile
+whose container serves on `:8080` instead of running once.
+
 **Inspect memory**
 
 ```bash
@@ -160,11 +177,11 @@ provider when it requires them.
 ```bash
 hiveloom keys generate rinaldo                          # on your own machine; the key stays there
 hiveloom keys authorize rinaldo <public-key> --harness ./recon --scope run
-hiveloom serve ./recon                                  # binds 127.0.0.1:8420 by default
+hiveloom control-plane ./recon                          # binds 127.0.0.1:8420 by default
 hiveloom keys sign --key ~/.hiveloom/keys/rinaldo.pem --scope run   # mint a bearer token
 ```
 
-`serve` exposes a deployed harness's full CLI surface (run/stats/trace/set/add/remove/
+`control-plane` exposes a deployed harness's full CLI surface (run/stats/trace/set/add/remove/
 evolve/proposals) over HTTP, bearer-authenticated with ed25519 keys. It's explicitly
 non-production: no TLS, no replay cache, one harness per process. See
 [`docs/control-plane.md`](docs/control-plane.md) for the endpoint table, the custody
@@ -205,13 +222,15 @@ Custom LLM providers (Ollama, vLLM, any OpenAI-compatible server) are one
 **For agents:** [AGENTS.md](AGENTS.md) is the entry point — ground rules, exit
 codes, and a task→skill map. [skills/](skills/README.md) holds a series of
 installable Agent Skills (build / run / evolve / extend / ship); the root
-[SKILL.md](SKILL.md) is the compact all-in-one variant.
+[SKILL.md](SKILL.md) is the compact all-in-one variant. All of it ships inside
+the package — after `pip install hiveloom`, `hiveloom guide --list` and
+`hiveloom guide <topic>` print it without a checkout of this repository.
 
 - [Architecture](docs/architecture.md) — components, data flow, and invariants.
 - [Harness spec reference](docs/spec.md) — the declarative contract and builtins.
 - [Extending hiveloom](docs/extending.md) — extension packs, providers, hooks, and SDK embedding.
 - [Deploying and evolving](docs/deploying-and-evolving.md) — portable artifacts and the production feedback loop.
-- [Control plane](docs/control-plane.md) — `hiveloom serve`'s endpoints, ed25519 keys/bearer-token auth, and the non-production limitations.
+- [Control plane](docs/control-plane.md) — `hiveloom control-plane`'s endpoints, ed25519 keys/bearer-token auth, and the non-production limitations.
 - [Examples](harnesses/) — summarization, market analysis, and HN extraction harnesses.
 
 ## Contributing and security

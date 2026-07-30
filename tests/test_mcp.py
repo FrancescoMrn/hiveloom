@@ -181,8 +181,10 @@ class _FakeSession:
         self._pages = iter(pages)
         self.cursors_seen: list[str | None] = []
 
-    def list_tools(self, cursor: str | None = None) -> mcp_types.ListToolsResult:
-        self.cursors_seen.append(cursor)
+    def list_tools(
+        self, *, params: mcp_types.PaginatedRequestParams | None = None
+    ) -> mcp_types.ListToolsResult:
+        self.cursors_seen.append(params.cursor if params else None)
         return next(self._pages)
 
 
@@ -505,9 +507,9 @@ def _serve_http(app) -> Iterator[str]:
 
 
 def test_http_transport_round_trip(tmp_path: Path):
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
-    app_mcp = FastMCP("echo-http")
+    app_mcp = MCPServer("echo-http")
 
     @app_mcp.tool()
     def ping() -> str:

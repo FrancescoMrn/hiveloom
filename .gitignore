@@ -13,3 +13,10 @@ hive.db
 # env
 .env
 .token.*
+
+# local credentials — never commit
+anthropic.token
+*.token
+
+# macOS
+.DS_Store

@@ -4,11 +4,11 @@
 > No replay/nonce cache — a captured token is replayable until it expires
 > (hence the short 900-second default TTL). No revocation propagation beyond
 > one local file. One harness per process. Binds to `127.0.0.1` by default;
-> `hiveloom serve` warns loudly on stderr if you point it anywhere else. Put
+> `hiveloom control-plane` warns loudly on stderr if you point it anywhere else. Put
 > a reverse proxy or an SSH tunnel in front if you need this reachable from
 > off-box, and never expose it directly to the open internet.
 
-`hiveloom serve <harness-dir>` exposes a deployed harness's CLI surface over
+`hiveloom control-plane <harness-dir>` exposes a deployed harness's CLI surface over
 HTTP, bearer-authenticated with the ed25519 keys described below — a
 **selected operational subset**, not everything `hiveloom` can do. Some
 verbs are deliberately absent (`package`, `generate`, `trust`) and some
@@ -67,7 +67,7 @@ is required.
 ## Serving a harness
 
 ```
-hiveloom serve <dir> [--host 127.0.0.1] [--port 8420]
+hiveloom control-plane <dir> [--host 127.0.0.1] [--port 8420]
                      [--max-concurrent-runs 1] [--max-queued-runs 4]
                      [--authorized-keys PATH] [--approve]
 ```
@@ -217,7 +217,7 @@ HTTP:
   key was separately authorized against a different harness (a different
   `authorized_keys.json`), revoking it here leaves that other copy
   untouched — there is no central registry linking them.
-- **One harness per process.** `hiveloom serve` serves exactly the directory
+- **One harness per process.** `hiveloom control-plane` serves exactly the directory
   it was started against. Running several harnesses means several
   processes (and, if exposed beyond loopback, several ports).
 - **Localhost by default, no built-in TLS.** Binding elsewhere prints a loud

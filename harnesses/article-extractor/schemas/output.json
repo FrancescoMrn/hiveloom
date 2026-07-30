@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "article-extractor output",
+  "type": "object",
+  "required": ["source_url", "title", "description", "author", "published_date", "headings"],
+  "properties": {
+    "source_url": {
+      "type": "string",
+      "pattern": "^https?://",
+      "description": "Exactly the input URL, character for character."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Page title (title tag, og:title, or first h1). Required and non-empty: a run without a title must fail."
+    },
+    "description": {
+      "type": ["string", "null"],
+      "description": "meta description or og:description; null if the page has none."
+    },
+    "author": {
+      "type": ["string", "null"],
+      "description": "meta author, byline, or rel=author text; null if absent."
+    },
+    "published_date": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "Publication date normalized to YYYY-MM-DD; null if absent or not confidently normalizable."
+    },
+    "headings": {
+      "type": "array",
+      "maxItems": 15,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Text of h1/h2/h3 elements in document order, tags stripped; empty array if none."
+    }
+  },
+  "additionalProperties": false
+}

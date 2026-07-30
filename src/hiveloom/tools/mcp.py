@@ -16,17 +16,17 @@ import os
 import re
 from collections.abc import Callable
 from contextlib import ExitStack
-from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import anyio
-import httpx
+import httpx2
 import mcp.types as mcp_types
 from anyio.from_thread import start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from hiveloom.errors import McpError
 from hiveloom.spec.schema import McpHttpServerRef, McpServerRef, McpStdioServerRef
@@ -47,7 +47,7 @@ def _sanitize(name: str) -> str:
 
 
 def _flatten_call_tool_result(result: mcp_types.CallToolResult) -> str:
-    """Join text content blocks; fall back to structuredContent; never silently empty.
+    """Join text content blocks; fall back to structured_content; never silently empty.
 
     Images/audio/embedded resources are v1 non-goals — ignored, but explained
     rather than dropped without a trace.
@@ -55,8 +55,8 @@ def _flatten_call_tool_result(result: mcp_types.CallToolResult) -> str:
     texts = [block.text for block in result.content if isinstance(block, mcp_types.TextContent)]
     if texts:
         return "\n".join(texts)
-    if result.structuredContent is not None:
-        return json.dumps(result.structuredContent)
+    if result.structured_content is not None:
+        return json.dumps(result.structured_content)
     if result.content:
         kinds = sorted({block.type for block in result.content})
         return f"[mcp tool returned non-text content: {', '.join(kinds)}]"
@@ -82,7 +82,7 @@ class McpBridge:
         )
         session = self._stack.enter_context(
             self._portal.wrap_async_context_manager(
-                ClientSession(read, write, read_timeout_seconds=timedelta(seconds=timeout))
+                ClientSession(read, write, read_timeout_seconds=timeout)
             )
         )
         self._initialize(session, timeout)
@@ -90,22 +90,21 @@ class McpBridge:
 
     def connect_http(self, url: str, headers: dict[str, str], timeout: float) -> ClientSession:
         # `streamable_http_client` no longer takes headers/timeout directly
-        # (that surface is deprecated); it takes a pre-configured httpx client.
+        # (that surface is deprecated); it takes a pre-configured httpx2 client,
+        # which `create_mcp_http_client` builds with the right MCP defaults.
         http_client = self._stack.enter_context(
             self._portal.wrap_async_context_manager(
-                httpx.AsyncClient(
-                    headers=headers, timeout=httpx.Timeout(timeout), follow_redirects=True
-                )
+                create_mcp_http_client(headers=headers, timeout=httpx2.Timeout(timeout))
             )
         )
-        read, write, _get_session_id = self._stack.enter_context(
+        read, write = self._stack.enter_context(
             self._portal.wrap_async_context_manager(
                 streamable_http_client(url, http_client=http_client)
             )
         )
         session = self._stack.enter_context(
             self._portal.wrap_async_context_manager(
-                ClientSession(read, write, read_timeout_seconds=timedelta(seconds=timeout))
+                ClientSession(read, write, read_timeout_seconds=timeout)
             )
         )
         self._initialize(session, timeout)
@@ -182,11 +181,11 @@ class McpToolAdapter(Tool):
                 self._session.call_tool,
                 self._remote_name,
                 kwargs,
-                timedelta(seconds=self._timeout),
+                self._timeout,
             )
         except Exception as exc:  # noqa: BLE001 - any transport/timeout failure is a ToolError
             raise ToolError(f"mcp tool '{self.name}' failed: {exc}") from exc
-        return ToolResult(content=_flatten_call_tool_result(result), is_error=bool(result.isError))
+        return ToolResult(content=_flatten_call_tool_result(result), is_error=bool(result.is_error))
 
 
 def _resolve_env(ref: McpStdioServerRef) -> dict[str, str]:
@@ -223,18 +222,19 @@ def _resolve_headers(ref: McpHttpServerRef) -> dict[str, str]:
 
 
 def _list_all_tools(bridge: McpBridge, session: ClientSession) -> list[mcp_types.Tool]:
-    """Follow ``ListToolsResult.nextCursor`` pagination to exhaustion, capped."""
+    """Follow ``ListToolsResult.next_cursor`` pagination to exhaustion, capped."""
     tools: list[mcp_types.Tool] = []
     cursor: str | None = None
     while True:
-        result: mcp_types.ListToolsResult = bridge.call(session.list_tools, cursor)
+        params = mcp_types.PaginatedRequestParams(cursor=cursor) if cursor else None
+        result: mcp_types.ListToolsResult = bridge.call(partial(session.list_tools, params=params))
         tools.extend(result.tools)
         if len(tools) > _MAX_DISCOVERED_TOOLS:
             raise McpError(
                 f"mcp server reported more than {_MAX_DISCOVERED_TOOLS} tools; "
                 "narrow it down with an explicit `tools` allowlist"
             )
-        cursor = result.nextCursor
+        cursor = result.next_cursor
         if not cursor:
             break
     return tools
@@ -277,7 +277,7 @@ def _build_adapters(
                 remote_name=remote.name,
                 description=remote.description
                 or f"MCP tool '{remote.name}' from server '{ref.name}'.",
-                input_schema=remote.inputSchema or {"type": "object", "properties": {}},
+                input_schema=remote.input_schema or {"type": "object", "properties": {}},
                 transport=transport,
                 timeout=ref.timeout_seconds,
             )

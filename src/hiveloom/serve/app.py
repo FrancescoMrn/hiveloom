@@ -322,7 +322,7 @@ def create_app(
             run_input,
             provider=provider,
             strong_model=strong_model,
-            resolve_input=False,
+            literal_input=True,
             on_event=on_event,
         )
 

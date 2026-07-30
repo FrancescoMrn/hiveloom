@@ -102,7 +102,7 @@ def run_harness(
     on_event=None,
     approve_trust=None,
     strong_model: StrongModel | None = None,
-    resolve_input: bool = True,
+    literal_input: bool = False,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -116,12 +116,12 @@ def run_harness(
     is a test seam: when given, auto-propose uses it instead of resolving one
     (so tests never need ``ANTHROPIC_API_KEY``).
 
-    ``resolve_input`` (default ``True``, the CLI's behavior) lets an existing
-    file path stand in for ``input_value``'s content — see
-    :func:`_resolve_input`. The HTTP control plane calls this with
-    ``resolve_input=False``: over HTTP, treating any caller-supplied string
-    that happens to name a file on the server as "read this file" would be an
-    arbitrary file read, so its ``input`` field is always literal text.
+    ``literal_input`` skips the input-names-a-file convenience — see
+    :func:`_resolve_input`. It is required when the input comes from an
+    untrusted caller (``hiveloom serve`` and the HTTP control plane): over
+    HTTP, treating any caller-supplied string that happens to name a file on
+    the server as "read this file" would be an arbitrary file read, so those
+    ``input`` fields are always literal text.
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -129,7 +129,7 @@ def run_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
 
-    run_input = _resolve_input(base, input_value) if resolve_input else input_value
+    run_input = input_value if literal_input else _resolve_input(base, input_value)
     registry = build_registry(spec, base)
     try:
         guardrails = build_guardrails(spec, registry, base)

@@ -64,12 +64,14 @@ _err_console = Console(stderr=True)
 # Output helpers
 # --------------------------------------------------------------------------- #
 def _emit_json(payload: dict[str, Any]) -> None:
-    _console.print_json(json.dumps(payload))
+    # Machine-readable contract: plain bytes, never through rich (which
+    # injects ANSI codes under FORCE_COLOR and breaks downstream json.loads).
+    print(json.dumps(payload, indent=2))
 
 
 def _fail(message: str, json_output: bool, code: int) -> None:
     if json_output:
-        _console.print_json(json.dumps({"ok": False, "error": message}))
+        print(json.dumps({"ok": False, "error": message}, indent=2))
     else:
         _err_console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code)
@@ -220,6 +222,45 @@ def extensions(
         _console.print("no extensions loaded (builtins only)")
     for err in info["errors"]:
         _err_console.print(f"[red]load error[/red] {err['source']}: {err['error']}")
+
+
+@app.command()
+def guide(
+    topic: str = typer.Argument(
+        "agents", help="Topic to print: agents (default), all, or a skill name."
+    ),
+    list_topics: bool = typer.Option(False, "--list", help="List the topics instead."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Print the agent guidance that ships with the package.
+
+    ``AGENTS.md`` and the lifecycle skills are packaged, so an agent that only
+    ran ``pip install hiveloom`` can read the ground rules without a repository
+    checkout. Free: this never touches the API.
+    """
+    from hiveloom import guide as guide_mod
+
+    with _guard(json_output):
+        if list_topics:
+            topics = guide_mod.list_topics()
+            if json_output:
+                _emit_json({"ok": True, "topics": topics})
+                return
+            table = Table(title="guide topics")
+            table.add_column("topic", style="bold cyan")
+            table.add_column("covers")
+            for entry in topics:
+                table.add_row(entry["name"], entry["description"])
+            _console.print(table)
+            return
+
+        text = guide_mod.read_topic(topic)
+        if json_output:
+            _emit_json({"ok": True, "topic": topic, "markdown": text})
+            return
+        # Raw markdown, not rendered: the reader is usually an agent piping it
+        # into its own context, and rich would reflow and recolour the text.
+        print(text)
 
 
 @app.command()
@@ -577,6 +618,14 @@ def run(
     approve: bool = typer.Option(
         False, "--approve", "-a", help="Trust the harness folder without prompting."
     ),
+    sync: bool = typer.Option(
+        False,
+        "--sync",
+        help=(
+            "Linked mode: pull the latest version before the run and push the "
+            "traces after (requires `hiveloom cloud link`)."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Run a harness on an input.
@@ -591,6 +640,12 @@ def run(
     from hiveloom import trust as trust_mod
 
     with _guard(json_output):
+        if sync:
+            from hiveloom import cloud as cloud_mod
+
+            pulled = cloud_mod.pull(harness_dir)
+            if pulled["changed"] and not (json_output or stream):
+                _console.print(f"[green]pulled[/green] @ {pulled['version_hash']}")
         if approve:
             trust_mod.record_trust(harness_dir)
         if dry_run:
@@ -629,7 +684,66 @@ def run(
                 _console.print(result.output)
             if result.reason:
                 _console.print(f"reason: {result.reason}")
+        if sync:
+            from hiveloom import cloud as cloud_mod
+
+            pushed = cloud_mod.push(harness_dir)
+            if not (json_output or stream):
+                _console.print(
+                    f"[green]pushed[/green] {pushed['uploaded']} trace file(s) to the cloud"
+                )
         raise typer.Exit(_RUN_STATUS_EXIT.get(result.status, ExitCode.RUNTIME_ERROR))
+
+
+@app.command()
+def serve(
+    harness_dir: str = typer.Argument(".", help="Harness directory to serve."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (0.0.0.0 in containers)."),
+    port: int = typer.Option(8080, "--port", help="Bind port."),
+    concurrency: int = typer.Option(
+        1, "--concurrency", help="Concurrent runs allowed; extra requests get 429."
+    ),
+    approve: bool = typer.Option(
+        False, "--approve", "-a", help="Trust the harness folder without prompting."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the startup line as JSON."),
+) -> None:
+    """Serve the harness over HTTP — the long-lived deployment interface.
+
+    ``GET /healthz`` reports liveness; ``POST /runs`` with ``{"input": "..."}``
+    runs the harness (add ``"stream": true`` for NDJSON trace events, final
+    ``run_result`` line last — same format as ``run --stream``). Set
+    ``HIVELOOM_API_KEY`` to require ``Authorization: Bearer`` / ``X-API-Key``
+    on ``/runs``; run inputs are always treated as literal text, never file
+    paths. Blocks until interrupted.
+    """
+    from hiveloom import serve as serve_mod
+    from hiveloom import trust as trust_mod
+
+    with _guard(json_output):
+        if approve:
+            trust_mod.record_trust(harness_dir)
+        server = serve_mod.HarnessServer(
+            harness_dir, host=host, port=port, concurrency=concurrency
+        )
+        info = {
+            "ok": True,
+            "name": server.harness_name,
+            "version_hash": server.version_hash,
+            "host": host,
+            "port": server.server_address[1],
+            "auth": bool(server.api_key),
+            "concurrency": concurrency,
+        }
+        if json_output:
+            _emit_json(info)
+        else:
+            auth = "API key required" if info["auth"] else "no API key (HIVELOOM_API_KEY unset)"
+            _console.print(
+                f"[green]serving[/green] {server.harness_name} "
+                f"on http://{host}:{info['port']} — {auth}"
+            )
+        serve_mod.serve_forever(server)
 
 
 @app.command()
@@ -1093,6 +1207,11 @@ def proposals_reject_cmd(
 def package(
     harness_dir: str = typer.Argument(..., help="Harness directory to package."),
     docker: bool = typer.Option(False, "--docker", help="Also emit a Dockerfile."),
+    serve: bool = typer.Option(
+        False,
+        "--serve",
+        help="Docker image serves HTTP (`hiveloom serve` on :8080) instead of one-shot run.",
+    ),
     runtime_wheel: str | None = typer.Option(
         None,
         "--runtime-wheel",
@@ -1117,6 +1236,7 @@ def package(
         result = package_harness(
             harness_dir,
             docker=docker,
+            serve=serve,
             output_dir=output,
             runtime_wheel=runtime_wheel,
         )
@@ -1144,8 +1264,8 @@ def _serve_approve_callback():
     return _trust_prompt(json_output=False)
 
 
-@app.command()
-def serve(
+@app.command("control-plane")
+def control_plane(
     harness_dir: str = typer.Argument(..., help="Harness directory to serve."),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
     port: int = typer.Option(8420, "--port", help="Bind port."),
@@ -1417,6 +1537,96 @@ def _parse_header_pairs(values: list[str]) -> dict[str, str]:
             raise SpecError(f"--header expects 'Name: value' (got {raw!r})")
         result[name] = value
     return result
+# --------------------------------------------------------------------------- #
+# cloud — linked mode against a hiveloom-cloud harness
+# --------------------------------------------------------------------------- #
+cloud_app = typer.Typer(
+    help="Pair a local folder with a hiveloom-cloud harness and keep the two in sync."
+)
+app.add_typer(cloud_app, name="cloud")
+
+
+@cloud_app.command("link")
+def cloud_link(
+    url: str = typer.Argument(..., help="The hiveloom-cloud origin, e.g. https://app.example.com"),
+    token: str = typer.Argument(..., help="The harness's link token (hl_link_…) from the web UI."),
+    directory: str | None = typer.Option(
+        None, "--dir", help="Target directory (defaults to the harness slug)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Pair a directory with a remote harness and pull it."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.link_harness(url, token, directory)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        else:
+            _console.print(
+                f"[green]linked[/green] {result['dir']} → {result['slug']} "
+                f"@ {result['version_hash']}"
+            )
+
+
+@cloud_app.command("pull")
+def cloud_pull(
+    harness_dir: str = typer.Argument(".", help="Linked harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Fetch the latest harness version when the remote hash moved."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.pull(harness_dir)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        elif result["changed"]:
+            _console.print(f"[green]pulled[/green] @ {result['version_hash']}")
+        else:
+            _console.print(f"already up to date @ {result['version_hash']}")
+
+
+@cloud_app.command("push")
+def cloud_push(
+    harness_dir: str = typer.Argument(".", help="Linked harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Upload local run traces so the web harness can evolve from them."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.push(harness_dir)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        else:
+            _console.print(
+                f"[green]pushed[/green] {result['uploaded']} trace file(s), "
+                f"{result['run_count']} run(s)"
+            )
+
+
+@cloud_app.command("sync")
+def cloud_sync(
+    harness_dir: str = typer.Argument(".", help="Linked harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Push local traces, then pull the latest version."""
+    from hiveloom import cloud as cloud_mod
+
+    with _guard(json_output):
+        result = cloud_mod.sync(harness_dir)
+        if json_output:
+            _emit_json({"ok": True, **result})
+        else:
+            _console.print(
+                f"[green]synced[/green] pushed {result['uploaded']} trace file(s); "
+                + (
+                    f"pulled @ {result['version_hash']}"
+                    if result["changed"]
+                    else f"already up to date @ {result['version_hash']}"
+                )
+            )
 
 
 if __name__ == "__main__":

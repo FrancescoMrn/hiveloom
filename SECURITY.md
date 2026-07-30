@@ -19,9 +19,9 @@ gates foreign harness directories before their code loads; review a harness and
 use `hiveloom trust <dir>` deliberately. Keep API keys in `.env` or your
 deployment secret store, never in a harness spec or source file.
 
-## HTTP control plane (`hiveloom serve`)
+## HTTP control plane (`hiveloom control-plane`)
 
-`hiveloom serve` is explicitly non-production: no TLS (bearer tokens are
+`hiveloom control-plane` is explicitly non-production: no TLS (bearer tokens are
 cleartext on the wire), no replay/nonce cache (a captured token is replayable
 until it expires, hence the short 900-second default TTL), and no revocation
 propagation beyond the one `authorized_keys.json` file it reads. It binds to

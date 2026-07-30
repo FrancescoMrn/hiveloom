@@ -26,6 +26,22 @@ def test_init_records_trust(harness_dir: Path):
     assert trust.is_trusted(harness_dir)
 
 
+def test_record_trust_is_idempotent(harness_dir: Path):
+    """Re-trusting an already-trusted dir must not rewrite the store.
+
+    `run --approve` records trust on every invocation; the read-modify-write is
+    unlocked, so repeated writes race under concurrent runs (e.g. an eval sweep
+    firing many `hiveloom run` subprocesses at the same harness).
+    """
+    store = trust.trust_store_path()
+    before = store.read_bytes()
+
+    trust.record_trust(harness_dir)
+
+    assert store.read_bytes() == before
+    assert trust.is_trusted(harness_dir)
+
+
 def test_untrusted_foreign_harness_is_rejected(harness_dir: Path, monkeypatch):
     monkeypatch.delenv("HIVELOOM_TRUST", raising=False)
     trust.revoke_trust(harness_dir)  # simulate a foreign folder

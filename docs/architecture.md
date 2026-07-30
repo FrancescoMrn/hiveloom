@@ -38,6 +38,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │    loop/          engine + pluggable policies (react | plan | …)    │
   │    skills.py      progressive-disclosure SKILL.md folders           │
   │    runner.py      assemble + drive a run; `hiveloom run [--stream]` │
+  │    serve.py       stdlib HTTP wrapper: POST /runs, GET /healthz     │
   │                                                                     │
   │  logging/         trace.py (append-only JSONL) + hive.py (SQLite)   │
   │                                                                     │
@@ -46,12 +47,15 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │  evolve/          analyzer (Hive) → propose → gate → apply          │
   │    proposals.py   queue: create/list/get/apply/reject (Hive-backed) │
   │  package.py       portable <name>-<hash>.zip (+ Dockerfile, packs)  │
-  │  serve/           HTTP control plane (non-production); see          │
-  │                   docs/control-plane.md                             │
+  │  serve/           HTTP surfaces (non-production)                    │
+  │    simple.py      `hiveloom serve`: stdlib /runs + /healthz         │
+  │                   — the rest is `hiveloom control-plane`, see       │
+  │                   docs/control-plane.md:                            │
   │    keys.py        ed25519 keypairs, compact-JWT sign/verify         │
   │    auth.py        authorized-keys store, bearer verification        │
   │    runslots.py    bounded run concurrency for POST /run             │
   │    app.py         Starlette app: auth + spec lock + endpoints       │
+  │  guide.py         AGENTS.md + skills/, packaged; `hiveloom guide`   │
   │  cli.py           Typer CLI over all of the above                   │
   └────────────────────────────────────────────────────────────────┘
 ```

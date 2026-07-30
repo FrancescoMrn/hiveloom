@@ -1,8 +1,17 @@
-"""The hiveloom HTTP control plane: identity, auth, and (later) the server itself.
+"""Serving a harness over HTTP: the simple deployment server and the control plane.
 
-This package currently holds only the identity foundation — key generation and
-bearer-token auth (see ``keys.py``/``auth.py``). It builds no HTTP server; that
-arrives in the next task, alongside ``docs/control-plane.md``.
+Two distinct surfaces live here:
+
+- ``simple.py`` — :class:`HarnessServer`, the stdlib HTTP server behind
+  ``hiveloom serve`` (and the docker ``--serve`` entrypoint): ``GET /healthz``
+  plus ``POST /runs``, optional ``HIVELOOM_API_KEY`` bearer auth.
+- ``app.py``/``keys.py``/``auth.py``/``runslots.py`` — the bearer-authorized
+  control plane behind ``hiveloom control-plane``: the full CLI surface over
+  HTTP with ed25519 keys and scoped tokens. See ``docs/control-plane.md``.
 """
 
 from __future__ import annotations
+
+from hiveloom.serve.simple import HarnessServer, serve_forever
+
+__all__ = ["HarnessServer", "serve_forever"]

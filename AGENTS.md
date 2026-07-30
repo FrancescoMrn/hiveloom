@@ -27,17 +27,19 @@ the library; humans should start at [README.md](README.md).
    allowlist-only; foreign harness folders are trust-gated before their code
    loads. Don't route around any of this on a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
-   `extensions`, and `run --dry-run` never call the model API. A harness with
-   `mcp_servers` is the one exception to "free": its tools are discovered
-   eagerly, so `run --dry-run` does perform real local/network I/O against
-   those declared servers (see `docs/spec.md`). `run`, `generate`, and
+   `extensions`, `guide`, and `run --dry-run` never call the model API. A
+   harness with `mcp_servers` is the one exception to "free": its tools are
+   discovered eagerly, so `run --dry-run` does perform real local/network I/O
+   against those declared servers (see `docs/spec.md`). `run`, `generate`, and
    `evolve` need credentials for their configured provider when that provider
    requires them (for example, `ANTHROPIC_API_KEY` for the default provider).
 
 ## Task → skill map
 
 Focused skills live in [`skills/`](skills/README.md); the compact all-in-one
-variant is the root [`SKILL.md`](SKILL.md).
+variant is the root [`SKILL.md`](SKILL.md). Both ship inside the package, so
+without a checkout of this repository read them with `hiveloom guide --list`,
+then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file).
 
 | You are asked to… | Load | Core commands |
 |---|---|---|
