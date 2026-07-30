@@ -646,7 +646,7 @@ class EvolutionConfig(BaseModel):
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
-# list. Enforced in the evolver (M4); declared here as the safety contract.
+# list. Enforced in the evolver and declared here as the safety contract.
 # `extensions` load arbitrary code, so evolution can never add or change them.
 # Hooks can transform tool inputs/results and final output, placing them
 # upstream of guardrails. They therefore share the non-negotiable evolution

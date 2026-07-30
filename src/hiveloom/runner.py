@@ -15,8 +15,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from hiveloom import trust
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
@@ -33,9 +31,7 @@ if TYPE_CHECKING:
     from hiveloom.generate.llm import StrongModel
     from hiveloom.spec.schema import HarnessSpec
 
-# Keep diagnostics off machine-readable command stdout when structlog has not
-# been configured by an embedding application.
-log = structlog.wrap_logger(logging.getLogger(__name__))
+log = logging.getLogger(__name__)
 
 
 def _resolve_input(base: Path, value: str) -> str:
@@ -246,10 +242,10 @@ def _maybe_auto_propose(
             )
     except Exception as exc:  # noqa: BLE001 - see docstring: never fail a completed run
         log.warning(
-            "auto_propose_failed",
-            harness_name=spec.name,
-            error=str(exc),
-            error_type=type(exc).__name__,
+            "auto-propose failed for harness %s: %s: %s",
+            spec.name,
+            type(exc).__name__,
+            exc,
         )
 
 

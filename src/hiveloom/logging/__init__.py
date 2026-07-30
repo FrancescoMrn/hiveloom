@@ -1,6 +1,4 @@
-"""Logging as memory. M2 ships the append-only trace layer; the queryable Hive
-index (SQLite) lands in M3.
-"""
+"""Append-only run traces and the queryable SQLite Hive index."""
 
 from hiveloom.logging.hive import Hive, default_db_path
 from hiveloom.logging.trace import TraceEvent, TraceWriter, spec_version_hash

@@ -5,10 +5,10 @@ spec-time parameters they accept. It is consumed by:
 
 * ``hiveloom catalog`` (lists these entries),
 * the spec schema (validates ``builtin:`` references against these entries),
-* the generator's ``{builtin_catalog}`` prompt placeholder (M4).
+* the generator's ``{builtin_catalog}`` prompt placeholder.
 
-Runtime *implementations* (added in M2 for guardrails/verify/tools) register
-against the names defined here, so the metadata never drifts from behaviour.
+Runtime implementations register against the names defined here, so the
+metadata never drifts from behaviour.
 """
 
 from __future__ import annotations
