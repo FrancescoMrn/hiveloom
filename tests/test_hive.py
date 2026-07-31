@@ -114,6 +114,72 @@ def test_failure_signatures(tmp_path: Path):
         assert statuses["verify_failed"] == 2
 
 
+def test_failure_signatures_group_one_behaviour_across_different_inputs(tmp_path: Path):
+    """The point of the grouping: a behaviour is systematic precisely when it
+    recurs across *different* inputs, and validators interpolate the input into
+    their feedback. Grouping on raw text therefore splits exactly the failures
+    worth acting on into one group per input.
+    """
+    for i, title in enumerate(["Foo - Ars Technica", "Bar \\ Anthropic", "Baz | Blog"]):
+        _write_trace(
+            tmp_path,
+            f"run_{i}",
+            status="verify_failed",
+            verifications=[(False, f"Title '{title}' does not appear on the live page.")],
+        )
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        verdicts = hive.failure_signatures("h")["verdicts"]
+
+    assert len(verdicts) == 1, "three inputs, one behaviour, one cluster"
+    assert verdicts[0]["count"] == 3
+    assert verdicts[0]["feedback"] == "Title <str> does not appear on the live page."
+    # A representative original is kept so the evolver still sees a real case.
+    assert "Ars Technica" in verdicts[0]["example"]
+
+
+def test_failure_signatures_count_runs_not_verification_rows(tmp_path: Path):
+    """One run failing two validators is one failing run, not two."""
+    _write_trace(
+        tmp_path,
+        "run_multi",
+        status="verify_failed",
+        verifications=[
+            (False, "Title 'A' does not appear."),
+            (False, "Title 'B' does not appear."),
+        ],
+    )
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        verdicts = hive.failure_signatures("h")["verdicts"]
+
+    assert verdicts[0]["count"] == 1
+
+
+def test_failure_signatures_can_scope_to_one_version(tmp_path: Path):
+    """Failures an earlier evolution already repaired must not keep driving the
+    next proposal."""
+    _write_trace(tmp_path, "old", version="v1", status="verify_failed",
+                 verifications=[(False, "Title 'X' does not appear.")])
+    _write_trace(tmp_path, "new", version="v2", status="verify_failed",
+                 verifications=[(False, "headings are wrong")])
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        assert len(hive.failure_signatures("h")["verdicts"]) == 2
+        scoped = hive.failure_signatures("h", version="v2")["verdicts"]
+
+    assert [v["feedback"] for v in scoped] == ["headings are wrong"]
+
+
+def test_normalize_feedback_is_generic_not_validator_specific():
+    """It must not encode knowledge of any particular validator or harness."""
+    from hiveloom.logging.hive import normalize_feedback
+
+    assert normalize_feedback("saw ['a', 'b'] at line 12") == "saw <list> at line <num>"
+    assert normalize_feedback('fetch of "https://x.test/a" failed') == "fetch of <str> failed"
+    assert normalize_feedback("value  spread\n  over lines") == "value spread over lines"
+
+
 def test_recent_failures_with_feedback(tmp_path: Path):
     _write_trace(tmp_path, "run_ok", status="success")
     _write_trace(
