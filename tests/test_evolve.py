@@ -414,6 +414,43 @@ def test_parse_proposal_rejects_bad_json():
         parse_proposal("definitely not json")
 
 
+def test_parse_proposal_recovers_an_object_narrated_in_prose():
+    """A strong model asked to analyse failures usually narrates first and emits
+    the object last. Observed against the real evolve prompt: 1kB of markdown
+    analysis, then a valid proposal. Rejecting that discards a good proposal
+    over its packaging.
+    """
+    narrated = (
+        "Looking at the failure clusters:\n\n"
+        "1. **Invalid JSON (479 cases)** is dominant.\n"
+        "2. Headings exceed the limit.\n\n"
+        "Here is my proposal:\n\n"
+        '{"rationale": "tighten output rules",\n'
+        ' "yaml_changes": [{"path": "loop.max_turns", "value": 12,'
+        ' "rationale": "room to retry"}],\n'
+        ' "code_changes": []}\n'
+    )
+    proposal = parse_proposal(narrated)
+
+    assert proposal.rationale == "tighten output rules"
+    assert [c.path for c in proposal.yaml_changes] == ["loop.max_turns"]
+
+
+def test_parse_proposal_recovers_an_object_with_trailing_commentary():
+    """Prose after the object must not defeat the match either."""
+    proposal = parse_proposal(
+        'Proposal:\n{"rationale": "r", "yaml_changes": [], "code_changes": []}\n'
+        "I would also suggest reviewing the validators, though that is out of scope."
+    )
+
+    assert proposal.rationale == "r"
+
+
+def test_parse_proposal_still_rejects_prose_with_no_object():
+    with pytest.raises(Exception, match="not valid JSON"):
+        parse_proposal("I considered several mutations but recommend none at this time.")
+
+
 # --------------------------------------------------------------------------- #
 # CLI: evolve --propose (queues instead of applying)
 # --------------------------------------------------------------------------- #
