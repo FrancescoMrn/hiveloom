@@ -308,12 +308,14 @@ class Hive:
         failures an earlier evolution already repaired stop influencing the
         next proposal.
         """
+        # All three queries below share this clause; scoping only some of them
+        # reported another version's failures.
         scope = "r.harness_name=?" + (" AND r.harness_version_hash=?" if version else "")
         args: tuple[Any, ...] = (harness_name, version) if version else (harness_name,)
         rows = self._conn.execute(
             "SELECT v.feedback AS feedback, r.run_id AS run_id "
             "FROM verifications v JOIN runs r ON v.run_id=r.run_id "
-            f"WHERE {scope} AND v.passed=0 AND v.feedback != ''",
+            f"WHERE {scope} AND v.passed=0 AND v.feedback != ''",  # noqa: S608
             args,
         ).fetchall()
 
@@ -335,14 +337,14 @@ class Hive:
         guardrails = self._conn.execute(
             "SELECT g.guardrail AS guardrail, g.kind AS kind, COUNT(*) AS count "
             "FROM guardrail_triggers g JOIN runs r ON g.run_id=r.run_id "
-            "WHERE r.harness_name=? GROUP BY g.guardrail, g.kind ORDER BY count DESC LIMIT ?",
-            (harness_name, limit),
+            f"WHERE {scope} GROUP BY g.guardrail, g.kind ORDER BY count DESC LIMIT ?",  # noqa: S608
+            (*args, limit),
         ).fetchall()
         statuses = self._conn.execute(
-            "SELECT status, COUNT(*) AS count FROM runs "
-            "WHERE harness_name=? AND status != 'success' "
-            "GROUP BY status ORDER BY count DESC",
-            (harness_name,),
+            "SELECT r.status AS status, COUNT(*) AS count FROM runs r "
+            f"WHERE {scope} AND r.status != 'success' "  # noqa: S608
+            "GROUP BY r.status ORDER BY count DESC",
+            args,
         ).fetchall()
         return {
             "verdicts": verdicts,
@@ -350,12 +352,20 @@ class Hive:
             "statuses": [dict(r) for r in statuses],
         }
 
-    def recent_failures(self, harness_name: str, n: int = 5) -> list[dict[str, Any]]:
-        """The N most recent failed runs with their failing verifier feedback."""
+    def recent_failures(
+        self, harness_name: str, n: int = 5, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The N most recent failed runs with their failing verifier feedback.
+
+        ``version`` scopes them, so examples cannot come from a version a
+        caller's aggregate counts excluded.
+        """
+        scope = "harness_name=?" + (" AND harness_version_hash=?" if version else "")
+        args: tuple[Any, ...] = (harness_name, version, n) if version else (harness_name, n)
         runs = self._conn.execute(
-            "SELECT * FROM runs WHERE harness_name=? AND status != 'success' "
+            f"SELECT * FROM runs WHERE {scope} AND status != 'success' "  # noqa: S608
             "ORDER BY finished_at DESC LIMIT ?",
-            (harness_name, n),
+            args,
         ).fetchall()
         result = []
         for run in runs:
@@ -457,10 +467,19 @@ class Hive:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def failure_count(self, harness_name: str, *, since: str | None = None) -> int:
-        """COUNT(*) of non-success runs, optionally since an ISO timestamp."""
+    def failure_count(
+        self, harness_name: str, *, since: str | None = None, version: str | None = None
+    ) -> int:
+        """COUNT(*) of non-success runs, optionally since an ISO timestamp.
+
+        Gate on this and then analyse? Pass the same ``version`` to both, or the
+        gate opens on evidence the analysis will not see.
+        """
         query = "SELECT COUNT(*) AS n FROM runs WHERE harness_name=? AND status != 'success'"
         params: list[Any] = [harness_name]
+        if version is not None:
+            query += " AND harness_version_hash=?"
+            params.append(version)
         if since is not None:
             query += " AND finished_at >= ?"
             params.append(since)

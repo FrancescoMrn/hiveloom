@@ -331,7 +331,7 @@ def test_reject_unknown_id_raises(tmp_path: Path):
 def _queue_via_cli(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
     """Seed a failure, fake the strong model, and queue a proposal via the CLI."""
     harness = _harness(tmp_path)
-    _seed_failure(tmp_path)
+    _seed_failure(tmp_path, harness)
     _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
 
     result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--propose", "--json"])

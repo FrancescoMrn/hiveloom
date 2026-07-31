@@ -171,6 +171,36 @@ def test_failure_signatures_can_scope_to_one_version(tmp_path: Path):
     assert [v["feedback"] for v in scoped] == ["headings are wrong"]
 
 
+def test_failure_signatures_scopes_every_cluster_kind_not_just_verdicts(tmp_path: Path):
+    """The version filter covers verdicts, guardrails and statuses together —
+    scoping only some of them reports another version's failures as current."""
+    _write_trace(tmp_path, "old", version="v1", status="guardrail_stopped",
+                 verifications=[(False, "old failure")],
+                 guardrails=[("max_turns", "limit", "exhausted")])
+    _write_trace(tmp_path, "new", version="v2", status="verify_failed",
+                 verifications=[(False, "new failure")])
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        scoped = hive.failure_signatures("h", version="v2")
+
+    assert [v["feedback"] for v in scoped["verdicts"]] == ["new failure"]
+    assert scoped["guardrails"] == []
+    assert [s["status"] for s in scoped["statuses"]] == ["verify_failed"]
+
+
+def test_recent_failures_can_scope_to_one_version(tmp_path: Path):
+    _write_trace(tmp_path, "old", version="v1", status="verify_failed",
+                 verifications=[(False, "old failure")])
+    _write_trace(tmp_path, "new", version="v2", status="verify_failed",
+                 verifications=[(False, "new failure")])
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        assert len(hive.recent_failures("h")) == 2
+        scoped = hive.recent_failures("h", version="v2")
+
+    assert [r["run_id"] for r in scoped] == ["new"]
+
+
 def test_normalize_feedback_is_generic_not_validator_specific():
     """It must not encode knowledge of any particular validator or harness."""
     from hiveloom.logging.hive import normalize_feedback

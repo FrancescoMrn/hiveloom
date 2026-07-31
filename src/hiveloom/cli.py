@@ -915,26 +915,26 @@ def evolve(
     from hiveloom.evolve import proposals as proposals_mod
     from hiveloom.generate.llm import build_strong_model
     from hiveloom.logging.hive import Hive
+    from hiveloom.logging.trace import spec_version_hash
+    from hiveloom.spec.loader import harness_path, load_spec
 
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
-        base = Path(harness_dir)
-        model = build_strong_model(model_id, base if base.is_dir() else base.parent)
+        base = harness_path(harness_dir).parent  # the harness dir, given a dir or a yaml path
+        model = build_strong_model(model_id, base)
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
-            report = evolve_mod.analyze(hive, name)
+            spec = load_spec(harness_dir)
+            # Scoped to the current version — see analyze().
+            report = evolve_mod.analyze(hive, name, version=spec_version_hash(spec, base))
             if report.is_empty():
+                reason = _nothing_to_evolve_reason(hive, name)
                 if json_output:
-                    _emit_json(
-                        {"ok": True, "changed": False, "reason": "no failures to learn from"}
-                    )
+                    _emit_json({"ok": True, "changed": False, "reason": reason})
                 else:
-                    _console.print("[green]nothing to evolve[/green] — no recorded failures")
+                    _console.print(f"[green]nothing to evolve[/green] — {reason}")
                 return
 
-            from hiveloom.spec.loader import load_spec
-
-            spec = load_spec(harness_dir)
             if propose:
                 record = proposals_mod.create_proposal(
                     hive, spec, harness_dir, report, model, trigger="manual"
@@ -973,6 +973,23 @@ def evolve(
 # --------------------------------------------------------------------------- #
 # Proposals queue
 # --------------------------------------------------------------------------- #
+def _nothing_to_evolve_reason(hive: Any, name: str) -> str:
+    """Why the report is empty — the two cases need different next steps.
+
+    Analysis is scoped to the current spec version, so a harness edited since
+    its last failing run has failures on record that deliberately do not count.
+    Reporting that as "no recorded failures" would send the user looking for a
+    logging bug instead of re-running the harness.
+    """
+    stale = hive.failure_count(name)
+    if stale:
+        return (
+            f"no failures recorded for the current harness version "
+            f"({stale} on earlier versions) — re-run the harness to collect fresh ones"
+        )
+    return "no recorded failures"
+
+
 def _emit_proposal_created(record: Any, json_output: bool) -> None:
     if json_output:
         from hiveloom.evolve.proposals import proposal_payload

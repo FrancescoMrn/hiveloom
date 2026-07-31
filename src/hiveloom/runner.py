@@ -221,8 +221,10 @@ def _maybe_auto_propose(
         from hiveloom.logging.hive import Hive
 
         with Hive(hive_path) as hive:
+            # One version for both: the gate must count what the report carries.
+            version = spec_version_hash(spec, base)
             since = last_auto_proposal_at(hive, spec.name)
-            if hive.failure_count(spec.name, since=since) < auto.min_failures:
+            if hive.failure_count(spec.name, since=since, version=version) < auto.min_failures:
                 return
             if since is not None:
                 elapsed_hours = (
@@ -232,7 +234,7 @@ def _maybe_auto_propose(
                     return
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.name)
+            report = analyze(hive, spec.name, version=version)
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a

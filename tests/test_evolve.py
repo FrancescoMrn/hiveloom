@@ -27,6 +27,7 @@ from hiveloom.evolve.evolver import (
 )
 from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
+from hiveloom.logging.trace import spec_version_hash
 from hiveloom.spec.loader import load_spec
 
 cli_runner = CliRunner()
@@ -60,6 +61,39 @@ def test_analyze_builds_report_from_hive(tmp_path: Path):
     assert report.total_runs == 2
     assert report.success_rate == 0.5
     assert any(c.kind == "verdict" and "JSON" in c.signature for c in report.clusters)
+
+
+def test_analyze_scopes_counts_clusters_and_examples_to_one_version(tmp_path: Path):
+    """Scoping is all-or-nothing: a report whose totals exclude a version but
+    whose clusters or examples come from it would mislead the proposing model."""
+    _write_trace(tmp_path, "old_fail", name="demo", version="v1", status="verify_failed",
+                 verifications=[(False, "not valid JSON")])
+    _write_trace(tmp_path, "new_fail", name="demo", version="v2", status="verify_failed",
+                 verifications=[(False, "headings are wrong")])
+    _write_trace(tmp_path, "new_ok", name="demo", version="v2", status="success")
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        pooled = analyze(hive, "demo")
+        scoped = analyze(hive, "demo", version="v2")
+
+    assert pooled.total_runs == 3
+    assert len(pooled.clusters) == 3  # two verdicts + one verify_failed status
+    assert scoped.total_runs == 2
+    assert scoped.success_rate == 0.5
+    assert [c.signature for c in scoped.clusters if c.kind == "verdict"] == ["headings are wrong"]
+    assert [f["run_id"] for f in scoped.recent_failures] == ["new_fail"]
+
+
+def test_analyze_reports_no_runs_for_an_unrecorded_version(tmp_path: Path):
+    """A version with no runs yet reports zeroes, not another version's stats."""
+    _write_trace(tmp_path, "old_fail", name="demo", version="v1", status="verify_failed",
+                 verifications=[(False, "not valid JSON")])
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(tmp_path)
+        report = analyze(hive, "demo", version="v9")
+
+    assert report.is_empty()
+    assert (report.total_runs, report.success_rate) == (0, 0.0)
 
 
 def test_analyze_empty_when_no_failures(tmp_path: Path):
@@ -459,10 +493,17 @@ _PROPOSAL_PAYLOAD = json.dumps(
 )
 
 
-def _seed_failure(tmp_path: Path, name: str = "demo") -> None:
+def _seed_failure(tmp_path: Path, harness: Path) -> None:
+    """Ingest one failed run for the harness at ``harness``.
+
+    Name and version hash come from the live spec, as a real run's trace
+    carries them: `evolve` scopes its analysis to the current version, so a
+    hand-written hash would read as history from a spec that no longer exists.
+    """
+    spec = load_spec(harness)
     trace = _write_trace(
-        tmp_path, "run_a", name=name, status="verify_failed",
-        verifications=[(False, "not valid JSON")],
+        tmp_path, "run_a", name=spec.name, version=spec_version_hash(spec, harness),
+        status="verify_failed", verifications=[(False, "not valid JSON")],
     )
     with Hive() as hive:  # the autouse conftest fixture points this at a throwaway db
         hive.ingest_trace_file(trace)
@@ -476,9 +517,26 @@ def _fake_model(monkeypatch, *responses: str) -> None:
     )
 
 
+def test_cli_evolve_says_failures_are_from_an_earlier_version(tmp_path: Path, monkeypatch):
+    """Editing the harness invalidates its failure history for evolution. Saying
+    "no recorded failures" there sends the user hunting a logging bug instead of
+    re-running the harness."""
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path, harness)
+    construct.set_field(harness, "loop.max_turns", "9")  # new spec, new version hash
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--propose", "--json"])
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["changed"] is False
+    assert "1 on earlier versions" in payload["reason"]
+
+
 def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch):
     harness = _harness(tmp_path)
-    _seed_failure(tmp_path)
+    _seed_failure(tmp_path, harness)
     _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
 
     result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--propose", "--json"])
@@ -493,7 +551,7 @@ def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch)
 
 def test_cli_evolve_propose_ignores_yes(tmp_path: Path, monkeypatch):
     harness = _harness(tmp_path)
-    _seed_failure(tmp_path)
+    _seed_failure(tmp_path, harness)
     _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
 
     result = cli_runner.invoke(
@@ -508,7 +566,7 @@ def test_cli_evolve_propose_ignores_yes(tmp_path: Path, monkeypatch):
 def test_cli_evolve_without_propose_is_unchanged(tmp_path: Path, monkeypatch):
     """Regression: plain `hiveloom evolve <dir>` still applies directly, no queue."""
     harness = _harness(tmp_path)
-    _seed_failure(tmp_path)
+    _seed_failure(tmp_path, harness)
     _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
 
     result = cli_runner.invoke(cli.app, ["evolve", str(harness), "--yes", "--json"])
