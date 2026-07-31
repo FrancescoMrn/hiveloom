@@ -22,24 +22,35 @@ validators, retry-with-feedback, guardrails, loop policy.
 
 ## Does the harness earn its place?
 
-Paired over the same 96 runs per model, so each row compares the two arms on
-identical inputs rather than comparing aggregates.
+Each row compares the two arms on identical inputs. **The unit of analysis is the
+URL, not the run**: the 96 runs per arm are 32 pages measured 3 times, and site
+difficulty correlates strongly within a page, so treating the 96 as independent
+overstates significance. The paired test below is a Wilcoxon signed-rank over
+the 32 per-URL success rates. An earlier version of this file reported
+run-level McNemar and called the qwen3:4b result significant; clustered
+properly it is not.
 
-| Model | harness | raw | delta | paired result |
-|---|---|---|---|---|
-| claude-haiku-4-5 | 64.6% | 3.1% | **+61.5** | b=60 c=1, McNemar p<0.0001 |
-| qwen3:4b-instruct | 68.8% | 58.3% | **+10.4** | b=15 c=5, p=0.041 |
-| qwen3.6-35B-A3B | 84.4% | 75.0% | +9.4 | b=18 c=9, p=0.12 (n.s.) |
-| gemma4:12b | 89.6% | 91.7% | -2.1 | b=5 c=7, p=0.77 (n.s.) |
+| Model | harness | raw | delta | URLs better/worse/tied | paired p |
+|---|---|---|---|---|---|
+| claude-haiku-4-5 | 64.6% | 3.1% | **+61.5** | 21 / 1 / 10 | **<0.0001** |
+| qwen3:4b-instruct | 68.8% | 58.3% | +10.4 | 6 / 2 / 24 | 0.18 (n.s.) |
+| qwen3.6-35B-A3B | 84.4% | 75.0% | +9.4 | 6 / 3 / 23 | 0.51 (n.s.) |
+| gemma4:12b | 89.6% | 91.7% | -2.1 | 4 / 3 / 25 | 0.86 (n.s.) |
 
-The scaffolding pays where the model cannot hold the contract alone, and
-approaches neutral as the model gets better at the task on its own. Raw haiku
-wraps its JSON in prose and nothing tells it to stop; retry-with-feedback is
-what recovers it. gemma4:12b already satisfies the contract unaided, so the
-harness neither helps nor hurts it.
+**Exactly one of four harness benefits is statistically defensible at this sample
+size.** Haiku's is large and unambiguous: raw haiku wraps its JSON in prose and
+nothing tells it to stop, and retry-with-feedback recovers it on 21 of 32 pages.
+The other three deltas point the way you would expect but are indistinguishable
+from noise over 32 pages, and should not be quoted as evidence that the harness
+helps those models. Note also the ceiling: a model with ~1% raw error has almost
+no room for a positive delta, so gemma's -2.1 is not evidence of harm either.
 
-**Hallucination is the sharper story.** The harness suppresses invented content
-in every model, including the ones where task success is a wash:
+What this benchmark can support is therefore narrower than the arm table
+suggests: scaffolding rescues a model that cannot hold the output contract, and
+is not measurably useful for models that already can.
+
+**Hallucination is the more robust signal**, because the effect sizes are large
+relative to the sample:
 
 | Model | harness | raw |
 |---|---|---|
@@ -48,15 +59,28 @@ in every model, including the ones where task success is a wash:
 | qwen3.6-35B-A3B | **0%** | 16% |
 | gemma4:12b | **0%** | 1% |
 
-qwen3.6-35B is the clearest case: same task success within noise, but 16% of raw
-runs invent content and 0% of harnessed ones do. A benchmark that only reported
-accuracy would call those two arms equivalent.
-
 **The incumbent still wins outright.** sonnet-5 raw scores 100% with 0%
-hallucination at $0.0073 per success. haiku+harness costs $0.0186 per success
-and loses 34 paired runs to 0 against it. Scaffolding a cheap model does not
-beat simply using a better one on this task; what it buys is a local, $0,
-private option that lands within 10 points of a frontier model.
+hallucination at $0.0073 per success; haiku+harness costs $0.0186. Scaffolding a
+cheap model does not beat using a better one on this task. What it buys is a
+local, $0, private option landing within 10 points of a frontier model.
+
+### What this benchmark does not measure
+
+Stated plainly, because the arm table invites over-reading:
+
+- **"Task success" is narrower than it sounds.** It requires schema validity,
+  the hallucination check, and an exact title match — not correct author, date,
+  description, or headings, which are reported as separate columns
+  (`inspect_evals/scorer.py`). An output with the right title and wrong metadata
+  counts as a success. This is closer to a title-copy benchmark with a schema
+  gate than to full structured extraction.
+- **The harness gets corrective model calls that raw does not.** Retry-with-
+  feedback means up to two extra calls carrying validator output. That is the
+  mechanism under test, but it means the comparison shows "retrying against the
+  scoring rule rescues a weak model", not that the harness encodes durable task
+  knowledge.
+- **One task, public web pages.** It cannot speak to tasks whose data cannot
+  leave the building, which is the case the product is actually aimed at.
 
 ## What changed since the pre-0.3.0 sweep
 
