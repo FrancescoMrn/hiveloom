@@ -30,3 +30,36 @@ Generated 2026-07-29 · dataset `30b99e5` · repo `30b99e5`
 - Live-URL dataset: see the drift check run alongside this sweep.
 
 Logs: `logs/haiku_harness/2026-07-29T13-19-47-00-00_article-extractor-harness_kZF8TvtGFUPQJL4gLCwgs5.eval`, `logs/haiku_raw/2026-07-29T13-24-00-00-00_article-extractor-raw_2vhoers8Tnh83aFKrsBCnn.eval`, `logs/sonnet_raw/2026-07-29T13-27-22-00-00_article-extractor-raw_Emdqcb6GkhQM6GU9BkKHeJ.eval`, `logs/qwen_harness/2026-07-29T15-49-45-00-00_article-extractor-harness_S6sgonYGXzQQNdCFUiowQH.eval`, `logs/qwen_raw/2026-07-29T15-39-06-00-00_article-extractor-raw_mDSSF699NVQoQtvNFCYwT3.eval`, `logs/gemma_harness/2026-07-29T16-06-01-00-00_article-extractor-harness_ZCzskKW8Aycx4s8cEw2786.eval`, `logs/gemma_raw/2026-07-29T17-01-00-00-00_article-extractor-raw_88CGrBwMnvXFcJiKCYRHvw.eval`, `logs/qwen35_harness/2026-07-29T17-54-59-00-00_article-extractor-harness_WbMYLMrSs7c963YCvEJEC9.eval`, `logs/qwen35_raw/2026-07-29T18-51-20-00-00_article-extractor-raw_6hBqam3NjhpETBtmTJNSxc.eval`
+
+## Re-test against 0.3.1 vs the pre-merge sweep
+
+Same model, same 32 samples x 3 epochs, same 4096-token budget. Only the
+hiveloom under the harness arm changed.
+
+| Metric | pre-merge | 0.3.1 | |
+|---|---|---|---|
+| gemma + harness | 78% (69-85) | **90% (82-94)** | +12 |
+| gemma raw | 94% (87-97) | 92% (84-96) | -2 (CIs overlap) |
+| harness title fidelity | 80% | **90%** | +10 |
+| harness hallucination | 1% | **0%** | |
+| harness headings F1 | 0.99 | **1.00** | |
+| harness pass^3 | 75% | **88%** | +13 |
+| errored runs in harness arm | 1 (s23, HTTP 400) | **0** | |
+
+Paired over the 96 runs: harness-only wins b=5, raw-only wins c=7, exact
+McNemar p=0.77 — no significant difference between the two arms. The 16-point
+deficit that motivated issue #6 is gone.
+
+What changed the harness arm, in likely order of size: gemma via Ollama returns
+its text in `reasoning` with `content: ""`, which used to normalise to an empty
+assistant turn (issue #5). On a multi-turn loop with retry-with-feedback that
+cost more than the one crashed sample it was found through. s23, which died on
+`invalid message content type: <nil>`, now passes 3/3.
+
+Title fidelity is no longer a harness bias. Both arms still strip site-name
+suffixes ("... [LWN.net]", "... \ Anthropic") at similar rates: 6 harness-only
+title misses vs 5 raw-only, against 15 vs ~0 before. That residue is model
+behaviour under a verbatim-copy contract, not scaffolding, and it is what
+issue #6 should be narrowed to if kept open.
+
+Dataset drift: 1 of 32 samples flagged (s20, unchanged from the earlier sweep).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -473,6 +474,43 @@ def test_openai_compat_retries_transient_transport_failure(monkeypatch):
     assert provider._post("/chat/completions", {}) == {"ok": True}
     assert attempts == 2
     assert sleeps == [1.0]
+
+
+def test_openai_compat_error_counts_attempts_actually_made(monkeypatch):
+    """Regression for issue #7: a 400 is never retried, so the error must not
+    claim the retry budget was spent."""
+    from urllib import error as urlerror
+
+    from hiveloom.models import openai_compat
+
+    calls = 0
+
+    def bad_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise urlerror.HTTPError("http://x/v1", 400, "Bad Request", {}, io.BytesIO(b"nope"))
+
+    monkeypatch.setattr(openai_compat.urlrequest, "urlopen", bad_request)
+    provider = openai_compat.OpenAICompatProvider("http://x/v1", sleep=lambda _s: None)
+
+    with pytest.raises(RuntimeError, match=r"failed on attempt 1: "):
+        provider._post("/chat/completions", {})
+    assert calls == 1
+
+
+def test_openai_compat_error_reports_the_full_budget_when_it_is_spent(monkeypatch):
+    from urllib import error as urlerror
+
+    from hiveloom.models import openai_compat
+
+    def always_down(*_args, **_kwargs):
+        raise urlerror.URLError("down")
+
+    monkeypatch.setattr(openai_compat.urlrequest, "urlopen", always_down)
+    provider = openai_compat.OpenAICompatProvider("http://x/v1", sleep=lambda _s: None)
+
+    with pytest.raises(RuntimeError, match=r"failed on attempt 4: "):
+        provider._post("/chat/completions", {})
 
 
 def test_claude_retries_overload_and_normalizes_response():
