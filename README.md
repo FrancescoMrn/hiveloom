@@ -227,6 +227,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Extensions](docs/extending.md)
 - [Deployment and evolution](docs/deploying-and-evolving.md)
 - [Control plane](docs/control-plane.md)
+- [Link/sync protocol](docs/sync-protocol.md)
 - [Contributing and QA](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
