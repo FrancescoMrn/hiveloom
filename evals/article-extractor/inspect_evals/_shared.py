@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import random
 import re
 import sys
 import types
@@ -110,6 +111,10 @@ def fingerprint(title: str | None, headings: list[str]) -> dict:
 
 
 def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson interval. Correct only when the n observations are independent.
+
+    Not what you want for this benchmark's arms: see :func:`cluster_bootstrap_ci`.
+    """
     if n == 0:
         return (0.0, 0.0)
     p = successes / n
@@ -117,3 +122,36 @@ def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
     center = p + z**2 / (2 * n)
     margin = z * ((p * (1 - p) / n + z**2 / (4 * n**2)) ** 0.5)
     return (max(0.0, (center - margin) / denom), min(1.0, (center + margin) / denom))
+
+
+def cluster_bootstrap_ci(
+    clusters: list[list[bool]], *, resamples: int = 10000, seed: int = 0
+) -> tuple[float, float]:
+    """95% CI for a success rate when observations come in correlated clusters.
+
+    Each arm runs the same URL over several epochs, so the rows are not
+    independent: a hard page tends to fail every epoch. Treating them as
+    independent shrinks the interval and inflates significance. Resampling
+    whole URLs with replacement keeps the within-URL correlation intact.
+
+    Seeded so a regenerated RESULTS.md does not churn on noise.
+    """
+    if not clusters:
+        return (0.0, 0.0)
+    k = len(clusters)
+    # When every cluster has the same rate, every resample is identical and the
+    # bootstrap collapses to a point, claiming certainty it has not earned. That
+    # is not only the all-pass/all-fail case: uniform 0.5 degenerates too. Fall
+    # back to Wilson over the clusters, which still widens when there are few.
+    cluster_rates = {sum(c) / len(c) for c in clusters}
+    if len(cluster_rates) == 1:
+        return wilson_ci(round(next(iter(cluster_rates)) * k), k)
+
+    rng = random.Random(seed)
+    rates = []
+    for _ in range(resamples):
+        drawn = [clusters[rng.randrange(k)] for _ in range(k)]
+        flat = [ok for c in drawn for ok in c]
+        rates.append(sum(flat) / len(flat))
+    rates.sort()
+    return (rates[int(0.025 * resamples)], rates[int(0.975 * resamples)])

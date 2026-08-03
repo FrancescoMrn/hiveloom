@@ -103,9 +103,7 @@ class OpenAICompatProvider(ModelProvider):
             if not retryable or attempt == _MAX_RETRIES:
                 break
             self._sleep(_BASE_DELAY * (2**attempt))
-        raise RuntimeError(
-            f"model call failed after {_MAX_RETRIES} retries: {last_exc}"
-        ) from last_exc
+        raise RuntimeError(f"model call failed on attempt {attempt + 1}: {last_exc}") from last_exc
 
 
 def _to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:

@@ -19,6 +19,10 @@ HIVELOOM="${HIVELOOM_BIN:-../../.venv/bin/hiveloom}"
 MAX_TOKENS="${MAX_TOKENS:-4096}"
 MLX_MODEL_ID="${MLX_MODEL_ID:-mlx-community/Qwen3.6-35B-A3B-8bit}"
 
+# The per-arm dirs are gitignored, so on a fresh clone this parent does not
+# exist yet and `cp -R` into it fails.
+mkdir -p harnesses
+
 make_arm() {
   local dir="harnesses/$1"
   if [ -d "$dir" ]; then echo "$dir exists, skipping"; return; fi

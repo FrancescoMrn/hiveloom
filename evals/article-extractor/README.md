@@ -29,11 +29,14 @@ not prompt engineering.
 
 - **task_success** — schema-valid AND no hallucination (title/headings verbatim
   on the re-fetched live page, via the harness's own
-  `validators/article_on_page.py`) AND title matches golden. Wilson 95% CI.
+  `validators/article_on_page.py`) AND title matches golden. 95% CI by
+  cluster bootstrap over URLs, since the 3 epochs of a page are not
+  independent observations.
 - **cost_per_success** — total arm cost / successful samples (the headline
   economic number).
 - Secondary: hallucination rate, per-field accuracy, headings F1, pass^3,
-  p50/p90 latency. Paired McNemar test for haiku_harness vs sonnet_raw.
+  p50/p90 latency. Paired Wilcoxon signed-rank over per-URL success rates for
+  haiku_harness vs sonnet_raw and vs haiku_raw.
 
 ## Setup
 
