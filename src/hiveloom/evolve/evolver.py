@@ -108,8 +108,34 @@ def build_evolve_prompt(spec: HarnessSpec, report: FailureReport) -> tuple[str, 
     return system, user
 
 
+def _embedded_object(text: str) -> dict[str, Any] | None:
+    """The outermost JSON object inside prose, or None if there isn't one.
+
+    Scans back from the last closing brace so trailing commentary after the
+    object does not defeat the match.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    end = text.rfind("}")
+    while end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            end = text.rfind("}", start, end)
+            continue
+        return parsed  # starts with '{', so a successful parse is an object
+    return None
+
+
 def parse_proposal(text: str) -> MutationProposal:
-    """Parse a mutation proposal from model text (tolerating code fences)."""
+    """Parse a mutation proposal from model text.
+
+    Tolerates code fences and, failing that, a proposal embedded in prose: a
+    strong model asked to analyse failures usually narrates its reasoning first
+    and emits the object at the end. Do not tighten this back to bare JSON
+    without checking what the model actually returns.
+    """
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
@@ -117,7 +143,9 @@ def parse_proposal(text: str) -> MutationProposal:
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise ProposalError(f"proposal is not valid JSON: {exc}") from exc
+        data = _embedded_object(stripped)
+        if data is None:
+            raise ProposalError(f"proposal is not valid JSON: {exc}") from exc
     try:
         return MutationProposal.model_validate(data)
     except Exception as exc:  # noqa: BLE001 - pydantic validation error → actionable message
@@ -279,6 +307,53 @@ def resolve_code_change_path(
         raise ProposalError(f"code change path is outside the harness: {file}") from exc
 
 
+class _Snapshot:
+    """Remembers a harness's pre-mutation state so a failed apply can undo it.
+
+    Records content lazily, as each file is about to be written, rather than up
+    front: the set of code targets is only known once ``approve_code`` has run,
+    and that callback is interactive.
+    """
+
+    def __init__(self, yaml_path: Path) -> None:
+        self._yaml_path = yaml_path
+        self._yaml = yaml_path.read_text(encoding="utf-8")
+        self._files: list[tuple[Path, str | None]] = []
+        self._backups: list[Path] = []
+
+    def take(self, target: Path) -> None:
+        """Remember ``target``'s content (or that it was absent) and, if it
+        existed, leave the ``.bak`` copy an operator can inspect afterwards."""
+        prior = target.read_text(encoding="utf-8") if target.exists() else None
+        self._files.append((target, prior))
+        if prior is not None:
+            bak = target.with_suffix(target.suffix + ".bak")
+            bak.write_text(prior, encoding="utf-8")
+            self._backups.append(bak)
+
+    def restore(self) -> None:
+        """Put everything back. Best-effort: never mask the original failure."""
+        for target, prior in reversed(self._files):
+            try:
+                if prior is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.write_text(prior, encoding="utf-8")
+            except OSError:
+                pass
+        # A .bak describes a change that did not survive, so leaving it would
+        # only mislead whoever inspects the folder afterwards.
+        for bak in self._backups:
+            try:
+                bak.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            atomic_write_text(self._yaml_path, self._yaml)
+        except OSError:
+            pass
+
+
 def apply_proposal(
     harness_dir: str | Path,
     proposal: MutationProposal,
@@ -320,36 +395,42 @@ def apply_proposal(
     ]
     applied_code: list[str] = []
     pending_code: list[str] = []
-    for change, target in code_targets:
-        approved = approve_code(change) if approve_code is not None else False
-        if approved:
-            if target.exists():
-                target.with_suffix(target.suffix + ".bak").write_text(
-                    target.read_text(encoding="utf-8"), encoding="utf-8"
-                )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(change.source, encoding="utf-8")
-            applied_code.append(change.file)
-        else:
-            pending_code.append(change.file)
+    # Full re-validation needs the code changes already on disk, because it
+    # imports the hooks — so writing has to precede validating, and a failure
+    # there would leave the harness mutated and invalid. Snapshot everything
+    # this call is about to touch and put it back if anything raises.
+    snapshot = _Snapshot(yaml_path)
+    try:
+        for change, target in code_targets:
+            approved = approve_code(change) if approve_code is not None else False
+            if approved:
+                snapshot.take(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(change.source, encoding="utf-8")
+                applied_code.append(change.file)
+            else:
+                pending_code.append(change.file)
 
-    changed = bool(applied_yaml or applied_code)
-    counter = _read_counter(yaml_path)
-    new_hash = old_hash
-    if changed:
-        counter += 1
-        atomic_write_text(yaml_path, f"# evolved: {counter}\n" + dump_spec(new_spec))
-        validate_harness(yaml_path)  # full re-validation incl. code hooks
-        new_hash = spec_version_hash(new_spec, base)
-        if hive is not None:
-            hive.record_evolution(
-                spec.name,
-                old_hash,
-                new_hash,
-                counter,
-                proposal.rationale,
-                datetime.now(UTC).isoformat(),
-            )
+        changed = bool(applied_yaml or applied_code)
+        counter = _read_counter(yaml_path)
+        new_hash = old_hash
+        if changed:
+            counter += 1
+            atomic_write_text(yaml_path, f"# evolved: {counter}\n" + dump_spec(new_spec))
+            validate_harness(yaml_path)  # full re-validation incl. code hooks
+            new_hash = spec_version_hash(new_spec, base)
+            if hive is not None:
+                hive.record_evolution(
+                    spec.name,
+                    old_hash,
+                    new_hash,
+                    counter,
+                    proposal.rationale,
+                    datetime.now(UTC).isoformat(),
+                )
+    except BaseException:
+        snapshot.restore()
+        raise
 
     return ApplyResult(
         changed=changed,

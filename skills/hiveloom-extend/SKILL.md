@@ -71,32 +71,47 @@ A pack declares its entry point in `pyproject.toml`:
 acme-tools = "acme_tools:hiveloom_extension"
 ```
 
-## Model providers (local/custom LLMs)
+## Model providers (other labs, local/custom LLMs)
 
-Declaratively, for any OpenAI-compatible server — one entry in
-`~/.hiveloom/models.yaml`:
+The major labs are **builtin** — no configuration, just the key. Run
+`hiveloom models` (add `--json`) for names, key variables, endpoints, and
+pricing: `claude`, `openai`, `gemini`, `mistral`, `deepseek`, `xai`, `groq`,
+`openrouter`, `together`, `fireworks`, `ollama`, `vllm`.
+
+Switch a harness to another lab with the **`provider/model-id` selector**:
+
+```bash
+hiveloom set model openai/gpt-4.1-mini --dir ./h
+hiveloom generate ... --model ollama/qwen3:32b
+```
+
+Use `set model`, never `set model.provider` / `set model.id` separately —
+those two fields validate against each other, so any one-at-a-time edit is
+rolled back. The selector splits on the first `/` only, so aggregator ids keep
+their own slashes (`openrouter/deepseek/deepseek-r1`).
+
+Every provider except `claude` has an **open catalog**: ids released after this
+hiveloom version validate fine. `claude` is fixed, so a typo there is caught.
+
+To add a server hiveloom does not ship, or to correct pricing, use
+`~/.hiveloom/models.yaml` — omit `base_url` to extend a builtin, supply it to
+override one or declare a new provider:
 
 ```yaml
 providers:
-  ollama:
+  lmstudio:
     api: openai_compat
-    base_url: http://localhost:11434/v1
+    base_url: http://localhost:1234/v1
     models:
       - id: qwen3:8b
         input_cost_per_mtok: 0
         output_cost_per_mtok: 0
 ```
 
-Then `hiveloom set model.provider ollama` / `set model.id qwen3:8b`, or
-`hiveloom generate ... --model ollama/qwen3:32b`. Programmatically:
-`hive.register_provider(name, factory, models=[...])`. Unknown models fall
-back to Haiku-class pricing so cost guardrails stay conservative.
-
-The same provider works against hosted endpoints, e.g. OpenRouter:
-`base_url: https://openrouter.ai/api/v1`, `api_key_env: OPENROUTER_API_KEY`
-(Groq/Together/vLLM/mlx_lm.server work the same way — see `docs/extending.md`
-for typical base URLs). Reasoning-style models (DeepSeek-R1 family etc.) are
-supported.
+Programmatically: `hive.register_provider(name, factory, models=[...])`.
+Unknown hosted models fall back to Haiku-class pricing so cost guardrails stay
+conservative; unknown local ones are free. Reasoning-style models (DeepSeek-R1
+family etc.) are supported. Full reference: `docs/models.md`.
 
 ## Event hooks (middleware, not guardrails)
 
@@ -104,8 +119,10 @@ Attach with `hiveloom add hook --on <event> --code|--builtin …`. Handlers get
 one dict payload; returning a dict steers (`before_tool_call` →
 `{"block": True}` or `{"input": {...}}`; `after_tool_call` → patch the result;
 `before_verification` → replace the output; `context_assemble` → replace
-messages; `before_compaction` → cancel or supply the summary). Returning
-`None` observes. In `harness.yaml` the field is `event:` — unquoted `on:` is a
+messages; `before_compaction` → cancel or supply the summary;
+`before_provider_request` → patch the outgoing `system`/`messages`/`tools`
+for that one request, after guardrails). Returning `None` observes —
+`after_provider_response` observes per-call `usage`/`cost_usd`. In `harness.yaml` the field is `event:` — unquoted `on:` is a
 YAML boolean. Handlers must not raise; a raising handler is logged as
 `hook_error` and skipped. Guardrails remain the frozen safety layer and always
 run first.

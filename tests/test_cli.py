@@ -52,6 +52,23 @@ def test_set_frozen_root_still_works_locally(tmp_path: Path):
     assert _json(r)["ok"] is True
 
 
+def test_set_model_selector_switches_lab(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(app, ["set", "model", "openai/gpt-4.1-mini", "--dir", directory, "--json"])
+    assert r.exit_code == ExitCode.OK
+    payload = _json(r)
+    assert (payload["provider"], payload["id"]) == ("openai", "gpt-4.1-mini")
+
+
+def test_set_model_selector_rejects_a_bare_model_id(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(app, ["set", "model", "gpt-4.1-mini", "--dir", directory, "--json"])
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "provider/model-id" in _json(r)["error"]
+
+
 def test_catalog_json(tmp_path: Path):
     r = runner.invoke(app, ["catalog", "tools", "--json"])
     assert r.exit_code == ExitCode.OK
@@ -278,3 +295,9 @@ def test_guide_reads_the_packaged_copy_when_present(tmp_path: Path, monkeypatch)
     (tmp_path / "hiveloom" / "agent_docs" / "AGENTS.md").write_text("# packaged\n")
     assert guide.agent_docs_dir() == tmp_path / "hiveloom" / "agent_docs"
     assert packaged.name == "agent_docs"  # the real constant is unchanged
+
+
+def test_mcp_serve_missing_harness_exits_spec_error(tmp_path: Path):
+    """`mcp serve` validates every directory at startup, before any protocol I/O."""
+    result = runner.invoke(app, ["mcp", "serve", str(tmp_path / "missing")])
+    assert result.exit_code == 3

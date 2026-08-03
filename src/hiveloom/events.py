@@ -16,6 +16,11 @@ Events and their mutation semantics (a handler returns ``None`` to observe):
 ``context_assemble``      return ``{"messages": [...]}`` to replace the
                           message list sent to the model
 ``before_model_call``     observe: ``{turn, phase}``
+``before_provider_request``  return ``{"system": ...}`` / ``{"messages": [...]}``
+                          / ``{"tools": [...]}`` to patch the outgoing request
+                          (this request only, after guardrails have run)
+``after_provider_response``  observe: ``{phase, model, stop_reason, usage,
+                          cost_usd}`` — the wire-level accounting view
 ``after_model_response``  observe: ``{turn, text, stop_reason, tool_calls}``
 ``before_tool_call``      return ``{"block": True, "reason": ...}`` to block,
                           or ``{"input": {...}}`` to replace the tool's args
@@ -49,6 +54,8 @@ EVENTS: tuple[str, ...] = (
     "run_started",
     "context_assemble",
     "before_model_call",
+    "before_provider_request",
+    "after_provider_response",
     "after_model_response",
     "before_tool_call",
     "after_tool_call",

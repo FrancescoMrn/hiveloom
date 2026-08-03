@@ -5,8 +5,10 @@ description: >-
   Docker), trust foreign harness folders, and close the deploy-anywhere-
   keep-evolving loop by collecting traces back. Use when shipping a harness to
   another machine/CI/production, receiving one from elsewhere, or setting up
-  the run→collect→evolve→redeploy cycle. Triggers: "package the harness",
-  "deploy the harness", "hiveloom package/trust", "collect traces back".
+  the run→collect→evolve→redeploy cycle, and expose harnesses to other agents
+  as MCP tools. Triggers: "package the harness", "deploy the harness",
+  "hiveloom package/trust", "collect traces back", "mcp serve", "let my agent
+  call the harness".
 ---
 
 # Shipping a hiveloom harness
@@ -43,6 +45,29 @@ HIVELOOM_TRUST=always hiveloom run .   # CI (or `never` to refuse)
 
 Never blanket-trust on a user's behalf — surface what the folder's hooks do
 first (read `tools/`, `validators/`, `hooks/`, `extensions:`).
+
+## Serve to agents (MCP)
+
+The agent-facing front door: each harness becomes an MCP tool an agent can
+call, returning `{status, output, reason, cost_usd, turns, run_id, verdicts}`
+— `status: success` means the output passed the harness's validators.
+
+```bash
+hiveloom mcp serve ./h ./other            # stdio; one run_<name> tool each
+hiveloom registry add ./h                 # register once...
+hiveloom mcp serve --registered           # ...serve everything registered
+HIVELOOM_API_KEY=k hiveloom mcp serve --registered --http --port 8765
+                                          # streamable HTTP at /mcp, Bearer-gated
+```
+
+Every server also exposes `list_harnesses`: the catalog with each harness's
+measured fitness (runs, success rate, avg cost/turns from the Hive), so a
+calling agent picks on evidence. Rules to preserve: input is always literal
+text (a caller can never read server files by naming one); trust is enforced
+per directory at startup and the command never prompts (stdout is the
+protocol) — `hiveloom trust <dir>` first for foreign folders; a non-loopback
+`--http` bind without `HIVELOOM_API_KEY` is refused. Runs delegated by other
+agents land in the Hive like any other, so they feed evolution too.
 
 ## The deploy-anywhere-keep-evolving loop
 

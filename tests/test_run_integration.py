@@ -12,6 +12,7 @@ from hiveloom import construct, runner
 from hiveloom.generate.llm import FakeStrongModel, StrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
+from hiveloom.models.provider import ContextOverflowError
 
 EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
 
@@ -261,3 +262,35 @@ def test_auto_propose_malformed_model_output_does_not_fail_the_run(tmp_path: Pat
     assert result.status == "guardrail_halt"
     with Hive() as hive:
         assert hive.list_proposals(harness_name="auto-demo") == []
+
+
+def test_context_overflow_recovery_compacts_and_retries(tmp_path: Path):
+    """A provider context-window rejection forces a compaction and retries the
+    turn instead of ending the run as an error."""
+    harness = _make_harness(tmp_path)
+    provider = FakeModelProvider(
+        [
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c1"),
+            ContextOverflowError("prompt is too long"),
+            text_response("compact summary of earlier turns"),  # the summarize call
+            text_response(_VALID_SUMMARY),
+        ]
+    )
+    result = runner.run_harness(harness, "notes.txt", provider=provider)
+
+    assert result.status == "success"
+    assert result.output == _VALID_SUMMARY
+    events = _event_types(result.trace_path)
+    assert "context_compaction" in events
+    assert "context_overflow_recovery" in events
+
+
+def test_context_overflow_with_nothing_to_compact_is_an_error_run(tmp_path: Path):
+    """Overflow on the very first call (only the task message in history)
+    cannot be recovered and must surface as an error run, not a crash."""
+    harness = _make_harness(tmp_path)
+    provider = FakeModelProvider([ContextOverflowError("prompt is too long")])
+    result = runner.run_harness(harness, "notes.txt", provider=provider)
+
+    assert result.status == "error"
+    assert "ContextOverflowError" in result.reason

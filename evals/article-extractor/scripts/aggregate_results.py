@@ -16,7 +16,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from inspect_ai.log import read_eval_log
-from inspect_evals._shared import EVAL_ROOT, PRICING_AS_OF, PRICING_PER_MTOK, wilson_ci
+from inspect_evals._shared import (
+    EVAL_ROOT,
+    PRICING_AS_OF,
+    PRICING_PER_MTOK,
+    cluster_bootstrap_ci,
+)
 
 SCORER_NAME = "article_extractor_scorer"
 
@@ -90,7 +95,8 @@ def summarize(name: str, arm: dict) -> dict:
     rows = arm["rows"]
     n = len(rows)
     successes = sum(r["success"] for r in rows)
-    lo, hi = wilson_ci(successes, n)
+    by_url = _group_by_url(rows)
+    lo, hi = cluster_bootstrap_ci(list(by_url.values()))
     costs = [r["cost"] for r in rows if r["cost"] is not None]
     latencies = sorted(
         r["meta"]["latency_seconds"]
@@ -102,10 +108,7 @@ def summarize(name: str, arm: dict) -> dict:
     total_cost = sum(costs)
     flag = "*" if arm["unpriced"] else ""
 
-    by_id: dict[str, list[bool]] = {}
-    for r in rows:
-        by_id.setdefault(r["id"], []).append(r["success"])
-    pass_all = [all(v) for v in by_id.values()]
+    pass_all = [all(v) for v in by_url.values()]
 
     halluc = [
         not r["meta"]["hallucination_passed"] for r in rows if "hallucination_passed" in r["meta"]
@@ -132,20 +135,37 @@ def summarize(name: str, arm: dict) -> dict:
     }
 
 
-def mcnemar(arm_a: dict, arm_b: dict) -> str:
-    from scipy.stats import binomtest
+def _group_by_url(rows: list[dict]) -> dict[str, list[bool]]:
+    grouped: dict[str, list[bool]] = {}
+    for r in rows:
+        grouped.setdefault(r["id"], []).append(r["success"])
+    return grouped
 
-    outcomes_a = {(r["id"], r["epoch"]): r["success"] for r in arm_a["rows"]}
-    outcomes_b = {(r["id"], r["epoch"]): r["success"] for r in arm_b["rows"]}
-    keys = outcomes_a.keys() & outcomes_b.keys()
-    b = sum(1 for k in keys if outcomes_a[k] and not outcomes_b[k])
-    c = sum(1 for k in keys if not outcomes_a[k] and outcomes_b[k])
-    if b + c == 0:
-        return f"no discordant pairs over {len(keys)} paired runs — arms identical on task_success"
-    p = binomtest(min(b, c), b + c, 0.5).pvalue
+
+def paired_comparison(arm_a: dict, arm_b: dict) -> str:
+    """Wilcoxon signed-rank over per-URL success rates.
+
+    An earlier version keyed McNemar on (url, epoch), which treats three epochs
+    of one page as three independent trials. They are not: page difficulty is
+    shared across its epochs, so that inflated the discordant-pair count and
+    understated p. Comparing per-URL rates keeps the unit of independence right.
+    """
+    from scipy.stats import wilcoxon
+
+    a, b = _group_by_url(arm_a["rows"]), _group_by_url(arm_b["rows"])
+    urls = sorted(a.keys() & b.keys())
+    diffs = [sum(a[u]) / len(a[u]) - sum(b[u]) / len(b[u]) for u in urls]
+    better = sum(1 for d in diffs if d > 0)
+    worse = sum(1 for d in diffs if d < 0)
+    nonzero = [d for d in diffs if d != 0]
+    if not nonzero:
+        return f"no URL differs over {len(urls)} paired URLs — arms identical on task_success"
+    p = wilcoxon(nonzero).pvalue
+    verdict = "significant" if p < 0.05 else "not significant at this sample size"
     return (
-        f"{len(keys)} paired runs; harness-only wins b={b}, raw-only wins c={c}; "
-        f"exact McNemar p={p:.4f}"
+        f"{len(urls)} paired URLs (3 epochs each); first arm better on {better}, "
+        f"worse on {worse}, tied on {len(urls) - better - worse}; "
+        f"Wilcoxon signed-rank p={p:.4f} ({verdict})"
     )
 
 
@@ -190,10 +210,10 @@ def main() -> None:
 
     lines += ["", "## Paired comparison", ""]
     if "haiku_harness" in arms and "sonnet_raw" in arms:
-        verdict = mcnemar(arms["haiku_harness"], arms["sonnet_raw"])
+        verdict = paired_comparison(arms["haiku_harness"], arms["sonnet_raw"])
         lines.append(f"**haiku_harness vs sonnet_raw**: {verdict}")
     if "haiku_harness" in arms and "haiku_raw" in arms:
-        verdict = mcnemar(arms["haiku_harness"], arms["haiku_raw"])
+        verdict = paired_comparison(arms["haiku_harness"], arms["haiku_raw"])
         lines.append("")
         lines.append(f"**haiku_harness vs haiku_raw** (harness contribution): {verdict}")
 

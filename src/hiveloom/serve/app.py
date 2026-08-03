@@ -555,10 +555,11 @@ def create_app(
             body = _parse_body(raw)
             with Hive() as hive:
                 name = runner_mod.resolve_and_ingest(harness_dir, hive)
-                report = evolve_mod.analyze(hive, name)
+                spec = load_spec(harness_dir)
+                # Scoped to the current version — see analyze().
+                report = evolve_mod.analyze(hive, name, version=spec_version_hash(spec, base))
                 if report.is_empty():
                     return {"ok": True, "changed": False, "reason": "no failures to learn from"}
-                spec = load_spec(harness_dir)
                 model = strong_model or build_strong_model(body.get("model"), base)
                 record = proposals_mod.create_proposal(
                     hive, spec, harness_dir, report, model, trigger="http"

@@ -14,6 +14,7 @@ import ipaddress
 import shlex
 import socket
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
@@ -27,6 +28,17 @@ from hiveloom.spec.schema import BuiltinToolRef
 from hiveloom.tools.registry import Tool, ToolError
 
 _MAX_HTTP_BYTES = 200_000
+
+# One lock per resolved target path (never dropped: paths per process are few
+# and bounded by the working directory's file count).
+_WRITE_LOCKS: dict[str, threading.Lock] = {}
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _path_write_lock(target: Path) -> threading.Lock:
+    key = str(target)
+    with _WRITE_LOCKS_GUARD:
+        return _WRITE_LOCKS.setdefault(key, threading.Lock())
 _BLOCKED_SHELL_BINARIES = {
     "bash", "dash", "env", "fish", "lua", "node", "perl", "php", "python", "python3",
     "ruby", "sh", "zsh",
@@ -112,7 +124,10 @@ class FileWriteTool(Tool):
     def run(self, path: str = "", content: str = "", **_: Any) -> str:
         target = _safe_path(self._base, path, trace_dir=self._trace_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        # Serialize writes per resolved path: with loop.tool_execution set to
+        # parallel, two calls in one batch may target the same file.
+        with _path_write_lock(target):
+            target.write_text(content, encoding="utf-8")
         return f"wrote {len(content)} chars to {path}"
 
 

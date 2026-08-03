@@ -9,11 +9,18 @@ tool-call arguments from lenient backends. No network, no API keys.
 
 from __future__ import annotations
 
+import io
+from urllib import error as urlerror
+
 import pytest
 
 from hiveloom.loop.agent_loop import AgentLoop
-from hiveloom.models.openai_compat import _normalize, _to_openai_messages
-from hiveloom.models.provider import ModelResponse
+from hiveloom.models.openai_compat import (
+    OpenAICompatProvider,
+    _normalize,
+    _to_openai_messages,
+)
+from hiveloom.models.provider import ContextOverflowError, ModelConfig, ModelResponse
 
 # --------------------------------------------------------------------------- #
 # Per-server response-shape fixtures
@@ -262,3 +269,80 @@ def test_content_filter_stop_reason_maps_to_end_turn():
     }
     result = _normalize(response)
     assert result.stop_reason == "end_turn"
+
+
+# --------------------------------------------------------------------------- #
+# Prompt-cache usage: cached tokens are split out of prompt_tokens
+# --------------------------------------------------------------------------- #
+def test_openai_compat_cached_tokens_split_out_of_prompt_tokens():
+    response = {
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+    }
+    result = _normalize(response)
+    assert result.usage.input_tokens == 20
+    assert result.usage.cache_read_tokens == 80
+
+
+def test_openai_compat_cached_tokens_never_exceed_prompt_tokens():
+    """A lenient backend reporting cached > prompt must not yield negative input."""
+    response = {
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {
+            "prompt_tokens": 50,
+            "completion_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+    }
+    result = _normalize(response)
+    assert result.usage.input_tokens == 0
+    assert result.usage.cache_read_tokens == 50
+
+
+# --------------------------------------------------------------------------- #
+# Context-window overflow: HTTP 400 classified, not retried
+# --------------------------------------------------------------------------- #
+def _http_error(code: int, body: str) -> urlerror.HTTPError:
+    return urlerror.HTTPError("http://x", code, "Bad Request", None, io.BytesIO(body.encode()))
+
+
+def test_openai_compat_overflow_400_raises_context_overflow(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9")
+    calls = {"n": 0}
+
+    def fake_urlopen(request, timeout=0):
+        calls["n"] += 1
+        raise _http_error(
+            400, '{"error": {"code": "context_length_exceeded", "message": "too long"}}'
+        )
+
+    monkeypatch.setattr("hiveloom.models.openai_compat.urlrequest.urlopen", fake_urlopen)
+    with pytest.raises(ContextOverflowError):
+        provider.complete(
+            system="s",
+            messages=[{"role": "user", "content": "x"}],
+            tools=[],
+            config=ModelConfig(id="m"),
+        )
+    assert calls["n"] == 1  # overflow is terminal for the request, never retried
+
+
+def test_openai_compat_other_400_stays_a_runtime_error(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9")
+
+    def fake_urlopen(request, timeout=0):
+        raise _http_error(400, '{"error": {"message": "unknown field"}}')
+
+    monkeypatch.setattr("hiveloom.models.openai_compat.urlrequest.urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError) as excinfo:
+        provider.complete(
+            system="s",
+            messages=[{"role": "user", "content": "x"}],
+            tools=[],
+            config=ModelConfig(id="m"),
+        )
+    assert not isinstance(excinfo.value, ContextOverflowError)
