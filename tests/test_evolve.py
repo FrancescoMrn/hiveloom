@@ -12,12 +12,14 @@ from test_hive import _write_trace
 from typer.testing import CliRunner
 
 from hiveloom import cli, construct
-from hiveloom.errors import ExitCode
+from hiveloom.errors import ExitCode, SpecError
 from hiveloom.evolve import evolver as evolver_mod
 from hiveloom.evolve.analyzer import FailureCluster, FailureReport, analyze
 from hiveloom.evolve.evolver import (
+    CodeChange,
     MutationProposal,
     ProposalError,
+    YamlChange,
     apply_proposal,
     build_evolve_prompt,
     gate,
@@ -383,6 +385,54 @@ def test_apply_code_change_requires_approval(tmp_path: Path):
     assert applied.applied_code == ["validators/check.py"]
     assert (harness / "validators" / "check.py.bak").exists()
     assert "return {'passed': True}" in (harness / "validators" / "check.py").read_text()
+
+
+def test_apply_rolls_back_when_validation_fails(tmp_path: Path, monkeypatch):
+    """Writing has to precede validation, because validation imports the code
+    changes. A failure there must therefore undo the writes, or the harness is
+    left mutated and invalid — the one path where that guarantee was missing.
+    """
+    harness = _harness(tmp_path)
+    yaml_before = (harness / "harness.yaml").read_text()
+    proposal = MutationProposal(
+        yaml_changes=[YamlChange(path="loop.max_turns", value=9)],
+        code_changes=[CodeChange(file="validators/new.py", source="# fresh\n")],
+    )
+
+    def boom(_path):
+        raise SpecError("hook failed to import")
+
+    monkeypatch.setattr(evolver_mod, "validate_harness", boom)
+    with pytest.raises(SpecError, match="hook failed to import"):
+        apply_proposal(harness, proposal, apply_yaml=True, approve_code=lambda c: True)
+
+    assert (harness / "harness.yaml").read_text() == yaml_before, "spec must be restored"
+    assert not (harness / "validators" / "new.py").exists(), "new file must be removed"
+    assert not (harness / "validators" / "new.py.bak").exists(), "no misleading .bak"
+
+
+def test_apply_rollback_restores_an_overwritten_file(tmp_path: Path, monkeypatch):
+    """The other half: a file that already existed goes back to its old body."""
+    harness = _harness(tmp_path)
+    target = harness / "validators" / "check.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# original\n")
+
+    monkeypatch.setattr(
+        evolver_mod, "validate_harness", lambda _p: (_ for _ in ()).throw(SpecError("nope"))
+    )
+    with pytest.raises(SpecError):
+        apply_proposal(
+            harness,
+            MutationProposal(
+                yaml_changes=[YamlChange(path="loop.max_turns", value=9)],
+                code_changes=[CodeChange(file="validators/check.py", source="# replaced\n")],
+            ),
+            apply_yaml=True,
+            approve_code=lambda c: True,
+        )
+
+    assert target.read_text() == "# original\n"
 
 
 def test_apply_code_change_cannot_escape_harness(tmp_path: Path):
