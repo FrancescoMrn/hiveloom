@@ -832,7 +832,7 @@ def test_set_concurrent_writes_never_lose_an_update(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 def test_proposals_propose_list_show_apply_flow(tmp_path: Path):
     harness = _harness(tmp_path)
-    _seed_failure(tmp_path, name="srv")
+    _seed_failure(tmp_path, harness)
     app = create_app(harness, strong_model=FakeStrongModel([_PROPOSAL_PAYLOAD]))
     read_token = _authorize(harness, ["read"])[1]
     evolve_token = _authorize(harness, ["evolve"])[1]
@@ -875,7 +875,7 @@ def test_proposals_propose_list_show_apply_flow(tmp_path: Path):
 
 def test_proposals_reject(tmp_path: Path):
     harness = _harness(tmp_path)
-    _seed_failure(tmp_path, name="srv")
+    _seed_failure(tmp_path, harness)
     app = create_app(harness, strong_model=FakeStrongModel([_PROPOSAL_PAYLOAD]))
     evolve_token = _authorize(harness, ["evolve"])[1]
 
@@ -934,7 +934,7 @@ def test_trace_endpoint_refuses_another_harnesss_run(tmp_path: Path):
 def test_proposals_endpoints_refuse_another_harnesss_proposal(tmp_path: Path):
     harness_a = _harness(tmp_path, name="harness-a")
     harness_b = _harness(tmp_path, name="harness-b")
-    _seed_failure(tmp_path, name="harness-b")
+    _seed_failure(tmp_path, harness_b)
 
     app_b = create_app(harness_b, strong_model=FakeStrongModel([_PROPOSAL_PAYLOAD]))
     _, evolve_token_b = _authorize(harness_b, ["evolve"])

@@ -59,6 +59,15 @@ Step by step:
 3. **Evolve**: `hiveloom evolve ./harness` reads the Hive's clustered failures,
    asks a strong model for a minimal mutation, gates it (see above), and applies
    it — bumping `# evolved: N` and recording the new version hash.
+
+   The analysis is scoped to the **current** version hash: only failures of the
+   harness as it is right now. So the loop is genuinely a loop — after applying a
+   mutation (or editing the folder by hand) you must run the harness again before
+   there is anything to evolve from, and `evolve` says so:
+   `nothing to evolve — no failures recorded for the current harness version
+   (94 on earlier versions) — re-run the harness to collect fresh ones`.
+   Pooling versions instead would keep proposing fixes for failures the previous
+   mutation already repaired.
 4. **Redeploy** the updated folder.
 5. **Judge**: `hiveloom stats ./harness` reports success rate, cost, and turns
    **per version hash**. Because runs on the new harness land under a new hash,
@@ -99,7 +108,7 @@ failing run, via `evolution.auto_propose` in `harness.yaml`:
 evolution:
   auto_propose:
     enabled: true        # off by default
-    min_failures: 5       # non-success runs required (since the last auto-proposal)
+    min_failures: 5       # non-success runs of THIS version, since the last auto-proposal
     cooldown_hours: 24.0  # minimum gap between auto-drafted proposals
     model: null            # strong-model override; else the CLI/env default
 ```
@@ -107,8 +116,10 @@ evolution:
 This is a synchronous check at the tail of every completed `hiveloom run` —
 no daemon, no scheduler, no background thread. It costs nothing for the
 (default, disabled) common case: a single boolean check, no Hive query. When
-enabled and a run fails, it counts recent failures, checks the cooldown, and —
-if both pass — analyzes the Hive and drafts a gated proposal with
+enabled and a run fails, it counts recent failures **of the current version**
+(same scope as `evolve`, so the threshold and the analysis always agree on which
+failures count), checks the cooldown, and — if both pass — analyzes the Hive and
+drafts a gated proposal with
 `trigger="auto"`, deduped exactly like `--propose` (a second failing run
 against the same failure state never pays for a second strong-model call).
 **It only ever drafts.** Applying still requires `hiveloom proposals apply`.

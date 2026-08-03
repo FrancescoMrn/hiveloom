@@ -108,8 +108,34 @@ def build_evolve_prompt(spec: HarnessSpec, report: FailureReport) -> tuple[str, 
     return system, user
 
 
+def _embedded_object(text: str) -> dict[str, Any] | None:
+    """The outermost JSON object inside prose, or None if there isn't one.
+
+    Scans back from the last closing brace so trailing commentary after the
+    object does not defeat the match.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    end = text.rfind("}")
+    while end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            end = text.rfind("}", start, end)
+            continue
+        return parsed  # starts with '{', so a successful parse is an object
+    return None
+
+
 def parse_proposal(text: str) -> MutationProposal:
-    """Parse a mutation proposal from model text (tolerating code fences)."""
+    """Parse a mutation proposal from model text.
+
+    Tolerates code fences and, failing that, a proposal embedded in prose: a
+    strong model asked to analyse failures usually narrates its reasoning first
+    and emits the object at the end. Do not tighten this back to bare JSON
+    without checking what the model actually returns.
+    """
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
@@ -117,7 +143,9 @@ def parse_proposal(text: str) -> MutationProposal:
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise ProposalError(f"proposal is not valid JSON: {exc}") from exc
+        data = _embedded_object(stripped)
+        if data is None:
+            raise ProposalError(f"proposal is not valid JSON: {exc}") from exc
     try:
         return MutationProposal.model_validate(data)
     except Exception as exc:  # noqa: BLE001 - pydantic validation error → actionable message

@@ -608,7 +608,10 @@ class AutoProposeConfig(BaseModel):
     )
     min_failures: int = Field(
         default=5, ge=1,
-        description="Non-success runs required (since the last auto-proposal) before drafting.",
+        description=(
+            "Non-success runs of the current harness version (since the last "
+            "auto-proposal) required before drafting."
+        ),
     )
     cooldown_hours: float = Field(
         default=24.0, ge=MIN_COOLDOWN_HOURS,
