@@ -215,7 +215,25 @@ class ContextManager:
         tokens = self.estimated_input_tokens()
         if tokens <= trigger:
             return False
+        return self._compact_now(budget, tokens)
 
+    def force_compact(self) -> bool:
+        """Compact unconditionally, after the provider rejected a request as too long.
+
+        An overflow proves the offline token estimate under-counted, so the
+        target budget is half the *current* estimate (capped at the configured
+        budget) rather than the configured budget alone — enough to guarantee
+        real headroom even when the estimator is well off.
+        """
+        if self._config.strategy == "full":
+            return False
+        if len(self.messages) <= self.pinned_message_count + 1:
+            return False
+        tokens = self.estimated_input_tokens()
+        budget = min(self._config.max_input_tokens, max(1, tokens // 2))
+        return self._compact_now(budget, tokens)
+
+    def _compact_now(self, budget: int, tokens: int) -> bool:
         method_name = (
             "summarize" if self._config.strategy == "summary" else self._config.compaction.method
         )

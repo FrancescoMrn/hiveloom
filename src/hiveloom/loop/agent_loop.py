@@ -23,7 +23,13 @@ from hiveloom.events import EventBus
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter
 from hiveloom.loop.policies import LoopPolicy, build_policy
-from hiveloom.models.provider import ModelConfig, ModelProvider, ModelResponse, Usage
+from hiveloom.models.provider import (
+    ContextOverflowError,
+    ModelConfig,
+    ModelProvider,
+    ModelResponse,
+    Usage,
+)
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry
 from hiveloom.verify.base import VerdictResult, Verifier
@@ -202,9 +208,18 @@ class AgentLoop:
     # ------------------------------------------------------------------ #
     def model_turn(self, *, phase: str = "act") -> ModelResponse:
         system, messages = self._context.assemble()
-        return self._complete_model_call(
-            system, messages, self._registry.anthropic_payload(), phase
-        )
+        tools = self._registry.anthropic_payload()
+        try:
+            return self._complete_model_call(system, messages, tools, phase)
+        except ContextOverflowError as exc:
+            # The provider's window overflowed even though the local estimate
+            # fit. Compact hard once and retry the turn; a second overflow (or
+            # nothing left to compact) surfaces as an error run.
+            if not self._context.force_compact():
+                raise
+            self._trace.emit("context_overflow_recovery", phase=phase, error=str(exc))
+            system, messages = self._context.assemble()
+            return self._complete_model_call(system, messages, tools, phase)
 
     def _compaction_model_turn(
         self, system: str, messages: list[dict[str, Any]]

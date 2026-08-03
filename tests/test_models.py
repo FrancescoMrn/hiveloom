@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 from hiveloom.models.provider import ModelConfig, Usage, estimate_tokens
 
@@ -17,6 +19,19 @@ def test_estimated_cost_haiku():
     usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000)
     cost = provider.estimated_cost(usage, "claude-haiku-4-5")
     assert cost == 6.0  # $1 input + $5 output
+
+
+def test_estimated_cost_prices_cache_traffic():
+    provider = FakeModelProvider([])
+    # Cache reads bill at 0.1x input price, writes at 1.25x (Anthropic multipliers).
+    read_cost = provider.estimated_cost(
+        Usage(cache_read_tokens=1_000_000), "claude-haiku-4-5"
+    )
+    write_cost = provider.estimated_cost(
+        Usage(cache_write_tokens=1_000_000), "claude-haiku-4-5"
+    )
+    assert read_cost == pytest.approx(0.1)
+    assert write_cost == pytest.approx(1.25)
 
 
 def test_estimated_cost_unknown_model_falls_back():

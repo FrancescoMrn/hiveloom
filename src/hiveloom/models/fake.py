@@ -54,9 +54,13 @@ def tool_response(
 
 
 class FakeModelProvider(ModelProvider):
-    """Returns scripted responses in order, one per ``complete`` call."""
+    """Returns scripted responses in order, one per ``complete`` call.
 
-    def __init__(self, responses: list[ModelResponse]):
+    A scripted ``Exception`` instance is raised instead of returned, which is
+    how tests exercise error paths (e.g. ``ContextOverflowError`` recovery).
+    """
+
+    def __init__(self, responses: list[ModelResponse | Exception]):
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
@@ -72,4 +76,7 @@ class FakeModelProvider(ModelProvider):
         if not self._responses:
             # Default to a benign completion if the script runs dry.
             return text_response("done")
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
