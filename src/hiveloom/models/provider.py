@@ -58,6 +58,12 @@ class ModelConfig(BaseModel):
     id: str
     max_tokens: int = 4096
     temperature: float = 0.0
+    # Which provider serves `id`. Carried for pricing, not for dispatch: an
+    # open-catalog provider accepts model ids that are not individually
+    # registered, and the *provider* is then the only thing that says what an
+    # unregistered id costs (a local Ollama model is free; an unknown hosted
+    # one is not). Defaulted so existing callers keep working.
+    provider: str = ""
 
 
 # Fallback per-1M-token pricing (input, output) in USD when a model id is not
@@ -118,11 +124,17 @@ class ModelProvider(ABC):
         """
         return _estimate_messages_tokens(system, messages)
 
-    def estimated_cost(self, usage: Usage, model_id: str) -> float:
-        """Return the USD cost of ``usage`` for ``model_id`` (registry-priced)."""
+    def estimated_cost(self, usage: Usage, model_id: str, provider: str = "") -> float:
+        """Return the USD cost of ``usage`` for ``model_id`` (registry-priced).
+
+        ``provider`` only matters for ids the registry does not know: it selects
+        that provider's declared default price instead of ``_FALLBACK_PRICE``,
+        which is what keeps a budget guardrail from charging Haiku rates for a
+        free local model.
+        """
         from hiveloom import ext
 
-        in_price, out_price = ext.model_pricing(model_id) or _FALLBACK_PRICE
+        in_price, out_price = ext.model_pricing(model_id, provider=provider) or _FALLBACK_PRICE
         return (usage.input_tokens / 1_000_000) * in_price + (
             usage.output_tokens / 1_000_000
         ) * out_price

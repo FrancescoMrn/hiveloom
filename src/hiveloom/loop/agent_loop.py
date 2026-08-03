@@ -87,6 +87,7 @@ class AgentLoop:
             id=spec.model.id,
             max_tokens=spec.model.max_tokens,
             temperature=spec.model.temperature,
+            provider=spec.model.provider,
         )
         self._state = RunState(tool_names=set(registry.names()))
         self._context.set_compaction_model_call(self._compaction_model_turn)
@@ -221,6 +222,7 @@ class AgentLoop:
         self._state.pending_cost_usd = self._provider.estimated_cost(
             Usage(input_tokens=input_tokens, output_tokens=self._model_config.max_tokens),
             self._model_config.id,
+            self._model_config.provider,
         )
         halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
         if halt is not None:
@@ -244,7 +246,9 @@ class AgentLoop:
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
-        cost = self._provider.estimated_cost(response.usage, self._model_config.id)
+        cost = self._provider.estimated_cost(
+            response.usage, self._model_config.id, self._model_config.provider
+        )
         self._state.cost_usd += cost
         self._state.pending_cost_usd = 0.0
         self._trace.emit(

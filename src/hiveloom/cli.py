@@ -192,6 +192,88 @@ def explain(
 
 
 @app.command()
+def models(
+    provider: str = typer.Argument("", help="Show only this provider's models."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List model providers and their known models, pricing, and key status.
+
+    Answers the two questions that block a first run: which provider name goes
+    in ``model.provider``, and which environment variable holds its key. An
+    ``open`` provider also accepts model ids not listed here (new releases,
+    aggregator routes, whatever a local server is serving); a closed one does
+    not, so a typo fails validation. Free: this never touches the API.
+    """
+    from hiveloom import ext
+
+    entries = ext.providers()
+    if provider:
+        entries = [p for p in entries if p.name == provider]
+        if not entries:
+            raise SpecError(
+                f"unknown model provider '{provider}' "
+                f"(available: {', '.join(ext.provider_names())})"
+            )
+
+    payload = [
+        {
+            "name": p.name,
+            "label": p.label,
+            "api": p.api,
+            "base_url": p.base_url,
+            "api_key_env": p.api_key_env,
+            # Whether the key is *present*, never its value — this output is
+            # routinely piped into agents and issue reports.
+            "api_key_set": bool(not p.api_key_env or os.environ.get(p.api_key_env)),
+            "open_catalog": p.open_catalog,
+            "source": p.source,
+            "models": [m.model_dump() for m in ext.models_for_provider(p.name)],
+        }
+        for p in entries
+    ]
+
+    if json_output:
+        _emit_json({"ok": True, "providers": payload})
+        return
+
+    table = Table(title="model providers")
+    table.add_column("provider", style="bold cyan")
+    table.add_column("key env")
+    table.add_column("key", justify="center")
+    table.add_column("catalog")
+    table.add_column("models")
+    for entry in payload:
+        key_env = entry["api_key_env"] or "-"
+        if not entry["api_key_env"]:
+            key_state = "[dim]n/a[/dim]"
+        elif entry["api_key_set"]:
+            key_state = "[green]set[/green]"
+        else:
+            key_state = "[red]unset[/red]"
+        listed = ", ".join(m["id"] for m in entry["models"]) or "-"
+        table.add_row(
+            entry["name"],
+            key_env,
+            key_state,
+            "open" if entry["open_catalog"] else "fixed",
+            listed,
+        )
+    _console.print(table)
+    if provider and payload:
+        entry = payload[0]
+        _console.print(f"endpoint: {entry['base_url'] or 'native SDK'}")
+        for model in entry["models"]:
+            _console.print(
+                f"  [cyan]{model['id']}[/cyan]  "
+                f"${model['input_cost_per_mtok']}/${model['output_cost_per_mtok']} per Mtok"
+            )
+    _console.print(
+        "[dim]Pricing is list price at release time, used for cost estimation and "
+        "budget guardrails. Override in ~/.hiveloom/models.yaml.[/dim]"
+    )
+
+
+@app.command()
 def extensions(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -315,11 +397,27 @@ def set_cmd(
     """Set a scalar/object field. Validated and rolled back on error.
 
     Examples: ``hiveloom set loop.max_turns 30`` /
-    ``hiveloom set system_prompt --file prompt.txt``.
+    ``hiveloom set system_prompt --file prompt.txt`` /
+    ``hiveloom set model openai/gpt-4.1-mini``.
+
+    ``set model provider/model-id`` is the way to switch labs: provider and id
+    validate against each other, so they must change in one commit.
     """
     with _guard(json_output):
         if value is None and file is None:
             raise SpecError("provide a VALUE argument or --file")
+        if path == "model" and file is None:
+            spec = construct.set_model(directory, value)
+            if json_output:
+                _emit_json(
+                    {"ok": True, "path": path,
+                     "provider": spec.model.provider, "id": spec.model.id}
+                )
+            else:
+                _console.print(
+                    f"[green]set[/green] model {spec.model.provider}/{spec.model.id}"
+                )
+            return
         construct.set_field(directory, path, value=value, file=file)
         if json_output:
             _emit_json({"ok": True, "path": path})

@@ -386,8 +386,10 @@ class ModelConfig(BaseModel):
     provider: str = Field(
         default="claude",
         description=(
-            "Model provider name. 'claude' is builtin; more come from extensions "
-            "or ~/.hiveloom/models.yaml (see `hiveloom extensions`)."
+            "Model provider name. Builtins cover the major labs (claude, openai, "
+            "gemini, mistral, deepseek, xai, groq, openrouter, together, fireworks, "
+            "ollama, vllm); more come from extensions or ~/.hiveloom/models.yaml "
+            "(see `hiveloom models`)."
         ),
     )
     id: str = Field(default="claude-haiku-4-5", description="Model id to execute with.")
@@ -415,6 +417,15 @@ class ModelConfig(BaseModel):
 
         info = ext.model_info(self.id)
         if info is None:
+            # An open-catalog provider (every OpenAI-compatible lab, the
+            # aggregators, and local servers) routes ids hiveloom cannot
+            # enumerate, so an unregistered id is normal there and must not
+            # block a spec — a model released after this hiveloom version
+            # still has to be usable. Cost estimation falls back to the
+            # provider's default price; see `ext.model_pricing`.
+            provider = ext.provider_info(self.provider)
+            if provider is not None and provider.open_catalog:
+                return self
             raise ValueError(
                 f"unknown model id '{self.id}' for provider '{self.provider}'. "
                 "Register it through an extension or ~/.hiveloom/models.yaml."
