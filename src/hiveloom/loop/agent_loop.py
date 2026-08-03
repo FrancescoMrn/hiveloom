@@ -253,6 +253,36 @@ class AgentLoop:
             tools=tools,
         )
         self._events.emit("before_model_call", {"turn": self._state.turns, "phase": phase})
+        # Request middleware: patches apply to this request only, and run
+        # after guardrails so a hook can never widen what a guardrail vetoed.
+        if self._events.has_handlers("before_provider_request"):
+            for outcome in self._events.emit(
+                "before_provider_request",
+                {
+                    "system": system,
+                    "messages": messages,
+                    "tools": tools,
+                    "model": self._model_config.id,
+                    "phase": phase,
+                },
+            ):
+                patched = False
+                if isinstance(outcome.get("system"), str):
+                    system = outcome["system"]
+                    patched = True
+                if isinstance(outcome.get("messages"), list):
+                    messages = outcome["messages"]
+                    patched = True
+                if isinstance(outcome.get("tools"), list):
+                    tools = outcome["tools"]
+                    patched = True
+                if patched:
+                    self._trace.emit(
+                        "hook_triggered",
+                        event="before_provider_request",
+                        hook=outcome["_handler"],
+                        action="patch_request",
+                    )
         response = self._provider.complete(
             system=system,
             messages=messages,
@@ -266,6 +296,16 @@ class AgentLoop:
         )
         self._state.cost_usd += cost
         self._state.pending_cost_usd = 0.0
+        self._events.emit(
+            "after_provider_response",
+            {
+                "phase": phase,
+                "model": self._model_config.id,
+                "stop_reason": response.stop_reason,
+                "usage": response.usage.model_dump(),
+                "cost_usd": cost,
+            },
+        )
         self._trace.emit(
             "model_response",
             turn=self._state.turns,

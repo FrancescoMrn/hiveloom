@@ -650,3 +650,50 @@ def test_build_event_bus_orders_ambient_then_spec(harness_dir: Path):
     assert bus.has_handlers("run_started")
     names = [s.name for s in bus._subs["run_started"]]
     assert names[0].startswith("test:order") and names[1].startswith("hooks/")
+
+
+# --------------------------------------------------------------------------- #
+# Provider middleware events
+# --------------------------------------------------------------------------- #
+_PROVIDER_REQUEST_HOOK = """
+def inject(event):
+    return {"system": event["system"] + "\\nINJECTED", "tools": []}
+"""
+
+_PROVIDER_RESPONSE_HOOK = """
+import json
+import pathlib
+
+
+def record(event):
+    path = pathlib.Path(__file__).resolve().parent / "usage.json"
+    path.write_text(json.dumps({"usage": event["usage"], "cost_usd": event["cost_usd"]}))
+"""
+
+
+def test_before_provider_request_hook_patches_the_wire_request(harness_dir: Path):
+    _no_verify(harness_dir)
+    construct.add_tool(harness_dir, builtin="file_read")
+    _add_code_hook(harness_dir, "before_provider_request", _PROVIDER_REQUEST_HOOK, "inject")
+
+    provider = FakeModelProvider([text_response("done")])
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    assert provider.calls[0]["system"].endswith("INJECTED")
+    assert provider.calls[0]["tools"] == []  # hook stripped the tool list
+    triggered = [e for e in _events(result.trace_path) if e["type"] == "hook_triggered"]
+    assert any(e["payload"]["action"] == "patch_request" for e in triggered)
+
+
+def test_after_provider_response_hook_observes_usage_and_cost(harness_dir: Path):
+    _no_verify(harness_dir)
+    _add_code_hook(harness_dir, "after_provider_response", _PROVIDER_RESPONSE_HOOK, "record")
+
+    provider = FakeModelProvider([text_response("done")])
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    recorded = json.loads((harness_dir / "hooks" / "usage.json").read_text())
+    assert recorded["usage"]["input_tokens"] == 100
+    assert recorded["cost_usd"] > 0
