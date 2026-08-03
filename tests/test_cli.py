@@ -296,3 +296,8 @@ def test_guide_reads_the_packaged_copy_when_present(tmp_path: Path, monkeypatch)
     assert guide.agent_docs_dir() == tmp_path / "hiveloom" / "agent_docs"
     assert packaged.name == "agent_docs"  # the real constant is unchanged
 
+
+def test_mcp_serve_missing_harness_exits_spec_error(tmp_path: Path):
+    """`mcp serve` validates every directory at startup, before any protocol I/O."""
+    result = runner.invoke(app, ["mcp", "serve", str(tmp_path / "missing")])
+    assert result.exit_code == 3

@@ -52,8 +52,14 @@ keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
 app.add_typer(keys_app, name="keys")
-mcp_app = typer.Typer(help="Introspect the MCP servers declared by a harness.")
+mcp_app = typer.Typer(
+    help="MCP integration: expose harnesses as MCP tools, or introspect declared servers."
+)
 app.add_typer(mcp_app, name="mcp")
+registry_app = typer.Typer(
+    help="The local harness registry: what `hiveloom mcp serve --registered` offers to agents."
+)
+app.add_typer(registry_app, name="registry")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -640,6 +646,119 @@ def trust(
             _emit_json({"ok": True, "directory": harness_dir, "action": verb})
         else:
             _console.print(f"[green]{verb}[/green] {harness_dir}")
+
+
+@registry_app.command("add")
+def registry_add_cmd(
+    directory: Path = typer.Argument(..., help="Harness directory to register."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Register a harness so ``mcp serve --registered`` offers it to agents."""
+    from hiveloom import registry as registry_mod
+
+    with _guard(json_output):
+        item = registry_mod.register(directory)
+        if json_output:
+            _emit_json({"ok": True, **item.model_dump()})
+        else:
+            _console.print(f"[green]registered[/green] {item.name} — {item.path}")
+
+
+@registry_app.command("remove")
+def registry_remove_cmd(
+    target: str = typer.Argument(..., help="Harness directory path or harness name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Remove a harness from the registry (does not touch the harness itself)."""
+    from hiveloom import registry as registry_mod
+
+    with _guard(json_output):
+        item = registry_mod.unregister(target)
+        if json_output:
+            _emit_json({"ok": True, **item.model_dump()})
+        else:
+            _console.print(f"[green]removed[/green] {item.path}")
+
+
+@registry_app.command("list")
+def registry_list_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List registered harnesses and whether each currently validates."""
+    from hiveloom import registry as registry_mod
+
+    with _guard(json_output):
+        items = registry_mod.registered()
+        if json_output:
+            _emit_json({"ok": True, "harnesses": [i.model_dump() for i in items]})
+            return
+        if not items:
+            _console.print("registry is empty (add one with `hiveloom registry add <dir>`)")
+            return
+        table = Table(title="registered harnesses")
+        table.add_column("name", style="bold cyan")
+        table.add_column("path")
+        table.add_column("status")
+        for item in items:
+            status = "[green]ok[/green]" if item.ok else f"[red]{item.error}[/red]"
+            table.add_row(item.name or "-", item.path, status)
+        _console.print(table)
+
+
+@mcp_app.command("serve")
+def mcp_serve_cmd(
+    directories: list[Path] = typer.Argument(  # noqa: B008 - typer idiom
+        None, help="Harness directories to expose (default: current directory)."
+    ),
+    registered: bool = typer.Option(
+        False,
+        "--registered",
+        help="Serve every harness in the local registry (`hiveloom registry list`).",
+    ),
+    http: bool = typer.Option(
+        False,
+        "--http",
+        help="Serve over streamable HTTP at /mcp instead of stdio. Auth via "
+        "HIVELOOM_API_KEY (Bearer or X-API-Key); a non-loopback bind "
+        "without the key is refused.",
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host (with --http)."),
+    port: int = typer.Option(8765, "--port", help="HTTP bind port (with --http)."),
+) -> None:
+    """Expose harnesses as MCP tools (one ``run_<name>`` tool each).
+
+    The agent-facing front door: an MCP-capable agent mounts this server and
+    can delegate a task to any listed harness, getting back a structured,
+    validator-checked result. Non-interactive by design — stdout is the MCP
+    protocol channel — so untrusted directories fail at startup instead of
+    prompting; approve them first with ``hiveloom trust <dir>``.
+    """
+    from hiveloom import registry as registry_mod
+    from hiveloom.serve.mcp import serve_http, serve_stdio
+
+    with _guard(True):
+        if registered:
+            dirs, skipped = registry_mod.serveable()
+            for entry in skipped:
+                # stderr is safe: stdout carries the MCP protocol.
+                print(
+                    f"warning: skipping registered harness {entry['path']}: "
+                    f"{entry['error']}",
+                    file=sys.stderr,
+                )
+            if not dirs:
+                raise SpecError(
+                    "no serveable registered harnesses "
+                    "(add one with `hiveloom registry add <dir>`)"
+                )
+        else:
+            dirs = [Path(".")] if not directories else directories
+        if http:
+            serve_http(
+                dirs, host=host, port=port, api_key=os.environ.get("HIVELOOM_API_KEY")
+            )
+        else:
+            serve_stdio(dirs)
 
 
 @mcp_app.command("list-tools")
