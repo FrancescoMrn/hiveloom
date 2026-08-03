@@ -167,6 +167,23 @@ queue, same dedup, just triggered on your own cadence instead of per-run.
   harness dir, and an egress policy. Traces still land in `.hiveloom/traces/`
   in-container, so the evolve loop works unchanged — or capture the `/runs` stream at
   your gateway and ship events wherever you like.
+- **MCP server (agent-facing)** — `hiveloom mcp serve DIR [DIR ...]` exposes each
+  harness as an MCP tool (`run_<name>`) so an MCP-capable agent can delegate a
+  task and get back a structured, validator-checked result
+  (`{status, output, reason, cost_usd, turns, run_id, verdicts}`). A
+  `list_harnesses` tool carries the catalog with each harness's measured fitness
+  (runs, success rate, avg cost/turns from the Hive) so callers pick on
+  evidence. Register harnesses once (`hiveloom registry add <dir>`) and serve
+  the whole registry with `--registered`; broken entries are skipped with a
+  stderr warning. Transport is stdio by default — the right choice for a local
+  agent's MCP config — or streamable HTTP at `/mcp` with `--http [--host]
+  [--port]`, gated by `HIVELOOM_API_KEY` (`Bearer` or `X-API-Key`); a
+  non-loopback bind without the key is refused. Same caller contract as the
+  HTTP servers: input is always literal text, and trust is enforced per
+  directory at startup (the command is non-interactive — stdout is the protocol
+  channel — so approve foreign folders with `hiveloom trust` first). Delegated
+  runs land in the Hive like any other, so tasks handed over by *other agents*
+  drive the evolve loop too.
 - **Git-backed harness** — keep `harness.yaml` + hooks in git (traces are
   gitignored by `init`). Evolution produces a clean diff (the `# evolved` counter
   and version hash); commit it and redeploy. Rollback = `git revert`.

@@ -46,6 +46,13 @@ prompt and fetch tool; the difference is the harness scaffolding.
 On this task, the Haiku harness gained 59 percentage points over raw Haiku and
 cut cost per successful result by about 17×. It did **not** beat raw Sonnet, and
 the full results include a local-model arm where scaffolding reduced success.
+
+Prompt caching (on by default for the `claude` provider) compounds this: in a
+live measurement on a 7k-token harness prompt (Haiku 4.5, two-turn run), the
+first run wrote the prefix to cache and every later run inside the cache TTL
+read it back at a tenth of the input price — **$0.0019 per warm run vs $0.0100
+cold, an 81% reduction**. A harness runs the same prompt shape every time,
+which is exactly the workload prompt caching rewards.
 That is the point of versioned evals: harness value is measured per task and
 model, not assumed. See the
 [methodology and caveats](evals/article-extractor/README.md).
@@ -88,6 +95,12 @@ hiveloom run ./summarizer --input notes.txt --dry-run --json
 # Run for real (the default provider uses Anthropic)
 export ANTHROPIC_API_KEY=sk-...
 hiveloom run ./summarizer --input notes.txt --json
+
+# …or any other lab. `hiveloom models` lists every provider and its key
+# variable; OpenAI, Gemini, Mistral, DeepSeek, xAI, Groq, OpenRouter,
+# Together, Fireworks, Ollama, and vLLM are builtin.
+hiveloom models
+hiveloom set model openai/gpt-4.1-mini --dir ./summarizer
 
 # Inspect evidence and propose a gated improvement after failures
 hiveloom stats ./summarizer --json
@@ -149,12 +162,24 @@ hiveloom extensions --json
 hiveloom mcp list-tools --dir ./my-harness --json
 hiveloom package ./my-harness --docker --json
 hiveloom serve ./my-harness
+hiveloom mcp serve ./my-harness ./other-harness
 ```
 
 `run --dry-run` makes no model call, but declared MCP servers are contacted
 because their tools are discovered eagerly. `serve` provides `/healthz` and
 `/runs`; the separately documented `control-plane` is a scoped,
 bearer-authorized, non-production operational API.
+
+`mcp serve` is the agent-facing front door: it exposes each harness as an MCP
+tool (`run_<name>`) plus a `list_harnesses` tool that carries each harness's
+measured success rate and cost, so any MCP-capable agent can pick a harness on
+evidence and delegate a task to it — getting back a structured,
+validator-checked result instead of improvising the task itself. Input is
+always treated as literal text, and untrusted directories fail at startup
+(approve them with `hiveloom trust`). Register harnesses once with
+`hiveloom registry add <dir>` and serve them all with `--registered`; add
+`--http` (with `HIVELOOM_API_KEY`) to serve over streamable HTTP instead of
+stdio.
 
 ### Python SDK
 
@@ -198,7 +223,8 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Agent entry point](AGENTS.md) and [lifecycle skills](skills/README.md)
 - [Harness spec](docs/spec.md)
 - [Architecture](docs/architecture.md)
-- [Extensions and providers](docs/extending.md)
+- [Models and providers](docs/models.md)
+- [Extensions](docs/extending.md)
 - [Deployment and evolution](docs/deploying-and-evolving.md)
 - [Control plane](docs/control-plane.md)
 - [Contributing and QA](CONTRIBUTING.md)
