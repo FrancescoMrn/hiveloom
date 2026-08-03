@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `evolve --apply` now restores the harness folder when validation of an
+  approved proposal fails, instead of leaving a mutated spec, a bumped
+  `# evolved:` counter, and half-applied code files behind.
+- Failure analysis groups verdicts by a normalised template and counts distinct
+  runs, so a behaviour that recurs across different inputs shows up as one
+  cluster rather than one cluster per input. Analysis is now scoped to the
+  current harness version.
+- `openai_compat` reports the attempt a model call actually failed on, rather
+  than claiming the full retry budget was spent on errors it never retried.
+- `evals/article-extractor/scripts/setup_harnesses.sh` creates `harnesses/`, so
+  the benchmark can be set up from a fresh clone.
+
 ## [0.3.1] - 2026-07-30
 
 ### Changed
