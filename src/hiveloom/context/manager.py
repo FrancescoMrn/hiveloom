@@ -49,6 +49,27 @@ class TruncateOldestCompaction(CompactionMethod):
             del manager.messages[manager.pinned_message_count]
 
 
+# A structured summary keeps the model oriented after history is dropped:
+# free-form summaries reliably preserve *facts* but lose *direction* (what was
+# being attempted and what comes next), which is what post-compaction turns
+# actually stall on. Fixed section headers force both to survive.
+_SUMMARY_FORMAT = """Summarize the agent transcript below so the agent can continue \
+the task with the transcript gone. Use exactly these sections, each as terse \
+bullet points; write "none" for an empty section:
+
+# Goal
+The task being performed, in one line.
+# Progress
+What has been done and what it produced (include exact values, paths, ids).
+# Key decisions
+Choices made and why, including approaches ruled out.
+# Next steps
+What remains to be done, in order.
+# Critical context
+Verbatim fragments that must survive: identifiers, tool outputs still needed, \
+constraints, error messages."""
+
+
 class SummarizeCompaction(CompactionMethod):
     name = "summarize"
 
@@ -58,16 +79,10 @@ class SummarizeCompaction(CompactionMethod):
         older = manager.messages[manager.pinned_message_count : -1]
         transcript = _render_for_summary(older)
         summary_prompt = [
-            {
-                "role": "user",
-                "content": (
-                    "Summarize the following agent transcript into a compact set of "
-                    "facts and decisions to preserve. Be terse.\n\n" + transcript
-                ),
-            }
+            {"role": "user", "content": f"{_SUMMARY_FORMAT}\n\n{transcript}"}
         ]
         response = manager.complete_compaction(
-            system="You compress agent transcripts into durable notes.",
+            system="You compress agent transcripts into durable, structured notes.",
             messages=summary_prompt,
         )
         manager.apply_summary(response.text)
@@ -92,6 +107,7 @@ class ContextManager:
             id=spec.model.id,
             max_tokens=spec.model.max_tokens,
             temperature=spec.model.temperature,
+            provider=spec.model.provider,
         )
         self._system_prompt = spec.system_prompt
         self.provider = provider
@@ -214,7 +230,25 @@ class ContextManager:
         tokens = self.estimated_input_tokens()
         if tokens <= trigger:
             return False
+        return self._compact_now(budget, tokens)
 
+    def force_compact(self) -> bool:
+        """Compact unconditionally, after the provider rejected a request as too long.
+
+        An overflow proves the offline token estimate under-counted, so the
+        target budget is half the *current* estimate (capped at the configured
+        budget) rather than the configured budget alone — enough to guarantee
+        real headroom even when the estimator is well off.
+        """
+        if self._config.strategy == "full":
+            return False
+        if len(self.messages) <= self.pinned_message_count + 1:
+            return False
+        tokens = self.estimated_input_tokens()
+        budget = min(self._config.max_input_tokens, max(1, tokens // 2))
+        return self._compact_now(budget, tokens)
+
+    def _compact_now(self, budget: int, tokens: int) -> bool:
         method_name = (
             "summarize" if self._config.strategy == "summary" else self._config.compaction.method
         )

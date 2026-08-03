@@ -386,8 +386,10 @@ class ModelConfig(BaseModel):
     provider: str = Field(
         default="claude",
         description=(
-            "Model provider name. 'claude' is builtin; more come from extensions "
-            "or ~/.hiveloom/models.yaml (see `hiveloom extensions`)."
+            "Model provider name. Builtins cover the major labs (claude, openai, "
+            "gemini, mistral, deepseek, xai, groq, openrouter, together, fireworks, "
+            "ollama, vllm); more come from extensions or ~/.hiveloom/models.yaml "
+            "(see `hiveloom models`)."
         ),
     )
     id: str = Field(default="claude-haiku-4-5", description="Model id to execute with.")
@@ -415,6 +417,15 @@ class ModelConfig(BaseModel):
 
         info = ext.model_info(self.id)
         if info is None:
+            # An open-catalog provider (every OpenAI-compatible lab, the
+            # aggregators, and local servers) routes ids hiveloom cannot
+            # enumerate, so an unregistered id is normal there and must not
+            # block a spec — a model released after this hiveloom version
+            # still has to be usable. Cost estimation falls back to the
+            # provider's default price; see `ext.model_pricing`.
+            provider = ext.provider_info(self.provider)
+            if provider is not None and provider.open_catalog:
+                return self
             raise ValueError(
                 f"unknown model id '{self.id}' for provider '{self.provider}'. "
                 "Register it through an extension or ~/.hiveloom/models.yaml."
@@ -523,6 +534,14 @@ class LoopConfig(BaseModel):
     )
     on_tool_error: Literal["retry_once", "surface_to_model", "abort"] = Field(
         default="retry_once", description="What to do when a tool call errors."
+    )
+    tool_execution: Literal["sequential", "parallel"] = Field(
+        default="sequential",
+        description="How a turn's tool calls run. 'sequential' runs each call's "
+        "full pipeline in order. 'parallel' preflights guardrails/hooks for "
+        "every call in source order, executes the surviving calls concurrently, "
+        "then finalizes results in source order. Only opt in when the "
+        "harness's tools are safe to run concurrently.",
     )
     require_verification: bool = Field(
         default=True, description="If true, the loop cannot succeed without verify passing."

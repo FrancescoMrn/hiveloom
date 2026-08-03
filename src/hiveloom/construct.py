@@ -321,6 +321,39 @@ def set_field(
     )
 
 
+def set_model(directory: str | Path, selector: str) -> HarnessSpec:
+    """Switch provider and model id together, from a ``provider/model-id`` selector.
+
+    Both fields must move in one commit. Setting them one at a time can never
+    work: `model.provider` and `model.id` validate against each other, so
+    whichever is written first leaves the spec briefly inconsistent and the
+    change is rolled back. This is the only supported way to move a harness
+    between labs.
+
+    The selector matches ``generate --model`` / ``evolve --model``, and splits
+    on the FIRST ``/`` only — aggregator ids contain slashes of their own
+    (``openrouter/deepseek/deepseek-r1``).
+    """
+    directory = Path(directory)
+    provider, _, model_id = selector.partition("/")
+    if not provider or not model_id:
+        raise SpecError(
+            f"expected 'provider/model-id' (got {selector!r}); "
+            "run `hiveloom models` to list providers"
+        )
+
+    raw = load_raw(directory)
+    model = raw.get("model")
+    if not isinstance(model, dict):
+        model = {}
+        raw["model"] = model
+    model["provider"] = provider
+    model["id"] = model_id
+    return _commit(
+        directory, raw, [], "set_model", {"provider": provider, "id": model_id}
+    )
+
+
 def set_value(directory: str | Path, path: str, value: Any) -> HarnessSpec:
     """Set a dotted field to an already-typed value (no YAML parsing).
 

@@ -82,57 +82,34 @@ change the code a harness loads.
 
 ## Model providers
 
-`model.provider` is a registry name, not a hard-coded literal. Two ways to add
-one:
+`model.provider` is a registry name, not a hard-coded literal. Builtin
+providers already cover the major labs (`claude`, `openai`, `gemini`,
+`mistral`, `deepseek`, `xai`), the aggregators (`groq`, `openrouter`,
+`together`, `fireworks`), and local servers (`ollama`, `vllm`) — run
+`hiveloom models` to list them. **[models.md](models.md) is the full
+reference**: endpoints, key variables, pricing rules, open vs fixed catalogs,
+and `~/.hiveloom/models.yaml` customisation.
 
-**Declaratively** — `~/.hiveloom/models.yaml` for any OpenAI-compatible server
-(Ollama, vLLM, LM Studio, Groq, OpenRouter…):
+What belongs here is the programmatic path, for anything that is not an
+OpenAI-compatible HTTP endpoint:
 
-```yaml
-providers:
-  ollama:
-    api: openai_compat
-    base_url: http://localhost:11434/v1
-    # api_key_env: OLLAMA_API_KEY   # optional
-    models:
-      - id: qwen3:8b
-        input_cost_per_mtok: 0
-        output_cost_per_mtok: 0
+```python
+def setup(hive):
+    hive.register_provider(
+        "mylab",
+        lambda ctx: MyProvider(),        # must return a ModelProvider
+        api_key_env="MYLAB_API_KEY",
+        base_url="https://api.mylab.example/v1",
+        open_catalog=False,              # only the ids below validate
+        models=[{"id": "mylab-small", "input_cost_per_mtok": 0.1,
+                 "output_cost_per_mtok": 0.4}],
+    )
 ```
 
-The same `openai_compat` provider works against hosted third-party endpoints,
-e.g. OpenRouter:
-
-```yaml
-providers:
-  openrouter:
-    api: openai_compat
-    base_url: https://openrouter.ai/api/v1
-    api_key_env: OPENROUTER_API_KEY
-    models:
-      - id: deepseek/deepseek-r1
-        input_cost_per_mtok: 0.55
-        output_cost_per_mtok: 2.19
-```
-
-Other servers speaking the same API — typical defaults, confirm against your
-deployment: Groq `https://api.groq.com/openai/v1`, Together
-`https://api.together.xyz/v1`, vLLM `http://localhost:8000/v1`,
-mlx_lm.server `http://localhost:8080/v1`. Reasoning-style models (the
-DeepSeek-R1 family and similar) are supported: a reasoning-only turn is
-normalized from the response's `reasoning`/`reasoning_content` field when
-`content` is empty.
-
-Run, generate, and evolve need credentials for the configured provider when
-that provider requires them: `ANTHROPIC_API_KEY` is the default Anthropic case;
-hosted OpenAI-compatible providers use the environment variable named by
-`api_key_env` (for example `OPENROUTER_API_KEY`), while local vLLM, Ollama, or
-mlx_lm.server deployments may require no credential.
-
-**Programmatically** — `hive.register_provider(name, factory, models=[...])`
-with a factory returning a `ModelProvider`. Model pricing lives in the
-registry; unknown models fall back to Haiku-class pricing so cost guardrails
-stay conservative.
+Registering a name that already exists raises, so two packs cannot silently
+fight over one provider name; only `models.yaml` may override a builtin.
+Pricing lives in the registry, and unknown models fall back to conservative
+Haiku-class pricing so cost guardrails never under-count.
 
 Generate/evolve can use any provider too: `--model ollama/qwen3:32b`
 (`provider/model-id`). Note `model` stays in `ALWAYS_FROZEN` — the registry
@@ -171,11 +148,12 @@ steers the run, returning `None` observes:
 | Event | A returned dict may… |
 |---|---|
 | `context_assemble` | `{"messages": [...]}` — replace the message list |
+| `before_provider_request` | `{"system": ...}` / `{"messages": [...]}` / `{"tools": [...]}` — patch the outgoing request (this request only; runs after guardrails) |
 | `before_tool_call` | `{"block": True, "reason": ...}` or `{"input": {...}}` |
 | `after_tool_call` | `{"content": ...}` / `{"is_error": ...}` — patch the result |
 | `before_verification` | `{"output": ...}` — replace final output before guardrails and validators |
 | `before_compaction` | `{"cancel": True}` or `{"summary": "..."}` |
-| `run_started` / `before_model_call` / `after_model_response` / `verification` / `run_finished` | observe only |
+| `run_started` / `before_model_call` / `after_provider_response` / `after_model_response` / `verification` / `run_finished` | observe only |
 
 ```bash
 hiveloom add hook --on before_tool_call --code hooks/audit.py:audit --dir ./h

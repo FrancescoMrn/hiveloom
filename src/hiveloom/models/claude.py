@@ -3,6 +3,12 @@
 Anthropic SDK types are confined to this module; everything returned is a
 hiveloom :class:`ModelResponse`. Rate limits and overloads are retried with
 exponential backoff (max 3 retries).
+
+Prompt caching is always on: the system prompt, the tool list, and the tail of
+the conversation are marked as cache breakpoints, so the stable prefix of an
+agent loop (system + tools + earlier turns) is written once and read cheaply
+on every subsequent turn. Cache read/write tokens are reported on ``Usage``
+and priced by ``ModelProvider.estimated_cost``.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ import time
 from typing import Any
 
 from hiveloom.models.provider import (
+    ContextOverflowError,
     Message,
     ModelConfig,
     ModelProvider,
@@ -21,6 +28,38 @@ from hiveloom.models.provider import (
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0
+
+_CACHE_CONTROL = {"type": "ephemeral"}
+
+# Substrings that identify a BadRequestError as a context-window overflow.
+_OVERFLOW_MARKERS = ("prompt is too long", "context window", "maximum context")
+
+
+def _is_overflow(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _OVERFLOW_MARKERS)
+
+
+def _with_cache_breakpoint(messages: list[Message]) -> list[Message]:
+    """Copy ``messages`` with a cache breakpoint on the final content block.
+
+    Only the touched path is copied: the history dicts are shared with the
+    context manager, and mutating them would accumulate stale breakpoints
+    across turns (the API allows at most four).
+    """
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last.get("content")
+    if isinstance(content, str) and content:
+        last["content"] = [{"type": "text", "text": content, "cache_control": _CACHE_CONTROL}]
+    elif isinstance(content, list) and content:
+        blocks = list(content)
+        blocks[-1] = {**blocks[-1], "cache_control": _CACHE_CONTROL}
+        last["content"] = blocks
+    else:
+        return messages
+    return [*messages[:-1], last]
 
 
 class ClaudeProvider(ModelProvider):
@@ -41,13 +80,21 @@ class ClaudeProvider(ModelProvider):
         tools: list[dict[str, Any]],
         config: ModelConfig,
     ) -> ModelResponse:
+        system_param: Any = system
+        if system:
+            system_param = [
+                {"type": "text", "text": system, "cache_control": _CACHE_CONTROL}
+            ]
+        tools_param = tools
+        if tools:
+            tools_param = [*tools[:-1], {**tools[-1], "cache_control": _CACHE_CONTROL}]
         raw = self._call_with_backoff(
             model=config.id,
             max_tokens=config.max_tokens,
             temperature=config.temperature,
-            system=system,
-            messages=messages,
-            tools=tools,
+            system=system_param,
+            messages=_with_cache_breakpoint(messages),
+            tools=tools_param,
         )
         return self._normalize(raw)
 
@@ -92,6 +139,10 @@ class ClaudeProvider(ModelProvider):
                 if attempt == _MAX_RETRIES:
                     break
                 self._sleep(_BASE_DELAY * (2**attempt))
+            except anthropic.BadRequestError as exc:
+                if _is_overflow(str(exc)):
+                    raise ContextOverflowError(str(exc)) from exc
+                raise
         raise RuntimeError(f"model call failed after {_MAX_RETRIES} retries: {last_exc}")
 
     def _normalize(self, raw: Any) -> ModelResponse:
@@ -113,8 +164,10 @@ class ClaudeProvider(ModelProvider):
                     }
                 )
         usage = Usage(
-            input_tokens=getattr(raw.usage, "input_tokens", 0),
-            output_tokens=getattr(raw.usage, "output_tokens", 0),
+            input_tokens=getattr(raw.usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(raw.usage, "output_tokens", 0) or 0,
+            cache_read_tokens=getattr(raw.usage, "cache_read_input_tokens", 0) or 0,
+            cache_write_tokens=getattr(raw.usage, "cache_creation_input_tokens", 0) or 0,
         )
         return ModelResponse(
             text="".join(text_parts),

@@ -20,6 +20,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from hiveloom.models.provider import (
+    ContextOverflowError,
     Message,
     ModelConfig,
     ModelProvider,
@@ -37,6 +38,16 @@ _STOP_REASONS = {
 }
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0
+
+# Substrings in an HTTP 400 body that identify a context-window overflow
+# ("context_length_exceeded" is OpenAI's error code; the phrases cover servers
+# that only return a message, e.g. vLLM's "maximum context length is ...").
+_OVERFLOW_MARKERS = ("context_length_exceeded", "maximum context length", "context window")
+
+
+def _is_overflow(body: str) -> bool:
+    lowered = body.lower()
+    return any(marker in lowered for marker in _OVERFLOW_MARKERS)
 
 
 class OpenAICompatProvider(ModelProvider):
@@ -95,6 +106,8 @@ class OpenAICompatProvider(ModelProvider):
                     return json.loads(resp.read().decode("utf-8"))
             except urlerror.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")[:500]
+                if exc.code == 400 and _is_overflow(body):
+                    raise ContextOverflowError(f"provider returned HTTP 400: {body}") from exc
                 last_exc = RuntimeError(f"provider returned HTTP {exc.code}: {body}")
                 retryable = exc.code == 429 or 500 <= exc.code < 600
             except (urlerror.URLError, TimeoutError, ConnectionError) as exc:
@@ -233,7 +246,17 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
         output_tokens = _usage("output_tokens")
     if output_tokens is None:
         output_tokens = estimate_tokens(text or json.dumps(message.get("tool_calls") or []))
-    usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
+    # OpenAI-style usage counts cached tokens *inside* prompt_tokens; hiveloom's
+    # Usage keeps input_tokens uncached-only, so split the cached share out.
+    details = raw_usage.get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    cache_read = int(cached) if isinstance(cached, (int, float)) else 0
+    cache_read = min(cache_read, input_tokens)
+    usage = Usage(
+        input_tokens=input_tokens - cache_read,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+    )
     finish = choice.get("finish_reason") or "stop"
     return ModelResponse(
         text=text,

@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Builtin model providers for the major labs, so no configuration is needed
+  beyond an API key: `openai`, `gemini`, `mistral`, `deepseek`, `xai`, `groq`,
+  `openrouter`, `together`, `fireworks`, `ollama`, and `vllm` join `claude`.
+  All are backed by the existing stdlib-only OpenAI-compatible provider.
+- `hiveloom models [PROVIDER] [--json]` lists providers with their endpoint,
+  API-key variable, whether that key is set (never its value), catalog policy,
+  and per-model pricing.
+- `hiveloom set model <provider>/<model-id>` (and `construct.set_model`) moves
+  provider and id in a single validated commit. Previously a harness could not
+  change lab at all: the two fields validate against each other, so either
+  single-field ordering was rolled back.
+- Open-catalog providers: every builtin except `claude` accepts model ids that
+  are not pre-registered, so a model released after a hiveloom version is
+  usable immediately. `claude` stays closed, so typos still fail validation.
+- `~/.hiveloom/models.yaml` can now extend a builtin provider (omit `base_url`
+  to add models or correct pricing) or override one (supply `base_url` to point
+  a lab name at a gateway or proxy).
+- `docs/models.md`: the full model/provider reference.
+- Prompt caching. The `claude` provider marks the system prompt, tool list,
+  and conversation tail as cache breakpoints on every call, so the stable
+  prefix of an agent loop is written once and read at 0.1x the input price on
+  every later turn. Cache read/write tokens are broken out on `Usage`, priced
+  in cost estimation (0.1x / 1.25x input), and visible in traces; OpenAI-style
+  `cached_tokens` are likewise split out of the prompt count.
+- `hiveloom mcp serve DIR [DIR ...]`: expose harnesses as MCP tools over
+  stdio — the agent-facing front door. Each harness becomes a `run_<name>`
+  tool whose description is the harness description and whose result is
+  structured (`status`, `output`, `reason`, `cost_usd`, `turns`, `run_id`,
+  `verdicts`), so a calling agent can delegate a task and check the verified
+  outcome instead of improvising. Caller input is always literal text
+  (mirroring the HTTP servers), trust is enforced per directory at startup,
+  and failed runs land in the Hive like any other — so delegated work drives
+  evolution too. SDK: `hiveloom.serve.mcp.build_mcp_server`.
+- Local harness registry and MCP discovery. `hiveloom registry add|remove|list`
+  keeps a machine-level list of harnesses (`~/.hiveloom/registry.yaml`);
+  `hiveloom mcp serve --registered` serves all of them at once (broken entries
+  are skipped with a stderr warning), and every MCP server now exposes a
+  `list_harnesses` tool returning the catalog *with measured fitness* — total
+  runs, success rate, average cost/turns from the Hive — so a calling agent
+  can pick a harness on evidence, not vibes. Registration is not trust: the
+  same per-directory trust gate still applies.
+- `hiveloom mcp serve --http [--host] [--port]`: the MCP server over the
+  streamable-HTTP transport at `/mcp`, gated by `HIVELOOM_API_KEY` (Bearer or
+  `X-API-Key`, constant-time compare, mirroring `hiveloom serve`). A
+  non-loopback bind without the key is refused at startup. No TLS — a gateway
+  should front this, as with the other HTTP surfaces.
+- Parallel tool execution (opt-in): `loop.tool_execution: parallel` preflights
+  guardrails and hooks for a turn's tool calls in source order, executes the
+  surviving calls concurrently, and finalizes results in source order.
+  `TraceWriter` is now thread-safe, and the builtin `file_write` serializes
+  writes per resolved path. The default stays `sequential`, where a halt
+  during one call still prevents later calls from executing at all.
+- Provider middleware events: `before_provider_request` lets a hook patch the
+  outgoing request (`system`/`messages`/`tools`; this request only, and always
+  after guardrails), and `after_provider_response` observes the wire-level
+  accounting (`usage`, `cost_usd`, `stop_reason`) per call.
+
+- Context-overflow recovery. When a provider rejects a request because the
+  prompt exceeds the model's context window (the offline token estimate
+  under-counted), the loop now force-compacts the history — targeting half the
+  current estimate — and retries the turn once, instead of ending the run as an
+  `error`. Recovery is traced as `context_overflow_recovery`; a second
+  overflow still surfaces as an error run. Overflow rejections are classified
+  by both the Anthropic and OpenAI-compatible providers
+  (`ContextOverflowError`), and are never blindly retried against the same
+  too-long prompt.
+
+### Changed
+
+- `summarize` compaction now requests a structured summary (Goal / Progress /
+  Key decisions / Next steps / Critical context) instead of free-form "be
+  terse" notes, so post-compaction turns keep direction, not just facts.
+- Cost estimation resolves an unregistered model id through its provider's
+  default price before the conservative fallback, so an unlisted model on a
+  local Ollama or vLLM server is priced at zero instead of Haiku rates. Unknown
+  *hosted* models keep the conservative fallback, so budget guardrails still
+  never under-count.
+
 ### Fixed
 
 - `evolve --apply` now restores the harness folder when validation of an

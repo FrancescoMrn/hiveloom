@@ -77,6 +77,47 @@ def test_set_invalid_rolls_back(harness_dir: Path):
     assert (harness_dir / "harness.yaml").read_text() == before
 
 
+def test_set_model_switches_lab_in_one_commit(harness_dir: Path):
+    """Provider and id must move together — the only way to change labs."""
+    spec = construct.set_model(harness_dir, "openai/gpt-4.1-mini")
+    assert (spec.model.provider, spec.model.id) == ("openai", "gpt-4.1-mini")
+    reloaded = load_spec(harness_dir)
+    assert (reloaded.model.provider, reloaded.model.id) == ("openai", "gpt-4.1-mini")
+
+
+def test_set_model_keeps_slashes_in_aggregator_ids(harness_dir: Path):
+    spec = construct.set_model(harness_dir, "openrouter/deepseek/deepseek-r1")
+    assert spec.model.provider == "openrouter"
+    assert spec.model.id == "deepseek/deepseek-r1"
+
+
+def test_set_model_preserves_other_model_fields(harness_dir: Path):
+    construct.set_field(harness_dir, "model.max_tokens", value="1024")
+    construct.set_model(harness_dir, "openai/gpt-4o-mini")
+    assert load_spec(harness_dir).model.max_tokens == 1024
+
+
+@pytest.mark.parametrize("selector", ["gpt-4.1-mini", "/gpt-4.1-mini", "openai/"])
+def test_set_model_requires_a_full_selector(harness_dir: Path, selector: str):
+    with pytest.raises(SpecError, match="provider/model-id"):
+        construct.set_model(harness_dir, selector)
+
+
+def test_set_model_rolls_back_an_invalid_pair(harness_dir: Path):
+    before = (harness_dir / "harness.yaml").read_text()
+    with pytest.raises(SpecError):
+        construct.set_model(harness_dir, "claude/claude-hiaku-4-5")  # typo
+    assert (harness_dir / "harness.yaml").read_text() == before
+
+
+def test_setting_provider_and_id_separately_still_fails(harness_dir: Path):
+    """The reason set_model exists: neither single-field order can validate."""
+    with pytest.raises(SpecError):
+        construct.set_field(harness_dir, "model.provider", value="openai")
+    with pytest.raises(SpecError):
+        construct.set_field(harness_dir, "model.id", value="gpt-4.1-mini")
+
+
 def test_add_builtin_tool(harness_dir: Path):
     construct.add_tool(harness_dir, builtin="file_read")
     spec = load_spec(harness_dir)

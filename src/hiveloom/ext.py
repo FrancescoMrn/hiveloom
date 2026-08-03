@@ -67,6 +67,28 @@ class ModelInfo(BaseModel):
     context_window: int | None = None
 
 
+class ProviderInfo(BaseModel):
+    """Describes a registered provider for introspection (``hiveloom models``).
+
+    ``open_catalog`` is the important one. A *closed* provider only accepts the
+    model ids registered alongside it, so a typo fails spec validation. An
+    *open* provider accepts any id, because enumerating its catalog is either
+    impossible (aggregators like OpenRouter route to thousands of models) or
+    meaningless (a local Ollama/vLLM server serves whatever the user pulled).
+    Unknown ids on an open provider fall back to conservative pricing — see
+    ``models/provider.py:_FALLBACK_PRICE`` — so a budget guardrail never
+    silently costs *less* than it thinks.
+    """
+
+    name: str
+    api: str = "openai_compat"
+    base_url: str = ""
+    api_key_env: str = ""
+    open_catalog: bool = False
+    source: str = ""
+    label: str = ""
+
+
 # A factory builds a runtime object from a ref's inline params and a context.
 Factory = Callable[[dict[str, Any], BuildContext], Any]
 ProviderFactory = Callable[[BuildContext], Any]
@@ -80,6 +102,11 @@ class _Registry:
         default_factory=lambda: {kind: {} for kind in catalog.CATALOGS}
     )
     providers: dict[str, ProviderFactory] = field(default_factory=dict)
+    provider_meta: dict[str, ProviderInfo] = field(default_factory=dict)
+    # Per-provider (input, output) price for ids the registry does not know.
+    # Only open-catalog providers can have unknown ids, and only local ones
+    # currently set this — see `_OPENAI_COMPAT_PROVIDERS`.
+    provider_default_price: dict[str, tuple[float, float]] = field(default_factory=dict)
     models: dict[str, ModelInfo] = field(default_factory=dict)
     ambient_hooks: list[tuple[str, str, Callable]] = field(default_factory=list)
     blueprints: dict[str, str] = field(default_factory=dict)
@@ -237,11 +264,33 @@ class ExtensionAPI:
         factory: ProviderFactory,
         *,
         models: Iterable[ModelInfo | dict[str, Any]] = (),
+        api: str = "",
+        base_url: str = "",
+        api_key_env: str = "",
+        open_catalog: bool = False,
+        label: str = "",
+        replace: bool = False,
     ) -> None:
-        """Register a model provider. ``factory(ctx)`` must return a ``ModelProvider``."""
-        if name in _registry.providers:
+        """Register a model provider. ``factory(ctx)`` must return a ``ModelProvider``.
+
+        ``replace=True`` overrides an existing registration instead of failing.
+        Only user configuration uses it: ``~/.hiveloom/models.yaml`` must be
+        able to point a builtin lab name at a different ``base_url`` (a
+        corporate gateway, a proxy, a pinned API version). Packs still collide
+        loudly, so two extensions cannot silently fight over one name.
+        """
+        if name in _registry.providers and not replace:
             raise ExtensionError(f"provider '{name}' is already registered")
         _registry.providers[name] = factory
+        _registry.provider_meta[name] = ProviderInfo(
+            name=name,
+            api=api or "openai_compat",
+            base_url=base_url,
+            api_key_env=api_key_env,
+            open_catalog=open_catalog,
+            source=self.source,
+            label=label or name,
+        )
         _registry.registrations.append({"source": self.source, "kind": "providers", "name": name})
         for model in models:
             self.register_model(model, provider=name)
@@ -337,13 +386,46 @@ def build_provider(name: str, base: Path | None = None) -> Any:
     return factory(BuildContext(base=base))
 
 
-def model_pricing(model_id: str) -> tuple[float, float] | None:
-    """(input, output) USD per 1M tokens for ``model_id``, if registered."""
+def model_pricing(model_id: str, *, provider: str = "") -> tuple[float, float] | None:
+    """(input, output) USD per 1M tokens for ``model_id``, if known.
+
+    An exact model registration wins. Failing that, ``provider``'s declared
+    default price applies — that is how an unlisted model on a local Ollama or
+    vLLM server is priced at zero instead of inheriting the conservative
+    hosted fallback. ``None`` means "nothing knows", and the caller applies
+    ``models/provider.py:_FALLBACK_PRICE``.
+    """
     ensure_environment_loaded()
     info = _registry.models.get(model_id)
-    if info is None:
-        return None
-    return (info.input_cost_per_mtok, info.output_cost_per_mtok)
+    if info is not None:
+        return (info.input_cost_per_mtok, info.output_cost_per_mtok)
+    if provider:
+        return _registry.provider_default_price.get(provider)
+    return None
+
+
+def provider_info(name: str) -> ProviderInfo | None:
+    """Metadata for one registered provider (endpoint, key variable, catalog policy)."""
+    ensure_environment_loaded()
+    return _registry.provider_meta.get(name)
+
+
+def providers() -> list[ProviderInfo]:
+    """Metadata for every registered provider, name-sorted."""
+    ensure_environment_loaded()
+    return [_registry.provider_meta[name] for name in sorted(_registry.provider_meta)]
+
+
+def models_for_provider(name: str) -> list[ModelInfo]:
+    """Registered models belonging to ``name``, id-sorted.
+
+    An open-catalog provider accepts ids beyond these; the list is a starting
+    point with known pricing, not a limit.
+    """
+    ensure_environment_loaded()
+    return sorted(
+        (m for m in _registry.models.values() if m.provider == name), key=lambda m: m.id
+    )
 
 
 def model_info(model_id: str) -> ModelInfo | None:
@@ -548,17 +630,146 @@ def _claude_factory(ctx: BuildContext) -> Any:
     return ClaudeProvider()
 
 
+# Every other lab hiveloom ships with speaks the OpenAI chat-completions API,
+# so one adapter (`OpenAICompatProvider`) covers all of them; a builtin entry
+# is just the endpoint, the key variable, and a starter model list.
+#
+# All of these are `open_catalog`: model catalogs churn far faster than
+# hiveloom releases, and the aggregators route to thousands of ids, so
+# pinning a closed list would mean a new frontier model is unusable until the
+# next release. `claude` stays closed — it has a native provider and a list
+# maintained in-repo, so a typo there should still fail validation.
+#
+# The pricing below is list price per 1M tokens at the time of writing and is
+# used only for cost *estimation* and budget guardrails. Verify against your
+# provider's current pricing and override any entry in ~/.hiveloom/models.yaml.
+# `default_price` prices ids that are not listed; local servers are free, so
+# theirs is (0, 0) rather than the conservative hosted fallback.
+@dataclass(frozen=True)
+class _BuiltinProvider:
+    base_url: str
+    api_key_env: str
+    label: str
+    models: dict[str, tuple[float, float]] = field(default_factory=dict)
+    default_price: tuple[float, float] | None = None
+
+
+_OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
+    "openai": _BuiltinProvider(
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+        label="OpenAI",
+        models={
+            "gpt-4o": (2.50, 10.00),
+            "gpt-4o-mini": (0.15, 0.60),
+            "gpt-4.1": (2.00, 8.00),
+            "gpt-4.1-mini": (0.40, 1.60),
+            "gpt-4.1-nano": (0.10, 0.40),
+        },
+    ),
+    "gemini": _BuiltinProvider(
+        # Google exposes an OpenAI-compatible surface at this path. Tool-call
+        # support there is narrower than the native API; see docs/models.md.
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env="GEMINI_API_KEY",
+        label="Google Gemini",
+        models={
+            "gemini-2.0-flash": (0.10, 0.40),
+            "gemini-2.5-flash": (0.30, 2.50),
+            "gemini-2.5-pro": (1.25, 10.00),
+        },
+    ),
+    "mistral": _BuiltinProvider(
+        base_url="https://api.mistral.ai/v1",
+        api_key_env="MISTRAL_API_KEY",
+        label="Mistral",
+        models={
+            "mistral-small-latest": (0.20, 0.60),
+            "mistral-large-latest": (2.00, 6.00),
+        },
+    ),
+    "deepseek": _BuiltinProvider(
+        base_url="https://api.deepseek.com/v1",
+        api_key_env="DEEPSEEK_API_KEY",
+        label="DeepSeek",
+        models={"deepseek-chat": (0.27, 1.10), "deepseek-reasoner": (0.55, 2.19)},
+    ),
+    "xai": _BuiltinProvider(
+        base_url="https://api.x.ai/v1",
+        api_key_env="XAI_API_KEY",
+        label="xAI Grok",
+        models={"grok-3": (3.00, 15.00), "grok-3-mini": (0.30, 0.50)},
+    ),
+    "moonshot": _BuiltinProvider(
+        base_url="https://api.moonshot.ai/v1",
+        api_key_env="MOONSHOT_API_KEY",
+        label="Moonshot AI",
+    ),
+    "groq": _BuiltinProvider(
+        base_url="https://api.groq.com/openai/v1",
+        api_key_env="GROQ_API_KEY",
+        label="Groq",
+    ),
+    "openrouter": _BuiltinProvider(
+        base_url="https://openrouter.ai/api/v1",
+        api_key_env="OPENROUTER_API_KEY",
+        label="OpenRouter",
+    ),
+    "together": _BuiltinProvider(
+        base_url="https://api.together.xyz/v1",
+        api_key_env="TOGETHER_API_KEY",
+        label="Together AI",
+    ),
+    "fireworks": _BuiltinProvider(
+        base_url="https://api.fireworks.ai/inference/v1",
+        api_key_env="FIREWORKS_API_KEY",
+        label="Fireworks AI",
+    ),
+    "ollama": _BuiltinProvider(
+        base_url="http://localhost:11434/v1",
+        api_key_env="",
+        label="Ollama (local)",
+        default_price=(0.0, 0.0),
+    ),
+    "vllm": _BuiltinProvider(
+        base_url="http://localhost:8000/v1",
+        api_key_env="",
+        label="vLLM (local)",
+        default_price=(0.0, 0.0),
+    ),
+}
+
+
 def _register_builtin_providers() -> None:
     api = ExtensionAPI(source="builtin")
     api.register_provider(
         "claude",
         _claude_factory,
+        api="anthropic",
+        api_key_env="ANTHROPIC_API_KEY",
+        label="Anthropic Claude",
         models=[
             ModelInfo(id=mid, provider="claude", input_cost_per_mtok=inp,
                       output_cost_per_mtok=out)
             for mid, (inp, out) in _CLAUDE_MODELS.items()
         ],
     )
+    for name, entry in _OPENAI_COMPAT_PROVIDERS.items():
+        if entry.default_price is not None:
+            _registry.provider_default_price[name] = entry.default_price
+        api.register_provider(
+            name,
+            _openai_compat_factory(entry.base_url, entry.api_key_env or None),
+            base_url=entry.base_url,
+            api_key_env=entry.api_key_env,
+            label=entry.label,
+            open_catalog=True,
+            models=[
+                ModelInfo(id=mid, provider=name, input_cost_per_mtok=inp,
+                          output_cost_per_mtok=out)
+                for mid, (inp, out) in entry.models.items()
+            ],
+        )
 
 
 class _YamlModelEntry(BaseModel):
@@ -570,8 +781,11 @@ class _YamlModelEntry(BaseModel):
 
 class _YamlProviderEntry(BaseModel):
     api: str = "openai_compat"
-    base_url: str
+    # Optional so an entry can *extend* a builtin provider (add models, fix a
+    # price) without restating its endpoint. Supplying it overrides the builtin.
+    base_url: str | None = None
     api_key_env: str | None = None
+    open_catalog: bool | None = None
     models: list[_YamlModelEntry] = []
 
 
@@ -607,13 +821,36 @@ def _load_models_yaml() -> None:
                     f"provider '{name}': unsupported api '{entry.api}' "
                     "(v0 supports: openai_compat)"
                 )
+            models = [_model_info_from_yaml(m, name, source) for m in entry.models]
+            builtin = _registry.provider_meta.get(name)
+            if entry.base_url is None:
+                # Extend-only: the entry adds models or corrects pricing for a
+                # provider that already exists. Without a builtin to extend
+                # there is no endpoint to call, so that is a real error.
+                if builtin is None:
+                    raise ExtensionError(
+                        f"provider '{name}': base_url is required "
+                        "(no builtin provider of that name to extend)"
+                    )
+                for model in models:
+                    api.register_model(model, provider=name)
+                continue
             api.register_provider(
                 name,
                 _openai_compat_factory(entry.base_url, entry.api_key_env),
-                models=[
-                    _model_info_from_yaml(m, name, source)
-                    for m in entry.models
-                ],
+                base_url=entry.base_url,
+                api_key_env=entry.api_key_env or "",
+                label=builtin.label if builtin else name,
+                # Declared entries are closed by default — the user listed the
+                # models they meant, so a typo should fail. Overriding a builtin
+                # keeps the builtin's policy unless the entry says otherwise.
+                open_catalog=(
+                    entry.open_catalog
+                    if entry.open_catalog is not None
+                    else bool(builtin and builtin.open_catalog)
+                ),
+                replace=True,
+                models=models,
             )
     except Exception as exc:  # noqa: BLE001 - a bad models.yaml must not crash the CLI
         _registry.errors.append({"source": source, "error": f"{type(exc).__name__}: {exc}"})

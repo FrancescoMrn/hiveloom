@@ -13,6 +13,7 @@ from hiveloom import catalog, construct, ext, runner, trust
 from hiveloom.cli import app
 from hiveloom.errors import CatalogError, SpecError
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
+from hiveloom.models.provider import Usage
 from hiveloom.spec.loader import load_spec, spec_from_dict
 from hiveloom.spec.schema import HarnessSpec, ModelConfig
 from hiveloom.tools.registry import Tool, build_registry
@@ -578,3 +579,146 @@ def test_catalog_json_includes_source():
     r = cli_runner.invoke(app, ["catalog", "tools", "--json"])
     payload = json.loads(r.stdout)
     assert all(e["source"] == "builtin" for e in payload["entries"])
+
+
+# --------------------------------------------------------------------------- #
+# Builtin multi-lab providers
+# --------------------------------------------------------------------------- #
+def test_major_labs_are_builtin_providers():
+    """Every lab hiveloom advertises must be usable without any user config."""
+    names = ext.provider_names()
+    for expected in (
+        "claude", "openai", "gemini", "mistral", "deepseek", "xai",
+        "groq", "openrouter", "together", "fireworks", "ollama", "vllm",
+    ):
+        assert expected in names, f"{expected} is not a builtin provider"
+
+
+def test_builtin_openai_compat_providers_declare_endpoint_and_key():
+    for info in ext.providers():
+        if info.name == "claude":
+            assert info.api == "anthropic"
+            continue
+        assert info.base_url.startswith("http"), info.name
+        # Local servers need no key; every hosted one must name its variable,
+        # since that string is what `hiveloom models` tells the user to set.
+        if "localhost" not in info.base_url:
+            assert info.api_key_env, info.name
+
+
+def test_open_catalog_provider_accepts_an_unregistered_model_id():
+    """A model released after this hiveloom version must still be usable."""
+    assert ext.model_info("gpt-6-turbo-not-real") is None
+    config = ModelConfig(provider="openai", id="gpt-6-turbo-not-real")
+    assert config.id == "gpt-6-turbo-not-real"
+
+
+def test_closed_catalog_provider_still_rejects_a_typo():
+    with pytest.raises(ValueError, match="unknown model id"):
+        ModelConfig(provider="claude", id="claude-hiaku-4-5")
+
+
+def test_unknown_hosted_model_falls_back_to_conservative_pricing():
+    """Unknown + hosted must not be free, or a budget guardrail under-counts."""
+    assert ext.model_pricing("gpt-6-turbo-not-real", provider="openai") is None
+    provider = FakeModelProvider([])
+    cost = provider.estimated_cost(
+        Usage(input_tokens=1_000_000, output_tokens=1_000_000),
+        "gpt-6-turbo-not-real",
+        "openai",
+    )
+    assert cost == pytest.approx(6.0)  # the (1.00, 5.00) conservative fallback
+
+
+def test_unknown_local_model_is_priced_free():
+    """A local server costs nothing; charging Haiku rates would trip budgets."""
+    assert ext.model_pricing("qwen3:8b", provider="ollama") == (0.0, 0.0)
+    provider = FakeModelProvider([])
+    cost = provider.estimated_cost(
+        Usage(input_tokens=1_000_000, output_tokens=1_000_000), "qwen3:8b", "ollama"
+    )
+    assert cost == 0.0
+
+
+def test_models_yaml_can_override_a_builtin_provider(monkeypatch, tmp_path: Path):
+    """A corporate gateway must be able to take over a builtin lab name."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  openai:
+    base_url: https://gateway.internal.test/v1
+    api_key_env: INTERNAL_KEY
+    models:
+      - id: house-model
+        input_cost_per_mtok: 0
+        output_cost_per_mtok: 0
+""",
+        encoding="utf-8",
+    )
+
+    info = ext.provider_info("openai")
+    assert info.base_url == "https://gateway.internal.test/v1"
+    assert info.source == "models.yaml"
+    assert ext.model_pricing("house-model") == (0.0, 0.0)
+    assert not ext.status()["errors"]
+
+
+def test_models_yaml_can_extend_a_builtin_without_restating_the_endpoint(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  openai:
+    models:
+      - id: gpt-4o
+        input_cost_per_mtok: 1.11
+        output_cost_per_mtok: 2.22
+""",
+        encoding="utf-8",
+    )
+
+    # Endpoint survives; the corrected price wins over the shipped one.
+    assert ext.provider_info("openai").base_url == "https://api.openai.com/v1"
+    assert ext.model_pricing("gpt-4o") == (1.11, 2.22)
+
+
+def test_models_yaml_extend_of_an_unknown_provider_is_an_error(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  nosuchlab:
+    models:
+      - id: whatever
+        input_cost_per_mtok: 0
+        output_cost_per_mtok: 0
+""",
+        encoding="utf-8",
+    )
+
+    assert "nosuchlab" not in ext.provider_names()
+    assert any("base_url is required" in e["error"] for e in ext.status()["errors"])
+
+
+def test_models_command_lists_providers_and_hides_key_values(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-value")
+    r = cli_runner.invoke(app, ["models", "--json"])
+    assert r.exit_code == 0
+    payload = json.loads(r.stdout)
+    by_name = {p["name"]: p for p in payload["providers"]}
+    assert by_name["openai"]["api_key_set"] is True
+    assert by_name["gemini"]["api_key_set"] is False
+    assert by_name["ollama"]["open_catalog"] is True
+    # The output is routinely pasted into agents and issues.
+    assert "sk-super-secret-value" not in r.stdout
+
+
+def test_models_command_rejects_an_unknown_provider():
+    r = cli_runner.invoke(app, ["models", "nosuchlab"])
+    assert r.exit_code != 0
