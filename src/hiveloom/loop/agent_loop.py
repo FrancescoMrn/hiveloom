@@ -13,6 +13,7 @@ tool calls, patch results, transform context). Guardrails always run first.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,17 @@ class GuardrailHalt(RuntimeError):
 
 class ToolAbort(RuntimeError):
     """Internal signal used when ``loop.on_tool_error`` is ``abort``."""
+
+
+def _blocked_result(call: Any, reason: str) -> dict[str, Any]:
+    return {"tool_use_id": call.id, "content": f"blocked: {reason}", "is_error": True}
+
+
+def _terminate_output(dispatched: list[Any], results: list[dict[str, Any]]) -> str | None:
+    """The batch terminates only when every finalized result asked to."""
+    if dispatched and len(dispatched) == len(results) and all(r.terminate for r in dispatched):
+        return dispatched[-1].content
+    return None
 
 
 class AgentLoop:
@@ -338,141 +350,186 @@ class AgentLoop:
         Returns ``(halt_reason, terminate_output)``: a halt reason ends the run;
         ``terminate_output`` is set when every finalized result asked to
         terminate (its value is the last result's content).
+
+        ``loop.tool_execution: parallel`` splits the per-call pipeline into
+        phases: preflight (guardrails + hooks, source order), execute
+        (concurrent), finalize (source order). Sequential mode keeps the
+        original semantics — a halt during one call's finalize prevents later
+        calls from executing at all.
         """
+        if self._spec.loop.tool_execution == "parallel" and len(response.tool_calls) > 1:
+            return self._dispatch_parallel(response)
         results: list[dict[str, Any]] = []
         dispatched: list[Any] = []
         for call in response.tool_calls:
-            blocked_reason: str | None = None
-            for guardrail in self._guardrails:
-                decision = guardrail.before_tool_call(self._state, call)
-                if decision.kind == "halt":
-                    self._trace.emit(
-                        "guardrail_triggered",
-                        hook="before_tool_call",
-                        guardrail=guardrail.name,
-                        kind="halt",
-                        reason=decision.reason,
-                    )
-                    return decision.reason, None
-                if decision.kind == "block":
-                    blocked_reason = decision.reason
-                    self._trace.emit(
-                        "guardrail_triggered",
-                        hook="before_tool_call",
-                        guardrail=guardrail.name,
-                        kind="block",
-                        reason=decision.reason,
-                    )
-                    break
-
-            if blocked_reason is None:
-                for outcome in self._events.emit(
-                    "before_tool_call",
-                    {
-                        "name": call.name,
-                        "input": call.input,
-                        "turn": self._state.turns,
-                        "cost_usd": self._state.cost_usd,
-                    },
-                ):
-                    if outcome.get("block"):
-                        blocked_reason = str(
-                            outcome.get("reason", f"blocked by hook {outcome['_handler']}")
-                        )
-                        self._trace.emit(
-                            "hook_triggered",
-                            event="before_tool_call",
-                            hook=outcome["_handler"],
-                            action="block",
-                            reason=blocked_reason,
-                        )
-                        break
-                    if isinstance(outcome.get("input"), dict):
-                        call.input = outcome["input"]
-                        self._trace.emit(
-                            "hook_triggered",
-                            event="before_tool_call",
-                            hook=outcome["_handler"],
-                            action="patch_input",
-                        )
-
-            if blocked_reason is not None:
-                results.append(
-                    {
-                        "tool_use_id": call.id,
-                        "content": f"blocked: {blocked_reason}",
-                        "is_error": True,
-                    }
-                )
+            pre = self._preflight_call(call)
+            if pre is not None:
+                kind, reason = pre
+                if kind == "halt":
+                    return reason, None
+                results.append(_blocked_result(call, reason))
                 continue
-
             self._trace.emit("tool_call", name=call.name, input=call.input, id=call.id)
-
-            def on_update(progress: str, _call=call) -> None:
-                self._trace.emit("tool_update", id=_call.id, name=_call.name, content=progress)
-
-            result = self._registry.dispatch(call, on_update=on_update)
-            if result.is_error and self._spec.loop.on_tool_error == "retry_once":
-                self._trace.emit("tool_retry", id=call.id, name=call.name)
-                result = self._registry.dispatch(call, on_update=on_update)
-            if result.is_error and self._spec.loop.on_tool_error == "abort":
-                raise ToolAbort(f"tool '{call.name}' failed: {result.content}")
-
-            for outcome in self._events.emit(
-                "after_tool_call",
-                {
-                    "name": call.name,
-                    "input": call.input,
-                    "content": result.content,
-                    "is_error": result.is_error,
-                },
-            ):
-                patched = False
-                if isinstance(outcome.get("content"), str):
-                    result.content = outcome["content"]
-                    patched = True
-                if isinstance(outcome.get("is_error"), bool):
-                    result.is_error = outcome["is_error"]
-                    patched = True
-                if patched:
-                    self._trace.emit(
-                        "hook_triggered",
-                        event="after_tool_call",
-                        hook=outcome["_handler"],
-                        action="patch_result",
-                    )
-
-            for guardrail in self._guardrails:
-                decision = guardrail.after_tool_call(self._state, call, result)
-                if decision.kind == "halt":
-                    self._trace.emit(
-                        "guardrail_triggered",
-                        hook="after_tool_call",
-                        guardrail=guardrail.name,
-                        kind="halt",
-                        reason=decision.reason,
-                    )
-                    return decision.reason, None
-
-            self._trace.emit(
-                "tool_result",
-                id=call.id,
-                name=call.name,
-                content=result.content,
-                is_error=result.is_error,
-            )
+            result = self._execute_call(call)
+            halt = self._finalize_call(call, result)
+            if halt is not None:
+                return halt, None
             dispatched.append(result)
             results.append(
                 {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
             )
         self._context.add_tool_results(results)
+        return None, _terminate_output(dispatched, results)
 
-        terminate_output: str | None = None
-        if dispatched and len(dispatched) == len(results) and all(
-            r.terminate for r in dispatched
+    def _dispatch_parallel(self, response: ModelResponse) -> tuple[str | None, str | None]:
+        plan: list[tuple[Any, str | None]] = []
+        for call in response.tool_calls:
+            pre = self._preflight_call(call)
+            if pre is not None:
+                kind, reason = pre
+                if kind == "halt":
+                    return reason, None
+                plan.append((call, reason))
+                continue
+            self._trace.emit("tool_call", name=call.name, input=call.input, id=call.id)
+            plan.append((call, None))
+
+        runnable = [(i, call) for i, (call, blocked) in enumerate(plan) if blocked is None]
+        executed: dict[int, Any] = {}
+        abort: ToolAbort | None = None
+        if runnable:
+            with ThreadPoolExecutor(max_workers=len(runnable)) as pool:
+                futures = [(i, pool.submit(self._execute_call, call)) for i, call in runnable]
+                for i, future in futures:
+                    try:
+                        executed[i] = future.result()
+                    except ToolAbort as exc:
+                        # Keep draining so no worker outlives the batch; the
+                        # first abort in source order is the one reported.
+                        abort = abort if abort is not None else exc
+        if abort is not None:
+            raise abort
+
+        results: list[dict[str, Any]] = []
+        dispatched: list[Any] = []
+        for i, (call, blocked) in enumerate(plan):
+            if blocked is not None:
+                results.append(_blocked_result(call, blocked))
+                continue
+            result = executed[i]
+            halt = self._finalize_call(call, result)
+            if halt is not None:
+                return halt, None
+            dispatched.append(result)
+            results.append(
+                {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
+            )
+        self._context.add_tool_results(results)
+        return None, _terminate_output(dispatched, results)
+
+    def _preflight_call(self, call: Any) -> tuple[str, str] | None:
+        """Guardrails then hooks for one call. ``("halt", r)``/``("block", r)``/None."""
+        for guardrail in self._guardrails:
+            decision = guardrail.before_tool_call(self._state, call)
+            if decision.kind in ("halt", "block"):
+                self._trace.emit(
+                    "guardrail_triggered",
+                    hook="before_tool_call",
+                    guardrail=guardrail.name,
+                    kind=decision.kind,
+                    reason=decision.reason,
+                )
+                return decision.kind, decision.reason
+
+        for outcome in self._events.emit(
+            "before_tool_call",
+            {
+                "name": call.name,
+                "input": call.input,
+                "turn": self._state.turns,
+                "cost_usd": self._state.cost_usd,
+            },
         ):
-            terminate_output = dispatched[-1].content
-        return None, terminate_output
+            if outcome.get("block"):
+                reason = str(outcome.get("reason", f"blocked by hook {outcome['_handler']}"))
+                self._trace.emit(
+                    "hook_triggered",
+                    event="before_tool_call",
+                    hook=outcome["_handler"],
+                    action="block",
+                    reason=reason,
+                )
+                return "block", reason
+            if isinstance(outcome.get("input"), dict):
+                call.input = outcome["input"]
+                self._trace.emit(
+                    "hook_triggered",
+                    event="before_tool_call",
+                    hook=outcome["_handler"],
+                    action="patch_input",
+                )
+        return None
+
+    def _execute_call(self, call: Any) -> Any:
+        """Dispatch one preflighted call (worker-thread safe: trace only)."""
+
+        def on_update(progress: str, _call=call) -> None:
+            self._trace.emit("tool_update", id=_call.id, name=_call.name, content=progress)
+
+        result = self._registry.dispatch(call, on_update=on_update)
+        if result.is_error and self._spec.loop.on_tool_error == "retry_once":
+            self._trace.emit("tool_retry", id=call.id, name=call.name)
+            result = self._registry.dispatch(call, on_update=on_update)
+        if result.is_error and self._spec.loop.on_tool_error == "abort":
+            raise ToolAbort(f"tool '{call.name}' failed: {result.content}")
+        return result
+
+    def _finalize_call(self, call: Any, result: Any) -> str | None:
+        """After-hooks and after-guardrails for one call. Returns a halt reason."""
+        for outcome in self._events.emit(
+            "after_tool_call",
+            {
+                "name": call.name,
+                "input": call.input,
+                "content": result.content,
+                "is_error": result.is_error,
+            },
+        ):
+            patched = False
+            if isinstance(outcome.get("content"), str):
+                result.content = outcome["content"]
+                patched = True
+            if isinstance(outcome.get("is_error"), bool):
+                result.is_error = outcome["is_error"]
+                patched = True
+            if patched:
+                self._trace.emit(
+                    "hook_triggered",
+                    event="after_tool_call",
+                    hook=outcome["_handler"],
+                    action="patch_result",
+                )
+
+        for guardrail in self._guardrails:
+            decision = guardrail.after_tool_call(self._state, call, result)
+            if decision.kind == "halt":
+                self._trace.emit(
+                    "guardrail_triggered",
+                    hook="after_tool_call",
+                    guardrail=guardrail.name,
+                    kind="halt",
+                    reason=decision.reason,
+                )
+                return decision.reason
+
+        self._trace.emit(
+            "tool_result",
+            id=call.id,
+            name=call.name,
+            content=result.content,
+            is_error=result.is_error,
+        )
+        return None
 
     def _on_output(self, output: str) -> str | None:
         """Run on_output guardrails. Returns None (ok), a block reason, or 'HALT:<reason>'."""

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -126,6 +127,9 @@ class TraceWriter:
         self._patterns = [re.compile(p, re.IGNORECASE) for p in (redact_patterns or [])]
         self._level = level
         self._on_event = on_event
+        # Parallel tool execution emits tool_update/tool events from worker
+        # threads; seq assignment and the file append must stay atomic.
+        self._lock = threading.Lock()
         self.events: list[TraceEvent] = []
 
     @property
@@ -133,31 +137,35 @@ class TraceWriter:
         return self._path
 
     def emit(self, event_type: str, **payload: Any) -> TraceEvent:
-        """Record an event: assign seq/timestamp, redact, append to JSONL."""
-        event = TraceEvent(
-            run_id=self._run_id,
-            harness_name=self._name,
-            harness_version_hash=self._version,
-            seq=self._seq,
-            timestamp=datetime.now(UTC).isoformat(),
-            type=event_type,
-            payload=self._redact(payload),
-        )
-        self._seq += 1
-        if self._level == "tool_calls_only" and event_type not in {
-            "run_started",
-            "run_finished",
-            "tool_call",
-            "tool_update",
-            "tool_retry",
-            "tool_result",
-            "guardrail_triggered",
-            "verification_result",
-        }:
-            return event
-        self.events.append(event)
-        with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(event.model_dump_json() + "\n")
+        """Record an event: assign seq/timestamp, redact, append to JSONL.
+
+        Thread-safe: parallel tool execution calls this from worker threads.
+        """
+        with self._lock:
+            event = TraceEvent(
+                run_id=self._run_id,
+                harness_name=self._name,
+                harness_version_hash=self._version,
+                seq=self._seq,
+                timestamp=datetime.now(UTC).isoformat(),
+                type=event_type,
+                payload=self._redact(payload),
+            )
+            self._seq += 1
+            if self._level == "tool_calls_only" and event_type not in {
+                "run_started",
+                "run_finished",
+                "tool_call",
+                "tool_update",
+                "tool_retry",
+                "tool_result",
+                "guardrail_triggered",
+                "verification_result",
+            }:
+                return event
+            self.events.append(event)
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(event.model_dump_json() + "\n")
         if self._on_event is not None:
             try:
                 self._on_event(event)

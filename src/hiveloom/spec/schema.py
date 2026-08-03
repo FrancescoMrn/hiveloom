@@ -535,6 +535,14 @@ class LoopConfig(BaseModel):
     on_tool_error: Literal["retry_once", "surface_to_model", "abort"] = Field(
         default="retry_once", description="What to do when a tool call errors."
     )
+    tool_execution: Literal["sequential", "parallel"] = Field(
+        default="sequential",
+        description="How a turn's tool calls run. 'sequential' runs each call's "
+        "full pipeline in order. 'parallel' preflights guardrails/hooks for "
+        "every call in source order, executes the surviving calls concurrently, "
+        "then finalizes results in source order. Only opt in when the "
+        "harness's tools are safe to run concurrently.",
+    )
     require_verification: bool = Field(
         default=True, description="If true, the loop cannot succeed without verify passing."
     )
