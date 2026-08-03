@@ -186,3 +186,27 @@ def test_force_compact_disabled_for_full_strategy():
         cm.add_user("message " + str(i))
     assert cm.force_compact() is False
 
+
+def test_summarize_compaction_prompts_for_structured_sections():
+    from hiveloom.models.fake import text_response
+
+    spec = _spec(
+        max_input_tokens=40,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "summarize"},
+    )
+    provider = FakeModelProvider([text_response("# Goal\n- summarize\n# Next steps\n- none")])
+    cm = ContextManager(spec, provider, None)
+    cm.add_user("TASK: pinned first message")
+    for i in range(6):
+        cm.add_user("filler message number " + str(i) + " with some length to it")
+
+    assert cm.maybe_compact() is True
+
+    prompt = provider.calls[0]["messages"][0]["content"]
+    sections = ("# Goal", "# Progress", "# Key decisions", "# Next steps", "# Critical context")
+    for section in sections:
+        assert section in prompt
+    assert any(
+        "summary of earlier turns" in str(m.get("content", "")) for m in cm.messages
+    )

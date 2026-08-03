@@ -49,6 +49,27 @@ class TruncateOldestCompaction(CompactionMethod):
             del manager.messages[manager.pinned_message_count]
 
 
+# A structured summary keeps the model oriented after history is dropped:
+# free-form summaries reliably preserve *facts* but lose *direction* (what was
+# being attempted and what comes next), which is what post-compaction turns
+# actually stall on. Fixed section headers force both to survive.
+_SUMMARY_FORMAT = """Summarize the agent transcript below so the agent can continue \
+the task with the transcript gone. Use exactly these sections, each as terse \
+bullet points; write "none" for an empty section:
+
+# Goal
+The task being performed, in one line.
+# Progress
+What has been done and what it produced (include exact values, paths, ids).
+# Key decisions
+Choices made and why, including approaches ruled out.
+# Next steps
+What remains to be done, in order.
+# Critical context
+Verbatim fragments that must survive: identifiers, tool outputs still needed, \
+constraints, error messages."""
+
+
 class SummarizeCompaction(CompactionMethod):
     name = "summarize"
 
@@ -58,16 +79,10 @@ class SummarizeCompaction(CompactionMethod):
         older = manager.messages[manager.pinned_message_count : -1]
         transcript = _render_for_summary(older)
         summary_prompt = [
-            {
-                "role": "user",
-                "content": (
-                    "Summarize the following agent transcript into a compact set of "
-                    "facts and decisions to preserve. Be terse.\n\n" + transcript
-                ),
-            }
+            {"role": "user", "content": f"{_SUMMARY_FORMAT}\n\n{transcript}"}
         ]
         response = manager.complete_compaction(
-            system="You compress agent transcripts into durable notes.",
+            system="You compress agent transcripts into durable, structured notes.",
             messages=summary_prompt,
         )
         manager.apply_summary(response.text)
