@@ -20,28 +20,28 @@ classifiers = [
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
-    "typer>=0.27.0",
+    "typer>=0.27.1",
     "rich>=13.0",
-    "anthropic>=0.120.1",
-    "anyio>=4.0",
+    "anthropic>=0.121.0",
+    "anyio>=4.14.2",
     "httpx2>=2.9",
     "mcp>=2.0.0",
     "python-dotenv>=1.0",
     "jsonschema>=4.0",
-    "starlette>=1.0",
-    "uvicorn>=0.30",
-    "pyjwt[crypto]>=2.8",
-    "cryptography>=42.0",
+    "starlette>=1.5.1",
+    "uvicorn>=0.52.1",
+    "pyjwt[crypto]>=2.13.0",
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=7.0", "ruff>=0.16.0"]
+dev = ["pytest>=8.0", "pytest-cov>=7.0", "ruff>=0.16.2"]
 
 [project.scripts]
 hiveloom = "hiveloom.cli:app"
 
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
