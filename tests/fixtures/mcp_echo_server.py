@@ -7,6 +7,8 @@ local server rather than a mock.
 
 from __future__ import annotations
 
+from typing import Any
+
 from mcp.server import MCPServer
 
 mcp = MCPServer("echo")
@@ -28,6 +30,15 @@ def add(a: int, b: int) -> int:
 def boom() -> str:
     """Always raises, to exercise the tool-error path."""
     raise RuntimeError("boom")
+
+
+@mcp.tool(structured_output=True)
+def chart(title: str) -> dict[str, Any]:
+    """Return a caller-facing artifact alongside the model-facing text."""
+    return {
+        "note": f"chart {title} registered",
+        "_hiveloom": {"artifacts": [{"kind": "chart", "data": {"title": title}}]},
+    }
 
 
 if __name__ == "__main__":

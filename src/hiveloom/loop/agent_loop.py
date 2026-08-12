@@ -23,6 +23,7 @@ from hiveloom.context.manager import ContextManager
 from hiveloom.events import EventBus
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter
+from hiveloom.loop.control import RunControl
 from hiveloom.loop.policies import LoopPolicy, build_policy
 from hiveloom.models.provider import (
     ContextOverflowError,
@@ -31,15 +32,16 @@ from hiveloom.models.provider import (
     ModelResponse,
     Usage,
 )
+from hiveloom.playbooks import PlaybookManager
 from hiveloom.spec.schema import HarnessSpec
-from hiveloom.tools.registry import ToolRegistry
+from hiveloom.tools.registry import ToolRegistry, ToolResult
 from hiveloom.verify.base import VerdictResult, Verifier
 
 
 class RunResult(BaseModel):
     """The outcome of a harness run."""
 
-    status: str  # success | verify_failed | guardrail_halt | max_turns | error
+    status: str  # success | verify_failed | guardrail_halt | max_turns | stopped | error
     output: str = ""
     turns: int = 0
     cost_usd: float = 0.0
@@ -48,6 +50,14 @@ class RunResult(BaseModel):
     trace_path: str = ""
     verdicts: list[VerdictResult] = Field(default_factory=list)
     reason: str = ""
+    # Structured tool side-products in dispatch order: {"kind", "data", "tool"}.
+    # Populated even on a failed run — a turn that proposed something before
+    # hitting max_turns still produced it.
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+    def artifacts_of(self, kind: str) -> list[Any]:
+        """The ``data`` payloads of every artifact of one kind, in order."""
+        return [a["data"] for a in self.artifacts if a.get("kind") == kind]
 
 
 class GuardrailHalt(RuntimeError):
@@ -86,6 +96,10 @@ class AgentLoop:
         run_id: str,
         events: EventBus | None = None,
         policy: LoopPolicy | None = None,
+        history: list[dict[str, Any]] | None = None,
+        context_values: dict[str, Any] | None = None,
+        playbooks: PlaybookManager | None = None,
+        control: RunControl | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -97,6 +111,16 @@ class AgentLoop:
         self._trace = trace
         self._run_input = run_input
         self._run_id = run_id
+        self._history = list(history or [])
+        # Kept by reference, not copied: a tool may accumulate run-scoped state
+        # in it across calls, and the caller reads it back after the run.
+        self._context_values = context_values if context_values is not None else {}
+        self._playbooks = playbooks
+        if playbooks is not None:
+            self._context.set_playbooks(playbooks)
+            switch_tool = registry.get("switch_playbook")
+            if switch_tool is not None:
+                switch_tool.bind(self._handle_switch_playbook)
         self._events = events if events is not None else EventBus(trace=trace)
         self._policy = policy if policy is not None else build_policy(
             spec.loop.policy, {"steps": spec.loop.steps}
@@ -107,6 +131,7 @@ class AgentLoop:
             temperature=spec.model.temperature,
             provider=spec.model.provider,
         )
+        self._control = control
         self._state = RunState(tool_names=set(registry.names()))
         self._context.set_compaction_model_call(self._compaction_model_turn)
 
@@ -129,16 +154,27 @@ class AgentLoop:
             input=self._run_input,
             policy=loop.policy,
             model=self._model_config.id,
+            history_turns=len(self._history),
         )
         self._events.emit(
             "run_started",
-            {"input": self._run_input, "policy": loop.policy, "model": self._model_config.id},
+            {
+                "input": self._run_input,
+                "policy": loop.policy,
+                "model": self._model_config.id,
+                "history": self._history,
+            },
         )
 
         halt = self._guardrail_halt(lambda g: g.before_run(self._state))
         if halt is not None:
             return self._finish("guardrail_halt", reason=halt)
 
+        self._enter_initial_playbook()
+
+        # Prior turns first, so the current input stays the newest message —
+        # policies and compaction both rely on that position.
+        self._context.seed_history(self._history)
         self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
@@ -150,6 +186,21 @@ class AgentLoop:
         retries = 0
         last_verdicts: list[VerdictResult] = []
         while self._state.model_calls < loop.max_turns:
+            # Turn boundary: the one point where outside control is consumed.
+            # The state is coherent here — no model call or tool in flight.
+            if self._control is not None:
+                if self._control.stop_requested():
+                    return self._finish(
+                        "stopped",
+                        output=self._state.output or "",
+                        reason=self._control.stop_reason,
+                    )
+                for steer in self._control.drain_messages():
+                    self._trace.emit("user_steer", content=steer)
+                    self._context.add_user(
+                        "[Operator message received while you were working — "
+                        f"take it into account from here on]\n{steer}"
+                    )
             try:
                 response = self.model_turn()
             except GuardrailHalt as exc:
@@ -357,6 +408,27 @@ class AgentLoop:
         original semantics — a halt during one call's finalize prevents later
         calls from executing at all.
         """
+        if response.stop_reason == "max_tokens":
+            # The response was cut off mid-emission, so the calls' argument
+            # JSON is untrustworthy (typically missing fields). Executing them
+            # would surface confusing errors — or worse, act on partial input.
+            truncated = [
+                {
+                    "tool_use_id": call.id,
+                    "content": (
+                        f"Call to {call.name} not executed: your response hit the "
+                        "max_tokens ceiling and the tool arguments arrived truncated. "
+                        "Retry with a more compact call (shorter lists and texts, or "
+                        "an aggregate form of the same request)."
+                    ),
+                    "is_error": True,
+                }
+                for call in response.tool_calls
+            ]
+            for call in response.tool_calls:
+                self._trace.emit("tool_truncated", name=call.name, id=call.id)
+            self._context.add_tool_results(truncated)
+            return None, None
         if self._spec.loop.tool_execution == "parallel" and len(response.tool_calls) > 1:
             return self._dispatch_parallel(response)
         results: list[dict[str, Any]] = []
@@ -476,10 +548,17 @@ class AgentLoop:
         def on_update(progress: str, _call=call) -> None:
             self._trace.emit("tool_update", id=_call.id, name=_call.name, content=progress)
 
-        result = self._registry.dispatch(call, on_update=on_update)
-        if result.is_error and self._spec.loop.on_tool_error == "retry_once":
+        run_context = self._run_context()
+        result = self._registry.dispatch(call, on_update=on_update, run_context=run_context)
+        if (
+            result.is_error
+            and result.retryable
+            and self._spec.loop.on_tool_error == "retry_once"
+        ):
             self._trace.emit("tool_retry", id=call.id, name=call.name)
-            result = self._registry.dispatch(call, on_update=on_update)
+            result = self._registry.dispatch(
+                call, on_update=on_update, run_context=run_context
+            )
         if result.is_error and self._spec.loop.on_tool_error == "abort":
             raise ToolAbort(f"tool '{call.name}' failed: {result.content}")
         return result
@@ -522,12 +601,21 @@ class AgentLoop:
                 )
                 return decision.reason
 
+        # Collect structured side-products before tracing, so the trace shows
+        # exactly what the caller will receive.
+        collected = [
+            {"kind": artifact.kind, "data": artifact.data, "tool": call.name}
+            for artifact in getattr(result, "artifacts", [])
+        ]
+        self._state.artifacts.extend(collected)
+
         self._trace.emit(
             "tool_result",
             id=call.id,
             name=call.name,
             content=result.content,
             is_error=result.is_error,
+            artifacts=collected,
         )
         return None
 
@@ -569,14 +657,109 @@ class AgentLoop:
                 )
         return output
 
-    def _verify(self, output: str) -> list[VerdictResult]:
-        run_context = {
+    # ------------------------------------------------------------------ #
+    # Playbooks
+    # ------------------------------------------------------------------ #
+    def _hook_error(self, playbook: str, kind: str, exc: Exception) -> None:
+        self._trace.emit(
+            "hook_error",
+            event=f"playbook_{kind}",
+            hook=playbook,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    def _enter_initial_playbook(self) -> None:
+        if self._playbooks is None or not self._playbooks.names:
+            return
+        outcome = self._playbooks.enter_initial(
+            run_context=self._run_context(), on_hook_error=self._hook_error
+        )
+        name = self._playbooks.current_name
+        self._trace.emit(
+            "playbook_switch", to=name, **{"from": None}, reason="run start",
+            ok=outcome.ok, notes=outcome.notes,
+        )
+        self._events.emit(
+            "playbook_enter", {"playbook": name, "from": None, "reason": "run start"}
+        )
+
+    def _handle_switch_playbook(self, name: str, reason: str = "") -> ToolResult:
+        """Back the switch_playbook tool. Refusals are tool errors, not halts."""
+        assert self._playbooks is not None  # bound only when playbooks exist
+        previous = self._playbooks.current_name
+        outcome = self._playbooks.switch(
+            name,
+            run_context=self._run_context(),
+            reason=reason,
+            on_hook_error=self._hook_error,
+        )
+        self._trace.emit(
+            "playbook_switch",
+            to=name,
+            **{"from": previous},
+            reason=reason,
+            ok=outcome.ok,
+            notes=outcome.notes,
+            refused_reason=outcome.reason,
+        )
+        if not outcome.ok:
+            return ToolResult(content=outcome.reason, is_error=True, retryable=False)
+
+        self._events.emit(
+            "playbook_exit", {"playbook": previous, "to": name, "reason": reason}
+        )
+        self._events.emit(
+            "playbook_enter", {"playbook": name, "from": previous, "reason": reason}
+        )
+        active = ", ".join(sorted(self._registry.active_names()))
+        message = [f"Now in playbook '{name}'. Active tools: {active}."]
+        message += outcome.notes
+        return ToolResult(content=" ".join(message))
+
+    def _run_context(self, **extra: Any) -> dict[str, Any]:
+        """The per-run dict handed to code tools and validators.
+
+        ``context`` holds the caller's own values (a DSN, request-scoped
+        state). It is nested rather than merged so a caller key can never
+        shadow ``input``/``harness_dir``/``run_id``, and the same object is
+        passed through — a tool may use it to accumulate state across calls
+        within one run.
+        """
+        return {
             "input": self._run_input,
             "harness_dir": str(self._base),
-            "output": output,
+            "run_id": self._run_id,
+            "context": self._context_values,
+            # A snapshot of what the run has produced so far. This is what
+            # makes a playbook exit gate expressible ("you entered targeting
+            # and proposed nothing") and lets a validator grade side-products,
+            # not just the final text.
+            "artifacts": list(self._state.artifacts),
+            **extra,
         }
+
+    def _active_verifiers(self) -> list[Verifier]:
+        """Spec validators plus the current playbook's, if any.
+
+        Mode validators are additive: a playbook grades what *it* is
+        responsible for on top of the harness-wide contract, never instead of
+        it — otherwise entering a mode could quietly lower the bar.
+        """
+        if self._playbooks is None or self._playbooks.current is None:
+            return self._verifiers
+        refs = self._playbooks.current.ref.validators
+        if not refs:
+            return self._verifiers
+        from hiveloom.verify.builtin import build_verifiers_from_refs
+
+        return [*self._verifiers, *build_verifiers_from_refs(refs, self._base)]
+
+    def _verify(self, output: str) -> list[VerdictResult]:
+        run_context = self._run_context(
+            output=output, playbook=self._playbooks.current_name if self._playbooks else None
+        )
         verdicts: list[VerdictResult] = []
-        for verifier in self._verifiers:
+        for verifier in self._active_verifiers():
             verdict = verifier.validate(output, run_context)
             verdict.verifier = verdict.verifier or verifier.name
             self._trace.emit(
@@ -645,4 +828,5 @@ class AgentLoop:
             trace_path=str(self._trace.path),
             verdicts=verdicts or [],
             reason=reason,
+            artifacts=list(self._state.artifacts),
         )

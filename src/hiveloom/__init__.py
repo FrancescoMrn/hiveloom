@@ -43,6 +43,10 @@ _SDK = {
     "validate_harness": ("hiveloom.spec.loader", "validate_harness"),
     "Hive": ("hiveloom.logging.hive", "Hive"),
     "HarnessServer": ("hiveloom.serve", "HarnessServer"),
+    # Code-tool authoring surface: return a ToolResult carrying Artifacts to
+    # hand structured output to the embedding caller.
+    "Artifact": ("hiveloom.tools.registry", "Artifact"),
+    "ToolResult": ("hiveloom.tools.registry", "ToolResult"),
 }
 
 

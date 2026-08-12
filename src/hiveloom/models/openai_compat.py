@@ -77,7 +77,7 @@ class OpenAICompatProvider(ModelProvider):
         payload: dict[str, Any] = {
             "model": config.id,
             "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
+            **({} if config.temperature is None else {"temperature": config.temperature}),
             "messages": _to_openai_messages(system, messages),
         }
         if tools:

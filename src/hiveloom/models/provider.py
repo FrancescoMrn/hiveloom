@@ -72,7 +72,7 @@ class ModelConfig(BaseModel):
 
     id: str
     max_tokens: int = 4096
-    temperature: float = 0.0
+    temperature: float | None = None
     # Which provider serves `id`. Carried for pricing, not for dispatch: an
     # open-catalog provider accepts model ids that are not individually
     # registered, and the *provider* is then the only thing that says what an

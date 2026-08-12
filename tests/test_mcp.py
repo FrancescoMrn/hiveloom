@@ -274,7 +274,7 @@ def test_stdio_discovery_dispatch_and_error_never_raises_out_of_dispatch(tmp_pat
     try:
         tools = connect_mcp_server(ref, tmp_path, bridge)
         names = {t.name for t in tools}
-        assert names == {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom"}
+        assert {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom"} <= names
         for tool in tools:
             registry.register(tool)
             assert tool.tags == ["mcp", "mcp:echo", "exec", "dangerous"]
@@ -531,3 +531,28 @@ def test_http_transport_round_trip(tmp_path: Path):
             assert "pong" in result.content
         finally:
             bridge.close()
+
+
+# --------------------------------------------------------------------------- #
+# Structured artifacts over MCP
+# --------------------------------------------------------------------------- #
+def test_mcp_tool_can_return_caller_artifacts(tmp_path: Path):
+    """A tool behind MCP keeps the artifact channel a local code tool has."""
+    from hiveloom.tools.registry import Artifact
+
+    bridge = McpBridge()
+    registry = ToolRegistry()
+    registry.add_closer(bridge.close)
+    try:
+        for tool in connect_mcp_server(_stdio_ref(), tmp_path, bridge):
+            registry.register(tool)
+        result = registry.dispatch(
+            ToolCall(id="c1", name="mcp__echo__chart", input={"title": "AUM"})
+        )
+    finally:
+        registry.close()
+
+    assert result.artifacts == [Artifact(kind="chart", data={"title": "AUM"})]
+    # The envelope is for the caller; the model must not be billed for it.
+    assert "_hiveloom" not in result.content
+    assert "chart AUM registered" in result.content
