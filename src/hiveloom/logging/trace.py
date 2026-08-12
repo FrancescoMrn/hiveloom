@@ -101,11 +101,17 @@ class TraceEvent(BaseModel):
     seq: int
     timestamp: str
     type: str
+    session_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class TraceWriter:
-    """Writes trace events to ``<trace_dir>/<run_id>.jsonl`` (redacted)."""
+    """Writes trace events to ``<trace_dir>/<run_id>.jsonl`` (redacted).
+
+    With a ``session_id``, traces group under ``<trace_dir>/<session_id>/`` —
+    one directory per conversation/session — and every event carries the id,
+    so related runs read together instead of as an undifferentiated pile.
+    """
 
     def __init__(
         self,
@@ -116,10 +122,12 @@ class TraceWriter:
         redact_patterns: list[str] | None = None,
         level: str = "full",
         on_event=None,
+        session_id: str | None = None,
     ):
-        self._dir = Path(trace_dir)
+        self._dir = Path(trace_dir) if session_id is None else Path(trace_dir) / session_id
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / f"{run_id}.jsonl"
+        self._session_id = session_id
         self._run_id = run_id
         self._name = harness_name
         self._version = version_hash
@@ -149,6 +157,7 @@ class TraceWriter:
                 seq=self._seq,
                 timestamp=datetime.now(UTC).isoformat(),
                 type=event_type,
+                session_id=self._session_id,
                 payload=self._redact(payload),
             )
             self._seq += 1

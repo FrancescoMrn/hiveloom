@@ -926,9 +926,11 @@ def serve(
 ) -> None:
     """Serve the harness over HTTP — the long-lived deployment interface.
 
-    ``GET /healthz`` reports liveness; ``POST /runs`` with ``{"input": "..."}``
-    runs the harness (add ``"stream": true`` for NDJSON trace events, final
-    ``run_result`` line last — same format as ``run --stream``). Set
+    ``GET /healthz`` reports liveness; ``POST /runs`` runs the harness with
+    either ``{"input": "..."}`` or ``{"messages": [...]}`` (the whole
+    conversation, for a multi-turn caller). Add ``"stream": true`` for NDJSON
+    trace events, final ``run_result`` line last — same format as
+    ``run --stream``. Set
     ``HIVELOOM_API_KEY`` to require ``Authorization: Bearer`` / ``X-API-Key``
     on ``/runs``; run inputs are always treated as literal text, never file
     paths. Blocks until interrupted.

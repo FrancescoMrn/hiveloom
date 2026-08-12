@@ -10,6 +10,7 @@ discovery is eager.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +22,9 @@ from hiveloom.events import build_event_bus
 from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
+from hiveloom.loop.control import RunControl
 from hiveloom.models.provider import ModelProvider
+from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
 from hiveloom.tools.registry import build_registry
@@ -45,6 +48,66 @@ def _resolve_input(base: Path, value: str) -> str:
     return value
 
 
+def split_conversation(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    """Split a whole conversation into ``(history, task_statement)``.
+
+    Multi-turn callers own the conversation and replay it every turn, so they
+    pass the thread as it stands: alternating user/assistant turns ending with
+    the user message to act on. That last message becomes the run's task
+    statement (and its trace ``input``); everything before it is seeded as
+    history.
+
+    Roles must alternate — the major provider APIs reject consecutive
+    same-role messages, and a caller finding that out as an opaque provider
+    400 is far worse than finding it out here.
+    """
+    if not messages:
+        raise ValueError("messages must not be empty")
+
+    normalized: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            raise ValueError(
+                f"messages[{index}].role must be 'user' or 'assistant' (got {role!r})"
+            )
+        if "content" not in message:
+            raise ValueError(f"messages[{index}] has no 'content'")
+        if normalized and normalized[-1]["role"] == role:
+            raise ValueError(
+                f"messages[{index}] repeats the '{role}' role; turns must alternate"
+            )
+        normalized.append({"role": role, "content": message["content"]})
+
+    if normalized[-1]["role"] != "user":
+        raise ValueError(
+            "the last message must be from the user — it is the task statement"
+        )
+    task_statement = normalized[-1]["content"]
+    if not isinstance(task_statement, str):
+        raise ValueError("the last message's content must be a string")
+    return normalized[:-1], task_statement
+
+
+def _resolve_conversation(
+    base: Path,
+    input_value: str | None,
+    messages: list[dict[str, Any]] | None,
+    *,
+    literal_input: bool,
+) -> tuple[list[dict[str, Any]], str]:
+    """Normalize the two input forms into ``(history, task_statement)``."""
+    if (input_value is None) == (messages is None):
+        raise ValueError("pass exactly one of 'input_value' or 'messages'")
+    if messages is not None:
+        # Conversation content is always literal: it is caller-authored chat
+        # text, never a filename to resolve.
+        return split_conversation(messages)
+    return [], input_value if literal_input else _resolve_input(base, input_value)
+
+
 def _resolve_trace_dir(base: Path, trace_dir: str) -> Path:
     path = Path(trace_dir)
     if path.is_absolute():
@@ -57,11 +120,17 @@ def _new_run_id() -> str:
 
 
 def dry_run(
-    harness_dir: str | Path, input_value: str, *, approve_trust=None
+    harness_dir: str | Path,
+    input_value: str | None = None,
+    *,
+    conversation: list[dict[str, Any]] | None = None,
+    approve_trust=None,
 ) -> dict[str, Any]:
     """Assemble the first model call without calling the model provider.
 
     Declared MCP servers are still contacted because tool discovery is eager.
+    Pass either ``input_value`` (single-shot) or ``conversation`` (the whole
+    multi-turn thread) — see :func:`run_harness`.
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -70,12 +139,29 @@ def dry_run(
     resolve_hooks(spec, base)
     registry = build_registry(spec, base)
     try:
-        run_input = _resolve_input(base, input_value)
+        history, run_input = _resolve_conversation(
+            base, input_value, conversation, literal_input=False
+        )
 
         from hiveloom.models.provider import _estimate_messages_tokens
 
-        system = spec.system_prompt
-        messages = [{"role": "user", "content": run_input}]
+        # Assemble the system prompt the way a real run does, rather than
+        # echoing spec.system_prompt: the skills index and active tools'
+        # guidelines are part of what actually goes on the wire, so leaving
+        # them out here would under-report both the prompt and the token
+        # estimate this function exists to provide. No provider is needed —
+        # ContextManager.system() does not call one.
+        context_manager = ContextManager(
+            spec, None, registry=registry, skills=load_skills(spec, base)
+        )
+        if spec.playbooks:
+            # Show the run as it would start: in the entry playbook, with its
+            # prompt fragment and its narrowed tool set.
+            manager = PlaybookManager(load_playbooks(spec, base), registry)
+            manager.enter_initial()
+            context_manager.set_playbooks(manager)
+        system = context_manager.system()
+        messages = [*history, {"role": "user", "content": run_input}]
         return {
             "name": spec.name,
             "model": spec.model.id,
@@ -90,8 +176,10 @@ def dry_run(
 
 def run_harness(
     harness_dir: str | Path,
-    input_value: str,
+    input_value: str | None = None,
     *,
+    conversation: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
     provider: ModelProvider | None = None,
     ingest: bool = True,
     hive_path: str | Path | None = None,
@@ -99,8 +187,26 @@ def run_harness(
     approve_trust=None,
     strong_model: StrongModel | None = None,
     literal_input: bool = False,
+    control: RunControl | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
+
+    Pass exactly one input form. ``input_value`` is the single-shot task
+    string. ``conversation`` is the whole multi-turn thread — alternating
+    user/assistant turns ending with the user message to act on — for callers
+    that own the conversation and replay it each turn (a chat service). The
+    trailing user message becomes the task statement; the rest is seeded as
+    history and is the first thing compaction reclaims. Conversation content is
+    always literal, so ``literal_input`` applies only to ``input_value``.
+
+    ``context`` carries per-run values the *caller* owns rather than the model:
+    a database DSN, request-scoped state, a mutable accumulator. Code tools
+    that declare a ``run_context`` parameter receive it (under the ``context``
+    key, alongside ``input``/``harness_dir``/``run_id``), as do validators. The
+    dict is passed by reference and never traced, so it is also the right place
+    for values that must not be persisted.
 
     Unless ``ingest`` is false, the completed run's trace is ingested into the
     Hive so ``hiveloom trace``/``stats`` see it immediately, and (if the spec
@@ -111,6 +217,16 @@ def run_harness(
     when the harness folder is not yet trusted on this machine. ``strong_model``
     is a test seam: when given, auto-propose uses it instead of resolving one
     (so tests never need ``ANTHROPIC_API_KEY``).
+
+    ``control`` is an optional :class:`hiveloom.loop.control.RunControl`: a
+    thread-safe channel the caller keeps to stop the run gracefully or inject
+    steering messages, both consumed at the loop's next turn boundary.
+    ``run_id`` lets the caller pre-allocate the id (so it can be announced to
+    a client before the run finishes); by default one is generated.
+    ``session_id`` groups related runs (the turns of one conversation, say):
+    traces land in ``<trace_dir>/<session_id>/`` and every trace event carries
+    the id. Letters, digits, ``.``, ``_`` and ``-`` only — it names a
+    directory.
 
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
@@ -125,21 +241,33 @@ def run_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
 
-    run_input = input_value if literal_input else _resolve_input(base, input_value)
+    history, run_input = _resolve_conversation(
+        base, input_value, conversation, literal_input=literal_input
+    )
     registry = build_registry(spec, base)
     try:
         guardrails = build_guardrails(spec, registry, base)
         verifiers = build_verifiers(spec, base)
         skills = load_skills(spec, base)
+        playbooks = (
+            PlaybookManager(load_playbooks(spec, base), registry)
+            if spec.playbooks
+            else None
+        )
 
         if provider is None:
             provider = _default_provider(base, spec.model.provider)
 
         version_hash = spec_version_hash(spec, base)
-        run_id = _new_run_id()
+        run_id = run_id or _new_run_id()
+        if session_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", session_id):
+            raise ValueError(
+                "session_id must be 1-64 characters of letters, digits, '.', '_' or '-'"
+            )
         trace = TraceWriter(
             _resolve_trace_dir(base, spec.logging.trace_dir),
             run_id=run_id,
+            session_id=session_id,
             harness_name=spec.name,
             version_hash=version_hash,
             redact_patterns=spec.logging.redact,
@@ -147,7 +275,9 @@ def run_harness(
             on_event=on_event,
         )
         events = build_event_bus(spec, base, trace)
-        context = ContextManager(
+        # Named context_manager, not context: the `context` parameter is the
+        # caller's per-run values and must not be shadowed here.
+        context_manager = ContextManager(
             spec, provider, trace, events=events, registry=registry, skills=skills
         )
         loop = AgentLoop(
@@ -157,11 +287,15 @@ def run_harness(
             registry=registry,
             guardrails=guardrails,
             verifiers=verifiers,
-            context=context,
+            context=context_manager,
             trace=trace,
             run_input=run_input,
             run_id=run_id,
             events=events,
+            history=history,
+            context_values=context,
+            playbooks=playbooks,
+            control=control,
         )
         result = loop.run()
     finally:
@@ -255,7 +389,7 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
     """The JSON shape of a completed run, shared by the CLI and the HTTP control plane.
 
     ``ok`` reflects only ``status == "success"`` — ``verify_failed``,
-    ``guardrail_halt``, ``max_turns``, and ``error`` are all completed runs
+    ``guardrail_halt``, ``max_turns``, ``stopped``, and ``error`` are all completed runs
     reported here, not raised exceptions, so both callers can never diverge
     on what a finished run looks like.
     """
@@ -269,6 +403,7 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "run_id": result.run_id,
         "trace_path": result.trace_path,
         "reason": result.reason,
+        "artifacts": result.artifacts,
     }
 
 
