@@ -18,12 +18,13 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 |---|---|---|
 | `version` | Spec format version | defaults to `0.2.0` |
 | `name` / `description` | Identity (Hive + packaging) | required |
-| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` |
+| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
 | `tools` | Tools available to the loop | list of `{builtin: name}` or `{code: path.py:fn, description: ...}` |
 | `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |
 | `extensions` | Harness-local extension modules | paths/modules loaded before validation; **always frozen** |
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
+| `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned` |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
@@ -37,7 +38,8 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 List them with `hiveloom catalog <tools|guardrails|validators|policies|compaction|hooks>`.
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
-  (allowlist-only, disabled without one), `http_get`.
+  (allowlist-only, disabled without one), `http_get`, `load_skill` (reads a
+  declared skill in full — progressive disclosure without a filesystem reader).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
   `regex_output_filter` are *singletons*: only one entry is meaningful, so
@@ -57,10 +59,77 @@ hook is any `@hiveloom.tools.tool`-decorated function (its JSON input schema is
 derived from type hints). `hiveloom add …/--code` scaffolds a correctly-signed
 stub.
 
+A tool that declares a `run_context` parameter is handed the run context
+(`input`, `harness_dir`, `run_id`, and the caller's own `context` dict from
+`run_harness(context=...)`) instead of having the model supply it; the
+parameter is hidden from the tool's JSON schema and cannot be forged by a
+model-supplied key of the same name. A tool that returns a `ToolResult` may
+attach `Artifact(kind=..., data=...)` side-products, which reach the caller on
+`RunResult.artifacts` without passing through the model's text channel.
+
+## Playbooks
+
+A **skill** is reference material the model reads; a **playbook** is a
+configuration the runtime applies. Entering one swaps in a prompt fragment,
+narrows the active tools, and adds mode-specific validators — so one harness
+covers what would otherwise need several, while keeping one conversation and
+one evolving spec.
+
+```yaml
+playbooks:
+  - name: overview
+    description: Read the segment landscape. No actions.
+    prompt: playbooks/overview.md
+    tools: [run_sql, render_chart]
+    entry: true
+
+  - name: targeting
+    description: Turn a cohort into a confirmable proposal.
+    prompt: playbooks/targeting.md
+    tools: [run_sql, render_chart, propose_decisions]
+    validators:
+      - code: validators/proposal.py:check_consent
+    on_enter: hooks/refresh_features.py:run
+    on_exit: hooks/require_proposal.py:check
+```
+
+Declaring any playbook auto-adds a `switch_playbook` tool, which stays active
+in every mode — a mode the model cannot leave is a trap, not a mode. The run
+starts in the `entry` playbook, or the first one declared.
+
+**Gates.** `on_enter` and `on_exit` receive `{playbook, from/to, reason,
+run_context}` and may return `None` to observe, `{"context": str}` to inject a
+note into the conversation, or `{"block": True, "reason": str}` to refuse. A
+blocking `on_exit` is a *boundary* check — the mode grades itself as the agent
+leaves ("you entered targeting and proposed nothing") instead of waiting for
+the end of the run. A gate that refuses three times running is force-released,
+so a badly written gate cannot trap the run; the release is traced. A hook that
+raises is recorded as `hook_error` and skipped, never crashing the run.
+Refusals reach the model as a tool error and are not retried.
+
+**Evidence.** Each switch is a `playbook_switch` trace event and a
+`playbook_enter`/`playbook_exit` lifecycle event. The Hive indexes them, so
+`hiveloom stats` breaks success, cost, turns, and refusals down per playbook,
+and the failure report localizes a problem to one mode. Attribution is *by
+visit*: a run that worked in two modes counts once for each.
+
+**Freeze.** `on_enter`/`on_exit` execute code and can never be changed by
+evolution, including through a rewrite of the surrounding `playbooks` list.
+Prompts are the evolvable part — which is the point: evolution rewrites one
+mode's guidance on that mode's own evidence.
+
 ## MCP servers
 
 A harness can declare MCP servers; their tools become ordinary dispatchable
-tools inside the loop, named `mcp__<server-name>__<tool>`. Discovery is
+tools inside the loop, named `mcp__<server-name>__<tool>`.
+
+An MCP tool can reach the *caller* as well as the model. Returning structured
+content under a `_hiveloom` envelope —
+`{"_hiveloom": {"artifacts": [{"kind": "chart", "data": {...}}]}}` — lands
+those entries on `RunResult.artifacts` exactly as a local code tool's would,
+and the envelope never enters the model's text. This is what lets a domain
+tool that also drives a UI be hosted on a server instead of copied into every
+harness that needs it. Discovery is
 **eager** — it happens when the tool registry is built, which includes
 `run --dry-run`. Dry-run never calls the model API, but a harness with
 `mcp_servers` genuinely performs local/network I/O to discover their tools
@@ -100,7 +169,10 @@ inspect what a harness's declared servers actually expose with
 ## Safety invariants (enforced in code)
 
 1. The evolver can never modify `guardrails`, `model`, `logging.redact`,
-   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
+   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose` — nor any
+   playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
+   around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
+   never side-effecting code.
 2. Code-hook regeneration always requires explicit human approval.
 3. `shell` is allowlist-only and disabled unless the spec enables it.
 4. Redaction patterns are applied before any trace is persisted.
@@ -112,7 +184,7 @@ inspect what a harness's declared servers actually expose with
 ```
 <harness-name>/
 ├── harness.yaml          # the spec
-├── tools/  validators/  schemas/
+├── tools/  validators/  schemas/  playbooks/
 ├── .hiveloom/traces/     # in-folder trace dir (memory travels with the harness)
 ├── .env.example          # every env var the spec/hooks reference
 ├── requirements.txt      # hiveloom==<pinned> + hook deps
