@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "article-digest output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_url", "summary", "key_quotes", "outline"],
+  "properties": {
+    "source_url": {"type": "string", "minLength": 1},
+    "summary": {"type": "string", "minLength": 1},
+    "key_quotes": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "outline": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

@@ -1803,10 +1803,21 @@ app.add_typer(cloud_app, name="cloud")
 
 @cloud_app.command("link")
 def cloud_link(
-    url: str = typer.Argument(..., help="The hiveloom-cloud origin, e.g. https://app.example.com"),
+    url: str = typer.Argument(
+        ...,
+        help=(
+            "The server origin, e.g. https://app.example.com — hiveloom-cloud or "
+            "any server implementing docs/sync-protocol.md."
+        ),
+    ),
     token: str = typer.Argument(..., help="The harness's link token (hl_link_…) from the web UI."),
     directory: str | None = typer.Option(
         None, "--dir", help="Target directory (defaults to the harness slug)."
+    ),
+    allow_insecure_http: bool = typer.Option(
+        False,
+        "--allow-insecure-http",
+        help="Allow sending the link token over plain HTTP to a non-local host.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -1814,7 +1825,9 @@ def cloud_link(
     from hiveloom import cloud as cloud_mod
 
     with _guard(json_output):
-        result = cloud_mod.link_harness(url, token, directory)
+        result = cloud_mod.link_harness(
+            url, token, directory, allow_insecure_http=allow_insecure_http
+        )
         if json_output:
             _emit_json({"ok": True, **result})
         else:

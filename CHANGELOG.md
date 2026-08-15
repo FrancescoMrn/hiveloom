@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Two evaluation suites that measure the harness on frontier models, where
+  article-extractor only measured the rescue of a weak one. `evals/article-digest`
+  (output-heavy digest, Opus 5 / Sonnet 5) shows verification and retry closing
+  the contract-compliance tail: 80% → 100% success at flat cost per success.
+  `evals/page-audit` (exhaustiveness past a truncated tool view, aggregation,
+  date arithmetic) shows the property that matters downstream: silently wrong
+  runs drop from 5/6 and 3/6 raw to 0/6 harnessed.
+- `evals/README.md`: an index of the three suites, the shared method, and the
+  caveats that apply to all of them.
+- `docs/models.md`: how the `claude` provider handles adaptive-thinking models.
+- Charts for the README's evidence section, regenerated from the committed
+  results by `docs/assets/make_plots.py`.
+
+### Changed
+
+- The README's article-extractor table showed the pre-0.3.0 sweep, not the
+  0.3.1 re-run it linked to. Corrected against the committed `RESULTS.md`
+  (Haiku 2%→3% raw and 61%→65% harnessed, cost per success $0.3405→$0.2212
+  raw, so 12× rather than 17×), with the Gemma arm — where the harness is
+  slightly worse — added rather than omitted, and the statistical caveat that
+  only the Haiku delta survives a paired test.
+
+### Fixed
+
+- `claude` provider: omit `temperature` for the models whose API rejects
+  sampling parameters (Opus 4.7 and later, Sonnet 5, Fable/Mythos). The spec
+  default of `0.0` is a non-default value to the API, so every call to those
+  models previously failed with a 400.
+- `claude` provider: preserve `thinking` / `redacted_thinking` blocks on the
+  assistant turn. Adaptive-thinking models require the turn to be replayed
+  unchanged, so dropping them broke the next call of a tool-use loop.
+
 ## [0.4.0] - 2026-08-03
 
 ### Added

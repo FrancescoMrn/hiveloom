@@ -34,6 +34,7 @@ class FakeCloud:
     def __init__(self, slug: str = "demo-notes", version: str = "aaa1111"):
         self.slug = slug
         self.version = version
+        self.protocol: int | None = cloud.PROTOCOL_VERSION
         self.files: dict[str, str] = {"harness.yaml": "name: demo\nlogging: {}\n"}
         self.trace_uploads: list[dict] = []
         self.requests: list[str] = []
@@ -51,6 +52,8 @@ class FakeCloud:
         self.requests.append(f"{request.get_method()} {path}")
         if path == "/api/link/status":
             payload = {"slug": self.slug, "name": self.slug, "version_hash": self.version}
+            if self.protocol is not None:
+                payload["protocol"] = self.protocol
             return _Response(json.dumps(payload).encode())
         if path == "/api/link/pull":
             return _Response(self._zip())
@@ -170,6 +173,41 @@ def test_zip_slip_is_refused(tmp_path, fake):
     with pytest.raises(cloud.CloudError, match="escaping"):
         cloud._extract_zip(tmp_path / "demo", buffer.getvalue())
     assert not (tmp_path / "evil.txt").exists()
+
+
+def test_status_without_protocol_field_means_revision_one(tmp_path, fake):
+    fake.protocol = None
+    result = _link(tmp_path, fake)
+    assert result["changed"] is True
+
+
+def test_protocol_mismatch_is_a_friendly_error(tmp_path, fake):
+    fake.protocol = cloud.PROTOCOL_VERSION + 1
+    with pytest.raises(cloud.CloudError, match="upgrade hiveloom"):
+        _link(tmp_path, fake)
+
+
+def test_plain_http_to_a_remote_host_is_refused(tmp_path, fake):
+    with pytest.raises(cloud.CloudError, match="allow-insecure-http"):
+        cloud.link_harness(
+            "http://cloud.test", "hl_link_tok", tmp_path / "demo", opener=fake.opener
+        )
+    assert fake.requests == []  # refused before any request, token never sent
+
+
+def test_plain_http_is_allowed_with_the_flag_or_locally(tmp_path, fake):
+    cloud.link_harness(
+        "http://cloud.test",
+        "hl_link_tok",
+        tmp_path / "a",
+        allow_insecure_http=True,
+        opener=fake.opener,
+    )
+    cloud.link_harness(
+        "http://localhost:8000", "hl_link_tok", tmp_path / "b", opener=fake.opener
+    )
+    assert (tmp_path / "a" / "harness.yaml").exists()
+    assert (tmp_path / "b" / "harness.yaml").exists()
 
 
 def test_run_sync_flag_requires_a_linked_dir(tmp_path):
