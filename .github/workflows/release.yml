@@ -100,14 +100,37 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Extract the CHANGELOG section for this version
+        # The release body should be the curated changelog entry, not a commit
+        # list. Falls back to generated notes when the section is missing (a
+        # tag with no CHANGELOG entry, or a workflow_dispatch run).
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ -s release-notes.md ]; then
+            echo "notes=file" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no CHANGELOG section for $VERSION; using generated notes"
+            echo "notes=generate" >> "$GITHUB_ENV"
+          fi
       - name: Create release with artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Idempotent so a re-run of the tag workflow refreshes the assets
-        # instead of failing on "release already exists".
+        # instead of failing on "release already exists". A re-run never
+        # rewrites the body, so notes edited by hand on the release page
+        # survive.
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          elif [ "$notes" = "file" ]; then
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md
           else
             gh release create "$GITHUB_REF_NAME" dist/* \
               --title "$GITHUB_REF_NAME" \
