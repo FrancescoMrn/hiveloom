@@ -26,6 +26,11 @@ Events and their mutation semantics (a handler returns ``None`` to observe):
                           or ``{"input": {...}}`` to replace the tool's args
 ``after_tool_call``       return ``{"content": ...}`` / ``{"is_error": ...}``
                           to patch the result (middleware, applied in order)
+``playbook_enter``        observe: ``{playbook, from, reason}`` — every mode
+                          entry, including the run's initial one. To *gate* an
+                          entry, use the playbook's own ``on_enter`` hook;
+                          this event is for cross-cutting observers.
+``playbook_exit``         observe: ``{playbook, to, reason}``
 ``before_verification``   return ``{"output": ...}`` to replace the final output
                           before output guardrails and validators run
 ``before_compaction``     return ``{"cancel": True}`` to skip this round, or
@@ -59,6 +64,8 @@ EVENTS: tuple[str, ...] = (
     "after_model_response",
     "before_tool_call",
     "after_tool_call",
+    "playbook_enter",
+    "playbook_exit",
     "before_verification",
     "before_compaction",
     "verification",

@@ -12,6 +12,12 @@ source of truth for run traces. Pull therefore overwrites harness files but
 never touches ``.hiveloom/`` (traces, this link config) or ``.env*`` —
 exactly the paths the cloud's packaged zip excludes.
 
+The link API is a small open protocol — any server implementing it can be
+linked, not just hiveloom-cloud. The contract (endpoints, payloads, the
+``protocol`` version field, and the trust model) lives in
+``docs/sync-protocol.md``. Note the trust model: pulled harness files can
+include extensions that execute locally, so only link servers you trust.
+
 Only the standard library (urllib), mirroring the OpenAI-compat provider's
 no-dependency stance.
 """
@@ -26,6 +32,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -33,8 +40,14 @@ from hiveloom.errors import HiveloomError
 
 CONFIG_RELPATH = Path(".hiveloom") / "cloud.json"
 
+# The link-API revision this client speaks. Servers advertise theirs in the
+# `protocol` field of /api/link/status (absent means 1, the initial revision);
+# see docs/sync-protocol.md for the full contract.
+PROTOCOL_VERSION = 1
+
 _DEFAULT_TRACE_DIR = "./.hiveloom/traces"
 _TIMEOUT = 60
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class CloudError(HiveloomError):
@@ -109,7 +122,15 @@ def _request(
 
 def remote_status(link: Link, *, opener=None) -> dict[str, Any]:
     _, body = _request(link, "/api/link/status", opener=opener)
-    return json.loads(body)
+    status = json.loads(body)
+    protocol = status.get("protocol", 1)
+    if protocol != PROTOCOL_VERSION:
+        raise CloudError(
+            f"the server at {link.base_url} speaks link protocol {protocol}, "
+            f"but this client speaks {PROTOCOL_VERSION} — upgrade "
+            + ("hiveloom" if protocol > PROTOCOL_VERSION else "the server")
+        )
+    return status
 
 
 def _trace_dir(harness_dir: Path) -> Path:
@@ -147,10 +168,31 @@ def _extract_zip(harness_dir: Path, blob: bytes) -> int:
     return written
 
 
+def _check_scheme(base_url: str, allow_insecure_http: bool) -> None:
+    """Refuse to send the link token over plain HTTP to a non-local host."""
+    split = urlsplit(base_url)
+    if split.scheme == "https":
+        return
+    if split.scheme != "http":
+        raise CloudError(f"unsupported URL scheme {split.scheme!r} — use https://")
+    if split.hostname in _LOCAL_HOSTS or allow_insecure_http:
+        return
+    raise CloudError(
+        f"refusing to send the link token over plain HTTP to {split.hostname} — "
+        "use https://, or pass --allow-insecure-http if you accept the risk"
+    )
+
+
 def link_harness(
-    base_url: str, token: str, directory: str | Path | None = None, *, opener=None
+    base_url: str,
+    token: str,
+    directory: str | Path | None = None,
+    *,
+    allow_insecure_http: bool = False,
+    opener=None,
 ) -> dict[str, Any]:
     """Pair a directory with the remote harness and pull it. Returns a summary."""
+    _check_scheme(base_url, allow_insecure_http)
     probe = Link(base_url=base_url, token=token)
     status = remote_status(probe, opener=opener)
     target = Path(directory) if directory is not None else Path(status["slug"])

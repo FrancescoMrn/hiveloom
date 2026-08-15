@@ -131,6 +131,51 @@ class FileWriteTool(Tool):
         return f"wrote {len(content)} chars to {path}"
 
 
+class LoadSkillTool(Tool):
+    """Read one of the harness's declared skills in full.
+
+    Progressive disclosure for harnesses that must not ship ``file_read``: a
+    guardrailed agent — say one whose only data access is a constrained SQL
+    tool — still gets pay-on-demand playbooks, but the reachable set is exactly
+    the spec's ``skills:`` list rather than the working directory.
+    """
+
+    def __init__(self, base: Path, skills: list[str]):
+        self._base = base
+        self._skills = list(skills)
+        entry = BUILTIN_TOOLS["load_skill"]
+        self.name = "load_skill"
+        self.description = entry.description + (
+            f" Available: {', '.join(self._skills)}." if self._skills else ""
+        )
+        self.tags = list(entry.tags)
+        self.input_schema = {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name exactly as listed in the system prompt.",
+                    # Enumerated so a cheap executor cannot invent a name.
+                    **({"enum": self._skills} if self._skills else {}),
+                }
+            },
+            "required": ["name"],
+        }
+
+    def run(self, name: str = "", **_: Any) -> str:
+        from hiveloom.errors import SpecError
+        from hiveloom.skills import skill_body
+
+        wanted = (name or "").strip()
+        if wanted not in self._skills:
+            available = ", ".join(self._skills) or "(none declared)"
+            raise ToolError(f"unknown skill '{name}'. Available: {available}")
+        try:
+            return skill_body(self._base, wanted)
+        except SpecError as exc:  # declared, but missing or malformed on disk
+            raise ToolError(str(exc)) from exc
+
+
 class ShellTool(Tool):
     """Run an allowlisted shell command (disabled without an allowlist)."""
 
@@ -263,10 +308,19 @@ class _SafeRedirectHandler(urlrequest.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def make_builtin_tool(ref: BuiltinToolRef, base: Path, *, trace_dir: Path | None = None) -> Tool:
+def make_builtin_tool(
+    ref: BuiltinToolRef,
+    base: Path,
+    *,
+    trace_dir: Path | None = None,
+    skills: list[str] | None = None,
+) -> Tool:
     """Instantiate the catalog tool named by ``ref`` (builtin or extension)."""
     return ext.build(
-        "tools", ref.builtin, ref.params(), ext.BuildContext(base=base, trace_dir=trace_dir)
+        "tools",
+        ref.builtin,
+        ref.params(),
+        ext.BuildContext(base=base, trace_dir=trace_dir, skills=list(skills or [])),
     )
 
 
@@ -276,6 +330,9 @@ def _register_factories() -> None:
     )
     ext.register_builtin_factory(
         "tools", "file_write", lambda _p, ctx: FileWriteTool(ctx.base, trace_dir=ctx.trace_dir)
+    )
+    ext.register_builtin_factory(
+        "tools", "load_skill", lambda _p, ctx: LoadSkillTool(ctx.base, ctx.skills)
     )
     ext.register_builtin_factory(
         "tools", "shell", lambda p, ctx: ShellTool(ctx.base, list(p.get("commands", []) or []))

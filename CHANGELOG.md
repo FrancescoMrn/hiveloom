@@ -5,6 +5,140 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.5.0] - 2026-08-15
+
+### Added
+
+- **Run control**: a thread-safe `RunControl` channel (`hiveloom.loop.control`)
+  lets a caller stop a running loop gracefully or inject steering messages,
+  both consumed at the next turn boundary. A stopped run completes with the
+  new status `"stopped"`, trace intact and partial output kept. `hiveloom
+  serve` exposes it as `POST /runs/{run_id}/stop` and
+  `POST /runs/{run_id}/messages`, and streaming responses now open with a
+  `{"type": "run_accepted", "run_id": …}` line so clients can address a run
+  while it is still going. `runner.run_harness` accepts `control=` and a
+  pre-allocated `run_id=`. Steering messages are traced as `user_steer`.
+- **Session-grouped traces**: `run_harness(session_id=…)` (and the optional
+  `"session_id"` field on serve's `POST /runs`) groups related runs — the
+  turns of one conversation — under `<trace_dir>/<session_id>/`, with every
+  trace event carrying the id. `Hive.ingest_dir` is recursive, so grouped and
+  flat traces ingest alike.
+- **Truncation guard**: tool calls from a `max_tokens`-truncated model
+  response are no longer executed on partial arguments — each call gets an
+  error result asking the model for a compact retry, traced as
+  `tool_truncated`.
+- **Playbooks**: named modes a harness switches between during a run. A
+  `playbooks:` entry carries a prompt fragment, the tool subset that mode may
+  use, mode-scoped validators, and optional `on_enter`/`on_exit` code hooks.
+  Declaring any auto-adds a `switch_playbook` tool. One harness with three
+  playbooks replaces three harnesses that would otherwise duplicate a system
+  prompt and split their evidence three ways.
+  - `on_enter` may return `{"context": str}` to inject a note or
+    `{"block": True, "reason": str}` to refuse entry (e.g. stale data);
+    `on_exit` may refuse the *exit*, making it a boundary gate — "you entered
+    targeting and proposed nothing". A stuck exit gate is force-released after
+    three consecutive refusals, and the release is traced.
+  - Every switch is a `playbook_switch` trace event and a
+    `playbook_enter`/`playbook_exit` lifecycle event. The Hive indexes them, so
+    `stats` reports success, cost, turns, and refusals **per playbook**, and
+    the failure report localizes a problem to one mode.
+  - `playbooks.*.on_enter`/`on_exit` execute code and are frozen from
+    evolution, enforced by a value-inspecting gate check so rewriting the whole
+    `playbooks` list cannot smuggle a hook in. Prompts stay mutable — evolution
+    rewrites guidance, never side-effecting code.
+  - Construction: `construct.add_playbook` scaffolds the prompt, hooks, and
+    validators through the same validate-and-rollback path as everything else;
+    because playbooks live in `spec/schema.py`, the JSON schema, annotated
+    template, `explain`, and the generator's meta-prompt all pick them up.
+- **Multi-turn conversation input**: `run_harness(conversation=[...])` and
+  `dry_run(conversation=[...])` take a whole alternating thread. The trailing
+  user message becomes the task statement; earlier turns are seeded as history
+  and are the first thing compaction reclaims. For callers that own the
+  conversation themselves, such as a chat service replaying it each turn.
+- **Structured artifacts**: a tool may return a `ToolResult` carrying
+  `Artifact(kind=..., data=...)` side-products. They surface on
+  `RunResult.artifacts` (and `artifacts_of(kind)`), on the run payload, and on
+  the trace — so a harness can drive a real UI with charts or proposals
+  without pushing JSON through the model's text channel. Visible to guardrails
+  via `RunState.artifacts`.
+- **Per-run context injection**: `run_harness(context={...})` passes
+  caller-owned values (a DSN, request-scoped state, a mutable accumulator) to
+  code tools that declare a `run_context` parameter, and to validators. The
+  parameter is hidden from the model's tool schema and cannot be forged by a
+  model-supplied key of the same name. Never written to the trace.
+- **`load_skill` builtin tool**: progressive disclosure without shipping a
+  filesystem reader. Only skills the spec declares are reachable, and the
+  schema enumerates them. The skills index points at whichever loader the
+  harness actually carries.
+- **Deferred outcome labels**: `Hive.record_outcome(run_id, "success"|"failure")`
+  and `hiveloom outcome <run-id> <result>` attach a real-world judgement to a
+  completed run — a human confirmed or dismissed the proposal, the extracted
+  record turned out wrong. Validators grade a run while it happens; this
+  records what the world said afterwards. Surfaced by `stats` and by the
+  failure report, so it can drive evolution. The run row is never rewritten.
+- **Artifacts over MCP.** An MCP server can hand hiveloom caller-facing
+  side-products by returning structured content under a `_hiveloom` envelope
+  (`{"_hiveloom": {"artifacts": [{"kind": ..., "data": ...}]}}`); the bridge
+  lifts them onto `RunResult.artifacts` and keeps the envelope out of the
+  model's text. Without this, moving a tool behind MCP silently downgraded it
+  to text-only — a domain tool that also drives a UI (a chart spec, a decision
+  proposal) could not be hosted remotely.
+- Playbook tool subsets may name MCP tools (`mcp__<server>__<tool>`). They are
+  exempt from the declared-tool check, since MCP tools are discovered from a
+  live server when the registry is built and cannot be known at parse time.
+- `ToolResult.retryable`: set `False` on a deterministic error so
+  `loop.on_tool_error: retry_once` does not repeat it. A refused playbook
+  switch uses it — retrying re-runs the gate's side effects and double-counts
+  the refusal in run evidence.
+- Two evaluation suites that measure the harness on frontier models, where
+  article-extractor only measured the rescue of a weak one. `evals/article-digest`
+  (output-heavy digest, Opus 5 / Sonnet 5) shows verification and retry closing
+  the contract-compliance tail: 80% → 100% success at flat cost per success.
+  `evals/page-audit` (exhaustiveness past a truncated tool view, aggregation,
+  date arithmetic) shows the property that matters downstream: silently wrong
+  runs drop from 5/6 and 3/6 raw to 0/6 harnessed.
+- `evals/README.md`: an index of the three suites, the shared method, and the
+  caveats that apply to all of them.
+- `docs/models.md`: how the `claude` provider handles adaptive-thinking models.
+- Charts for the README's evidence section, regenerated from the committed
+  results by `docs/assets/make_plots.py`.
+
+### Changed
+
+- `model.temperature` is now optional and unset by default: when unset it is
+  omitted from provider API calls entirely. Current Anthropic models reject
+  the parameter as deprecated, so specs should simply not set it.
+- The README's article-extractor table showed the pre-0.3.0 sweep, not the
+  0.3.1 re-run it linked to. Corrected against the committed `RESULTS.md`
+  (Haiku 2%→3% raw and 61%→65% harnessed, cost per success $0.3405→$0.2212
+  raw, so 12× rather than 17×), with the Gemma arm — where the harness is
+  slightly worse — added rather than omitted, and the statistical caveat that
+  only the Haiku delta survives a paired test.
+
+### Fixed
+
+- `dry_run` reported `spec.system_prompt` verbatim instead of the assembled
+  system prompt, omitting the skills index and active tools' guidelines. Both
+  the reported prompt and `estimated_input_tokens` under-reported what a real
+  run sends.
+- `_set_dotted` (evolution's change applier) could not address list entries, so
+  a dotted path through any list-valued section silently created a mapping and
+  the whole batch was then rejected as invalid. Numeric segments now index
+  lists, which is what lets evolution target one playbook's prompt.
+- `construct._scaffold_hook` raised a bare `ValueError` on a malformed
+  `path.py:function` ref instead of an actionable `SpecError`.
+- `hiveloom.serve`'s `result_payload` was a second copy of the canonical run
+  payload, so fields added to it (notably `artifacts`) were silently missing
+  over HTTP. It now delegates.
+- `claude` provider: omit `temperature` for the models whose API rejects
+  sampling parameters (Opus 4.7 and later, Sonnet 5, Fable/Mythos), even when a
+  spec sets one explicitly. Any value at all makes those models 400.
+- `claude` provider: preserve `thinking` / `redacted_thinking` blocks on the
+  assistant turn. Adaptive-thinking models require the turn to be replayed
+  unchanged, so dropping them broke the next call of a tool-use loop.
+
 ## [0.4.0] - 2026-08-03
 
 ### Added

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from hiveloom.spec.schema import HarnessSpec
 
@@ -43,6 +43,10 @@ _SDK = {
     "validate_harness": ("hiveloom.spec.loader", "validate_harness"),
     "Hive": ("hiveloom.logging.hive", "Hive"),
     "HarnessServer": ("hiveloom.serve", "HarnessServer"),
+    # Code-tool authoring surface: return a ToolResult carrying Artifacts to
+    # hand structured output to the embedding caller.
+    "Artifact": ("hiveloom.tools.registry", "Artifact"),
+    "ToolResult": ("hiveloom.tools.registry", "ToolResult"),
 }
 
 

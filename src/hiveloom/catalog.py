@@ -79,6 +79,15 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
         tags=["write", "file"],
     ),
     CatalogEntry(
+        name="load_skill",
+        description=(
+            "Read one of the harness's declared skills in full. Progressive "
+            "disclosure without a general file reader: only skills named in "
+            "the spec are reachable."
+        ),
+        tags=["read", "skills"],
+    ),
+    CatalogEntry(
         name="shell",
         description=(
             "Run an allowlisted shell command. Disabled unless an allowlist is "

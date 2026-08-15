@@ -131,12 +131,21 @@ class CodeVerifier(Verifier):
 
 def build_verifiers(spec: HarnessSpec, base_dir: str | Path) -> list[Verifier]:
     """Instantiate verifiers (builtins + code hooks) from a spec."""
+    return build_verifiers_from_refs(spec.verify.validators, base_dir)
+
+
+def build_verifiers_from_refs(refs: list[Any], base_dir: str | Path) -> list[Verifier]:
+    """Instantiate verifiers from validator refs.
+
+    Split out of :func:`build_verifiers` so a playbook's mode-scoped
+    validators are built through exactly the same path as the spec's.
+    """
     base = Path(base_dir)
     if base.is_file():
         base = base.parent
 
     verifiers: list[Verifier] = []
-    for ref in spec.verify.validators:
+    for ref in refs:
         if isinstance(ref, BuiltinValidatorRef):
             verifiers.append(_make_builtin(ref, base))
         elif isinstance(ref, CodeValidatorRef):

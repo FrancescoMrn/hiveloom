@@ -55,6 +55,9 @@ class BuildContext:
     # this (it has the spec loaded); every other factory ignores it via this
     # default, so adding it here does not ripple into unrelated builders.
     trace_dir: Path | None = None
+    # Skill names the spec declares, for `load_skill` — same arrangement as
+    # `trace_dir`: populated by `build_registry`, defaulted everywhere else.
+    skills: list[str] = field(default_factory=list)
 
 
 class ModelInfo(BaseModel):

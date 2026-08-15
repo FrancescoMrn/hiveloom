@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from typing_extensions import TypedDict
 
 from hiveloom.models.provider import ToolCall
 from hiveloom.spec.schema import BuiltinToolRef, HarnessSpec
@@ -199,6 +200,25 @@ def test_schema_from_function_derives_properties():
     assert "po_number" in schema["properties"]
     assert "po_number" in schema["required"]
     assert "limit" not in schema.get("required", [])
+
+
+class _ChartSeries(TypedDict):
+    name: str
+    values: list[float]
+
+
+def test_schema_from_function_resolves_postponed_structured_annotations():
+    def render(series: list[_ChartSeries]) -> str:
+        return ""
+
+    # This test module uses ``from __future__ import annotations``, so the raw
+    # signature contains the string ``list[_ChartSeries]``.  The emitted tool
+    # schema must nevertheless tell the model the exact object keys.
+    schema = schema_from_function(render)
+    item_ref = schema["properties"]["series"]["items"]["$ref"]
+    item_schema = schema["$defs"][item_ref.rsplit("/", 1)[-1]]
+    assert item_schema["required"] == ["name", "values"]
+    assert item_schema["properties"]["values"]["items"]["type"] == "number"
 
 
 def test_function_tool_stringifies_result():

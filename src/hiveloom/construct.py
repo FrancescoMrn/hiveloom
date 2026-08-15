@@ -147,11 +147,30 @@ def {func}(event):
     return None
 '''
 
+_PLAYBOOK_HOOK_STUB = '''"""Auto-scaffolded hiveloom playbook hook — fill in the behaviour.
+
+Runs when a playbook is entered or left. The payload carries
+``playbook``, ``from``/``to``, ``reason``, and ``run_context``.
+
+Return None to just observe, or a dict:
+  {{"context": "..."}}                 inject a note into the conversation
+  {{"block": True, "reason": "..."}}   refuse the entry/exit (a boundary gate)
+
+Must not raise: a raising hook is traced as hook_error and skipped.
+"""
+
+
+def {func}(event):
+    """TODO: implement the playbook gate/side effect."""
+    return None
+'''
+
 _STUBS = {
     "tool": _TOOL_STUB,
     "validator": _VALIDATOR_STUB,
     "guardrail": _GUARDRAIL_STUB,
     "hook": _EVENT_HOOK_STUB,
+    "playbook_hook": _PLAYBOOK_HOOK_STUB,
 }
 
 _SKILL_STUB = """---
@@ -173,6 +192,11 @@ def _scaffold_hook(directory: Path, code_ref: str, kind: str, description: str) 
     Returns the created path (for rollback) or ``None`` if the file already
     existed.
     """
+    if code_ref.count(":") != 1 or code_ref.startswith(":") or code_ref.endswith(":"):
+        raise SpecError(
+            "code hook must be 'relative/path.py:function_name' "
+            f"(got {code_ref!r})"
+        )
     rel_path, func_name = code_ref.rsplit(":", 1)
     file_path = directory / rel_path
     if file_path.exists():
@@ -511,6 +535,85 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
         raise SpecError(f"skill '{name}' is already listed in the spec")
     skills.append(name)
     return _commit(directory, raw, created, "add_skill", {"name": name})
+
+
+_PLAYBOOK_PROMPT_STUB = """# {name}
+
+TODO: write the guidance that applies while the harness is in this playbook.
+It is appended to the system prompt on entry, so keep it about *how to work in
+this mode* — what to establish first, what to refuse, when to hand off to
+another playbook.
+"""
+
+
+def add_playbook(
+    directory: str | Path,
+    *,
+    name: str,
+    description: str,
+    prompt: str | None = None,
+    tools: list[str] | None = None,
+    validators: list[dict[str, Any]] | None = None,
+    on_enter: str | None = None,
+    on_exit: str | None = None,
+    entry: bool = False,
+) -> HarnessSpec:
+    """Add a playbook: scaffold its prompt (and any hooks) and list it in the spec.
+
+    ``prompt`` defaults to ``playbooks/<name>.md``; pass an explicit path to
+    reuse one. Hook refs are scaffolded like every other code hook, so a
+    generated plan and a hand-typed CLI call land the same way.
+    """
+    directory = Path(directory)
+    created: list[Path] = []
+
+    prompt_ref = prompt or f"playbooks/{name}.md"
+    prompt_file = directory / prompt_ref
+    if not prompt_file.exists():
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text(
+            _PLAYBOOK_PROMPT_STUB.format(name=name), encoding="utf-8"
+        )
+        created.append(prompt_file)
+
+    for hook_ref in (on_enter, on_exit):
+        if hook_ref:
+            scaffolded = _scaffold_hook(
+                directory, hook_ref, "playbook_hook", f"{name} playbook hook"
+            )
+            if scaffolded is not None:
+                created.append(scaffolded)
+
+    entry_dict: dict[str, Any] = {
+        "name": name,
+        "description": description,
+        "prompt": prompt_ref,
+    }
+    if tools is not None:
+        entry_dict["tools"] = list(tools)
+    if validators:
+        entry_dict["validators"] = [dict(v) for v in validators]
+        for ref in validators:
+            code_ref = ref.get("code")
+            if code_ref:
+                scaffolded = _scaffold_hook(
+                    directory, code_ref, "validator", f"{name} playbook validator"
+                )
+                if scaffolded is not None:
+                    created.append(scaffolded)
+    if on_enter:
+        entry_dict["on_enter"] = on_enter
+    if on_exit:
+        entry_dict["on_exit"] = on_exit
+    if entry:
+        entry_dict["entry"] = True
+
+    raw = load_raw(directory)
+    playbooks = raw.setdefault("playbooks", [])
+    if any(p.get("name") == name for p in playbooks):
+        raise SpecError(f"playbook '{name}' is already listed in the spec")
+    playbooks.append(entry_dict)
+    return _commit(directory, raw, created, "add_playbook", {"name": name})
 
 
 def add_mcp_server(

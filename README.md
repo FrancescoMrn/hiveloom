@@ -8,9 +8,10 @@ and verification often decide whether the same model succeeds or fails.
 hiveloom makes that surrounding system a self-contained folder that can be
 validated, versioned, run anywhere, measured, and deliberately improved.
 
-> **Status:** `0.3.1`. The spec, CLI, Python SDK, runtime, trace/Hive
+> **Status:** `0.5.0`. The spec, CLI, Python SDK, runtime, trace/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
-> serving surfaces are implemented.
+> serving surfaces are implemented, along with playbooks, structured
+> artifacts, run control, and session-grouped traces.
 
 ## The moat: Your harness is the product
 
@@ -30,22 +31,84 @@ that evidence into an improvable harness.
 
 ## Measured performance
 
-The checked-in
-[article-extractor benchmark](evals/article-extractor/RESULTS.md) evaluates 32
+Three checked-in evaluations live in [`evals/`](evals/README.md), each with its
+harnesses, scoring code, and committed results. They answer three different
+questions, and the answers are not the same.
+
+### 1. Does a harness rescue a weak model? (article-extractor)
+
+The [article-extractor benchmark](evals/article-extractor/RESULTS.md) evaluates 32
 live URLs over three epochs (96 runs per arm). Raw and harness arms use the same
 prompt and fetch tool; the difference is the harness scaffolding.
 
+![Task success by model, raw versus the same model inside a hiveloom harness](docs/assets/01-task-success.png)
+
 | Model / arm | Task success | Hallucination | Cost per success | p50 latency |
 |---|---:|---:|---:|---:|
-| Claude Haiku, raw | 2% | 98% | $0.3405 | 6.6s |
-| Claude Haiku + hiveloom | **61%** | **11%** | **$0.0196** | 10.7s |
-| Claude Sonnet, raw baseline | 99% | 0% | $0.0077 | 6.4s |
-| Qwen 3 4B, raw / harness | 60% / **69%** | 18% / 17% | local | 3.3s / 5.9s |
-| Qwen 3.6 35B, raw / harness | 78% / **83%** | 13% / **0%** | local | 15.4s / 18.2s |
+| Claude Haiku 4.5, raw | 3% | 96% | $0.2212 | 5.8s |
+| Claude Haiku 4.5 + hiveloom | **65%** | **11%** | **$0.0186** | 10.3s |
+| Claude Sonnet 5, raw baseline | 100% | 0% | $0.0073 | 6.4s |
+| Qwen 3 4B, raw / harness | 58% / **69%** | 19% / 16% | local | 3.9s / 6.3s |
+| Qwen 3.6 35B, raw / harness | 75% / **84%** | 16% / **0%** | local | 13.5s / 16.4s |
+| Gemma 4 12B, raw / harness | **92%** / 90% | 1% / **0%** | local | 26.2s / 9.3s |
 
-On this task, the Haiku harness gained 59 percentage points over raw Haiku and
-cut cost per successful result by about 17×. It did **not** beat raw Sonnet, and
-the full results include a local-model arm where scaffolding reduced success.
+The Haiku harness gained 61.5 percentage points over raw Haiku and cut cost per
+successful result by 12×. Read the rest of the table before generalising from
+that: **Haiku's is the only delta that survives a paired test over the 32 URLs**
+(p < 0.0001); the three local models move by 10 points or less, which is noise
+at this sample size, and Gemma is slightly worse harnessed. Scaffolding rescues
+a model that cannot hold the output contract. It does not improve one that
+already can — and it did not beat raw Sonnet, which wins outright on both
+success and cost.
+
+Hallucination is the more robust signal, because the effect sizes are large
+relative to the sample. Every output is checked verbatim against a re-fetch of
+the live page:
+
+![Hallucination rate, raw versus harnessed](docs/assets/02-hallucination.png)
+
+![Cost per successful extraction](docs/assets/03-cost-per-success.png)
+
+### 2. Does it still earn its place on frontier models? (article-digest)
+
+[article-digest](evals/article-digest/RESULTS.md) runs an output-heavy task —
+a 120-200 word original summary plus five verbatim quotes and a verbatim
+outline — on Claude Opus 5 and Sonnet 5. Both arms go through hiveloom with the
+same prompt, tool, guardrails, and loop policy; the raw arms only drop the
+validators and `loop.require_verification`, so the measured delta is
+**validators plus retry-with-feedback, and nothing else**.
+
+| Arm | Success | Hallucinated quotes | Cost per success |
+|---|---:|---:|---:|
+| Opus 5 + hiveloom | **100%** | 0% | $0.0383 |
+| Opus 5, raw | 80% | 0% | $0.0320 |
+| Sonnet 5 + hiveloom | **100%** | 0% | $0.0142 |
+| Sonnet 5, raw | 80% | 0% | $0.0141 |
+
+Neither model fabricated anything. What the raw arms lost was the *contract*:
+one run emitted invalid JSON, another a quote outside the required length. The
+harness is not buying accuracy from a frontier model — it is buying the tail
+of contract compliance, at roughly unchanged cost per success.
+
+### 3. What do frontier models still get wrong? (page-audit)
+
+[page-audit](evals/page-audit/RESULTS.md) targets what remains: exhaustiveness
+past a truncated tool view, aggregation, and date arithmetic. The fetch tool
+clips its digest, and half the pages have more headings than the digest shows,
+so no complete answer is reachable from the tool alone. The metric that matters
+is not success but whether a wrong answer arrives **labelled**.
+
+| Arm | Silently wrong | Flagged (`verify_failed`) |
+|---|---:|---:|
+| Opus 5 + hiveloom | **0/6** | 1/6 |
+| Opus 5, raw | 5/6 | 0/6 |
+| Sonnet 5 + hiveloom | **0/6** | 1/6 |
+| Sonnet 5, raw | 3/6 | 0/6 |
+
+Raw arms confidently returned truncated heading lists and off-by-one day
+counts. The harnessed arms either recovered on retry or exited `verify_failed`
+— they never returned a wrong audit as a success. That is the property a
+downstream automation can actually build on.
 
 Prompt caching (on by default for the `claude` provider) compounds this: in a
 live measurement on a 7k-token harness prompt (Haiku 4.5, two-turn run), the
@@ -53,9 +116,13 @@ first run wrote the prefix to cache and every later run inside the cache TTL
 read it back at a tenth of the input price — **$0.0019 per warm run vs $0.0100
 cold, an 81% reduction**. A harness runs the same prompt shape every time,
 which is exactly the workload prompt caching rewards.
+
+![Prompt caching, cold versus warm run cost](docs/assets/04-prompt-caching.png)
+
 That is the point of versioned evals: harness value is measured per task and
-model, not assumed. See the
-[methodology and caveats](evals/article-extractor/README.md).
+model, not assumed — it can be a rescue, a compliance floor, or nothing at all.
+Sample sizes, scoring code, and caveats are in
+[`evals/README.md`](evals/README.md).
 
 ## Install
 
@@ -221,12 +288,14 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Documentation
 
 - [Agent entry point](AGENTS.md) and [lifecycle skills](skills/README.md)
+- [Evaluations](evals/README.md)
 - [Harness spec](docs/spec.md)
 - [Architecture](docs/architecture.md)
 - [Models and providers](docs/models.md)
 - [Extensions](docs/extending.md)
 - [Deployment and evolution](docs/deploying-and-evolving.md)
 - [Control plane](docs/control-plane.md)
+- [Link/sync protocol](docs/sync-protocol.md)
 - [Contributing and QA](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 

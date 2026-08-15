@@ -31,6 +31,18 @@ _BASE_DELAY = 1.0
 
 _CACHE_CONTROL = {"type": "ephemeral"}
 
+# Models whose API surface rejects sampling parameters: Opus 4.7 onward,
+# Sonnet 5, and the Fable/Mythos tier return 400 for a non-default
+# `temperature` (the spec default of 0.0 is non-default to the API).
+_NO_SAMPLING_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos",
+)
+
 # Substrings that identify a BadRequestError as a context-window overflow.
 _OVERFLOW_MARKERS = ("prompt is too long", "context window", "maximum context")
 
@@ -88,10 +100,16 @@ class ClaudeProvider(ModelProvider):
         tools_param = tools
         if tools:
             tools_param = [*tools[:-1], {**tools[-1], "cache_control": _CACHE_CONTROL}]
+        # Omitted when unset, and always for the ids whose API rejects sampling
+        # parameters — for those, any value at all is a 400.
+        send_temperature = config.temperature is not None and not config.id.startswith(
+            _NO_SAMPLING_PREFIXES
+        )
+        extra = {"temperature": config.temperature} if send_temperature else {}
         raw = self._call_with_backoff(
             model=config.id,
             max_tokens=config.max_tokens,
-            temperature=config.temperature,
+            **extra,
             system=system_param,
             messages=_with_cache_breakpoint(messages),
             tools=tools_param,
@@ -163,6 +181,12 @@ class ClaudeProvider(ModelProvider):
                         "input": dict(block.input),
                     }
                 )
+            elif hasattr(block, "model_dump"):
+                # thinking / redacted_thinking / other model-internal blocks.
+                # Adaptive-thinking models (Opus 5, Sonnet 5, ...) require the
+                # assistant turn to be replayed with these blocks unchanged;
+                # dropping them can 400 on the next call of a tool-use loop.
+                content_blocks.append(block.model_dump())
         usage = Usage(
             input_tokens=getattr(raw.usage, "input_tokens", 0) or 0,
             output_tokens=getattr(raw.usage, "output_tokens", 0) or 0,

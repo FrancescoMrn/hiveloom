@@ -30,9 +30,16 @@ class FailureReport(BaseModel):
     success_rate: float
     clusters: list[FailureCluster] = Field(default_factory=list)
     recent_failures: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-playbook fitness, when the harness has modes: localizes a failure to
+    # one mode instead of blaming the whole harness.
+    playbooks: list[dict[str, Any]] = Field(default_factory=list)
+    # What the world said afterwards (see Hive.record_outcome). Empty for
+    # harnesses nobody labels — most of them.
+    outcomes: dict[str, Any] = Field(default_factory=dict)
+    outcome_failures: list[dict[str, Any]] = Field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not self.clusters and not self.recent_failures
+        return not self.clusters and not self.recent_failures and not self.outcome_failures
 
 
 def analyze(
@@ -86,4 +93,9 @@ def analyze(
         success_rate=(successes / total_runs) if total_runs else 0.0,
         clusters=clusters,
         recent_failures=hive.recent_failures(harness_name, recent, version=version),
+        playbooks=hive.playbook_stats(harness_name, version=version),
+        outcomes=hive.outcome_summary(harness_name, version=version),
+        outcome_failures=hive.failed_outcome_traces(
+            harness_name, recent, version=version
+        ),
     )
