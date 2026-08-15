@@ -8,9 +8,10 @@ and verification often decide whether the same model succeeds or fails.
 hiveloom makes that surrounding system a self-contained folder that can be
 validated, versioned, run anywhere, measured, and deliberately improved.
 
-> **Status:** `0.4.0`. The spec, CLI, Python SDK, runtime, trace/Hive
+> **Status:** `0.5.0`. The spec, CLI, Python SDK, runtime, trace/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
-> serving surfaces are implemented.
+> serving surfaces are implemented, along with playbooks, structured
+> artifacts, run control, and session-grouped traces.
 
 ## The moat: Your harness is the product
 

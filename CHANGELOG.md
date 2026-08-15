@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-15
+
 ### Added
 
 - **Run control**: a thread-safe `RunControl` channel (`hiveloom.loop.control`)
