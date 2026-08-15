@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `evals/README.md`: an index of the three suites, the shared method, and the
   caveats that apply to all of them.
 - `docs/models.md`: how the `claude` provider handles adaptive-thinking models.
+- Charts for the README's evidence section, regenerated from the committed
+  results by `docs/assets/make_plots.py`.
+
+### Changed
+
+- The README's article-extractor table showed the pre-0.3.0 sweep, not the
+  0.3.1 re-run it linked to. Corrected against the committed `RESULTS.md`
+  (Haiku 2%→3% raw and 61%→65% harnessed, cost per success $0.3405→$0.2212
+  raw, so 12× rather than 17×), with the Gemma arm — where the harness is
+  slightly worse — added rather than omitted, and the statistical caveat that
+  only the Haiku delta survives a paired test.
 
 ### Fixed
 

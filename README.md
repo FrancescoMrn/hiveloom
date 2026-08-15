@@ -40,17 +40,33 @@ The [article-extractor benchmark](evals/article-extractor/RESULTS.md) evaluates 
 live URLs over three epochs (96 runs per arm). Raw and harness arms use the same
 prompt and fetch tool; the difference is the harness scaffolding.
 
+![Task success by model, raw versus the same model inside a hiveloom harness](docs/assets/01-task-success.png)
+
 | Model / arm | Task success | Hallucination | Cost per success | p50 latency |
 |---|---:|---:|---:|---:|
-| Claude Haiku, raw | 2% | 98% | $0.3405 | 6.6s |
-| Claude Haiku + hiveloom | **61%** | **11%** | **$0.0196** | 10.7s |
-| Claude Sonnet, raw baseline | 99% | 0% | $0.0077 | 6.4s |
-| Qwen 3 4B, raw / harness | 60% / **69%** | 18% / 17% | local | 3.3s / 5.9s |
-| Qwen 3.6 35B, raw / harness | 78% / **83%** | 13% / **0%** | local | 15.4s / 18.2s |
+| Claude Haiku 4.5, raw | 3% | 96% | $0.2212 | 5.8s |
+| Claude Haiku 4.5 + hiveloom | **65%** | **11%** | **$0.0186** | 10.3s |
+| Claude Sonnet 5, raw baseline | 100% | 0% | $0.0073 | 6.4s |
+| Qwen 3 4B, raw / harness | 58% / **69%** | 19% / 16% | local | 3.9s / 6.3s |
+| Qwen 3.6 35B, raw / harness | 75% / **84%** | 16% / **0%** | local | 13.5s / 16.4s |
+| Gemma 4 12B, raw / harness | **92%** / 90% | 1% / **0%** | local | 26.2s / 9.3s |
 
-On this task, the Haiku harness gained 59 percentage points over raw Haiku and
-cut cost per successful result by about 17×. It did **not** beat raw Sonnet, and
-the full results include a local-model arm where scaffolding reduced success.
+The Haiku harness gained 61.5 percentage points over raw Haiku and cut cost per
+successful result by 12×. Read the rest of the table before generalising from
+that: **Haiku's is the only delta that survives a paired test over the 32 URLs**
+(p < 0.0001); the three local models move by 10 points or less, which is noise
+at this sample size, and Gemma is slightly worse harnessed. Scaffolding rescues
+a model that cannot hold the output contract. It does not improve one that
+already can — and it did not beat raw Sonnet, which wins outright on both
+success and cost.
+
+Hallucination is the more robust signal, because the effect sizes are large
+relative to the sample. Every output is checked verbatim against a re-fetch of
+the live page:
+
+![Hallucination rate, raw versus harnessed](docs/assets/02-hallucination.png)
+
+![Cost per successful extraction](docs/assets/03-cost-per-success.png)
 
 ### 2. Does it still earn its place on frontier models? (article-digest)
 
@@ -99,6 +115,9 @@ first run wrote the prefix to cache and every later run inside the cache TTL
 read it back at a tenth of the input price — **$0.0019 per warm run vs $0.0100
 cold, an 81% reduction**. A harness runs the same prompt shape every time,
 which is exactly the workload prompt caching rewards.
+
+![Prompt caching, cold versus warm run cost](docs/assets/04-prompt-caching.png)
+
 That is the point of versioned evals: harness value is measured per task and
 model, not assumed — it can be a rescue, a compliance floor, or nothing at all.
 Sample sizes, scoring code, and caveats are in
