@@ -1,3 +1,5 @@
+<img src="docs/assets/logo.png" alt="" width="76">
+
 # hiveloom
 
 [![CI](https://github.com/FrancescoMrn/hiveloom/actions/workflows/ci.yml/badge.svg)](https://github.com/FrancescoMrn/hiveloom/actions/workflows/ci.yml)
