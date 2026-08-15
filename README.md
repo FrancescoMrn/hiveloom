@@ -1,5 +1,10 @@
 # hiveloom
 
+[![CI](https://github.com/FrancescoMrn/hiveloom/actions/workflows/ci.yml/badge.svg)](https://github.com/FrancescoMrn/hiveloom/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/FrancescoMrn/hiveloom?label=release&color=blue)](https://github.com/FrancescoMrn/hiveloom/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **Build durable agent harnesses so smaller models can perform repeatable,
 verifiable tasks.**
 
@@ -7,6 +12,14 @@ A model is only one part of an agent. Tools, context, loop policy, guardrails,
 and verification often decide whether the same model succeeds or fails.
 hiveloom makes that surrounding system a self-contained folder that can be
 validated, versioned, run anywhere, measured, and deliberately improved.
+
+![Task success by model, raw versus the same model inside a hiveloom harness](docs/assets/01-task-success.png)
+
+Same model, same prompt, same tool — the only difference is the harness. Claude
+Haiku goes from 3% to 65%; the three local models move by amounts that are noise
+at this sample size, and one is slightly worse. Which is the point:
+[the evidence is measured per task and model](#measured-performance), not
+assumed.
 
 > **Status:** `0.5.0`. The spec, CLI, Python SDK, runtime, trace/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
@@ -40,8 +53,6 @@ questions, and the answers are not the same.
 The [article-extractor benchmark](evals/article-extractor/RESULTS.md) evaluates 32
 live URLs over three epochs (96 runs per arm). Raw and harness arms use the same
 prompt and fetch tool; the difference is the harness scaffolding.
-
-![Task success by model, raw versus the same model inside a hiveloom harness](docs/assets/01-task-success.png)
 
 | Model / arm | Task success | Hallucination | Cost per success | p50 latency |
 |---|---:|---:|---:|---:|
@@ -134,8 +145,8 @@ uv pip install hiveloom
 For development:
 
 ```bash
-git clone <this-repository>
-cd hiveloom-harness
+git clone https://github.com/FrancescoMrn/hiveloom.git
+cd hiveloom
 uv sync --extra dev
 ```
 
@@ -297,6 +308,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Control plane](docs/control-plane.md)
 - [Link/sync protocol](docs/sync-protocol.md)
 - [Contributing and QA](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 - [Security policy](SECURITY.md)
 
 Agent guidance ships in the wheel: `hiveloom guide --list`.

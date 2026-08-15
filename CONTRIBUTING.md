@@ -63,5 +63,7 @@ version. Record notable changes in [CHANGELOG.md](CHANGELOG.md) under an
 `[Unreleased]` heading as part of the same pull request. Build release
 artifacts with `uv build` and validate a harness package before publishing.
 
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 Security-sensitive issues should follow [SECURITY.md](SECURITY.md), not be
 reported in a public issue.
