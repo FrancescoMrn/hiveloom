@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Two evaluation suites that measure the harness on frontier models, where
+  article-extractor only measured the rescue of a weak one. `evals/article-digest`
+  (output-heavy digest, Opus 5 / Sonnet 5) shows verification and retry closing
+  the contract-compliance tail: 80% → 100% success at flat cost per success.
+  `evals/page-audit` (exhaustiveness past a truncated tool view, aggregation,
+  date arithmetic) shows the property that matters downstream: silently wrong
+  runs drop from 5/6 and 3/6 raw to 0/6 harnessed.
+- `evals/README.md`: an index of the three suites, the shared method, and the
+  caveats that apply to all of them.
+- `docs/models.md`: how the `claude` provider handles adaptive-thinking models.
+
 ### Fixed
 
 - `claude` provider: omit `temperature` for the models whose API rejects

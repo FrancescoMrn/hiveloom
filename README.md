@@ -8,7 +8,7 @@ and verification often decide whether the same model succeeds or fails.
 hiveloom makes that surrounding system a self-contained folder that can be
 validated, versioned, run anywhere, measured, and deliberately improved.
 
-> **Status:** `0.3.1`. The spec, CLI, Python SDK, runtime, trace/Hive
+> **Status:** `0.4.0`. The spec, CLI, Python SDK, runtime, trace/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
 > serving surfaces are implemented.
 
@@ -30,8 +30,13 @@ that evidence into an improvable harness.
 
 ## Measured performance
 
-The checked-in
-[article-extractor benchmark](evals/article-extractor/RESULTS.md) evaluates 32
+Three checked-in evaluations live in [`evals/`](evals/README.md), each with its
+harnesses, scoring code, and committed results. They answer three different
+questions, and the answers are not the same.
+
+### 1. Does a harness rescue a weak model? (article-extractor)
+
+The [article-extractor benchmark](evals/article-extractor/RESULTS.md) evaluates 32
 live URLs over three epochs (96 runs per arm). Raw and harness arms use the same
 prompt and fetch tool; the difference is the harness scaffolding.
 
@@ -47,6 +52,47 @@ On this task, the Haiku harness gained 59 percentage points over raw Haiku and
 cut cost per successful result by about 17×. It did **not** beat raw Sonnet, and
 the full results include a local-model arm where scaffolding reduced success.
 
+### 2. Does it still earn its place on frontier models? (article-digest)
+
+[article-digest](evals/article-digest/RESULTS.md) runs an output-heavy task —
+a 120-200 word original summary plus five verbatim quotes and a verbatim
+outline — on Claude Opus 5 and Sonnet 5. Both arms go through hiveloom with the
+same prompt, tool, guardrails, and loop policy; the raw arms only drop the
+validators and `loop.require_verification`, so the measured delta is
+**validators plus retry-with-feedback, and nothing else**.
+
+| Arm | Success | Hallucinated quotes | Cost per success |
+|---|---:|---:|---:|
+| Opus 5 + hiveloom | **100%** | 0% | $0.0383 |
+| Opus 5, raw | 80% | 0% | $0.0320 |
+| Sonnet 5 + hiveloom | **100%** | 0% | $0.0142 |
+| Sonnet 5, raw | 80% | 0% | $0.0141 |
+
+Neither model fabricated anything. What the raw arms lost was the *contract*:
+one run emitted invalid JSON, another a quote outside the required length. The
+harness is not buying accuracy from a frontier model — it is buying the tail
+of contract compliance, at roughly unchanged cost per success.
+
+### 3. What do frontier models still get wrong? (page-audit)
+
+[page-audit](evals/page-audit/RESULTS.md) targets what remains: exhaustiveness
+past a truncated tool view, aggregation, and date arithmetic. The fetch tool
+clips its digest, and half the pages have more headings than the digest shows,
+so no complete answer is reachable from the tool alone. The metric that matters
+is not success but whether a wrong answer arrives **labelled**.
+
+| Arm | Silently wrong | Flagged (`verify_failed`) |
+|---|---:|---:|
+| Opus 5 + hiveloom | **0/6** | 1/6 |
+| Opus 5, raw | 5/6 | 0/6 |
+| Sonnet 5 + hiveloom | **0/6** | 1/6 |
+| Sonnet 5, raw | 3/6 | 0/6 |
+
+Raw arms confidently returned truncated heading lists and off-by-one day
+counts. The harnessed arms either recovered on retry or exited `verify_failed`
+— they never returned a wrong audit as a success. That is the property a
+downstream automation can actually build on.
+
 Prompt caching (on by default for the `claude` provider) compounds this: in a
 live measurement on a 7k-token harness prompt (Haiku 4.5, two-turn run), the
 first run wrote the prefix to cache and every later run inside the cache TTL
@@ -54,8 +100,9 @@ read it back at a tenth of the input price — **$0.0019 per warm run vs $0.0100
 cold, an 81% reduction**. A harness runs the same prompt shape every time,
 which is exactly the workload prompt caching rewards.
 That is the point of versioned evals: harness value is measured per task and
-model, not assumed. See the
-[methodology and caveats](evals/article-extractor/README.md).
+model, not assumed — it can be a rescue, a compliance floor, or nothing at all.
+Sample sizes, scoring code, and caveats are in
+[`evals/README.md`](evals/README.md).
 
 ## Install
 
@@ -221,6 +268,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Documentation
 
 - [Agent entry point](AGENTS.md) and [lifecycle skills](skills/README.md)
+- [Evaluations](evals/README.md)
 - [Harness spec](docs/spec.md)
 - [Architecture](docs/architecture.md)
 - [Models and providers](docs/models.md)

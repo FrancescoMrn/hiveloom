@@ -119,6 +119,24 @@ them out of the input count and prices them the same way. Both feed the
 `max_cost_usd` guardrail and `hiveloom stats`, so cached runs show their real,
 lower cost.
 
+### Adaptive-thinking Claude models
+
+The newer Claude tiers (Opus 4.7 and later, Sonnet 5, Fable/Mythos) reject
+sampling parameters and reason with adaptive thinking. The provider adapts on
+its own — nothing to configure — but two consequences are worth knowing:
+
+- `model.temperature` is **not sent** for those ids. The spec default of `0.0`
+  is a non-default value to that API and would fail the call, so it is dropped
+  rather than silently reinterpreted. Set it for other models as usual.
+- Thinking blocks are kept on the assistant turn and replayed verbatim, which
+  those models require across a tool-use loop. They are billed as output
+  tokens, so budget `model.max_tokens` for thinking *plus* the answer: a
+  harness whose responses are large should raise it (the frontier evals use
+  `16000`).
+
+Those ids are not all in the fixed `claude` catalog yet; register a missing one
+with its pricing in `models.yaml` as below.
+
 ## Customising with `models.yaml`
 
 `~/.hiveloom/models.yaml` (or `$HIVELOOM_HOME/models.yaml`) adds providers and
