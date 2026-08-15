@@ -70,14 +70,37 @@ def load_skills(spec: HarnessSpec, base_dir: str | Path) -> list[Skill]:
     return [load_skill(base, name) for name in spec.skills]
 
 
-def skill_index(skills: list[Skill]) -> str:
-    """The system-prompt section listing available skills."""
+def skill_body(base: Path, name: str) -> str:
+    """The instructions of a skill: everything after its frontmatter block.
+
+    The frontmatter is index metadata that already reaches the model through
+    :func:`skill_index`, so re-sending it on load would just cost tokens.
+    """
+    skill = load_skill(base, name)
+    text = (base / skill.path).read_text(encoding="utf-8")
+    parts = text.split("---", 2)
+    return (parts[2] if len(parts) >= 3 else text).strip()
+
+
+def skill_index(skills: list[Skill], *, loader: str = "file_read") -> str:
+    """The system-prompt section listing available skills.
+
+    ``loader`` names the tool the model should use to read one. A harness
+    carrying the ``load_skill`` builtin points at that instead of ``file_read``,
+    so it can use skills without shipping a general filesystem reader.
+    """
     if not skills:
         return ""
-    lines = [
-        "# Skills",
-        "When a skill below matches the task, read its file with the file_read "
-        "tool and follow its instructions.",
-    ]
-    lines += [f"- {s.name} ({s.path}): {s.description}" for s in skills]
-    return "\n".join(lines)
+    if loader == "load_skill":
+        how = (
+            "When a skill below matches the task, load it with the load_skill "
+            "tool and follow its instructions."
+        )
+        entries = [f"- {s.name}: {s.description}" for s in skills]
+    else:
+        how = (
+            f"When a skill below matches the task, read its file with the {loader} "
+            "tool and follow its instructions."
+        )
+        entries = [f"- {s.name} ({s.path}): {s.description}" for s in skills]
+    return "\n".join(["# Skills", how, *entries])

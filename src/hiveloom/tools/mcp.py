@@ -30,7 +30,7 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 
 from hiveloom.errors import McpError
 from hiveloom.spec.schema import McpHttpServerRef, McpServerRef, McpStdioServerRef
-from hiveloom.tools.registry import Tool, ToolError, ToolResult
+from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 
 _MAX_DISCOVERED_TOOLS = 500
 _NAME_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_-]")
@@ -46,17 +46,58 @@ def _sanitize(name: str) -> str:
     return cleaned or "tool"
 
 
+# Envelope key an MCP server uses to hand hiveloom structured side-products
+# (see :class:`~hiveloom.tools.registry.Artifact`). Namespaced so an ordinary
+# MCP server can never trip it by having a field of its own called "artifacts",
+# and so the envelope never reaches the model as text.
+ARTIFACT_ENVELOPE = "_hiveloom"
+
+
+def _artifacts_from(result: mcp_types.CallToolResult) -> list[Artifact]:
+    """Lift ``structured_content['_hiveloom']['artifacts']`` into Artifacts.
+
+    Without this an MCP-hosted tool could only talk to the *model*: everything
+    it returned would be flattened to text. Domain tools that also drive a UI
+    (a chart spec, a decision proposal) need the same caller channel a local
+    code tool gets, or moving a tool behind MCP would silently downgrade it.
+    """
+    structured = result.structured_content
+    if not isinstance(structured, dict):
+        return []
+    envelope = structured.get(ARTIFACT_ENVELOPE)
+    if not isinstance(envelope, dict):
+        return []
+    artifacts: list[Artifact] = []
+    for entry in envelope.get("artifacts") or []:
+        if isinstance(entry, dict) and entry.get("kind"):
+            artifacts.append(Artifact(kind=str(entry["kind"]), data=entry.get("data")))
+    return artifacts
+
+
 def _flatten_call_tool_result(result: mcp_types.CallToolResult) -> str:
     """Join text content blocks; fall back to structured_content; never silently empty.
 
     Images/audio/embedded resources are v1 non-goals — ignored, but explained
     rather than dropped without a trace.
     """
+    structured = result.structured_content
+    if isinstance(structured, dict) and ARTIFACT_ENVELOPE in structured:
+        # A server that opts into the envelope hands hiveloom the text too: the
+        # SDK also serializes the whole structured payload into a text block,
+        # so using that block verbatim would bill the model for an envelope it
+        # must ignore. Derive the message from the remaining fields instead.
+        remainder = {k: v for k, v in structured.items() if k != ARTIFACT_ENVELOPE}
+        if len(remainder) == 1:
+            only = next(iter(remainder.values()))
+            if isinstance(only, str):
+                return only
+        return json.dumps(remainder) if remainder else "[no text result]"
+
     texts = [block.text for block in result.content if isinstance(block, mcp_types.TextContent)]
     if texts:
         return "\n".join(texts)
-    if result.structured_content is not None:
-        return json.dumps(result.structured_content)
+    if structured is not None:
+        return json.dumps(structured)
     if result.content:
         kinds = sorted({block.type for block in result.content})
         return f"[mcp tool returned non-text content: {', '.join(kinds)}]"
@@ -185,7 +226,11 @@ class McpToolAdapter(Tool):
             )
         except Exception as exc:  # noqa: BLE001 - any transport/timeout failure is a ToolError
             raise ToolError(f"mcp tool '{self.name}' failed: {exc}") from exc
-        return ToolResult(content=_flatten_call_tool_result(result), is_error=bool(result.is_error))
+        return ToolResult(
+            content=_flatten_call_tool_result(result),
+            is_error=bool(result.is_error),
+            artifacts=_artifacts_from(result),
+        )
 
 
 def _resolve_env(ref: McpStdioServerRef) -> dict[str, str]:

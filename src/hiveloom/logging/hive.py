@@ -101,9 +101,26 @@ CREATE TABLE IF NOT EXISTS proposals (
     created_at TEXT,
     resolved_at TEXT
 );
+CREATE TABLE IF NOT EXISTS playbook_visits (
+    run_id TEXT,
+    seq INTEGER,
+    playbook TEXT,
+    entered_from TEXT,
+    ok INTEGER,
+    reason TEXT
+);
+CREATE TABLE IF NOT EXISTS run_outcomes (
+    run_id TEXT PRIMARY KEY,
+    outcome TEXT,
+    source TEXT,
+    detail TEXT,
+    recorded_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
+CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
+CREATE INDEX IF NOT EXISTS idx_playbook_visits_name ON playbook_visits(playbook);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
 CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
@@ -176,12 +193,16 @@ class Hive:
         return ingested
 
     def ingest_dir(self, trace_dir: str | Path) -> int:
-        """Ingest every ``*.jsonl`` run trace in a directory. Returns run count."""
+        """Ingest every ``*.jsonl`` run trace in a directory. Returns run count.
+
+        Recursive: session-grouped traces live one directory down
+        (``<trace_dir>/<session_id>/<run_id>.jsonl``).
+        """
         directory = Path(trace_dir)
         if not directory.exists():
             return 0
         count = 0
-        for file_path in sorted(directory.glob("*.jsonl")):
+        for file_path in sorted(directory.rglob("*.jsonl")):
             count += len(self.ingest_trace_file(file_path))
         return count
 
@@ -202,6 +223,7 @@ class Hive:
         }
         verifications: list[tuple] = []
         triggers: list[tuple] = []
+        visits: list[tuple] = []
 
         for event in events:
             etype = event.get("type")
@@ -236,11 +258,23 @@ class Hive:
                         payload.get("hook", ""),
                     )
                 )
+            elif etype == "playbook_switch":
+                visits.append(
+                    (
+                        run_id,
+                        event.get("seq", 0),
+                        payload.get("to", ""),
+                        payload.get("from") or "",
+                        1 if payload.get("ok") else 0,
+                        payload.get("refused_reason", "") or payload.get("reason", ""),
+                    )
+                )
 
         cur = self._conn
         cur.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM verifications WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM guardrail_triggers WHERE run_id=?", (run_id,))
+        cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path) "
@@ -257,6 +291,11 @@ class Hive:
             "INSERT INTO guardrail_triggers (run_id, seq, guardrail, kind, reason, hook) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             triggers,
+        )
+        cur.executemany(
+            "INSERT INTO playbook_visits (run_id, seq, playbook, entered_from, ok, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            visits,
         )
 
     # ------------------------------------------------------------------ #
@@ -438,6 +477,12 @@ class Hive:
         self._conn.execute(
             f"DELETE FROM guardrail_triggers WHERE run_id IN ({placeholders})", run_ids
         )
+        self._conn.execute(
+            f"DELETE FROM playbook_visits WHERE run_id IN ({placeholders})", run_ids
+        )
+        self._conn.execute(
+            f"DELETE FROM run_outcomes WHERE run_id IN ({placeholders})", run_ids
+        )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()
         return len(run_ids)
@@ -605,6 +650,160 @@ class Hive:
         )
         self._conn.commit()
 
+    # ------------------------------------------------------------------ #
+    # Deferred outcomes
+    # ------------------------------------------------------------------ #
+    def record_outcome(
+        self,
+        run_id: str,
+        outcome: str,
+        *,
+        source: str = "external",
+        detail: str = "",
+    ) -> dict[str, Any]:
+        """Attach a real-world outcome to a completed run, after the fact.
+
+        Validators grade a run *while it happens*, from what the output looks
+        like. Some signals only exist later and elsewhere: a human confirmed
+        or dismissed the proposal, the campaign converted, the extracted
+        record turned out wrong. This records that judgement against the
+        run_id so it can drive evolution.
+
+        ``outcome`` is ``"success"`` or ``"failure"``; anything else is
+        rejected, because :meth:`outcome_summary` and the analyzer both treat
+        this as a binary reward signal. The run row itself is never rewritten
+        — the trace remains what the run *did*, and this stays what the world
+        later said about it. One outcome per run: recording again replaces it,
+        so a corrected label wins.
+        """
+        if outcome not in ("success", "failure"):
+            raise ValueError(
+                f"outcome must be 'success' or 'failure' (got {outcome!r})"
+            )
+        row = self._conn.execute(
+            "SELECT run_id FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown run_id '{run_id}'")
+        recorded_at = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            "INSERT INTO run_outcomes (run_id, outcome, source, detail, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET "
+            "outcome=excluded.outcome, source=excluded.source, "
+            "detail=excluded.detail, recorded_at=excluded.recorded_at",
+            (run_id, outcome, source, detail, recorded_at),
+        )
+        self._conn.commit()
+        return {
+            "run_id": run_id,
+            "outcome": outcome,
+            "source": source,
+            "detail": detail,
+            "recorded_at": recorded_at,
+        }
+
+    def get_outcome(self, run_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT run_id, outcome, source, detail, recorded_at "
+            "FROM run_outcomes WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def outcome_summary(
+        self, harness_name: str, *, version: str | None = None
+    ) -> dict[str, Any]:
+        """Labelled-outcome stats for one harness.
+
+        Separate from :meth:`summary`'s ``success_rate`` on purpose: that one
+        measures whether the harness satisfied its own validators, this one
+        whether the result held up in the world. They can disagree, and the
+        disagreement is the interesting part.
+        """
+        query = (
+            "SELECT o.outcome AS outcome, COUNT(*) AS n "
+            "FROM run_outcomes o JOIN runs r ON r.run_id = o.run_id "
+            "WHERE r.harness_name=?"
+        )
+        params: list[Any] = [harness_name]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        query += " GROUP BY o.outcome"
+        counts = {r["outcome"]: r["n"] for r in self._conn.execute(query, params)}
+        labelled = sum(counts.values())
+        successes = counts.get("success", 0)
+        return {
+            "harness_name": harness_name,
+            "labelled_runs": labelled,
+            "successes": successes,
+            "failures": counts.get("failure", 0),
+            "outcome_success_rate": (successes / labelled) if labelled else 0.0,
+        }
+
+    def failed_outcome_traces(
+        self, harness_name: str, limit: int = 5, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Recent runs the world labelled as failures, newest first."""
+        query = (
+            "SELECT r.run_id, r.trace_path, r.status, o.detail, o.source, o.recorded_at "
+            "FROM run_outcomes o JOIN runs r ON r.run_id = o.run_id "
+            "WHERE r.harness_name=? AND o.outcome='failure'"
+        )
+        params: list[Any] = [harness_name]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        query += " ORDER BY o.recorded_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self._conn.execute(query, params).fetchall()]
+
+    def playbook_stats(
+        self, harness_name: str, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Success, cost, and turns per playbook.
+
+        Attribution is *by visit*: a run that worked in two playbooks counts
+        once for each, so the rates are "runs that passed through this mode",
+        not an exclusive partition. That is the honest reading of a single
+        run-level outcome, and it is still enough to separate a mode that
+        keeps failing from one that does not — which is what lets evolution
+        target one mode's prompt.
+
+        ``refusals`` counts switches the gates rejected; a mode nobody can
+        enter looks healthy on success rate alone.
+        """
+        query = (
+            "SELECT v.playbook AS playbook, "
+            "COUNT(DISTINCT CASE WHEN v.ok=1 THEN v.run_id END) AS runs, "
+            "COUNT(DISTINCT CASE WHEN v.ok=1 AND r.status='success' "
+            "                    THEN v.run_id END) AS successes, "
+            "SUM(CASE WHEN v.ok=0 THEN 1 ELSE 0 END) AS refusals, "
+            "AVG(r.cost_usd) AS avg_cost_usd, AVG(r.turns) AS avg_turns "
+            "FROM playbook_visits v JOIN runs r ON r.run_id = v.run_id "
+            "WHERE r.harness_name=?"
+        )
+        params: list[Any] = [harness_name]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        query += " GROUP BY v.playbook ORDER BY runs DESC, playbook"
+
+        out: list[dict[str, Any]] = []
+        for row in self._conn.execute(query, params).fetchall():
+            runs = row["runs"] or 0
+            out.append(
+                {
+                    "playbook": row["playbook"],
+                    "runs": runs,
+                    "success_rate": ((row["successes"] or 0) / runs) if runs else 0.0,
+                    "refusals": row["refusals"] or 0,
+                    "avg_cost_usd": row["avg_cost_usd"] or 0.0,
+                    "avg_turns": row["avg_turns"] or 0.0,
+                }
+            )
+        return out
+
     def summary(self, harness_name: str) -> dict[str, Any]:
         """A rolled-up stats view for one harness (all versions + per version)."""
         totals = self._conn.execute(
@@ -624,4 +823,5 @@ class Hive:
             "avg_turns": totals["avg_turns"] or 0.0,
             "versions": self.version_stats(harness_name),
             "failure_signatures": self.failure_signatures(harness_name),
+            "playbooks": self.playbook_stats(harness_name),
         }

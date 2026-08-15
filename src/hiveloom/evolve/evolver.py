@@ -37,7 +37,7 @@ from hiveloom.spec.loader import (
     spec_to_dict,
     validate_harness,
 )
-from hiveloom.spec.schema import ALWAYS_FROZEN, HarnessSpec
+from hiveloom.spec.schema import ALWAYS_FROZEN, PLAYBOOK_FROZEN_FIELDS, HarnessSpec
 from hiveloom.tools.builtin import _safe_path
 from hiveloom.tools.registry import ToolError
 
@@ -220,6 +220,13 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
                     "reason": "dangerous tool changes require an explicit construct command",
                 }
             )
+        elif _touches_playbook_code(change):
+            rejected.append(
+                {
+                    "path": change.path,
+                    "reason": "playbook code hooks are frozen from evolution",
+                }
+            )
         elif not _covered(change.path, mutable):
             rejected.append({"path": change.path, "reason": "not in the mutable set"})
         else:
@@ -227,9 +234,12 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
 
     if accepted:
         raw = spec_to_dict(spec)
-        for change in accepted:
-            _set_dotted(raw, change.path, change.value)
         try:
+            # Applying is inside the try too: an unaddressable path (a bad list
+            # index) is the same class of problem as a batch that will not
+            # validate, and must be reported, not raised at the caller.
+            for change in accepted:
+                _set_dotted(raw, change.path, change.value)
             spec_from_dict(raw, source="accepted evolution mutation batch")
         except SpecError as exc:
             reason = f"accepted mutation batch would produce an invalid spec: {exc}"
@@ -237,6 +247,34 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
             accepted = []
 
     return GateResult(accepted=accepted, rejected=rejected, code_changes=proposal.code_changes)
+
+
+def _touches_playbook_code(change: YamlChange) -> bool:
+    """Keep playbook ``on_enter``/``on_exit`` out of YAML evolution.
+
+    Two shapes have to be caught: a direct write to the hook field
+    (``playbooks.0.on_enter``), and a write of an ancestor whose *value*
+    carries a hook — rewriting the whole ``playbooks`` list, or one playbook
+    mapping, would otherwise install executable code through a path that only
+    looks like prose. Prompts stay mutable; that is the point of the split.
+    """
+    head, *rest = change.path.split(".")
+    if head != "playbooks":
+        return False
+    if rest and rest[-1] in PLAYBOOK_FROZEN_FIELDS:
+        return True
+    return _carries_playbook_hook(change.value)
+
+
+def _carries_playbook_hook(value: Any) -> bool:
+    """True if a proposed value contains a playbook hook field anywhere."""
+    if isinstance(value, dict):
+        if any(value.get(field) is not None for field in PLAYBOOK_FROZEN_FIELDS):
+            return True
+        return any(_carries_playbook_hook(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_carries_playbook_hook(item) for item in value)
+    return False
 
 
 def _enables_dangerous_tool(change: YamlChange) -> bool:
@@ -263,14 +301,43 @@ def _read_counter(yaml_path: Path) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _list_index(target: list[Any], segment: str) -> int:
+    """Resolve a dotted segment to a list index, or fail with a clear message."""
+    try:
+        index = int(segment)
+    except ValueError:
+        raise SpecError(
+            f"'{segment}' is not a valid list index (a numeric segment is "
+            "required to address a list entry)"
+        ) from None
+    if not -len(target) <= index < len(target):
+        raise SpecError(f"list index {index} is out of range (length {len(target)})")
+    return index
+
+
 def _set_dotted(raw: dict[str, Any], path: str, value: Any) -> None:
+    """Write ``value`` at a dotted path, creating missing mappings on the way.
+
+    A numeric segment addresses a list entry, so one element of a list-valued
+    section can be rewritten in place (``playbooks.0.prompt``) instead of
+    replacing the whole list. That matters for playbooks: targeting one mode's
+    prompt is the point, and a whole-list rewrite would be both a bigger
+    blast radius and a way to smuggle in fields that are frozen per-entry.
+    """
     parts = path.split(".")
     cursor: Any = raw
     for segment in parts[:-1]:
-        if segment not in cursor or not isinstance(cursor[segment], dict):
+        if isinstance(cursor, list):
+            cursor = cursor[_list_index(cursor, segment)]
+            continue
+        if segment not in cursor or not isinstance(cursor[segment], (dict, list)):
             cursor[segment] = {}
         cursor = cursor[segment]
-    cursor[parts[-1]] = value
+    last = parts[-1]
+    if isinstance(cursor, list):
+        cursor[_list_index(cursor, last)] = value
+    else:
+        cursor[last] = value
 
 
 def preview_yaml_changes(harness_dir: str | Path, proposal: MutationProposal) -> str:

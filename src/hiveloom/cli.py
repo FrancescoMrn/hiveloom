@@ -926,9 +926,11 @@ def serve(
 ) -> None:
     """Serve the harness over HTTP — the long-lived deployment interface.
 
-    ``GET /healthz`` reports liveness; ``POST /runs`` with ``{"input": "..."}``
-    runs the harness (add ``"stream": true`` for NDJSON trace events, final
-    ``run_result`` line last — same format as ``run --stream``). Set
+    ``GET /healthz`` reports liveness; ``POST /runs`` runs the harness with
+    either ``{"input": "..."}`` or ``{"messages": [...]}`` (the whole
+    conversation, for a multi-turn caller). Add ``"stream": true`` for NDJSON
+    trace events, final ``run_result`` line last — same format as
+    ``run --stream``. Set
     ``HIVELOOM_API_KEY`` to require ``Authorization: Bearer`` / ``X-API-Key``
     on ``/runs``; run inputs are always treated as literal text, never file
     paths. Blocks until interrupted.
@@ -1034,9 +1036,12 @@ def stats(
             name = runner.resolve_and_ingest(target, hive)
             summary = hive.summary(name)
             recent = hive.recent_failures(name, 5)
+            outcomes = hive.outcome_summary(name)
 
         if json_output:
-            _emit_json({"ok": True, **summary, "recent_failures": recent})
+            _emit_json(
+                {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
+            )
             return
 
         _console.print(
@@ -1060,6 +1065,30 @@ def stats(
                     f"{v['avg_turns']:.1f}",
                 )
             _console.print(table)
+        if summary["playbooks"]:
+            table = Table(title="per playbook")
+            table.add_column("playbook", style="cyan")
+            table.add_column("runs", justify="right")
+            table.add_column("success", justify="right", style="green")
+            table.add_column("refused", justify="right", style="yellow")
+            table.add_column("avg cost", justify="right")
+            table.add_column("avg turns", justify="right")
+            for p in summary["playbooks"]:
+                table.add_row(
+                    p["playbook"],
+                    str(p["runs"]),
+                    f"{p['success_rate']:.0%}",
+                    str(p["refusals"]),
+                    f"${p['avg_cost_usd']:.4f}",
+                    f"{p['avg_turns']:.1f}",
+                )
+            _console.print(table)
+        if outcomes["labelled_runs"]:
+            _console.print(
+                f"[bold]labelled outcomes[/bold] — {outcomes['labelled_runs']} labelled, "
+                f"{outcomes['outcome_success_rate']:.0%} held up "
+                f"({outcomes['failures']} rejected by the world)"
+            )
         sigs = summary["failure_signatures"]
         if sigs["verdicts"]:
             _console.print("[yellow]top failure verdicts:[/yellow]")
@@ -1069,6 +1098,40 @@ def stats(
             _console.print("[yellow]top guardrail triggers:[/yellow]")
             for g in sigs["guardrails"]:
                 _console.print(f"  {g['count']}× {g['guardrail']} ({g['kind']})")
+
+
+@app.command()
+def outcome(
+    run_id: str = typer.Argument(..., help="Run id to label."),
+    result: str = typer.Argument(..., help="'success' or 'failure'."),
+    source: str = typer.Option(
+        "external", "--source", help="Who or what produced this judgement."
+    ),
+    detail: str = typer.Option("", "--detail", help="Why, in one line."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Attach a real-world outcome to a completed run.
+
+    Validators grade a run while it happens; some signals only arrive later
+    and from somewhere else — a human confirmed or dismissed the proposal, the
+    extracted record turned out wrong. Recording that here feeds it back into
+    `stats` and `evolve` as the reward signal, without rewriting what the run
+    itself did.
+    """
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        with Hive() as hive:
+            recorded = hive.record_outcome(
+                run_id, result, source=source, detail=detail
+            )
+        if json_output:
+            _emit_json({"ok": True, **recorded})
+            return
+        _console.print(
+            f"recorded [bold]{recorded['outcome']}[/bold] for {run_id} "
+            f"(source: {recorded['source']})"
+        )
 
 
 def _status_colour(status: str) -> str:

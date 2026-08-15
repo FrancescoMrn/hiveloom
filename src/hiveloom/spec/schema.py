@@ -396,7 +396,10 @@ class ModelConfig(BaseModel):
     max_tokens: int = Field(
         default=4096, gt=0, le=32768, description="Max output tokens per call."
     )
-    temperature: float = Field(default=0.0, ge=0.0, le=1.0, description="Sampling temperature.")
+    temperature: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Sampling temperature. None omits it — required for models that deprecate it.",
+    )
 
     @field_validator("provider")
     @classmethod
@@ -575,6 +578,97 @@ class VerifyConfig(BaseModel):
     )
 
 
+_PLAYBOOK_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+class PlaybookRef(BaseModel):
+    """One named mode the harness can work in.
+
+    A skill is reference material the model *reads*; a playbook is a
+    configuration the runtime *applies*. Entering one swaps in a prompt
+    fragment, narrows the active tools, and adds mode-specific validators, so a
+    single harness can cover what would otherwise need several — a profiling
+    mode that may only read, an action mode that may also propose — while
+    keeping one conversation and one evolving spec.
+
+    Because each switch is traced, the Hive measures success, cost, and turns
+    *per playbook*, and evolution can rewrite one mode's prompt on evidence
+    without touching a mode that already works.
+
+    ``on_enter``/``on_exit`` run arbitrary code and are therefore frozen from
+    evolution (see :data:`ALWAYS_FROZEN` and the evolver's gate); ``prompt`` is
+    the part meant to be evolved.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Unique mode name; what switch_playbook takes.")
+    description: str = Field(
+        description=(
+            "What this mode is for. Shown to the model in the playbook index, "
+            "so it can pick the right mode — write it as selection guidance."
+        )
+    )
+    prompt: str | None = Field(
+        default=None,
+        description=(
+            "Relative path to a markdown file appended to the system prompt "
+            "while this playbook is active (e.g. playbooks/targeting.md)."
+        ),
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tool names active in this mode; omit to leave the harness's tool "
+            "activation untouched. Narrowing here is what makes a mode a mode."
+        ),
+    )
+    validators: list[ValidatorRef] = Field(
+        default_factory=list,
+        description="Validators added to verify.validators while this mode is active.",
+    )
+    on_enter: str | None = Field(
+        default=None,
+        description=(
+            "Code hook 'path.py:function' run when this playbook is entered. "
+            "Return {'context': str} to inject a note, or {'block': True, "
+            "'reason': str} to refuse entry. Frozen from evolution."
+        ),
+    )
+    on_exit: str | None = Field(
+        default=None,
+        description=(
+            "Code hook 'path.py:function' run when leaving this playbook. "
+            "Return {'block': True, 'reason': str} to refuse the exit — a "
+            "boundary gate, e.g. 'you entered targeting and proposed nothing'. "
+            "Frozen from evolution."
+        ),
+    )
+    entry: bool = Field(
+        default=False,
+        description="Start the run in this playbook (defaults to the first one).",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not _PLAYBOOK_NAME_RE.match(value):
+            raise ValueError(f"playbook name {value!r} must match [a-zA-Z0-9_-]+")
+        return value
+
+    @field_validator("on_enter", "on_exit")
+    @classmethod
+    def _check_hook_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value.count(":") != 1 or value.endswith(":") or value.startswith(":"):
+            raise ValueError(
+                "playbook hook must be 'relative/path.py:function_name' "
+                f"(got {value!r})"
+            )
+        return value
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -687,6 +781,15 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "evolution.auto_propose",
 )
 
+# Playbook fields that execute code, and so share the boundary above. They
+# cannot be expressed in ALWAYS_FROZEN because playbooks are a *list*: the
+# dotted paths would need an index or a wildcard, and both `_covered` and
+# `_touches_frozen` match literal dotted prefixes only. The evolver enforces
+# these with a dedicated value-inspecting check (`_touches_playbook_code`),
+# the same shape as its dangerous-tool check, so that rewriting the whole
+# `playbooks` list cannot smuggle a hook in either.
+PLAYBOOK_FROZEN_FIELDS: tuple[str, ...] = ("on_enter", "on_exit")
+
 
 # --------------------------------------------------------------------------- #
 # Top-level spec
@@ -728,6 +831,15 @@ class HarnessSpec(BaseModel):
             "name + description enter the system prompt; the model reads the "
             "full skill on demand (progressive disclosure — pair with the "
             "file_read tool)."
+        ),
+    )
+    playbooks: list[PlaybookRef] = Field(
+        default_factory=list,
+        description=(
+            "Named modes the harness can switch between mid-run: each carries a "
+            "prompt fragment, an active tool subset, extra validators, and "
+            "enter/exit code hooks. Declaring any auto-adds the "
+            "switch_playbook tool. Measured per playbook in the Hive."
         ),
     )
     hooks: list[HookRef] = Field(
@@ -796,4 +908,56 @@ class HarnessSpec(BaseModel):
             if server.name in seen:
                 raise ValueError(f"duplicate mcp server name '{server.name}'")
             seen.add(server.name)
+        return self
+
+    def tool_names(self) -> set[str]:
+        """Names the spec's tools will register under.
+
+        A builtin registers under its catalog name; a code tool registers under
+        its function name, which is the part after the colon in its ``code``
+        ref. Derivable without importing anything, which is what lets playbook
+        tool subsets be checked at validation time.
+        """
+        names: set[str] = set()
+        for tool in self.tools:
+            if isinstance(tool, BuiltinToolRef):
+                names.add(tool.builtin)
+            else:
+                names.add(tool.code.split(":", 1)[1])
+        return names
+
+    @model_validator(mode="after")
+    def _check_playbooks(self) -> HarnessSpec:
+        seen: set[str] = set()
+        entries: list[str] = []
+        for playbook in self.playbooks:
+            if playbook.name in seen:
+                raise ValueError(f"duplicate playbook name '{playbook.name}'")
+            seen.add(playbook.name)
+            if playbook.entry:
+                entries.append(playbook.name)
+        if len(entries) > 1:
+            raise ValueError(
+                "at most one playbook may set entry: true "
+                f"(got {', '.join(entries)})"
+            )
+
+        # A tool subset naming a tool the harness does not have would silently
+        # deactivate everything on entry and strand the model with no way back.
+        # Catch the typo at validation time instead.
+        #
+        # MCP tools are exempt: they are discovered from a live server when the
+        # registry is built, so their names cannot be known here. Validating
+        # them would mean either refusing valid specs or requiring every
+        # declared server to be reachable just to parse the YAML.
+        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        for playbook in self.playbooks:
+            declared = {t for t in (playbook.tools or []) if not t.startswith("mcp__")}
+            unknown = sorted(declared - available)
+            if unknown:
+                raise ValueError(
+                    f"playbook '{playbook.name}' lists unknown tool(s): "
+                    f"{', '.join(unknown)}. Declared tools: "
+                    f"{', '.join(sorted(available)) or '(none)'}"
+                )
         return self

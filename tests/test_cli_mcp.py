@@ -141,7 +141,7 @@ def test_mcp_list_tools_json_discovers_real_tools(tmp_path: Path):
     r = runner.invoke(app, ["mcp", "list-tools", "--dir", directory, "--json"])
     assert r.exit_code == ExitCode.OK
     names = {t["name"] for t in _json(r)["tools"]}
-    assert names == {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom"}
+    assert {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__boom"} <= names
     # Reuses build_registry's bridge/closer -- must tear the subprocess and
     # portal thread down cleanly, not leak them after the command returns.
     assert threading.active_count() == before

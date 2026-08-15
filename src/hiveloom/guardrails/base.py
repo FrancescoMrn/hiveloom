@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from hiveloom.models.provider import ModelResponse, ToolCall
 from hiveloom.tools.registry import ToolResult
@@ -55,9 +55,18 @@ class RunState:
     tool_names: set[str] = field(default_factory=set)
     started_at: float = field(default_factory=time.monotonic)
     output: str | None = None
+    # Structured tool side-products collected so far, in dispatch order. Each
+    # entry is {"kind", "data", "tool"}. Exposed here so a guardrail can act on
+    # what the run has actually produced (e.g. cap how many decisions one turn
+    # may propose), not only on cost and turn counts.
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
 
     def elapsed_seconds(self) -> float:
         return time.monotonic() - self.started_at
+
+    def artifacts_of(self, kind: str) -> list[Any]:
+        """The ``data`` payloads of every collected artifact of one kind."""
+        return [a["data"] for a in self.artifacts if a.get("kind") == kind]
 
 
 class Guardrail:

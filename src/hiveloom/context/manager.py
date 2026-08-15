@@ -124,12 +124,37 @@ class ContextManager:
         )
         self._compaction_model_call: Callable[[str, list[dict[str, Any]]], Any] | None = None
         self._plan: str | None = None
+        self._playbooks: Any = None
         self.messages: list[dict[str, Any]] = []
+        self._history_count = 0
 
     @property
     def pinned_message_count(self) -> int:
-        """Number of history messages declared persistent through compaction."""
+        """Number of leading messages held persistent through compaction.
+
+        Compaction methods treat this as a *prefix* length, so it can only pin
+        the task statement while the task statement is the first message — the
+        single-shot case. Once prior turns are seeded (:meth:`seed_history`)
+        the task statement is instead the newest message, which every
+        compaction method already preserves, and the history in front of it is
+        exactly what should be reclaimed first. So nothing is pinned then.
+        """
+        if self._history_count:
+            return 0
         return int("task_statement" in self._config.pinned and bool(self.messages))
+
+    def seed_history(self, messages: list[dict[str, Any]]) -> None:
+        """Seed prior conversation turns ahead of the current task statement.
+
+        For multi-turn callers that own the conversation themselves: a chat
+        service replays the whole thread each turn, so the earlier turns are
+        appended verbatim here and the loop then adds the current input as the
+        final user message.
+        """
+        if not messages:
+            return
+        self.messages.extend(messages)
+        self._history_count += len(messages)
 
     def set_compaction_model_call(
         self, callback: Callable[[str, list[dict[str, Any]]], Any]
@@ -178,17 +203,45 @@ class ContextManager:
         """Pin a plan (plan_then_act) into the system prompt so it is never dropped."""
         self._plan = plan
 
+    def set_playbooks(self, manager: Any) -> None:
+        """Attach the :class:`~hiveloom.playbooks.PlaybookManager` for this run.
+
+        Held rather than snapshotted so the system prompt reflects the current
+        mode on every assembly — a switch has to change what the model is
+        told, not just which tools it has.
+        """
+        self._playbooks = manager
+
     # ------------------------------------------------------------------ #
     # Assembly & budgeting
     # ------------------------------------------------------------------ #
     def system(self) -> str:
         parts = [self._system_prompt]
+        if self._playbooks is not None and self._playbooks.names:
+            from hiveloom.playbooks import playbook_index
+
+            parts.append(
+                playbook_index(self._playbooks.all(), self._playbooks.current_name)
+            )
+            fragment = self._playbooks.prompt_fragment()
+            if fragment:
+                current = self._playbooks.current_name
+                parts.append(f"# Playbook: {current}\n{fragment}")
         if self._plan:
             parts.append(f"# Plan\n{self._plan}")
         if self._skills:
             from hiveloom.skills import skill_index
 
-            parts.append(skill_index(self._skills))
+            # Point the model at whichever loader this harness actually
+            # carries; a spec with load_skill need not ship file_read at all.
+            has_load_skill = (
+                self._registry is not None and "load_skill" in self._registry.active_names()
+            )
+            parts.append(
+                skill_index(
+                    self._skills, loader="load_skill" if has_load_skill else "file_read"
+                )
+            )
         if self._registry is not None:
             guidelines = self._registry.guidelines()
             if guidelines:

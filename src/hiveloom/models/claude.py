@@ -100,12 +100,16 @@ class ClaudeProvider(ModelProvider):
         tools_param = tools
         if tools:
             tools_param = [*tools[:-1], {**tools[-1], "cache_control": _CACHE_CONTROL}]
+        # Omitted when unset, and always for the ids whose API rejects sampling
+        # parameters — for those, any value at all is a 400.
+        send_temperature = config.temperature is not None and not config.id.startswith(
+            _NO_SAMPLING_PREFIXES
+        )
+        extra = {"temperature": config.temperature} if send_temperature else {}
         raw = self._call_with_backoff(
             model=config.id,
             max_tokens=config.max_tokens,
-            temperature=(
-                None if config.id.startswith(_NO_SAMPLING_PREFIXES) else config.temperature
-            ),
+            **extra,
             system=system_param,
             messages=_with_cache_breakpoint(messages),
             tools=tools_param,

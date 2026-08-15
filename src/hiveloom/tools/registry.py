@@ -17,9 +17,9 @@ import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model, field_validator
 
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
@@ -32,17 +32,58 @@ class ToolError(HiveloomError):
     """Raised by a tool when it cannot complete a call."""
 
 
+# A code tool that declares this parameter is handed the run context instead of
+# having the model supply it. Same name the validator contract already uses
+# (``validate(run_output, run_context)``), so one word means one thing.
+RUN_CONTEXT_PARAM = "run_context"
+
+
+class Artifact(BaseModel):
+    """A structured side-product of a tool call, for the embedding application.
+
+    ``content`` is what the *model* reads back; an artifact is what the
+    *caller* renders or stores. A charting tool returns "chart registered" to
+    the model and the chart spec as an artifact; a proposal tool returns
+    "awaiting confirmation" and the proposal rows as an artifact. Keeping the
+    two apart means a harness can drive a real UI without smuggling JSON
+    through the model's text channel.
+
+    ``kind`` groups artifacts for the caller (``"chart"``, ``"proposal"``);
+    ``data`` is arbitrary JSON-serializable payload.
+    """
+
+    kind: str
+    data: Any
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("artifact kind must not be empty")
+        return value
+
+
 class ToolResult(BaseModel):
     """The outcome of dispatching a tool call.
 
     ``terminate`` is a hint that this result is the final output and the loop
     may skip the follow-up model call — honored only when every result in the
     turn's batch terminates (mirrors pi's semantics).
+
+    ``artifacts`` carries structured output to the embedding caller; see
+    :class:`Artifact`. They are recorded on the trace and collected onto
+    ``RunResult.artifacts`` in dispatch order.
     """
 
     content: str
     is_error: bool = False
     terminate: bool = False
+    artifacts: list[Artifact] = Field(default_factory=list)
+    # Set False on an error that will deterministically recur, so
+    # `loop.on_tool_error: retry_once` does not repeat it. A refused playbook
+    # switch is a policy decision, not a flaky call: retrying re-runs the gate
+    # hook's side effects and double-counts the refusal in run evidence.
+    retryable: bool = True
 
 
 class Tool(ABC):
@@ -64,6 +105,9 @@ class Tool(ABC):
     input_schema: dict[str, Any]
     guidelines: str = ""
     supports_updates: bool = False
+    # Set by tools that declare a ``run_context`` parameter; the registry then
+    # injects the run context at dispatch (see :data:`RUN_CONTEXT_PARAM`).
+    wants_run_context: bool = False
 
     @abstractmethod
     def run(self, **kwargs: Any) -> str | ToolResult:
@@ -91,6 +135,7 @@ class FunctionTool(Tool):
         self.tags = tags
         self.guidelines = guidelines
         self.input_schema = schema_from_function(func)
+        self.wants_run_context = RUN_CONTEXT_PARAM in inspect.signature(func).parameters
 
     def run(self, **kwargs: Any) -> str | ToolResult:
         result = self._func(**kwargs)
@@ -100,13 +145,34 @@ class FunctionTool(Tool):
 
 
 def schema_from_function(func) -> dict[str, Any]:
-    """Derive an Anthropic-style JSON input schema from a function's signature."""
+    """Derive an Anthropic-style JSON input schema from a function's signature.
+
+    ``run_context`` is skipped: it is injected by the runtime, so exposing it
+    to the model would both waste tokens and invite the model to forge
+    per-run dependencies.
+    """
     signature = inspect.signature(func)
+    # Code hooks commonly opt into postponed annotations via
+    # ``from __future__ import annotations``.  ``inspect.signature`` then
+    # exposes strings such as ``list[ChartSeries]``; handing those strings to
+    # pydantic leaves the generated model unresolved and prevents structured
+    # item schemas (TypedDict/BaseModel) from reaching the executor model.
+    # Resolve in the hook's own globals first, while retaining the historical
+    # fallback for unusual callables whose hints cannot be evaluated.
+    try:
+        resolved_hints = get_type_hints(func, include_extras=True)
+    except (NameError, TypeError):
+        resolved_hints = {}
     fields: dict[str, Any] = {}
     for pname, param in signature.parameters.items():
         if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
             continue
-        annotation = param.annotation if param.annotation is not inspect.Parameter.empty else str
+        if pname == RUN_CONTEXT_PARAM:
+            continue
+        annotation = resolved_hints.get(
+            pname,
+            param.annotation if param.annotation is not inspect.Parameter.empty else str,
+        )
         if param.default is inspect.Parameter.empty:
             fields[pname] = (annotation, ...)
         else:
@@ -168,6 +234,15 @@ class ToolRegistry:
         self._active.update(activated)
         return activated
 
+    def set_active(self, names: list[str]) -> None:
+        """Replace the active set outright (used by playbook tool subsets).
+
+        Unlike :meth:`activate` this also *deactivates*: entering a mode that
+        may only read must actually remove the write tools, or the narrowing
+        is decorative.
+        """
+        self._active = {n for n in names if n in self._tools}
+
     def __contains__(self, name: str) -> bool:
         return name in self._tools
 
@@ -192,7 +267,10 @@ class ToolRegistry:
         ]
 
     def dispatch(
-        self, call: ToolCall, on_update: Callable[[str], None] | None = None
+        self,
+        call: ToolCall,
+        on_update: Callable[[str], None] | None = None,
+        run_context: dict[str, Any] | None = None,
     ) -> ToolResult:
         """Run a tool call, converting failures into error results (never crash)."""
         tool = self._tools.get(call.name)
@@ -202,6 +280,10 @@ class ToolRegistry:
             return ToolResult(content=f"tool '{call.name}' is inactive", is_error=True)
         try:
             kwargs = tool.prepare(dict(call.input))
+            if tool.wants_run_context:
+                # Injected after prepare() so a model-supplied key of the same
+                # name can never reach the tool in its place.
+                kwargs[RUN_CONTEXT_PARAM] = dict(run_context or {})
             if on_update is not None and tool.supports_updates:
                 result = tool.run_with_updates(kwargs, on_update)
             else:
@@ -213,6 +295,50 @@ class ToolRegistry:
             return ToolResult(content=f"tool error: {exc}", is_error=True)
         except Exception as exc:  # noqa: BLE001 - tools must never crash the loop
             return ToolResult(content=f"tool raised {type(exc).__name__}: {exc}", is_error=True)
+
+
+class SwitchPlaybookTool(Tool):
+    """Switches the run's active playbook (auto-added when a spec declares any).
+
+    Registered by :func:`build_registry` so it appears in ``run --dry-run``
+    like any other tool, then bound by the agent loop, which owns what a
+    switch actually does (gates, tracing, prompt swap).
+    """
+
+    def __init__(self, playbooks: list[tuple[str, str]]):
+        self._names = [name for name, _ in playbooks]
+        self._handler: Callable[[str, str], ToolResult] | None = None
+        self.name = "switch_playbook"
+        listing = "; ".join(f"{name}: {desc}" for name, desc in playbooks)
+        self.description = (
+            "Switch to another playbook when the work moves into its area. "
+            "The active tools and guidance change with it. Available — "
+            f"{listing}"
+        )
+        self.tags = ["meta", "playbook"]
+        self.input_schema = {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Playbook to switch to.",
+                    "enum": self._names,
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One line on why this mode fits what comes next.",
+                },
+            },
+            "required": ["name"],
+        }
+
+    def bind(self, handler: Callable[[str, str], ToolResult]) -> None:
+        self._handler = handler
+
+    def run(self, name: str = "", reason: str = "", **_: Any) -> ToolResult:
+        if self._handler is None:
+            raise ToolError("switch_playbook is not available in this context")
+        return self._handler(name, reason)
 
 
 class SearchToolsTool(Tool):
@@ -273,7 +399,9 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
         active = not bool(tool_ref.deferred)
         has_deferred = has_deferred or not active
         if isinstance(tool_ref, BuiltinToolRef):
-            tool = builtin.make_builtin_tool(tool_ref, base, trace_dir=trace_dir)
+            tool = builtin.make_builtin_tool(
+                tool_ref, base, trace_dir=trace_dir, skills=spec.skills
+            )
             registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):
             func = _import_hook(tool_ref.code, base)
@@ -308,4 +436,8 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
 
     if has_deferred:
         registry.register(SearchToolsTool(registry))
+    if spec.playbooks:
+        registry.register(
+            SwitchPlaybookTool([(p.name, p.description) for p in spec.playbooks])
+        )
     return registry

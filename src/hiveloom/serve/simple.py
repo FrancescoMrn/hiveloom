@@ -9,11 +9,24 @@ Endpoints:
 
 - ``GET /healthz`` — liveness + identity, always unauthenticated (orchestrator
   probes must not need the API key).
-- ``POST /runs`` — body ``{"input": "...", "stream": false}``. Non-stream
-  responses mirror ``hiveloom run --json``; ``"stream": true`` responds with
-  ``application/x-ndjson`` chunks: every trace event as a JSON line, then a
-  final ``{"type": "run_result", ...}`` line — byte-compatible with
-  ``hiveloom run --stream``.
+- ``POST /runs`` — body carries exactly one of ``{"input": "..."}`` (single
+  shot) or ``{"messages": [{"role": ..., "content": ...}, ...]}`` (the whole
+  conversation, for a multi-turn caller that owns the thread), plus an
+  optional ``"stream": true`` and an optional ``"session_id"`` (letters,
+  digits, ``._-``; ≤64 chars) that groups the run's trace with the other runs
+  of the same conversation under ``<trace_dir>/<session_id>/``. Non-stream responses mirror
+  ``hiveloom run --json`` — including ``artifacts``, so a served harness can
+  drive a real UI; ``"stream": true`` responds with ``application/x-ndjson``
+  chunks: first a ``{"type": "run_accepted", "run_id": ...}`` line (so the
+  client can address the run while it is still going), then every trace event
+  as a JSON line, then a final ``{"type": "run_result", ...}`` line.
+- ``POST /runs/{run_id}/stop`` — ask a running run to stop gracefully at its
+  next turn boundary; it finishes with status ``"stopped"``, trace intact.
+  Optional body ``{"reason": "..."}``.
+- ``POST /runs/{run_id}/messages`` — inject a steering message
+  (``{"content": "..."}``) into a running run; the loop folds it in as an
+  operator message before its next model call. Queueing a message for *after*
+  the run is the caller's concern — it owns the conversation.
 
 Auth: when ``HIVELOOM_API_KEY`` is set (or ``api_key`` passed), ``/runs``
 requires ``Authorization: Bearer <key>`` or ``X-API-Key: <key>``. The key is
@@ -29,6 +42,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -75,22 +89,35 @@ class HarnessServer(ThreadingHTTPServer):
         if concurrency < 1:
             raise SpecError(f"serve concurrency must be >= 1 (got {concurrency})")
         self._slots = threading.Semaphore(concurrency)
+        # Live runs' control channels, keyed by run id. Entries exist only
+        # while the run executes; stop/messages for unknown ids are 404s.
+        self._controls: dict[str, Any] = {}
+        self._controls_lock = threading.Lock()
         super().__init__((host, port), _Handler)
+
+    def register_control(self, run_id: str, control: Any) -> None:
+        with self._controls_lock:
+            self._controls[run_id] = control
+
+    def release_control(self, run_id: str) -> None:
+        with self._controls_lock:
+            self._controls.pop(run_id, None)
+
+    def get_control(self, run_id: str) -> Any | None:
+        with self._controls_lock:
+            return self._controls.get(run_id)
 
 
 def result_payload(result: Any) -> dict[str, Any]:
-    """The same shape ``hiveloom run --json`` emits, so clients need one parser."""
-    return {
-        "ok": result.status == "success",
-        "status": result.status,
-        "output": result.output,
-        "turns": result.turns,
-        "cost_usd": result.cost_usd,
-        "duration_seconds": result.duration_seconds,
-        "run_id": result.run_id,
-        "trace_path": result.trace_path,
-        "reason": result.reason,
-    }
+    """The same shape ``hiveloom run --json`` emits, so clients need one parser.
+
+    Delegates instead of restating the fields. It used to be a second copy of
+    the same dict, which meant anything added to the canonical payload was
+    silently missing over HTTP.
+    """
+    from hiveloom import runner
+
+    return runner.run_result_payload(result)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -166,6 +193,10 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
+        parts = [p for p in self.path.split("/") if p]
+        if len(parts) == 3 and parts[0] == "runs" and parts[2] in ("stop", "messages"):
+            self._control_request(parts[1], parts[2])
+            return
         if self.path != "/runs":
             self._send_json(404, {"ok": False, "error": f"unknown path {self.path}"})
             return
@@ -173,9 +204,37 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "missing or invalid API key"})
             return
         body = self._read_body()
-        if body is None or not isinstance(body.get("input"), str) or not body["input"]:
+        if body is None:
+            self._send_json(400, {"ok": False, "error": "body must be a JSON object"})
+            return
+        # bool() matters: comparing the raw values would make `"x" == [...]`
+        # and `False == []` both False, letting "both" and "neither" through.
+        has_input = bool(isinstance(body.get("input"), str) and body["input"])
+        has_messages = bool(isinstance(body.get("messages"), list) and body["messages"])
+        if has_input == has_messages:
             self._send_json(
-                400, {"ok": False, "error": 'body must be JSON with a non-empty "input" string'}
+                400,
+                {
+                    "ok": False,
+                    "error": (
+                        'body must carry exactly one of a non-empty "input" string '
+                        'or a non-empty "messages" conversation'
+                    ),
+                },
+            )
+            return
+        session_id = body.get("session_id")
+        if session_id is not None and (
+            not isinstance(session_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", session_id)
+        ):
+            self._send_json(
+                400,
+                {
+                    "ok": False,
+                    "error": '"session_id" must be 1-64 characters of letters, '
+                    "digits, '.', '_' or '-'",
+                },
             )
             return
         if not self.server._slots.acquire(blocking=False):
@@ -184,26 +243,80 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
         try:
-            self._run(body["input"], stream=bool(body.get("stream")))
+            self._run(
+                body.get("input") if has_input else None,
+                body.get("messages") if has_messages else None,
+                stream=bool(body.get("stream")),
+                session_id=session_id,
+            )
         finally:
             self.server._slots.release()
 
-    def _run(self, input_value: str, *, stream: bool) -> None:
+    def _control_request(self, run_id: str, action: str) -> None:
+        """``POST /runs/{id}/stop`` and ``POST /runs/{id}/messages``."""
+        if not self._authorized():
+            self._send_json(401, {"ok": False, "error": "missing or invalid API key"})
+            return
+        control = self.server.get_control(run_id)
+        if control is None:
+            self._send_json(
+                404, {"ok": False, "error": f"no running run with id {run_id!r}"}
+            )
+            return
+        body = self._read_body() or {}
+        if action == "stop":
+            control.request_stop(str(body.get("reason") or ""))
+            self._send_json(200, {"ok": True, "run_id": run_id, "stopping": True})
+            return
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            self._send_json(
+                400, {"ok": False, "error": 'body must carry a non-empty "content" string'}
+            )
+            return
+        control.send_message(content.strip())
+        self._send_json(200, {"ok": True, "run_id": run_id, "queued_for_next_turn": True})
+
+    def _run(
+        self,
+        input_value: str | None,
+        conversation: list[Any] | None,
+        *,
+        stream: bool,
+        session_id: str | None = None,
+    ) -> None:
         from hiveloom import runner
+        from hiveloom.loop.control import RunControl
 
         provider = self.server.provider_factory() if self.server.provider_factory else None
+        # Conversation content is literal by construction; `literal_input` only
+        # concerns the single-shot form, where a caller-supplied string that
+        # happens to name a file must not be read off the server.
+        run_kwargs: dict[str, Any] = (
+            {"conversation": conversation}
+            if conversation is not None
+            else {"input_value": input_value, "literal_input": True}
+        )
+        # Pre-allocate the id and register a control channel so the run can be
+        # stopped or steered while it executes.
+        run_id = runner._new_run_id()
+        control = RunControl()
+        self.server.register_control(run_id, control)
+        run_kwargs.update(run_id=run_id, control=control, session_id=session_id)
 
         if not stream:
             try:
                 result = runner.run_harness(
-                    self.server.base_dir, input_value, provider=provider, literal_input=True
+                    self.server.base_dir, provider=provider, **run_kwargs
                 )
-            except SpecError as exc:
+            except (SpecError, ValueError) as exc:
                 self._send_json(422, {"ok": False, "error": str(exc)})
                 return
             except Exception as exc:  # noqa: BLE001 - one request must not kill the server
                 self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
                 return
+            finally:
+                self.server.release_control(run_id)
             self._send_json(200, result_payload(result))
             return
 
@@ -219,9 +332,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._start_stream()
         try:
+            self._write_chunk(json.dumps({"type": "run_accepted", "run_id": run_id}))
+        except (BrokenPipeError, ConnectionResetError):
+            client_gone.set()
+        try:
             result = runner.run_harness(
-                self.server.base_dir, input_value, provider=provider,
-                on_event=on_event, literal_input=True,
+                self.server.base_dir, provider=provider, on_event=on_event, **run_kwargs
             )
             final = {"type": "run_result", **result_payload(result)}
         except Exception as exc:  # noqa: BLE001 - surface as the final stream line
@@ -231,6 +347,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "status": "error",
                 "reason": f"{type(exc).__name__}: {exc}",
             }
+        finally:
+            self.server.release_control(run_id)
         if not client_gone.is_set():
             try:
                 self._write_chunk(json.dumps(final))
