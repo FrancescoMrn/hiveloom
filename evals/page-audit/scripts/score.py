@@ -40,8 +40,8 @@ def strip_fence(text: str) -> str:
 
 def main() -> None:
     records = [
-        json.loads(l)
-        for l in (ROOT / "results" / "results.jsonl").read_text().splitlines()
+        json.loads(line)
+        for line in (ROOT / "results" / "results.jsonl").read_text().splitlines()
     ]
     if not records:
         sys.exit("no results to score")

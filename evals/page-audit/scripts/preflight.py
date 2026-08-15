@@ -6,7 +6,6 @@ so we know which samples actually stress exhaustiveness."""
 from __future__ import annotations
 
 import importlib.util
-import json
 import pathlib
 import re
 import sys

@@ -90,13 +90,16 @@ def check(data: Any, expected_url: str, page: str) -> tuple[list[str], dict[str,
         normed = [_norm(q) for q in quotes]
         if len(set(normed)) != 5:
             problems.append("key_quotes must be 5 distinct passages.")
-        bad_len = [q for q in quotes if not (_QUOTE_MIN_WORDS <= len(q.split()) <= _QUOTE_MAX_WORDS)]
+        bad_len = [
+            q for q in quotes
+            if not (_QUOTE_MIN_WORDS <= len(q.split()) <= _QUOTE_MAX_WORDS)
+        ]
         if bad_len:
             problems.append(
                 f"each quote must be {_QUOTE_MIN_WORDS}-{_QUOTE_MAX_WORDS} words; "
                 f"offending: {bad_len!r}."
             )
-        missing = [q for q, n in zip(quotes, normed) if n not in page]
+        missing = [q for q, n in zip(quotes, normed, strict=True) if n not in page]
         stats["missing_quotes"] = len(missing)
         if len(missing) > 1:
             problems.append(
