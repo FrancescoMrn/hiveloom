@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `claude` provider: omit `temperature` for the models whose API rejects
+  sampling parameters (Opus 4.7 and later, Sonnet 5, Fable/Mythos). The spec
+  default of `0.0` is a non-default value to the API, so every call to those
+  models previously failed with a 400.
+- `claude` provider: preserve `thinking` / `redacted_thinking` blocks on the
+  assistant turn. Adaptive-thinking models require the turn to be replayed
+  unchanged, so dropping them broke the next call of a tool-use loop.
+
 ## [0.4.0] - 2026-08-03
 
 ### Added

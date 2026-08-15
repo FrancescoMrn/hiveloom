@@ -150,3 +150,46 @@ def test_other_bad_request_propagates_unchanged(monkeypatch):
             system="s", messages=[{"role": "user", "content": "x"}], tools=[],
             config=ModelConfig(id="m"),
         )
+
+
+def test_temperature_omitted_for_models_that_reject_sampling_params(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return _response()
+
+    provider, _ = _make_provider(monkeypatch, create)
+    provider.complete(
+        system="s", messages=[{"role": "user", "content": "x"}], tools=[],
+        config=ModelConfig(id="claude-opus-5"),
+    )
+    assert "temperature" not in captured
+
+    provider.complete(
+        system="s", messages=[{"role": "user", "content": "x"}], tools=[],
+        config=ModelConfig(id="claude-haiku-4-5", temperature=0.0),
+    )
+    assert captured["temperature"] == 0.0
+
+
+def test_thinking_blocks_are_preserved_on_the_assistant_turn(monkeypatch):
+    thinking = types.SimpleNamespace(
+        type="thinking",
+        model_dump=lambda: {"type": "thinking", "thinking": "…", "signature": "sig"},
+    )
+    raw = types.SimpleNamespace(
+        content=[thinking, types.SimpleNamespace(type="text", text="ok")],
+        stop_reason="end_turn",
+        usage=types.SimpleNamespace(input_tokens=10, output_tokens=5),
+    )
+
+    provider, _ = _make_provider(monkeypatch, lambda **kw: raw)
+    result = provider.complete(
+        system="s", messages=[{"role": "user", "content": "x"}], tools=[],
+        config=ModelConfig(id="claude-opus-5"),
+    )
+    assert result.content_blocks[0] == {
+        "type": "thinking", "thinking": "…", "signature": "sig",
+    }
+    assert result.text == "ok"
