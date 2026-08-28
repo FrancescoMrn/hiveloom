@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from hiveloom import construct
 from hiveloom.cli import app
 from hiveloom.errors import ExitCode, SpecError
+from hiveloom.spec.loader import load_spec
 
 runner = CliRunner()
 
@@ -301,6 +303,78 @@ def test_mcp_serve_missing_harness_exits_spec_error(tmp_path: Path):
     """`mcp serve` validates every directory at startup, before any protocol I/O."""
     result = runner.invoke(app, ["mcp", "serve", str(tmp_path / "missing")])
     assert result.exit_code == 3
+
+
+# --------------------------------------------------------------------------- #
+# add playbook
+# --------------------------------------------------------------------------- #
+def test_add_playbook_scaffolds_and_lists_the_mode(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="pb", task="Profile then decide.")
+
+    result = runner.invoke(app,         [
+            "add", "playbook", "overview",
+            "--description", "Read the landscape.",
+            "--entry",
+            "--dir", str(directory),
+            "--json",
+        ]
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {"ok": True, "added": "playbook", "ref": "overview"}
+    assert (directory / "playbooks" / "overview.md").is_file()
+
+    spec = load_spec(directory / "harness.yaml")
+    assert [p.name for p in spec.playbooks] == ["overview"]
+    assert spec.playbooks[0].entry is True
+    # switch_playbook is supplied by the runtime registry when playbooks exist,
+    # rather than written into the spec's tool list.
+    from hiveloom.tools.registry import build_registry
+
+    assert "switch_playbook" in build_registry(spec, directory).names()
+
+
+def test_add_playbook_narrows_tools_and_sets_a_model(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="pb", task="Profile then decide.")
+    runner.invoke(
+        app, ["add", "playbook", "profile", "--description", "P", "--dir", str(directory)]
+    )
+
+    runner.invoke(app, ["add", "tool", "--builtin", "file_read", "--dir", str(directory)])
+
+    result = runner.invoke(
+        app,
+        [
+            "add", "playbook", "decide",
+            "--description", "Commit to an answer.",
+            "--tools", "file_read, switch_playbook",
+            "--model", "claude-opus-5",
+            "--dir", str(directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    decide = {p.name: p for p in load_spec(directory / "harness.yaml").playbooks}["decide"]
+    # The comma-separated list is split and trimmed.
+    assert decide.tools == ["file_read", "switch_playbook"]
+    assert decide.model == "claude-opus-5"
+
+
+def test_add_playbook_rejects_a_duplicate_name(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="pb", task="t")
+    runner.invoke(app, ["add", "playbook", "a", "--description", "A", "--dir", str(directory)])
+
+    result = runner.invoke(
+        app,
+        ["add", "playbook", "a", "--description", "again", "--dir", str(directory), "--json"],
+    )
+
+    assert result.exit_code == ExitCode.SPEC_ERROR
+    assert "already listed" in json.loads(result.stdout)["error"]
 
 
 def test_version_flag_reports_the_installed_version():

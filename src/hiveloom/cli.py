@@ -550,6 +550,60 @@ def add_skill_cmd(
         _added(json_output, "skill", name)
 
 
+@add_app.command("playbook")
+def add_playbook_cmd(
+    name: str = typer.Argument(..., help="Mode name; what switch_playbook takes."),
+    description: str = typer.Option(
+        ..., "--description", help="What this mode is for (selection guidance for the model)."
+    ),
+    prompt: str | None = typer.Option(
+        None, "--prompt", help="Prompt fragment path (default: playbooks/<name>.md)."
+    ),
+    tools: str | None = typer.Option(
+        None, "--tools", help="Comma-separated tool names active in this mode."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Model id to execute with while this mode is active."
+    ),
+    model_provider: str | None = typer.Option(
+        None, "--model-provider", help="Provider serving --model (default: the harness's)."
+    ),
+    on_enter: str | None = typer.Option(
+        None, "--on-enter", help="Entry hook 'path.py:function' (scaffolded; frozen)."
+    ),
+    on_exit: str | None = typer.Option(
+        None, "--on-exit", help="Exit hook 'path.py:function' (scaffolded; frozen)."
+    ),
+    entry: bool = typer.Option(False, "--entry", help="Start runs in this playbook."),
+    directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Add a playbook: a named mode the run can switch between.
+
+    Scaffolds the prompt fragment (and any hooks) and lists the mode in the
+    spec. Declaring any playbook auto-adds the ``switch_playbook`` tool.
+
+    ``--tools`` narrows what the mode may use — that narrowing is what makes a
+    mode a mode. ``--model`` gives it its own executor, so one harness can
+    profile on a cheap model and decide on an expensive one. Both ``--model``
+    and the hook options are frozen from evolution.
+    """
+    with _guard(json_output):
+        construct.add_playbook(
+            directory,
+            name=name,
+            description=description,
+            prompt=prompt,
+            tools=[t.strip() for t in tools.split(",") if t.strip()] if tools else None,
+            model=model,
+            model_provider=model_provider,
+            on_enter=on_enter,
+            on_exit=on_exit,
+            entry=entry,
+        )
+        _added(json_output, "playbook", name)
+
+
 @add_app.command("mcp-server")
 def add_mcp_server_cmd(
     name: str = typer.Option(
