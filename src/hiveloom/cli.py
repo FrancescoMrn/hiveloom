@@ -1428,6 +1428,29 @@ def stats(
                     f"{v['avg_turns']:.1f}",
                 )
             _console.print(table)
+            held_out = sum(v.get("swapped_runs", 0) for v in summary["versions"])
+            if held_out:
+                _console.print(
+                    f"[yellow]{held_out} run(s) changed model mid-run and are "
+                    "excluded above[/yellow] — they did not execute the harness as "
+                    "declared. See the model-path table."
+                )
+        if summary.get("model_paths"):
+            table = Table(title="per model path (runs that swapped)")
+            table.add_column("version", style="cyan")
+            table.add_column("model path", style="magenta")
+            table.add_column("runs", justify="right")
+            table.add_column("success", justify="right", style="green")
+            table.add_column("avg cost", justify="right")
+            for row in summary["model_paths"]:
+                table.add_row(
+                    row["version"],
+                    row["model_path"],
+                    str(row["runs"]),
+                    f"{row['success_rate']:.0%}",
+                    f"${row['avg_cost_usd']:.4f}",
+                )
+            _console.print(table)
         if summary["playbooks"]:
             table = Table(title="per playbook")
             table.add_column("playbook", style="cyan")
