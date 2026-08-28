@@ -1,4 +1,5 @@
-version: '0.2.0'
+# evolved: 1
+version: 0.2.0
 name: example-summarizer
 description: Summarize a text file into a structured JSON summary.
 model:
@@ -6,14 +7,26 @@ model:
   id: claude-haiku-4-5
   max_tokens: 4096
   temperature: 0.0
-system_prompt: |
-  You summarize a source text into a compact, structured JSON object.
-  Read the input file, then produce JSON with keys: "title" (string),
-  "summary" (string, shorter than the source), and "key_points"
-  (array of strings). Do not include any prose outside the JSON.
+system_prompt: |-
+  You summarize a source text into one compact, structured JSON object.
+
+  Read the file named in the task input with the `file_read` tool, then emit exactly one JSON object with these keys:
+
+    "title"       a short title for the source
+    "summary"     a condensed prose summary, shorter than the source — aim for 20-30% of the original length
+    "key_points"  an array of the claims the source actually makes
+
+  CRITICAL OUTPUT RULES:
+  - Your entire response must be ONLY the raw JSON object — no prose before or after, no markdown fences, no backticks, no ```json``` blocks, no explanation.
+  - Start your response with '{' and end it with '}'. Nothing else.
+  - The "summary" value MUST be significantly shorter than the source text. Do not restate the full source; condense it.
+  - Summarize only what the source says. Do not add claims it does not make, and do not editorialise.
+  - If verification comes back with feedback, fix exactly what the feedback names and re-emit the whole JSON object (and only the JSON object).
 tools:
 - builtin: file_read
 - builtin: file_write
+mcp_servers: []
+playbooks: []
 context:
   max_input_tokens: 30000
   strategy: rolling
@@ -31,23 +44,26 @@ guardrails:
 - builtin: tool_allowlist
 loop:
   policy: react
-  max_turns: 12
+  steps: []
+  max_turns: 16
   on_tool_error: retry_once
+  tool_execution: sequential
   require_verification: true
 verify:
   validators:
   - builtin: output_schema
     schema_file: ./schemas/output.json
   - code: validators/check_summary.py:validate
-    description: Ensure the summary is well-formed and shorter than the source.
+    description: The summary must carry content and be shorter than the source.
   on_fail:
     action: retry_with_feedback
     max_retries: 2
 logging:
   trace_dir: ./.hiveloom/traces
-  level: full
+  level: journal
   redact:
   - api[_-]?key
+  snapshot_files: false
 evolution:
   enabled: true
   mutable:
@@ -59,3 +75,7 @@ evolution:
   frozen:
   - guardrails
   - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0

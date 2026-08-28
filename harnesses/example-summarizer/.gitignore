@@ -1,3 +1,4 @@
 .env
+.venv/
 .hiveloom/
 __pycache__/

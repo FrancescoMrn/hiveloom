@@ -1,17 +1,24 @@
+# evolved: 1
 version: 0.2.0
 name: article-extractor
 description: Fetch a single article or blog page by URL and extract structured metadata into strict JSON.
 model:
   provider: claude
-  id: claude-haiku-4-5
+  id: claude-fable-5
   max_tokens: 4096
   temperature: 0.0
 system_prompt: |
   You extract structured metadata from one article or blog page. The task input is the URL to fetch.
 
-  ## CRITICAL: YOUR FINAL MESSAGE MUST BE A NON-EMPTY JSON OBJECT
-  You MUST output exactly one JSON object as your final message — nothing else.
-  Never output an empty message.
+  ## YOUR ONLY JOB: OUTPUT A SINGLE RAW JSON OBJECT
+  No matter what, your final message must be exactly one JSON object — starting with '{' and ending with '}' — with zero characters outside. No markdown, no backticks, no prose, no fences, no explanation.
+
+  ## INPUT VALIDATION
+  Before doing anything, check: does the task input look like a URL (starts with http:// or https://)?
+  - If NO (it is a greeting, question, or non-URL text): output exactly this JSON and stop:
+    {"source_url": "<exact task input>", "title": null, "description": null, "author": null, "published_date": null, "headings": []}
+    where <exact task input> is replaced by the literal task input string. Do not call any tool.
+  - If YES: proceed to STEP 1 below.
 
   ## STEP-BY-STEP PROCEDURE
 
@@ -36,6 +43,7 @@ system_prompt: |
 
   ## MANDATORY PRE-OUTPUT CHECKLIST
   Before sending your final message, answer each question:
+  - Is the task input a valid URL? (If NO — output the non-URL fallback JSON above and stop.)
   - Did I call fetch_clean in this session and receive a digest? (If NO — call it now, do not output anything yet.)
   - Is source_url exactly the input URL? (If NO — fix it.)
   - Is every heading copied verbatim from an H1/H2/H3 digest line? (If NO — remove the offending entries.)
@@ -47,11 +55,13 @@ system_prompt: |
   - Your final message MUST be a single raw JSON object and absolutely nothing else.
   - Do NOT include explanations, markdown fences (```), code blocks, or backticks.
   - Use null for unknown description/author/published_date. source_url is never null.
-  - title may be null ONLY in the failed-fetch fallback above.
+  - title may be null ONLY in the failed-fetch fallback or non-URL fallback above.
 tools:
 - code: tools/fetch_clean.py:fetch_clean
   description: 'HTTP GET a page and return a compact deterministic digest: title, metadata, h1-h3 headings,
     lead text — always under 8KB.'
+mcp_servers: []
+playbooks: []
 hooks:
 - builtin: strip_json_fence
   event: before_verification
@@ -67,29 +77,32 @@ context:
 guardrails:
 - builtin: max_cost_usd
   value: 1.0
-- builtin: no_network_write
 - builtin: max_wall_clock_seconds
   value: 240
+- builtin: no_network_write
 - builtin: tool_allowlist
 loop:
   policy: react
-  max_turns: 10
+  steps: []
+  max_turns: 12
   on_tool_error: retry_once
+  tool_execution: sequential
   require_verification: true
 verify:
   validators:
   - builtin: output_schema
     schema_file: ./schemas/output.json
   - code: validators/article_on_page.py:validate
-    description: source_url must equal the run input; title/headings must appear verbatim on the live
+    description: source_url must equal the run input; title and headings must appear verbatim on the live
       page (anti-hallucination).
   on_fail:
     action: retry_with_feedback
     max_retries: 2
 logging:
   trace_dir: ./.hiveloom/traces
-  level: full
+  level: journal
   redact: []
+  snapshot_files: false
 evolution:
   enabled: true
   mutable:
@@ -101,3 +114,7 @@ evolution:
   frozen:
   - guardrails
   - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0
