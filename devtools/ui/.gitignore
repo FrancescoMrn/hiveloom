@@ -1,0 +1,9 @@
+node_modules/
+*.tsbuildinfo
+.hiveloom/
+
+# Build output, produced by a release and never committed: `web/` is the
+# compiled frontend that vite writes and the npm package carries, `pack/`
+# holds the tarball `npm pack` produces.
+web/
+pack/
