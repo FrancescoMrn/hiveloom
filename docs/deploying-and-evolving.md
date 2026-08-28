@@ -1,5 +1,9 @@
 # Deploying a harness and keeping it evolving
 
+For the proposed one-click, sandboxed chat/API deployment path, including
+controlled LLM internet access and shared-token protection, see
+[One-click harness deployment with OpenShell](openshell-one-click-deployment.md).
+
 A harness is a self-contained folder (`harness.yaml` + hooks + `.hiveloom/traces/`).
 Like a `docker-compose.yml`, it is portable and versionable but needs the engine
 (`pip install hiveloom`) wherever it lands. This document describes the loop that

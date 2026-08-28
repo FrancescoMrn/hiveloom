@@ -24,6 +24,20 @@ uv run hiveloom validate harnesses/example-summarizer
 uv run hiveloom run harnesses/example-summarizer --input notes.txt --dry-run
 ```
 
+The demo harnesses in `harnesses/` are **generated**. Do not edit them in
+place: change `scripts/build_harnesses.py` and rebuild, so the demos keep
+coming out of the same `init`/`add`/`set` path a user gets.
+
+```bash
+uv run python scripts/build_harnesses.py                    # all four
+uv run python scripts/build_harnesses.py --only routing-lab
+```
+
+A rebuild moves the previous folder to `.archive/harnesses-<stamp>/` rather
+than deleting it — the folder holds journals of real runs, and a rebuild is
+not a reason to lose them. `.archive/` is gitignored; clear it out yourself
+when you are done with it.
+
 The unit and integration suite uses fake providers and must not need credentials
 or network access. Before release, also run the live QA that matches the
 provider or transport you changed:
@@ -46,6 +60,39 @@ uv run python dataset/check_dataset_urls.py
 Live QA is intentionally separate from CI because it needs credentials, network
 access, mutable web pages, or local model servers. Record the command, model,
 date, and outcome in the change handoff; never commit its credentials or logs.
+
+## The workbench UI
+
+```sh
+devtools/ui/dev.sh      # http://127.0.0.1:5173
+```
+
+A graphical workbench for the build → run → diagnose → fix loop: harnesses with
+their measured fitness, a chat pane that shows each run's trace and validator
+verdicts, a spec editor backed by the catalog, and run history with full traces.
+See [devtools/ui/README.md](devtools/ui/README.md).
+
+The workbench is published to npm as `hiveloom-workbench`, built from
+`devtools/ui/`. It is never part of the `hiveloom` wheel: the framework is what
+runs a harness in production, and a deployment has no use for a compiled web
+interface. Users reach it with `npx hiveloom-workbench`, or `hiveloom ui`, which
+is a wrapper around the same command.
+
+One package carries the compiled UI, the Python API (`server.py` and the copilot
+harness), and the Node launcher that starts the API and serves the UI in front
+of it. They ship together so a UI/API version mismatch is impossible.
+
+Building needs the Node toolchain (22+), which lives entirely under
+`devtools/ui/`.
+
+```sh
+scripts/build_workbench.sh            # compiles the frontend, then builds sdist + wheel
+scripts/build_workbench.sh --check    # also installs the wheel and checks it serves
+```
+
+CI runs that same script on every pull request (the `workbench` job), so a
+TypeScript error or a wheel that ships no bundle fails the PR rather than the
+release.
 
 ## Pull requests
 

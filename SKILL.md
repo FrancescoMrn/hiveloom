@@ -90,7 +90,9 @@ hiveloom evolve ./h            # analyze Hive failures → propose a gated mutat
 ```
 The evolver enforces that always-frozen set in code, requires changes to stay
 within the harness's `mutable` set, and requires explicit y/n approval for any
-regenerated code hook. Applied changes bump an `# evolved: N` counter and are
+regenerated code hook. To evolve a fresh `hiveloom fork` — which has no runs of
+its own yet — add `--from-parent`, which analyses the parent run's version
+instead. Applied changes bump an `# evolved: N` counter and are
 recorded in the Hive so `hiveloom stats` can prove the mutation helped.
 
 ## Shipping
