@@ -10,6 +10,8 @@ keywords = ["agents", "llm", "harness", "anthropic", "claude", "evolution"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -33,6 +35,15 @@ dependencies = [
     "pyjwt[crypto]>=2.8",
     "cryptography>=42.0",
 ]
+
+# Rendered as the sidebar links on the PyPI project page. Without these the
+# published package points nowhere, since the long description is the README.
+[project.urls]
+Homepage = "https://github.com/FrancescoMrn/hiveloom"
+Repository = "https://github.com/FrancescoMrn/hiveloom"
+Documentation = "https://github.com/FrancescoMrn/hiveloom/blob/main/README.md"
+Changelog = "https://github.com/FrancescoMrn/hiveloom/blob/main/CHANGELOG.md"
+Issues = "https://github.com/FrancescoMrn/hiveloom/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=7.0", "ruff>=0.16.0"]
