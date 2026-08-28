@@ -600,16 +600,35 @@ def _iter_entry_points():
 # --------------------------------------------------------------------------- #
 # Builtin providers & models.yaml
 # --------------------------------------------------------------------------- #
-# Per-1M-token (input, output) pricing for the builtin Claude models. Sourced
-# from the Claude API model catalog; the executor default is claude-haiku-4-5.
+# Per-1M-token (input, output) pricing for the builtin Claude models, at
+# Anthropic first-party API rates. The executor default is claude-haiku-4-5.
+#
+# This table is load-bearing twice over: it is what the spec validates a
+# `model.id` against, and it is what the cost guardrail and every
+# cost-per-success figure are computed from. A missing entry makes a real model
+# unusable; a wrong price corrupts the numbers silently. So it is updated from
+# the model catalog, never from memory.
+#
+# Bedrock and Vertex are partner-operated with their own pricing; a harness
+# routed through one of those should carry its rates in ~/.hiveloom/models.yaml
+# rather than inherit these.
 _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5": (1.00, 5.00),
+    # Sonnet 5 has promotional introductory pricing of (2.00, 10.00) through
+    # 2026-08-31. The standard rate is deliberately used here: a harness folder
+    # outlives the promotion, and over-estimating cost only makes the cost
+    # guardrail halt sooner, which is the safe direction to be wrong in.
     "claude-sonnet-5": (3.00, 15.00),
     "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-opus-5": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),
     "claude-opus-4-7": (5.00, 25.00),
     "claude-opus-4-6": (5.00, 25.00),
     "claude-fable-5": (10.00, 50.00),
+    # Project Glasswing only. Registered because `models/claude.py` already
+    # handles its API surface, so leaving it out of the catalog would reject a
+    # model the runtime can actually drive for anyone who has access.
+    "claude-mythos-5": (10.00, 50.00),
 }
 
 
