@@ -1087,6 +1087,45 @@ def serve(
         serve_mod.serve_forever(server)
 
 
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def ui(ctx: typer.Context) -> None:
+    """Open the workbench: a local UI for building, running, and improving harnesses.
+
+    A convenience wrapper around ``npx hiveloom-workbench``. The workbench is
+    distributed on npm rather than with this package, because what it adds is a
+    compiled web interface — something a harness running in production has no
+    use for, and something this wheel should not carry for everyone who never
+    opens a browser.
+
+    It needs no separate install: ``npx`` fetches and runs it, and it brings its
+    own API, which it starts against the interpreter that has hiveloom — this
+    one. Every argument is passed straight through::
+
+        hiveloom ui --port 8770 --scan-dir ./harnesses
+
+    Blocks until interrupted.
+    """
+    import shutil
+
+    npx = shutil.which("npx")
+    if npx is None:
+        _console.print(
+            "[yellow]the workbench needs Node[/yellow] (npx was not found on PATH)\n"
+            "\n"
+            "  Install Node 20+, then:  [bold]npx hiveloom-workbench[/bold]\n"
+            "\n"
+            "The workbench ships on npm so this package stays what runs a harness."
+        )
+        raise typer.Exit(code=1)
+
+    # Replaces this process rather than wrapping it: the workbench is long-lived
+    # and interactive, and an extra Python process in the middle would only add
+    # a layer for Ctrl-C to traverse.
+    os.execv(npx, [npx, "--yes", "hiveloom-workbench", *ctx.args])
+
+
 @app.command()
 def trace(
     run_id: str = typer.Argument(..., help="Run id to display (e.g. run_abc123)."),
