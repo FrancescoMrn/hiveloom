@@ -152,7 +152,24 @@ class Hive:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Reconcile a database created by an earlier version.
+
+        The schema is `CREATE TABLE IF NOT EXISTS`, so a Hive from an earlier
+        version keeps its original `runs` shape. The Hive is a derived index
+        that can always be rebuilt by re-ingesting, so an obsolete column is
+        dropped here rather than carried forever.
+        """
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(runs)")}
+        if "session_id" in existing:
+            # The Hive is a derived index, so discard the obsolete grouping
+            # column rather than preserving a shape no public surface uses.
+            self._conn.execute("DROP INDEX IF EXISTS idx_runs_session")
+            self._conn.execute("ALTER TABLE runs DROP COLUMN session_id")
+            existing.remove("session_id")
 
     def close(self) -> None:
         self._conn.close()
@@ -195,8 +212,7 @@ class Hive:
     def ingest_dir(self, trace_dir: str | Path) -> int:
         """Ingest every ``*.jsonl`` run trace in a directory. Returns run count.
 
-        Recursive: session-grouped traces live one directory down
-        (``<trace_dir>/<session_id>/<run_id>.jsonl``).
+        Recursive so imported or archived trace trees are ingested too.
         """
         directory = Path(trace_dir)
         if not directory.exists():

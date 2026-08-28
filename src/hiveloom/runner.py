@@ -10,7 +10,6 @@ discovery is eager.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -189,7 +188,6 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
-    session_id: str | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -223,10 +221,6 @@ def run_harness(
     steering messages, both consumed at the loop's next turn boundary.
     ``run_id`` lets the caller pre-allocate the id (so it can be announced to
     a client before the run finishes); by default one is generated.
-    ``session_id`` groups related runs (the turns of one conversation, say):
-    traces land in ``<trace_dir>/<session_id>/`` and every trace event carries
-    the id. Letters, digits, ``.``, ``_`` and ``-`` only — it names a
-    directory.
 
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
@@ -260,14 +254,9 @@ def run_harness(
 
         version_hash = spec_version_hash(spec, base)
         run_id = run_id or _new_run_id()
-        if session_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", session_id):
-            raise ValueError(
-                "session_id must be 1-64 characters of letters, digits, '.', '_' or '-'"
-            )
         trace = TraceWriter(
             _resolve_trace_dir(base, spec.logging.trace_dir),
             run_id=run_id,
-            session_id=session_id,
             harness_name=spec.name,
             version_hash=version_hash,
             redact_patterns=spec.logging.redact,
