@@ -50,6 +50,10 @@ def normalize_feedback(feedback: str) -> str:
     return " ".join(text.split())
 
 
+# How much of a run's task statement the index keeps: enough to title and
+# search a run, not enough to become a shadow copy of the journal.
+_TASK_CHARS = 2000
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -65,7 +69,8 @@ CREATE TABLE IF NOT EXISTS runs (
     trace_path TEXT,
     parent_run_id TEXT,
     forked_at_seq INTEGER,
-    model_path TEXT
+    model_path TEXT,
+    task TEXT
 );
 CREATE TABLE IF NOT EXISTS verifications (
     run_id TEXT,
@@ -177,6 +182,7 @@ class Hive:
             ("parent_run_id", "TEXT"),
             ("forked_at_seq", "INTEGER"),
             ("model_path", "TEXT"),
+            ("task", "TEXT"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
@@ -255,6 +261,7 @@ class Hive:
             "parent_run_id": None,
             "forked_at_seq": None,
             "model_path": "",
+            "task": None,
         }
         verifications: list[tuple] = []
         triggers: list[tuple] = []
@@ -265,6 +272,11 @@ class Hive:
             payload = event.get("payload", {})
             if etype == "run_started":
                 row["started_at"] = event.get("timestamp")
+                task = payload.get("input")
+                if isinstance(task, str):
+                    # Capped: a label and a search target, not a second copy of
+                    # the journal, which already holds the full input.
+                    row["task"] = task[:_TASK_CHARS]
                 lineage = payload.get("lineage")
                 if isinstance(lineage, dict):
                     row["parent_run_id"] = lineage.get("parent_run_id") or None
@@ -318,10 +330,10 @@ class Hive:
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "parent_run_id, forked_at_seq, model_path) "
+            "parent_run_id, forked_at_seq, model_path, task) "
             "VALUES (:run_id, :harness_name, :harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":parent_run_id, :forked_at_seq, :model_path)",
+            ":parent_run_id, :forked_at_seq, :model_path, :task)",
             row,
         )
         cur.executemany(
@@ -592,6 +604,92 @@ class Hive:
             )
         ]
         return {"run": run, "ancestors": ancestors, "forks": forks}
+
+    def search_runs(
+        self, query: str, *, harness_name: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Runs whose task statement contains ``query`` (case-insensitive).
+
+        A LIKE scan over the indexed task text, not a full-text index over
+        every message. That is the honest scope: the Hive indexes runs, and
+        this makes the thing a person searches for — what they asked — findable
+        without pretending to search the transcript.
+        """
+        term = query.strip()
+        if not term:
+            return []
+        where = ["task IS NOT NULL", "task LIKE ? ESCAPE '\\'"]
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params: list[Any] = [f"%{escaped}%"]
+        if harness_name is not None:
+            where.append("harness_name=?")
+            params.append(harness_name)
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                f"SELECT * FROM runs WHERE {' AND '.join(where)} "
+                "ORDER BY started_at DESC LIMIT ?",
+                (*params, limit),
+            )
+        ]
+
+    # ------------------------------------------------------------------ #
+    # Comparison
+    # ------------------------------------------------------------------ #
+    def compare_versions(self, harness_name: str, left: str, right: str) -> dict[str, Any]:
+        """Two harness versions side by side, with the deltas spelled out.
+
+        This is what makes an evolution or a fork *judgeable*: not "the new one
+        scored 71%" but "+18 points, -$0.004 per run, and this failure
+        signature stopped appearing". Deltas are right-minus-left, so a
+        positive ``success_rate`` means the right-hand version is better.
+        """
+        by_version = {row["version"]: row for row in self.version_stats(harness_name)}
+
+        def side(version: str) -> dict[str, Any]:
+            stats = by_version.get(version) or {
+                "version": version,
+                "runs": 0,
+                "successes": 0,
+                "success_rate": 0.0,
+                "avg_cost_usd": 0.0,
+                "avg_turns": 0.0,
+                "swapped_runs": 0,
+            }
+            return {
+                **stats,
+                "failures": self.failure_signatures(harness_name, version=version),
+            }
+
+        a, b = side(left), side(right)
+        # A signature present on one side and absent on the other is the most
+        # actionable single fact in the comparison, so name both directions.
+        def _keys(entry: dict[str, Any]) -> set[str]:
+            # `failure_signatures` groups verdicts by normalised feedback, so
+            # that string *is* the signature identity.
+            return {
+                str(item["feedback"])
+                for item in entry["failures"].get("verdicts", [])
+                if item.get("feedback")
+            }
+
+        left_keys, right_keys = _keys(a), _keys(b)
+        return {
+            "harness_name": harness_name,
+            "left": a,
+            "right": b,
+            "delta": {
+                "success_rate": b["success_rate"] - a["success_rate"],
+                "avg_cost_usd": b["avg_cost_usd"] - a["avg_cost_usd"],
+                "avg_turns": b["avg_turns"] - a["avg_turns"],
+                "runs": b["runs"] - a["runs"],
+            },
+            "fixed_failures": sorted(left_keys - right_keys),
+            "new_failures": sorted(right_keys - left_keys),
+            # Neither side is comparable on one run each; say so rather than
+            # letting a UI render a confident delta over a sample of two.
+            "underpowered": a["runs"] < 5 or b["runs"] < 5,
+        }
 
     def prune_runs(
         self, retention_days: int, *, now: datetime | None = None

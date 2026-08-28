@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from hiveloom import runner
@@ -22,7 +23,10 @@ _VALID = json.dumps({"title": "T", "summary": "short.", "key_points": ["a"]})
 
 def _harness(tmp_path: Path) -> Path:
     target = tmp_path / "h"
-    shutil.copytree(EXAMPLE_HARNESS, target)
+    # Example folders are runnable workspaces and may legitimately carry local
+    # journals. A fixture starts from the harness definition, not a developer's
+    # prior run history, or its version counts depend on ambient state.
+    shutil.copytree(EXAMPLE_HARNESS, target, ignore=shutil.ignore_patterns(".hiveloom"))
     (target / "notes.txt").write_text("The quick brown fox jumps over the lazy dog. " * 20)
     return target
 
@@ -84,3 +88,77 @@ def test_stats_by_dir_ingests_infolder_traces(tmp_path: Path):
     r = cli.invoke(app, ["stats", str(copied), "--json"])
     assert r.exit_code == ExitCode.OK
     assert json.loads(r.stdout)["total_runs"] >= 1
+
+
+# --------------------------------------------------------------------------- #
+# Version comparison (workbench support)
+# --------------------------------------------------------------------------- #
+def _seed_version(hive, name, version, *, runs, successes, cost=0.01, feedback=None):
+    for index in range(runs):
+        run_id = f"{version}-{index}"
+        status = "success" if index < successes else "verify_failed"
+        hive._conn.execute(
+            "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, "
+            "turns, cost_usd, duration_seconds, started_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (run_id, name, version, status, 2, cost, 1.0, f"2026-01-0{index % 9 + 1}"),
+        )
+        if status != "success" and feedback:
+            hive._conn.execute(
+                "INSERT INTO verifications (run_id, seq, verifier, passed, feedback) "
+                "VALUES (?,?,?,?,?)",
+                (run_id, 1, "check", 0, feedback),
+            )
+    hive._conn.commit()
+
+
+def test_compare_versions_reports_the_delta_in_the_right_direction(tmp_path):
+    from hiveloom.logging.hive import Hive
+
+    with Hive(tmp_path / "hive.db") as hive:
+        _seed_version(hive, "h", "old", runs=10, successes=5, cost=0.02)
+        _seed_version(hive, "h", "new", runs=10, successes=8, cost=0.01)
+
+        report = hive.compare_versions("h", "old", "new")
+
+    # right minus left: positive success_rate means the right side is better.
+    assert report["delta"]["success_rate"] == pytest.approx(0.3)
+    assert report["delta"]["avg_cost_usd"] == pytest.approx(-0.01)
+    assert report["left"]["version"] == "old"
+    assert report["right"]["version"] == "new"
+    assert report["underpowered"] is False
+
+
+def test_compare_versions_names_which_failures_stopped_and_started(tmp_path):
+    from hiveloom.logging.hive import Hive
+
+    with Hive(tmp_path / "hive.db") as hive:
+        _seed_version(hive, "h", "old", runs=6, successes=0, feedback="not valid JSON")
+        _seed_version(hive, "h", "new", runs=6, successes=0, feedback="summary too long")
+
+        report = hive.compare_versions("h", "old", "new")
+
+    assert any("JSON" in item for item in report["fixed_failures"])
+    assert any("long" in item for item in report["new_failures"])
+
+
+def test_compare_versions_flags_an_underpowered_comparison(tmp_path):
+    """A confident delta over a sample of two is worse than no delta."""
+    from hiveloom.logging.hive import Hive
+
+    with Hive(tmp_path / "hive.db") as hive:
+        _seed_version(hive, "h", "old", runs=2, successes=0)
+        _seed_version(hive, "h", "new", runs=2, successes=2)
+
+        assert hive.compare_versions("h", "old", "new")["underpowered"] is True
+
+
+def test_comparing_against_a_version_with_no_runs_is_not_an_error(tmp_path):
+    from hiveloom.logging.hive import Hive
+
+    with Hive(tmp_path / "hive.db") as hive:
+        _seed_version(hive, "h", "old", runs=6, successes=3)
+        report = hive.compare_versions("h", "old", "never-ran")
+
+    assert report["right"]["runs"] == 0
+    assert report["underpowered"] is True
