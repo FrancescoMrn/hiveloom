@@ -1542,6 +1542,11 @@ def evolve(
         help="Queue the gated proposal for later review instead of applying it. "
         "--yes is ignored.",
     ),
+    from_parent: bool = typer.Option(
+        False,
+        "--from-parent",
+        help="Analyse the parent run's version instead (a fork with no runs yet).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
@@ -1551,6 +1556,12 @@ def evolve(
     approval. Recorded in the Hive under a new version hash. With ``--propose``,
     the gated proposal is queued (see ``hiveloom proposals``) instead of applied;
     a human reviews and applies it later via ``proposals apply``.
+
+    ``--from-parent`` is for a fresh fork: analysis is normally scoped to the
+    version on disk, which a fork has no runs for, so the failures that
+    motivated the fork are invisible at exactly the moment there is most to
+    say. It reads the parent version out of ``fork.yaml`` and drafts against
+    those failures, applying the result to the fork's own spec.
     """
     from hiveloom import evolve as evolve_mod
     from hiveloom import runner
@@ -1558,7 +1569,6 @@ def evolve(
     from hiveloom.evolve import proposals as proposals_mod
     from hiveloom.generate.llm import build_strong_model
     from hiveloom.logging.hive import Hive
-    from hiveloom.logging.trace import spec_version_hash
     from hiveloom.spec.loader import harness_path, load_spec
 
     with _guard(json_output):
@@ -1571,10 +1581,13 @@ def evolve(
         model = build_strong_model(model_id, base)
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
-            # Scoped to the current version — see analyze().
-            report = evolve_mod.analyze(hive, name, version=spec_version_hash(spec, base))
+            # Scoped to one version — see analyze().
+            version = _analysis_version(harness_dir, spec, base, from_parent=from_parent)
+            report = evolve_mod.analyze(hive, name, version=version)
             if report.is_empty():
-                reason = _nothing_to_evolve_reason(hive, name)
+                reason = _nothing_to_evolve_reason(
+                    hive, name, version, from_parent=from_parent
+                )
                 if json_output:
                     _emit_json({"ok": True, "changed": False, "reason": reason})
                 else:
@@ -1583,7 +1596,12 @@ def evolve(
 
             if propose:
                 record = proposals_mod.create_proposal(
-                    hive, spec, harness_dir, report, model, trigger="manual"
+                    hive,
+                    spec,
+                    harness_dir,
+                    report,
+                    model,
+                    trigger="fork" if from_parent else "manual",
                 )
                 _emit_proposal_created(record, json_output)
                 return
@@ -1619,15 +1637,54 @@ def evolve(
 # --------------------------------------------------------------------------- #
 # Proposals queue
 # --------------------------------------------------------------------------- #
-def _nothing_to_evolve_reason(hive: Any, name: str) -> str:
-    """Why the report is empty — the two cases need different next steps.
+def _analysis_version(
+    harness_dir: str, spec: Any, base: Path, *, from_parent: bool
+) -> str:
+    """Which harness version's failures drive the proposal.
 
-    Analysis is scoped to the current spec version, so a harness edited since
-    its last failing run has failures on record that deliberately do not count.
+    Normally the spec on disk: evolving against failures from a version that
+    has already been changed drafts a fix for a bug that may be gone.
+
+    A fork is the exception that scoping cannot see. It exists *because* its
+    parent failed, and until it is resumed it has no runs of its own — so the
+    default reports nothing to evolve at exactly the moment there is most to
+    say. ``--from-parent`` reads the parent version out of the fork's lineage
+    record, so the proposal is drafted against the failures that motivated the
+    fork and applied to the fork's own spec.
+    """
+    if not from_parent:
+        from hiveloom.logging.trace import spec_version_hash
+
+        return spec_version_hash(spec, base)
+
+    from hiveloom import fork as fork_mod
+
+    return fork_mod.parent_version_hash(harness_dir)
+
+
+def _nothing_to_evolve_reason(
+    hive: Any, name: str, version: str, *, from_parent: bool = False
+) -> str:
+    """Why the report is empty — the cases need different next steps.
+
+    Analysis is scoped to one spec version, so a harness edited since its last
+    failing run has failures on record that deliberately do not count.
     Reporting that as "no recorded failures" would send the user looking for a
     logging bug instead of re-running the harness.
+
+    Under ``--from-parent`` the scoped version is the parent's, so "re-run it"
+    is the wrong advice: the runs that would matter already happened, and an
+    empty report means the fork is pointed somewhere with nothing on record.
     """
     stale = hive.failure_count(name)
+    if from_parent:
+        if stale:
+            return (
+                f"no failures recorded for the parent version {version} "
+                f"({stale} on other versions of '{name}') — the parent run may "
+                "have succeeded, or its journal was never ingested"
+            )
+        return f"no failures recorded for '{name}' at any version"
     if stale:
         return (
             f"no failures recorded for the current harness version "
