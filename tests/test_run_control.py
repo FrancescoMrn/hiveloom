@@ -198,3 +198,74 @@ def test_streamed_run_can_be_stopped_by_its_announced_id(tmp_path):
         srv.shutdown()
         srv.server_close()
         thread.join(timeout=5)
+
+
+# ─── addressable steering queue ──────────────────────────────────────────────
+
+def test_queued_messages_are_addressable():
+    """A queue you can only append to cannot be shown or corrected."""
+    control = RunControl()
+    first = control.send_message("exclude segment X")
+    second = control.send_message("typo")
+
+    pending = control.pending_messages()
+    assert [m["id"] for m in pending] == [first, second]
+    assert [m["content"] for m in pending] == ["exclude segment X", "typo"]
+    assert all(m["queued_at"] for m in pending)
+
+
+def test_editing_keeps_queue_order():
+    """A delete-then-append would silently reorder what the agent is told."""
+    control = RunControl()
+    first = control.send_message("one")
+    second = control.send_message("two")
+
+    assert control.edit_message(first, "ONE")
+
+    assert control.drain_messages() == ["ONE", "two"]
+    assert second  # the second id stayed valid throughout
+
+
+def test_withdrawing_a_queued_message():
+    control = RunControl()
+    first = control.send_message("regret this")
+    control.send_message("keep this")
+
+    assert control.remove_message(first)
+    assert control.drain_messages() == ["keep this"]
+
+
+def test_editing_or_removing_a_drained_message_reports_false():
+    control = RunControl()
+    message_id = control.send_message("gone")
+    control.drain_messages()
+
+    assert control.edit_message(message_id, "x") is False
+    assert control.remove_message(message_id) is False
+
+
+def test_an_empty_message_is_not_queued():
+    control = RunControl()
+    assert control.send_message("") is None
+    assert control.pending_messages() == []
+
+
+def test_pending_messages_is_a_copy():
+    """A caller mutating the returned list must not corrupt the queue."""
+    control = RunControl()
+    control.send_message("one")
+
+    control.pending_messages().clear()
+
+    assert control.drain_messages() == ["one"]
+
+
+def test_playbook_switches_queue_and_drain():
+    control = RunControl()
+    control.switch_playbook("targeting", reason="operator")
+    control.switch_playbook("")  # ignored
+
+    assert control.drain_playbook_switches() == [
+        {"name": "targeting", "reason": "operator"}
+    ]
+    assert control.drain_playbook_switches() == []

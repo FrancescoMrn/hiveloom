@@ -206,6 +206,10 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._send_json(400, {"ok": False, "error": "body must be a JSON object"})
             return
+        unknown = sorted(set(body) - {"input", "messages", "stream"})
+        if unknown:
+            self._send_json(400, {"ok": False, "error": f"unknown fields: {unknown}"})
+            return
         # bool() matters: comparing the raw values would make `"x" == [...]`
         # and `False == []` both False, letting "both" and "neither" through.
         has_input = bool(isinstance(body.get("input"), str) and body["input"])

@@ -115,8 +115,19 @@ def _resolve_trace_dir(base: Path, trace_dir: str) -> Path:
     return (base / trace_dir).resolve()
 
 
-def _new_run_id() -> str:
+def new_run_id() -> str:
+    """Allocate a run id ahead of the run itself.
+
+    Public because pre-allocation is how a caller addresses a run *while it is
+    still going*: announce the id, hand :func:`run_harness` the same id and a
+    :class:`~hiveloom.loop.control.RunControl`, and stop/steer/model-switch
+    calls have somewhere to land before the first model call returns.
+    """
     return f"run_{uuid.uuid4().hex[:16]}"
+
+
+# Kept for callers written against the private name.
+_new_run_id = new_run_id
 
 
 def dry_run(
@@ -275,7 +286,7 @@ def run_harness(
         )
 
         version_hash = spec_version_hash(spec, base)
-        run_id = run_id or _new_run_id()
+        run_id = run_id or new_run_id()
         trace = TraceWriter(
             _resolve_trace_dir(base, spec.logging.trace_dir),
             run_id=run_id,

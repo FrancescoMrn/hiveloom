@@ -218,6 +218,8 @@ class AgentLoop:
                     )
                 for request in self._control.drain_model_switches():
                     self._switch_model(**request)
+                for request in self._control.drain_playbook_switches():
+                    self._switch_playbook_from_operator(**request)
             try:
                 response = self.model_turn()
             except GuardrailHalt as exc:
@@ -845,6 +847,66 @@ class AgentLoop:
             reason=f"playbook '{name}'",
             source="playbook",
         )
+
+    def _switch_playbook_from_operator(self, *, name: str, reason: str = "") -> bool:
+        """Move the run into another playbook on an operator's instruction.
+
+        Routed through the same :class:`PlaybookManager` the ``switch_playbook``
+        tool uses, so the mode's ``on_enter``/``on_exit`` gates still run and
+        may refuse. An operator switch is a request through the same door the
+        model uses — a gate that exists to stop a premature exit should stop
+        one that arrives over HTTP too.
+
+        The model is told, as a user turn: it has just had its tools narrowed
+        and its prompt fragment swapped, and a mode change it cannot see is a
+        mode change it will misread.
+        """
+        if self._playbooks is None or not self._playbooks.names:
+            self._trace.emit(
+                "playbook_switch_failed",
+                to=name,
+                source="operator",
+                reason=reason,
+                refused_reason="this harness declares no playbooks",
+            )
+            return False
+
+        previous = self._playbooks.current_name
+        why = reason or "operator request"
+        outcome = self._playbooks.switch(
+            name,
+            run_context=self._run_context(),
+            reason=why,
+            on_hook_error=self._hook_error,
+        )
+        self._trace.emit(
+            "playbook_switch",
+            to=name,
+            **{"from": previous},
+            reason=why,
+            source="operator",
+            ok=outcome.ok,
+            notes=outcome.notes,
+            refused_reason=outcome.reason,
+        )
+        if not outcome.ok:
+            return False
+
+        self._apply_playbook_model(name)
+        self._events.emit(
+            "playbook_exit", {"playbook": previous, "to": name, "reason": why}
+        )
+        self._events.emit(
+            "playbook_enter", {"playbook": name, "from": previous, "reason": why}
+        )
+        active = ", ".join(sorted(self._registry.active_names()))
+        note = [
+            f"[Operator switched you into playbook '{name}' while you were "
+            f"working. Active tools: {active}.]"
+        ]
+        note += outcome.notes
+        self._context.add_user(" ".join(note))
+        return True
 
     def _run_context(self, **extra: Any) -> dict[str, Any]:
         """The per-run dict handed to code tools and validators.
