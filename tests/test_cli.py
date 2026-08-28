@@ -301,3 +301,14 @@ def test_mcp_serve_missing_harness_exits_spec_error(tmp_path: Path):
     """`mcp serve` validates every directory at startup, before any protocol I/O."""
     result = runner.invoke(app, ["mcp", "serve", str(tmp_path / "missing")])
     assert result.exit_code == 3
+
+
+def test_version_flag_reports_the_installed_version():
+    """`hiveloom --version` is the first command the install docs tell a new
+    user to run, so it has to exist and print something parseable."""
+    from importlib.metadata import version as _version
+
+    for flag in ("--version", "-V"):
+        r = runner.invoke(app, [flag])
+        assert r.exit_code == ExitCode.OK
+        assert r.stdout.strip() == _version("hiveloom")

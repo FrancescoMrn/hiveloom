@@ -44,6 +44,30 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+@app.callback(invoke_without_command=True)
+def _main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        is_eager=True,
+        help="Show the installed hiveloom version and exit.",
+    ),
+) -> None:
+    """Generate, run, and evolve agent harnesses on the fly."""
+    if version:
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _version
+
+        try:
+            typer.echo(_version("hiveloom"))
+        except PackageNotFoundError:  # a source tree with no installed dist
+            typer.echo("unknown (hiveloom is not installed in this environment)")
+        raise typer.Exit(ExitCode.OK)
+
+
 add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to a harness.")
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
