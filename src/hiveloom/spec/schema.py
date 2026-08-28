@@ -627,6 +627,22 @@ class PlaybookRef(BaseModel):
         default_factory=list,
         description="Validators added to verify.validators while this mode is active.",
     )
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Model id to execute with while this mode is active; omit to keep "
+            "the harness's model. Profile on a cheap model, decide on an "
+            "expensive one, in one harness and one conversation. Leaving the "
+            "mode restores the previous model."
+        ),
+    )
+    model_provider: str | None = Field(
+        default=None,
+        description=(
+            "Provider serving this playbook's `model`; omit to use the "
+            "harness's provider. Set it to cross providers mid-run."
+        ),
+    )
     on_enter: str | None = Field(
         default=None,
         description=(
@@ -813,7 +829,16 @@ ALWAYS_FROZEN: tuple[str, ...] = (
 # these with a dedicated value-inspecting check (`_touches_playbook_code`),
 # the same shape as its dangerous-tool check, so that rewriting the whole
 # `playbooks` list cannot smuggle a hook in either.
-PLAYBOOK_FROZEN_FIELDS: tuple[str, ...] = ("on_enter", "on_exit")
+# `model`/`model_provider` join them: top-level `model` is already in
+# ALWAYS_FROZEN, and a per-playbook executor is the same decision by another
+# route. Evolution must not be able to move a harness onto a pricier model —
+# or onto a different lab — on its own initiative.
+PLAYBOOK_FROZEN_FIELDS: tuple[str, ...] = (
+    "on_enter",
+    "on_exit",
+    "model",
+    "model_provider",
+)
 
 
 # --------------------------------------------------------------------------- #

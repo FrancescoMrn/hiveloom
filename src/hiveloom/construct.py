@@ -554,6 +554,8 @@ def add_playbook(
     prompt: str | None = None,
     tools: list[str] | None = None,
     validators: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    model_provider: str | None = None,
     on_enter: str | None = None,
     on_exit: str | None = None,
     entry: bool = False,
@@ -563,6 +565,10 @@ def add_playbook(
     ``prompt`` defaults to ``playbooks/<name>.md``; pass an explicit path to
     reuse one. Hook refs are scaffolded like every other code hook, so a
     generated plan and a hand-typed CLI call land the same way.
+
+    ``model``/``model_provider`` give the mode its own executor — profile on a
+    cheap model, decide on an expensive one, inside one harness and one
+    conversation. Both are frozen from evolution, like the harness-level model.
     """
     directory = Path(directory)
     created: list[Path] = []
@@ -601,6 +607,10 @@ def add_playbook(
                 )
                 if scaffolded is not None:
                     created.append(scaffolded)
+    if model:
+        entry_dict["model"] = model
+    if model_provider:
+        entry_dict["model_provider"] = model_provider
     if on_enter:
         entry_dict["on_enter"] = on_enter
     if on_exit:

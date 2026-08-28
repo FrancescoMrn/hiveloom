@@ -224,7 +224,10 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
             rejected.append(
                 {
                     "path": change.path,
-                    "reason": "playbook code hooks are frozen from evolution",
+                    "reason": (
+                        "playbook code hooks and model selection are frozen "
+                        "from evolution"
+                    ),
                 }
             )
         elif not _covered(change.path, mutable):
@@ -250,13 +253,19 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
 
 
 def _touches_playbook_code(change: YamlChange) -> bool:
-    """Keep playbook ``on_enter``/``on_exit`` out of YAML evolution.
+    """Keep a playbook's frozen fields out of YAML evolution.
 
-    Two shapes have to be caught: a direct write to the hook field
+    Those are the code hooks (``on_enter``/``on_exit``) and the executor
+    (``model``/``model_provider``): the first two run arbitrary code, and the
+    second two are the same cost-and-capability decision that already keeps
+    top-level ``model`` in :data:`ALWAYS_FROZEN`.
+
+    Two shapes have to be caught: a direct write to the field
     (``playbooks.0.on_enter``), and a write of an ancestor whose *value*
-    carries a hook — rewriting the whole ``playbooks`` list, or one playbook
-    mapping, would otherwise install executable code through a path that only
-    looks like prose. Prompts stay mutable; that is the point of the split.
+    carries one — rewriting the whole ``playbooks`` list, or one playbook
+    mapping, would otherwise install executable code, or move the harness onto
+    a pricier model, through a path that only looks like prose. Prompts stay
+    mutable; that is the point of the split.
     """
     head, *rest = change.path.split(".")
     if head != "playbooks":
@@ -267,7 +276,7 @@ def _touches_playbook_code(change: YamlChange) -> bool:
 
 
 def _carries_playbook_hook(value: Any) -> bool:
-    """True if a proposed value contains a playbook hook field anywhere."""
+    """True if a proposed value contains a frozen playbook field anywhere."""
     if isinstance(value, dict):
         if any(value.get(field) is not None for field in PLAYBOOK_FROZEN_FIELDS):
             return True

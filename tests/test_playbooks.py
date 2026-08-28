@@ -477,7 +477,7 @@ def test_playbook_code_hooks_are_never_evolvable(tmp_path: Path):
     construct.set_value(directory, "evolution.mutable", ["playbooks"])
     result = _gate(directory, "playbooks.0.on_enter", "hooks/evil.py:run")
     assert not result.accepted
-    assert result.rejected[0]["reason"] == "playbook code hooks are frozen from evolution"
+    assert "frozen from evolution" in result.rejected[0]["reason"]
 
 
 def test_a_hook_cannot_be_smuggled_in_by_rewriting_the_list(tmp_path: Path):
@@ -489,4 +489,4 @@ def test_a_hook_cannot_be_smuggled_in_by_rewriting_the_list(tmp_path: Path):
         [{"name": "overview", "description": "O", "on_enter": "hooks/evil.py:run"}],
     )
     assert not result.accepted
-    assert result.rejected[0]["reason"] == "playbook code hooks are frozen from evolution"
+    assert "frozen from evolution" in result.rejected[0]["reason"]

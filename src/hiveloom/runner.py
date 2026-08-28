@@ -22,7 +22,8 @@ from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.loop.control import RunControl
-from hiveloom.models.provider import ModelProvider
+from hiveloom.models.provider import ModelConfig, ModelProvider
+from hiveloom.models.router import ModelRouter
 from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
@@ -188,6 +189,7 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
+    providers: dict[str, ModelProvider] | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -221,6 +223,11 @@ def run_harness(
     steering messages, both consumed at the loop's next turn boundary.
     ``run_id`` lets the caller pre-allocate the id (so it can be announced to
     a client before the run finishes); by default one is generated.
+    ``providers`` pre-registers model provider instances by name, for the
+    cross-provider case: a playbook or an operator may move the run onto a
+    provider the spec never named, and the router would otherwise construct one
+    from ambient credentials. Supplying it keeps an embedding caller (and the
+    test suite) in control of what a swap actually talks to.
 
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
@@ -239,6 +246,9 @@ def run_harness(
         base, input_value, conversation, literal_input=literal_input
     )
     registry = build_registry(spec, base)
+    # Bound before the try: several steps below it can raise, and an unbound
+    # name in the finally would mask the real error with a NameError.
+    router: ModelRouter | None = None
     try:
         guardrails = build_guardrails(spec, registry, base)
         verifiers = build_verifiers(spec, base)
@@ -251,6 +261,18 @@ def run_harness(
 
         if provider is None:
             provider = _default_provider(base, spec.model.provider)
+
+        router = ModelRouter.create(
+            base,
+            ModelConfig(
+                id=spec.model.id,
+                max_tokens=spec.model.max_tokens,
+                temperature=spec.model.temperature,
+                provider=spec.model.provider,
+            ),
+            provider,
+            providers=providers,
+        )
 
         version_hash = spec_version_hash(spec, base)
         run_id = run_id or _new_run_id()
@@ -285,10 +307,13 @@ def run_harness(
             context_values=context,
             playbooks=playbooks,
             control=control,
+            router=router,
         )
         result = loop.run()
     finally:
         registry.close()
+        if router is not None:
+            router.close()
 
     if ingest:
         _ingest_trace(trace.path, hive_path)

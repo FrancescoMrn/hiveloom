@@ -22,6 +22,8 @@ Endpoints:
   next turn boundary; it finishes with status ``"stopped"``, trace intact.
   Optional body ``{"reason": "..."}``.
 - ``POST /runs/{run_id}/messages`` — inject a steering message
+- ``POST /runs/{run_id}/model`` — move the run onto another model/provider at
+  its next turn boundary
   (``{"content": "..."}``) into a running run; the loop folds it in as an
   operator message before its next model call. Queueing a message for *after*
   the run is the caller's concern — it owns the conversation.
@@ -191,7 +193,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
         parts = [p for p in self.path.split("/") if p]
-        if len(parts) == 3 and parts[0] == "runs" and parts[2] in ("stop", "messages"):
+        if len(parts) == 3 and parts[0] == "runs" and parts[2] in ("stop", "messages", "model"):
             self._control_request(parts[1], parts[2])
             return
         if self.path != "/runs":
@@ -235,7 +237,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.server._slots.release()
 
     def _control_request(self, run_id: str, action: str) -> None:
-        """``POST /runs/{id}/stop`` and ``POST /runs/{id}/messages``."""
+        """``POST /runs/{id}/`` ``stop`` | ``messages`` | ``model``."""
         if not self._authorized():
             self._send_json(401, {"ok": False, "error": "missing or invalid API key"})
             return
@@ -250,6 +252,30 @@ class _Handler(BaseHTTPRequestHandler):
             control.request_stop(str(body.get("reason") or ""))
             self._send_json(200, {"ok": True, "run_id": run_id, "stopping": True})
             return
+        if action == "model":
+            model = body.get("model")
+            provider = body.get("provider")
+            if not isinstance(model, str | None) or not isinstance(provider, str | None):
+                self._send_json(
+                    400, {"ok": False, "error": '"model" and "provider" must be strings'}
+                )
+                return
+            if not model and not provider:
+                self._send_json(
+                    400,
+                    {"ok": False, "error": 'body must carry "model" and/or "provider"'},
+                )
+                return
+            control.switch_model(
+                model or None,
+                provider=provider or None,
+                reason=str(body.get("reason") or ""),
+            )
+            self._send_json(
+                200, {"ok": True, "run_id": run_id, "queued_for_next_turn": True}
+            )
+            return
+
         content = body.get("content")
         if not isinstance(content, str) or not content.strip():
             self._send_json(

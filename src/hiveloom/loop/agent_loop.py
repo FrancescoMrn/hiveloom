@@ -32,6 +32,7 @@ from hiveloom.models.provider import (
     ModelResponse,
     Usage,
 )
+from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry, ToolResult
@@ -100,6 +101,7 @@ class AgentLoop:
         context_values: dict[str, Any] | None = None,
         playbooks: PlaybookManager | None = None,
         control: RunControl | None = None,
+        router: ModelRouter | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -125,11 +127,15 @@ class AgentLoop:
         self._policy = policy if policy is not None else build_policy(
             spec.loop.policy, {"steps": spec.loop.steps}
         )
-        self._model_config = ModelConfig(
-            id=spec.model.id,
-            max_tokens=spec.model.max_tokens,
-            temperature=spec.model.temperature,
-            provider=spec.model.provider,
+        self._router = router if router is not None else ModelRouter.create(
+            self._base,
+            ModelConfig(
+                id=spec.model.id,
+                max_tokens=spec.model.max_tokens,
+                temperature=spec.model.temperature,
+                provider=spec.model.provider,
+            ),
+            provider,
         )
         self._control = control
         self._state = RunState(tool_names=set(registry.names()))
@@ -153,7 +159,7 @@ class AgentLoop:
             "run_started",
             input=self._run_input,
             policy=loop.policy,
-            model=self._model_config.id,
+            model=self._router.config.id,
             history_turns=len(self._history),
             # What produced this run, not just its 12-hex fingerprint: the
             # dumped spec plus a manifest of every local behavioural file. A
@@ -170,7 +176,7 @@ class AgentLoop:
             {
                 "input": self._run_input,
                 "policy": loop.policy,
-                "model": self._model_config.id,
+                "model": self._router.config.id,
                 "history": self._history,
             },
         )
@@ -210,6 +216,8 @@ class AgentLoop:
                         "[Operator message received while you were working — "
                         f"take it into account from here on]\n{steer}"
                     )
+                for request in self._control.drain_model_switches():
+                    self._switch_model(**request)
             try:
                 response = self.model_turn()
             except GuardrailHalt as exc:
@@ -278,6 +286,61 @@ class AgentLoop:
         )
 
     # ------------------------------------------------------------------ #
+    # Model routing
+    # ------------------------------------------------------------------ #
+    def _switch_model(
+        self,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        reason: str = "",
+        source: str = "operator",
+    ) -> bool:
+        """Move the executing model. Returns True if anything actually changed.
+
+        Called at a turn boundary only — the same discipline as stop and steer,
+        for the same reason: no model call and no tool is in flight, so the
+        conversation is in a state another model can be handed.
+        """
+        previous = self._router.config
+        try:
+            switch = self._router.switch(
+                model=model,
+                provider=provider,
+                turn=self._state.turns,
+                reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad target must not kill the run
+            self._trace.emit(
+                "model_swap_failed",
+                requested_model=model,
+                requested_provider=provider,
+                source=source,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+        if switch is None:
+            return False
+
+        # Prior turns may carry blocks only the previous model can validate.
+        # Strip them here, once, rather than hoping every provider ignores
+        # what it does not recognise.
+        dropped = 0
+        if switch.provider != previous.provider or switch.model != previous.id:
+            self._context.messages, dropped = portable_messages(self._context.messages)
+
+        self._trace.emit(
+            "model_swap",
+            **{"from": f"{previous.provider}:{previous.id}"},
+            to=switch.key,
+            turn=switch.turn,
+            reason=reason,
+            source=source,
+            blocks_dropped=dropped,
+        )
+        return True
+
+    # ------------------------------------------------------------------ #
     def model_turn(self, *, phase: str = "act") -> ModelResponse:
         system, messages = self._context.assemble()
         tools = self._registry.anthropic_payload()
@@ -305,13 +368,13 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         phase: str,
     ) -> ModelResponse:
-        input_tokens = self._provider.count_tokens(
+        input_tokens = self._router.provider.count_tokens(
             system=system, messages=messages, tools=tools
         )
-        self._state.pending_cost_usd = self._provider.estimated_cost(
-            Usage(input_tokens=input_tokens, output_tokens=self._model_config.max_tokens),
-            self._model_config.id,
-            self._model_config.provider,
+        self._state.pending_cost_usd = self._router.provider.estimated_cost(
+            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
+            self._router.config.id,
+            self._router.config.provider,
         )
         halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
         if halt is not None:
@@ -369,7 +432,7 @@ class AgentLoop:
                     "system": system,
                     "messages": messages,
                     "tools": tools,
-                    "model": self._model_config.id,
+                    "model": self._router.config.id,
                     "phase": phase,
                 },
             ):
@@ -390,16 +453,16 @@ class AgentLoop:
                         hook=outcome["_handler"],
                         action="patch_request",
                     )
-        response = self._provider.complete(
+        response = self._router.provider.complete(
             system=system,
             messages=messages,
             tools=tools,
-            config=self._model_config,
+            config=self._router.config,
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
-        cost = self._provider.estimated_cost(
-            response.usage, self._model_config.id, self._model_config.provider
+        cost = self._router.provider.estimated_cost(
+            response.usage, self._router.config.id, self._router.config.provider
         )
         self._state.cost_usd += cost
         self._state.pending_cost_usd = 0.0
@@ -407,7 +470,7 @@ class AgentLoop:
             "after_provider_response",
             {
                 "phase": phase,
-                "model": self._model_config.id,
+                "model": self._router.config.id,
                 "stop_reason": response.stop_reason,
                 "usage": response.usage.model_dump(),
                 "cost_usd": cost,
@@ -723,6 +786,7 @@ class AgentLoop:
             "playbook_switch", to=name, **{"from": None}, reason="run start",
             ok=outcome.ok, notes=outcome.notes,
         )
+        self._apply_playbook_model(name)
         self._events.emit(
             "playbook_enter", {"playbook": name, "from": None, "reason": "run start"}
         )
@@ -749,6 +813,7 @@ class AgentLoop:
         if not outcome.ok:
             return ToolResult(content=outcome.reason, is_error=True, retryable=False)
 
+        self._apply_playbook_model(name)
         self._events.emit(
             "playbook_exit", {"playbook": previous, "to": name, "reason": reason}
         )
@@ -759,6 +824,27 @@ class AgentLoop:
         message = [f"Now in playbook '{name}'. Active tools: {active}."]
         message += outcome.notes
         return ToolResult(content=" ".join(message))
+
+    def _apply_playbook_model(self, name: str | None) -> None:
+        """Put the run on the entered playbook's model, or back on the spec's.
+
+        A playbook that declares no ``model`` restores the harness default, so
+        leaving a mode always undoes what entering it did — a mode is a
+        configuration, not a one-way door. The switch happens between turns,
+        which is where the conversation is in a state another model can be
+        handed.
+        """
+        if self._playbooks is None or name is None:
+            return
+        playbook = self._playbooks.get(name)
+        if playbook is None:
+            return
+        self._switch_model(
+            model=playbook.ref.model or self._spec.model.id,
+            provider=playbook.ref.model_provider or self._spec.model.provider,
+            reason=f"playbook '{name}'",
+            source="playbook",
+        )
 
     def _run_context(self, **extra: Any) -> dict[str, Any]:
         """The per-run dict handed to code tools and validators.
@@ -858,6 +944,15 @@ class AgentLoop:
             output=output,
             verdicts=[v.model_dump() for v in (verdicts or [])],
             artifacts=self._state.artifacts,
+            # Which model(s) actually executed. A run that changed models is
+            # not a clean sample of "this harness at this version", and the
+            # Hive must be able to say so rather than blend it into a bucket
+            # with runs that did not.
+            model_path=self._router.path_key(),
+            models_used=[
+                {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
+                for s in self._router.path
+            ],
         )
         self._events.emit(
             "run_finished",
