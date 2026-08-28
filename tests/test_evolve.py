@@ -599,6 +599,46 @@ def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch)
     assert not (harness / "harness.yaml").read_text().startswith("# evolved")
 
 
+def test_cli_evolve_resolves_a_harness_declared_provider(tmp_path: Path):
+    harness = _harness(tmp_path)
+    extension = harness / "evolve_provider.py"
+    extension.write_text(
+        """
+from hiveloom.models.fake import FakeModelProvider, text_response
+
+def hiveloom_extension(hive):
+    hive.register_provider(
+        "local_evolver",
+        lambda _ctx: FakeModelProvider([text_response(
+            '{"rationale":"clarify","yaml_changes":'
+            '[{"path":"loop.max_turns","value":25}]}'
+        )]),
+        models=[{"id": "proposal-model", "provider": "local_evolver"}],
+        api="local",
+    )
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    construct.set_value(harness, "extensions", ["evolve_provider.py"])
+    _seed_failure(tmp_path, harness)
+
+    result = cli_runner.invoke(
+        cli.app,
+        [
+            "evolve",
+            str(harness),
+            "--model",
+            "local_evolver/proposal-model",
+            "--propose",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    assert json.loads(result.stdout)["status"] == "pending"
+
+
 def test_cli_evolve_propose_ignores_yes(tmp_path: Path, monkeypatch):
     harness = _harness(tmp_path)
     _seed_failure(tmp_path, harness)

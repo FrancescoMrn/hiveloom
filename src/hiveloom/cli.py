@@ -1564,10 +1564,13 @@ def evolve(
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         base = harness_path(harness_dir).parent  # the harness dir, given a dir or a yaml path
+        # Load first so harness-declared extensions have registered any provider
+        # named by --model. Resolving the strong model before the spec made an
+        # otherwise runnable local provider look unknown and fell back to Claude.
+        spec = load_spec(harness_dir)
         model = build_strong_model(model_id, base)
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
-            spec = load_spec(harness_dir)
             # Scoped to the current version — see analyze().
             report = evolve_mod.analyze(hive, name, version=spec_version_hash(spec, base))
             if report.is_empty():
