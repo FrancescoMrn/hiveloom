@@ -822,7 +822,14 @@ def mcp_list_tools_cmd(
 @app.command()
 def run(
     harness_dir: str = typer.Argument(".", help="Harness directory to run."),
-    input_value: str = typer.Option(..., "--input", help="Input FILE path or literal TEXT."),
+    input_value: str = typer.Option(
+        None, "--input", help="Input FILE path or literal TEXT (omit with --resume)."
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume a fork directory from the journal point it was created at.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -850,12 +857,23 @@ def run(
     without calling the model API; declared MCP servers are still contacted
     for tool discovery. ``--stream`` emits each trace event as a JSON line
     while the run progresses — the embedding interface for other programs.
+    ``--resume`` re-enters a directory made by ``hiveloom fork``: the parent
+    run's conversation is seeded at the journal point the fork names, and no
+    new task statement is added, so the run continues from that turn against
+    whatever the fork's harness now says.
     Exit codes: 0 success, 1 verify failed, 2 guardrail halt, 4 runtime error.
     """
     from hiveloom import runner
     from hiveloom import trust as trust_mod
 
     with _guard(json_output):
+        if resume == (input_value is not None):
+            _fail(
+                "pass exactly one of --input or --resume",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
+            return
         if sync:
             from hiveloom import cloud as cloud_mod
 
@@ -864,6 +882,9 @@ def run(
                 _console.print(f"[green]pulled[/green] @ {pulled['version_hash']}")
         if approve:
             trust_mod.record_trust(harness_dir)
+        if dry_run and input_value is None:
+            _fail("--dry-run needs --input", json_output, ExitCode.SPEC_ERROR)
+            return
         if dry_run:
             info = runner.dry_run(
                 harness_dir, input_value, approve_trust=_trust_prompt(json_output)
@@ -882,12 +903,36 @@ def run(
             def on_event(event) -> None:
                 typer.echo(event.model_dump_json())
 
-        result = runner.run_harness(
-            harness_dir,
-            input_value,
-            on_event=on_event,
-            approve_trust=_trust_prompt(json_output or stream),
-        )
+        if resume:
+            from hiveloom import fork as fork_mod
+
+            record = fork_mod.load_fork(harness_dir)
+            if record is None:
+                _fail(
+                    f"{harness_dir} is not a fork directory (no {fork_mod.FORK_FILE}); "
+                    "make one with `hiveloom fork <run_id> --at <seq>`",
+                    json_output,
+                    ExitCode.SPEC_ERROR,
+                )
+                return
+            result = runner.run_harness(
+                harness_dir,
+                resume_messages=fork_mod.load_fork_context(harness_dir),
+                lineage={
+                    "parent_run_id": record.get("parent_run_id", ""),
+                    "forked_at_seq": record.get("at_seq"),
+                    "parent_line_hash": record.get("parent_line_hash", ""),
+                },
+                on_event=on_event,
+                approve_trust=_trust_prompt(json_output or stream),
+            )
+        else:
+            result = runner.run_harness(
+                harness_dir,
+                input_value,
+                on_event=on_event,
+                approve_trust=_trust_prompt(json_output or stream),
+            )
         payload = runner.run_result_payload(result)
         if stream:
             typer.echo(json.dumps({"type": "run_result", **payload}))
@@ -1100,6 +1145,240 @@ def trace(
             _console.print(f"reason: {run['reason']}")
         for event in events:
             _console.print(f"  [dim]{event['seq']:>3}[/dim] {event['type']}")
+
+
+@app.command()
+def fork(
+    run_id: str = typer.Argument(..., help="Parent run to fork (e.g. run_abc123)."),
+    at: int | None = typer.Option(
+        None, "--at", help="Journal seq of the model call to re-enter (default: the last)."
+    ),
+    name: str | None = typer.Option(
+        None, "--name", "-n", help="Fork name inside the harness (default: <run_id>-<seq>)."
+    ),
+    directory: str | None = typer.Option(
+        None, "--dir", "-d", help="Write the fork here instead, outside the harness."
+    ),
+    source: str | None = typer.Option(
+        None, "--from", help="Harness folder to take files from (default: inferred)."
+    ),
+    list_points: bool = typer.Option(
+        False, "--list", help="List the run's fork points and exit."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Replay the prefix on this model instead (an A/B)."
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Provider serving --model (default: the parent's)."
+    ),
+    allow_drift: bool = typer.Option(
+        False,
+        "--allow-drift",
+        help="Fork even though a harness file has changed since the parent run.",
+    ),
+    ingest_dir: str | None = typer.Option(
+        None, "--ingest", help="Harness dir to ingest first if the run is unknown."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Re-enter a finished run at one of its model calls.
+
+    Materialises a new harness directory holding the harness that actually
+    produced the parent run (reconstructed from its journal snapshot and
+    checked against the working folder), a ``fork.yaml`` lineage record, and
+    the folded conversation at that point. Edit the fork's ``harness.yaml``,
+    then ``hiveloom run <dir> --resume`` to replay the identical prefix
+    against the changed harness.
+
+    Fork points are model calls: the state immediately before one is by
+    construction a valid provider request, where an arbitrary seq can land
+    mid-turn. ``--list`` shows them.
+
+    ``--model`` makes the commonest edit at fork time — replay this exact
+    prefix on a different model. It rewrites the fork's spec (through the same
+    validated path as ``hiveloom set``), so the fork is a clean sample of a
+    different harness version: identical prefix, one variable, and both arms
+    keep their own fitness bucket. ``hiveloom lineage`` reads the result.
+
+    The fork lands at ``<harness>/.hiveloom/forks/<name>``: an experiment on a
+    harness belongs inside it, so a folder of harnesses stays a folder of
+    harnesses and archiving one takes its experiments along. Forking a fork
+    puts the new one beside it under the same original harness rather than
+    nesting. ``--dir`` opts out for a one-off somewhere else — your own shell,
+    your own choice — but the workbench has no such escape hatch.
+    """
+    from hiveloom import fork as fork_mod
+    from hiveloom import runner
+    from hiveloom.logging.hive import Hive
+    from hiveloom.logging.journal import read_events
+
+    with _guard(json_output):
+        with Hive() as hive:
+            if ingest_dir is not None:
+                runner.resolve_and_ingest(ingest_dir, hive)
+            run = hive.get_run(run_id)
+        if run is None:
+            _fail(f"run '{run_id}' not found in the Hive", json_output, ExitCode.SPEC_ERROR)
+            return
+        trace_file = Path(run.get("trace_path", ""))
+        if not trace_file.exists():
+            _fail(
+                f"the journal for '{run_id}' is missing: {trace_file}",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
+            return
+
+        if list_points:
+            points = fork_mod.fork_points(read_events(trace_file))
+            if json_output:
+                _emit_json(
+                    {
+                        "ok": True,
+                        "run_id": run_id,
+                        "fork_points": [
+                            {
+                                "seq": p.seq,
+                                "turn": p.turn,
+                                "phase": p.phase,
+                                "num_messages": p.num_messages,
+                            }
+                            for p in points
+                        ],
+                    }
+                )
+                return
+            if not points:
+                _console.print("[yellow]no fork points — this run made no model calls[/yellow]")
+                return
+            _console.print(f"[bold]{run_id}[/bold] — {len(points)} fork point(s)")
+            for point in points:
+                _console.print(f"  [dim]{point.seq:>3}[/dim] {point.label()}")
+            return
+
+        if directory is not None:
+            target: str | Path = directory
+        else:
+            # Named after the parent run and the point in it, because that is
+            # what distinguishes two forks of the same harness from each other.
+            slug = name or f"{run_id.replace('run_', '')}-{at if at is not None else 'last'}"
+            origin = (
+                Path(source)
+                if source is not None
+                else fork_mod.find_harness_source(trace_file)
+            )
+            if origin is None:
+                _fail(
+                    f"cannot locate the harness folder that owns {trace_file}; "
+                    "pass --from <harness dir>, or --dir to write the fork elsewhere",
+                    json_output,
+                    ExitCode.SPEC_ERROR,
+                )
+                return
+            target = fork_mod.fork_target(origin, slug)
+        result = fork_mod.create_fork(
+            trace_file,
+            target,
+            at=at,
+            source_dir=source,
+            allow_drift=allow_drift,
+            model=model,
+            model_provider=provider,
+        )
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "directory": str(result.directory),
+                    "parent_run_id": result.parent_run_id,
+                    "at_seq": result.at_seq,
+                    "turn": result.turn,
+                    "messages": result.messages,
+                    "warnings": result.warnings,
+                    "model_override": result.model_override,
+                    "version_hash": result.version_hash,
+                    "trust_inherited": result.trust_inherited,
+                }
+            )
+            return
+        _console.print(
+            f"[green]forked[/green] {result.parent_run_id} @ seq {result.at_seq} "
+            f"(turn {result.turn}, {result.messages} messages) -> {result.directory}"
+        )
+        if result.model_override:
+            _console.print(
+                f"  model: [magenta]{result.model_override['from']}[/magenta] -> "
+                f"[magenta]{result.model_override['provider']}:"
+                f"{result.model_override['model']}[/magenta]  "
+                f"[dim](version {result.version_hash})[/dim]"
+            )
+        for warning in result.warnings:
+            _console.print(f"[yellow]warning:[/yellow] {warning}")
+        _console.print(
+            f"[dim]edit {result.directory}/harness.yaml, then: "
+            f"hiveloom run {result.directory} --resume[/dim]"
+        )
+
+
+@app.command()
+def lineage(
+    run_id: str = typer.Argument(..., help="Run to show the fork tree around."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show a run's forks and the parent they diverged from.
+
+    A fork shares its parent's journal up to the seq it re-entered at, so the
+    two are comparable on that identical prefix — which is what makes a fork a
+    controlled experiment rather than a second, unrelated run.
+    """
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        with Hive() as hive:
+            tree = hive.lineage(run_id)
+        if tree["run"] is None:
+            _fail(f"run '{run_id}' not found in the Hive", json_output, ExitCode.SPEC_ERROR)
+            return
+        if json_output:
+            _emit_json({"ok": True, **tree})
+            return
+
+        def _line(row: dict[str, Any], prefix: str = "") -> str:
+            status = row.get("status", "?")
+            colour = _status_colour(status)
+            cost = row.get("cost_usd") or 0.0
+            # The version hash and model path are the two things that can
+            # differ between arms sharing a prefix; showing them is what makes
+            # the comparison readable as an experiment.
+            executed = row.get("model_path") or "(pre-1.0)"
+            return (
+                f"{prefix}[bold]{row['run_id']}[/bold] "
+                f"[{colour}]{status}[/{colour}]  "
+                f"turns={row.get('turns', 0)}  cost=${cost:.4f}  "
+                f"[dim]{row.get('harness_version_hash', '')}[/dim] "
+                f"[magenta]{executed}[/magenta]"
+            )
+
+        for ancestor in reversed(tree["ancestors"]):
+            if ancestor.get("missing"):
+                _console.print(f"[dim]{ancestor['run_id']} (not ingested)[/dim]")
+                continue
+            _console.print(_line(ancestor))
+        run = tree["run"]
+        if run.get("parent_run_id"):
+            _console.print(
+                f"[dim]  forked from {run['parent_run_id']} "
+                f"at seq {run.get('forked_at_seq')}[/dim]"
+            )
+        _console.print(_line(run, prefix="> "))
+        if not tree["forks"]:
+            _console.print("[dim]no forks of this run[/dim]")
+            return
+        _console.print(
+            f"[bold]{len(tree['forks'])} fork(s)[/bold] — identical prefix, one change each"
+        )
+        for child in tree["forks"]:
+            _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
 
 
 @app.command()

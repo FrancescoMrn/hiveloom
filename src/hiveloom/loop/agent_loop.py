@@ -102,6 +102,8 @@ class AgentLoop:
         playbooks: PlaybookManager | None = None,
         control: RunControl | None = None,
         router: ModelRouter | None = None,
+        resume: bool = False,
+        lineage: dict[str, Any] | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -114,6 +116,10 @@ class AgentLoop:
         self._run_input = run_input
         self._run_id = run_id
         self._history = list(history or [])
+        # A resumed fork seeds a folded conversation that already ends where
+        # the parent run was, so there is no new task statement to append.
+        self._resume = resume
+        self._lineage = lineage
         # Kept by reference, not copied: a tool may accumulate run-scoped state
         # in it across calls, and the caller reads it back after the run.
         self._context_values = context_values if context_values is not None else {}
@@ -161,6 +167,11 @@ class AgentLoop:
             policy=loop.policy,
             model=self._router.config.id,
             history_turns=len(self._history),
+            resumed=self._resume,
+            # Where this run came from, when it is a fork: the parent run and
+            # the exact journal point it re-entered. This is what lets the Hive
+            # compare a fork against its parent on the prefix they share.
+            **({"lineage": self._lineage} if self._lineage else {}),
             # What produced this run, not just its 12-hex fingerprint: the
             # dumped spec plus a manifest of every local behavioural file. A
             # journal that only names a version hash cannot be forked without
@@ -190,7 +201,8 @@ class AgentLoop:
         # Prior turns first, so the current input stays the newest message —
         # policies and compaction both rely on that position.
         self._context.seed_history(self._history)
-        self._context.add_user(self._run_input)
+        if not self._resume:
+            self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
         except GuardrailHalt as exc:

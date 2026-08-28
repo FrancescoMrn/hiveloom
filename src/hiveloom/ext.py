@@ -26,6 +26,7 @@ cannot run without it.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
 import os
@@ -117,6 +118,10 @@ class _Registry:
     registrations: list[dict[str, str]] = field(default_factory=list)  # {source, kind, name}
     errors: list[dict[str, str]] = field(default_factory=list)  # {source, error}
     loaded_sources: set[str] = field(default_factory=set)
+    # Byte-identical local extensions may appear at several paths when a
+    # harness is forked. A long-lived workbench loads both folders into one
+    # registry, so executing the copy twice would collide with itself.
+    loaded_file_digests: set[str] = field(default_factory=set)
     env_loaded: bool = False
 
 
@@ -566,6 +571,10 @@ def _load_extension_file(file_path: Path, source: str) -> None:
     key = f"file:{file_path.resolve()}"
     if key in _registry.loaded_sources:
         return
+    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+    if digest in _registry.loaded_file_digests:
+        _registry.loaded_sources.add(key)
+        return
     module_name = f"hiveloom_ext_{abs(hash(str(file_path.resolve())))}"
     module_spec = importlib.util.spec_from_file_location(module_name, file_path)
     if module_spec is None or module_spec.loader is None:
@@ -576,6 +585,7 @@ def _load_extension_file(file_path: Path, source: str) -> None:
     if factory is None:
         raise ExtensionError(f"{file_path} has no hiveloom_extension(hive) function")
     _run_extension(factory, source, dedupe_key=key)
+    _registry.loaded_file_digests.add(digest)
 
 
 def _run_extension(factory: Callable[[ExtensionAPI], None], source: str,

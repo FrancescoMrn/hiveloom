@@ -200,6 +200,8 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
+    resume_messages: list[dict[str, Any]] | None = None,
+    lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
@@ -240,6 +242,13 @@ def run_harness(
     from ambient credentials. Supplying it keeps an embedding caller (and the
     test suite) in control of what a swap actually talks to.
 
+    ``resume_messages`` re-enters a run part-way through: the folded
+    conversation from a parent run's journal is seeded verbatim and **no new
+    task statement is appended**, because the seeded thread already ends where
+    the parent was. This is what ``hiveloom run <fork> --resume`` passes; see
+    :mod:`hiveloom.fork`. ``lineage`` is the accompanying provenance record
+    (parent run id, journal seq) written into ``run_started``.
+
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
     untrusted caller (``hiveloom serve`` and the HTTP control plane): over
@@ -253,9 +262,20 @@ def run_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
 
-    history, run_input = _resolve_conversation(
-        base, input_value, conversation, literal_input=literal_input
-    )
+    if resume_messages is not None:
+        if input_value is not None or conversation is not None:
+            raise ValueError(
+                "pass 'resume_messages' alone — a resumed run's conversation "
+                "comes from the parent journal, not from a new input"
+            )
+        history = list(resume_messages)
+        # The parent's task statement is already inside the folded thread; the
+        # trace records what this run re-entered rather than a fresh input.
+        run_input = (lineage or {}).get("parent_run_id", "")
+    else:
+        history, run_input = _resolve_conversation(
+            base, input_value, conversation, literal_input=literal_input
+        )
     registry = build_registry(spec, base)
     # Bound before the try: several steps below it can raise, and an unbound
     # name in the finally would mask the real error with a NameError.
@@ -318,6 +338,8 @@ def run_harness(
             context_values=context,
             playbooks=playbooks,
             control=control,
+            resume=resume_messages is not None,
+            lineage=lineage,
             router=router,
         )
         result = loop.run()

@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     reason TEXT,
     trace_path TEXT,
+    parent_run_id TEXT,
+    forked_at_seq INTEGER,
     model_path TEXT
 );
 CREATE TABLE IF NOT EXISTS verifications (
@@ -171,8 +173,19 @@ class Hive:
             self._conn.execute("DROP INDEX IF EXISTS idx_runs_session")
             self._conn.execute("ALTER TABLE runs DROP COLUMN session_id")
             existing.remove("session_id")
-        if "model_path" not in existing:
-            self._conn.execute("ALTER TABLE runs ADD COLUMN model_path TEXT")
+        for column, decl in (
+            ("parent_run_id", "TEXT"),
+            ("forked_at_seq", "INTEGER"),
+            ("model_path", "TEXT"),
+        ):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
+        # Indexes over migrated columns belong here, not in _SCHEMA: on an
+        # existing database the schema script runs before the ALTER, so an
+        # index naming a new column would fail before it could be added.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run_id)"
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -239,6 +252,8 @@ class Hive:
             "finished_at": None,
             "reason": "",
             "trace_path": trace_path,
+            "parent_run_id": None,
+            "forked_at_seq": None,
             "model_path": "",
         }
         verifications: list[tuple] = []
@@ -303,10 +318,10 @@ class Hive:
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "model_path) "
+            "parent_run_id, forked_at_seq, model_path) "
             "VALUES (:run_id, :harness_name, :harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":model_path)",
+            ":parent_run_id, :forked_at_seq, :model_path)",
             row,
         )
         cur.executemany(
@@ -545,6 +560,38 @@ class Hive:
             ).fetchall()
         ]
         return entry
+
+    def lineage(self, run_id: str) -> dict[str, Any]:
+        """The fork tree around a run: its ancestors, itself, and its forks.
+
+        A fork re-enters its parent at a journal seq, so the two runs share
+        everything up to that point. Reporting them as unrelated whole runs
+        would throw away the only thing that makes the comparison sharp — that
+        the prefix is identical and exactly one thing downstream changed.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            return {"run": None, "ancestors": [], "forks": []}
+
+        ancestors: list[dict[str, Any]] = []
+        seen = {run_id}
+        cursor = run.get("parent_run_id")
+        while cursor and cursor not in seen:
+            seen.add(cursor)
+            parent = self.get_run(cursor)
+            if parent is None:
+                ancestors.append({"run_id": cursor, "missing": True})
+                break
+            ancestors.append(parent)
+            cursor = parent.get("parent_run_id")
+
+        forks = [
+            dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM runs WHERE parent_run_id=? ORDER BY started_at", (run_id,)
+            )
+        ]
+        return {"run": run, "ancestors": ancestors, "forks": forks}
 
     def prune_runs(
         self, retention_days: int, *, now: datetime | None = None
