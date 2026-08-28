@@ -970,17 +970,35 @@ def trace(
     directory: str | None = typer.Option(
         None, "--dir", "-d", help="Harness dir to ingest first if the run is unknown."
     ),
+    materialize: int | None = typer.Option(
+        None,
+        "--materialize",
+        "-m",
+        help="Reconstruct the exact model request at this event seq and print it.",
+    ),
+    verify: bool = typer.Option(
+        False, "--verify", help="Check the journal's append-only hash chain."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show a run's trace: its summary and ordered events.
 
     Runs are ingested automatically by ``run``; pass ``--dir`` to ingest a
     harness's in-folder traces first (e.g. for a copied-back deployment).
+
+    ``--materialize <seq>`` folds the journal back into the ``(system,
+    messages, tools)`` triple that went to the model at that point — the
+    conversation is recorded progressively, so a request is reconstructed
+    rather than stored. ``--verify`` checks the hash chain instead: every
+    event commits to the sha256 of the line before it, so an edited or
+    removed line is reported with the position it broke at.
     """
     import json as _json
 
     from hiveloom import runner
     from hiveloom.logging.hive import Hive
+    from hiveloom.logging.journal import state_at, verify_chain
+    from hiveloom.logging.trace import payload_hash
 
     with _guard(json_output):
         with Hive() as hive:
@@ -999,6 +1017,72 @@ def trace(
                 for line in trace_file.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
+
+        if verify:
+            if not trace_file.exists():
+                _fail(
+                    f"trace file for '{run_id}' is missing: {trace_file}",
+                    json_output,
+                    ExitCode.SPEC_ERROR,
+                )
+                return
+            chain = verify_chain(trace_file)
+            if json_output:
+                _emit_json(
+                    {
+                        "ok": chain.ok,
+                        "run_id": run_id,
+                        "chained": chain.chained,
+                        "checked": chain.checked,
+                        "broken_at": chain.broken_at,
+                        "reason": chain.reason,
+                    }
+                )
+            else:
+                colour = "green" if chain.ok and chain.chained else (
+                    "yellow" if chain.ok else "red"
+                )
+                _console.print(f"[{colour}]{chain.summary()}[/{colour}]")
+            if not chain.ok:
+                raise typer.Exit(ExitCode.RUNTIME_ERROR)
+            return
+
+        if materialize is not None:
+            target = next((e for e in events if e.get("seq") == materialize), None)
+            if target is None:
+                _fail(
+                    f"no event with seq {materialize} in run '{run_id}'",
+                    json_output,
+                    ExitCode.SPEC_ERROR,
+                )
+                return
+            # A model_call is emitted *after* the context events it consumed,
+            # so its request is everything strictly before it.
+            is_call = target.get("type") == "model_call"
+            state = state_at(events, materialize, inclusive=not is_call)
+            request = state.as_request()
+            recorded = (target.get("payload") or {}).get("messages_hash")
+            faithful = recorded is None or recorded == payload_hash(state.messages)
+            if json_output:
+                _emit_json(
+                    {
+                        "ok": True,
+                        "run_id": run_id,
+                        "seq": materialize,
+                        "type": target.get("type"),
+                        "faithful": faithful,
+                        "request": request,
+                    }
+                )
+                return
+            if not faithful:
+                _console.print(
+                    "[yellow]warning:[/yellow] a context_assemble hook patched this "
+                    "request without persisting it; the reconstruction below is the "
+                    "conversation as journalled, not what went on the wire."
+                )
+            _console.print(_json.dumps(request, indent=2))
+            return
 
         if json_output:
             _emit_json({"ok": True, "run": run, "events": events})

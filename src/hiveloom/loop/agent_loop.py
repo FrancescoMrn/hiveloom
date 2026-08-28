@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import EventBus
 from hiveloom.guardrails.base import Guardrail, RunState
-from hiveloom.logging.trace import TraceWriter
+from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
 from hiveloom.loop.policies import LoopPolicy, build_policy
 from hiveloom.models.provider import (
@@ -155,6 +155,15 @@ class AgentLoop:
             policy=loop.policy,
             model=self._model_config.id,
             history_turns=len(self._history),
+            # What produced this run, not just its 12-hex fingerprint: the
+            # dumped spec plus a manifest of every local behavioural file. A
+            # journal that only names a version hash cannot be forked without
+            # the original folder, and cannot prove the folder never moved.
+            harness=harness_snapshot(
+                self._spec,
+                self._base,
+                include_files=self._spec.logging.snapshot_files,
+            ),
         )
         self._events.emit(
             "run_started",
@@ -296,7 +305,9 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         phase: str,
     ) -> ModelResponse:
-        input_tokens = self._provider.count_tokens(system=system, messages=messages, tools=tools)
+        input_tokens = self._provider.count_tokens(
+            system=system, messages=messages, tools=tools
+        )
         self._state.pending_cost_usd = self._provider.estimated_cost(
             Usage(input_tokens=input_tokens, output_tokens=self._model_config.max_tokens),
             self._model_config.id,
@@ -306,15 +317,48 @@ class AgentLoop:
         if halt is not None:
             self._state.pending_cost_usd = 0.0
             raise GuardrailHalt(halt)
-        self._trace.emit(
-            "model_call",
-            turn=self._state.turns,
-            phase=phase,
-            num_messages=len(messages),
-            system=system,
-            messages=messages,
-            tools=tools,
-        )
+        if phase == "compaction":
+            # An out-of-band request: a one-off summarisation prompt that is
+            # not part of the conversation. It is recorded inline (it is small,
+            # and it has no context events of its own) and flagged so the
+            # journal fold skips it instead of mistaking it for history.
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                inline=True,
+                system=system,
+                messages=messages,
+            )
+        else:
+            # The conversation itself is already journalled message by message;
+            # the system prompt and tool payload are journalled only when they
+            # change. So a model_call records what it *consumed*, not a copy of
+            # it — see hiveloom.logging.journal for the fold that reads it back.
+            system_hash = self._trace.emit_context_system(system)
+            tools_hash = self._trace.emit_context_tools(tools)
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                context_head=self._trace.context_head,
+                system_hash=system_hash,
+                tools_hash=tools_hash,
+                # The context meter. Both numbers are already known here —
+                # `input_tokens` was just counted for the cost guardrail — and
+                # recording them is what lets a reader see how close a call ran
+                # to the budget without re-tokenizing the whole conversation.
+                input_tokens=input_tokens,
+                max_input_tokens=self._spec.context.max_input_tokens,
+                # A checksum of what actually went on the wire. The fold
+                # reconstructs the persisted conversation; a `context_assemble`
+                # hook patches one request without persisting it, so this is
+                # how a reader detects that the reconstruction is not the whole
+                # story rather than silently believing it.
+                messages_hash=payload_hash(messages),
+            )
         self._events.emit("before_model_call", {"turn": self._state.turns, "phase": phase})
         # Request middleware: patches apply to this request only, and run
         # after guardrails so a hook can never widen what a guardrail vetoed.
@@ -808,6 +852,12 @@ class AgentLoop:
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
             duration_seconds=self._state.elapsed_seconds(),
+            # The answer and the judgements on it. A journal that reports a
+            # run's status but not what it produced is not a complete record
+            # of the run it describes.
+            output=output,
+            verdicts=[v.model_dump() for v in (verdicts or [])],
+            artifacts=self._state.artifacts,
         )
         self._events.emit(
             "run_finished",

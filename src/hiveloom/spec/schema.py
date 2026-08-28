@@ -678,12 +678,37 @@ class LoggingConfig(BaseModel):
         default="./.hiveloom/traces",
         description="Where traces are written. In-folder by default so memory travels.",
     )
-    level: Literal["full", "tool_calls_only"] = Field(
-        default="full", description="Trace verbosity."
+    level: Literal["journal", "summary"] = Field(
+        default="journal",
+        description=(
+            "What the run journal keeps. 'journal' records the conversation "
+            "progressively and is forkable. 'summary' keeps outcomes and tool "
+            "activity but no context bodies — smaller, and NOT forkable."
+        ),
     )
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _accept_pre_1_0_levels(cls, value: Any) -> Any:
+        """Accept the 0.x names. They said how much; the new ones say what for.
+
+        A harness folder is a portable artifact that outlives the runtime that
+        wrote it, so an old `harness.yaml` must keep loading rather than
+        failing validation on a rename.
+        """
+        return {"full": "journal", "tool_calls_only": "summary"}.get(value, value)
     redact: list[str] = Field(
         default_factory=list,
         description="Regexes scrubbed from persisted traces (frozen from evolution).",
+    )
+    snapshot_files: bool = Field(
+        default=False,
+        description=(
+            "Inline the harness's code hooks, validators, and skills into the "
+            "run_started snapshot, not just their hashes. Makes a journal "
+            "portable — forkable without the original folder — at the cost of "
+            "size. The manifest of hashes is always recorded either way."
+        ),
     )
 
 

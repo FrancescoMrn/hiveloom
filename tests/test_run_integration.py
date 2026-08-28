@@ -11,6 +11,8 @@ from pathlib import Path
 from hiveloom import construct, runner
 from hiveloom.generate.llm import FakeStrongModel, StrongModel
 from hiveloom.logging.hive import Hive
+from hiveloom.logging.journal import state_at
+from hiveloom.logging.trace import payload_hash
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 from hiveloom.models.provider import ContextOverflowError
 
@@ -51,13 +53,15 @@ def test_full_run_success_emits_ordered_events(tmp_path: Path):
     assert events[-1] == "run_finished"
     assert "tool_call" in events and "tool_result" in events
     assert events.count("verification_result") == 2  # output_schema + code validator
-    model_call = next(
-        json.loads(line)
-        for line in Path(result.trace_path).read_text().splitlines()
-        if json.loads(line)["type"] == "model_call"
-    )
-    assert model_call["payload"]["messages"]
-    assert "system" in model_call["payload"]
+    # The conversation is journalled progressively, so a model_call references
+    # the folded context rather than carrying a copy of it.
+    journal = [json.loads(line) for line in Path(result.trace_path).read_text().splitlines()]
+    model_call = next(e for e in journal if e["type"] == "model_call")
+    assert "messages" not in model_call["payload"]
+    assert model_call["payload"]["context_head"] >= 0
+    state = state_at(journal, model_call["seq"], inclusive=False)
+    assert state.messages and state.system
+    assert payload_hash(state.messages) == model_call["payload"]["messages_hash"]
 
 
 def test_verify_failure_triggers_retry_with_feedback(tmp_path: Path):
