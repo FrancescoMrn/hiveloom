@@ -60,13 +60,17 @@ _DOCKERIGNORE = """\
 !.env.example
 !.env.template
 .hiveloom/
+.venv/
 __pycache__/
 *.py[cod]
 *.zip
 .git/
 """
 
-_EXCLUDE_DIRS = {"__pycache__", ".hiveloom", ".git"}
+# ``.venv`` because a harness declares its dependencies in its own
+# pyproject.toml: ``uv sync`` inside the folder is expected, and an installed
+# environment is machine-local noise that must never reach a zip or an image.
+_EXCLUDE_DIRS = {"__pycache__", ".hiveloom", ".git", ".venv"}
 _ENV_TEMPLATES = {".env.example", ".env.template"}
 _EXCLUDE_DIRS_CF = {name.casefold() for name in _EXCLUDE_DIRS}
 _ENV_TEMPLATES_CF = {name.casefold() for name in _ENV_TEMPLATES}

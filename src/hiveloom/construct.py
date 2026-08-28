@@ -16,6 +16,7 @@ A harness directory is therefore never left in an invalid state.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -213,7 +214,36 @@ def _scaffold_hook(directory: Path, code_ref: str, kind: str, description: str) 
 # --------------------------------------------------------------------------- #
 # init
 # --------------------------------------------------------------------------- #
-_GITIGNORE = ".env\n.hiveloom/\n__pycache__/\n"
+# `.venv/` because a harness now declares its deps in pyproject.toml, so
+# `uv sync` inside the folder is the natural way to install them.
+_GITIGNORE = ".env\n.venv/\n.hiveloom/\n__pycache__/\n"
+
+# Dependencies are declared the way every other Python project declares them,
+# in a PEP 621 ``[project]`` table, rather than in a requirements.txt that no
+# resolver treats as authoritative. The harness folder is not a package and is
+# never built: ``[tool.uv] package = false`` says so, so ``uv sync`` installs
+# the pins and stops there.
+_REQUIRES_PYTHON = ">=3.11"
+
+_PYPROJECT_TEMPLATE = """\
+# What this harness needs to run. The folder is the harness; this file pins
+# the runtime that executes it, plus anything its tools, validators and
+# extensions import.
+#
+#     uv sync                        # or: pip install hiveloom=={version}
+[project]
+name = "{project_name}"
+version = "0.1.0"
+description = "{description}"
+requires-python = "{requires_python}"
+dependencies = [
+    "hiveloom=={version}",
+]
+
+# Not a library: nothing here is built or installed, only the pins resolved.
+[tool.uv]
+package = false
+"""
 
 _README_TEMPLATE = """# {name}
 
@@ -227,6 +257,7 @@ A self-contained **hiveloom** harness. The folder is the harness; the runtime
 ## Run
 
 ```bash
+uv sync                # install the pinned runtime (pyproject.toml)
 cp .env.example .env   # fill in ANTHROPIC_API_KEY
 hiveloom run . --input path/to/input.txt
 ```
@@ -274,7 +305,15 @@ def init_harness(directory: str | Path, name: str, task: str) -> HarnessSpec:
         write(harness_path(target), dump_spec(spec))
         write(target / ".gitignore", _GITIGNORE)
         write(target / ".env.example", "ANTHROPIC_API_KEY=\n")
-        write(target / "requirements.txt", f"hiveloom=={_pkg_version()}\n")
+        write(
+            target / "pyproject.toml",
+            _PYPROJECT_TEMPLATE.format(
+                project_name=_project_name(name),
+                description=_toml_line(task),
+                requires_python=_REQUIRES_PYTHON,
+                version=_pkg_version(),
+            ),
+        )
         write(target / "README.md", _README_TEMPLATE.format(name=name, task=task))
 
         # Trust is convenience metadata, not a requirement for a valid local harness.
@@ -305,6 +344,25 @@ def _pkg_version() -> str:
     from hiveloom import __version__
 
     return __version__
+
+
+def _project_name(name: str) -> str:
+    """Normalise a harness name into a valid PEP 508 distribution name.
+
+    Harness names are free text; project names are not. Anything outside
+    ``[a-z0-9._-]`` folds to a hyphen, and a name that survives as empty falls
+    back to ``harness`` rather than producing a pyproject nothing can parse.
+    """
+    slug = re.sub(r"[^a-z0-9._-]+", "-", name.strip().lower()).strip("-._")
+    return slug or "harness"
+
+
+def _toml_line(text: str) -> str:
+    """Fold arbitrary text into one escaped TOML basic-string line."""
+    line = " ".join(text.split())
+    if len(line) > 200:
+        line = line[:197].rstrip() + "..."
+    return line.replace("\\", "\\\\").replace('"', '\\"')
 
 
 # --------------------------------------------------------------------------- #
