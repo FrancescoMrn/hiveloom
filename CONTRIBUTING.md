@@ -24,19 +24,11 @@ uv run hiveloom validate harnesses/example-summarizer
 uv run hiveloom run harnesses/example-summarizer --input notes.txt --dry-run
 ```
 
-The demo harnesses in `harnesses/` are **generated**. Do not edit them in
-place: change `scripts/build_harnesses.py` and rebuild, so the demos keep
-coming out of the same `init`/`add`/`set` path a user gets.
-
-```bash
-uv run python scripts/build_harnesses.py                    # all four
-uv run python scripts/build_harnesses.py --only routing-lab
-```
-
-A rebuild moves the previous folder to `.archive/harnesses-<stamp>/` rather
-than deleting it — the folder holds journals of real runs, and a rebuild is
-not a reason to lose them. `.archive/` is gitignored; clear it out yourself
-when you are done with it.
+The demo harnesses in `harnesses/` are ordinary committed folders, each
+originally built through the same `init`/`add`/`set` CLI path a user gets. To
+change one, go through the CLI (`hiveloom set`, `add`, `remove` — validated,
+rolled back on error) rather than editing its `harness.yaml` by hand; code
+assets (tools, validators, the MCP server) are normal files edited in place.
 
 The unit and integration suite uses fake providers and must not need credentials
 or network access. Before release, also run the live QA that matches the

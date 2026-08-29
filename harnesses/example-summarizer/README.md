@@ -38,7 +38,8 @@ hiveloom set system_prompt "Summarize the file." && hiveloom run . --input notes
 hiveloom stats .              # the two versions, side by side
 ```
 
-## Rebuilding
+## Changing it
 
-This folder is generated. Edit `scripts/build_harnesses.py` and re-run it
-rather than editing `harness.yaml` by hand.
+Do not hand-edit `harness.yaml`. Make changes through the CLI — `hiveloom
+set`, `hiveloom add`, `hiveloom remove` — which validates every mutation and
+rolls back on error.

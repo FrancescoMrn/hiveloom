@@ -30,7 +30,8 @@ hiveloom trace <run_id>       # the ordered journal for one run
 - `../article-extractor` adds a custom tool written in Python.
 - `../routing-lab` adds playbooks, per-playbook models, and forking.
 
-## Rebuilding
+## Changing it
 
-This folder is generated. Edit `scripts/build_harnesses.py` and re-run it
-rather than editing `harness.yaml` by hand.
+Do not hand-edit `harness.yaml`. Make changes through the CLI — `hiveloom
+set`, `hiveloom add`, `hiveloom remove` — which validates every mutation and
+rolls back on error.

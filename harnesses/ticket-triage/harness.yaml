@@ -1,0 +1,91 @@
+version: 0.2.0
+name: ticket-triage
+id: hl-740161dbe484
+description: 'Triage the open support tickets exposed by the tickets MCP server: assign each open ticket
+  a category and priority and emit one JSON report.'
+model:
+  provider: claude
+  id: claude-haiku-4-5
+  max_tokens: 4096
+  temperature: 0.0
+system_prompt: |
+  You triage support tickets served by the `tickets` MCP server.
+
+  Steps:
+  1. Call mcp__tickets__list_tickets with status "open" to see the open tickets.
+  2. Call mcp__tickets__get_ticket for each open ticket to read its body.
+  3. Emit ONE raw JSON object and nothing else — no prose, no markdown fences — shaped as:
+     {"tickets": [{"id": "...", "category": "...", "priority": "...", "reason": "..."}]}
+
+  Rules:
+  - category is one of: "bug", "security", "billing", "how-to", "feature-request".
+  - priority is one of: "urgent", "high", "normal", "low". Security exposure and production outages are "urgent".
+  - Cover every open ticket exactly once; never invent ticket ids.
+  - reason is one short sentence grounded in the ticket body.
+  - If verification returns feedback, fix exactly what it names and re-emit the full JSON object.
+tools: []
+mcp_servers:
+- name: tickets
+  transport: stdio
+  command: uv
+  args:
+  - run
+  - --no-project
+  - --with
+  - fastmcp
+  - python
+  - mcp_server.py
+  env: {}
+  env_from_host_env: {}
+  cwd: .
+  deferred: false
+  timeout_seconds: 30.0
+playbooks: []
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+guardrails:
+- builtin: max_cost_usd
+  value: 0.25
+- builtin: max_wall_clock_seconds
+  value: 180
+loop:
+  policy: react
+  steps: []
+  max_turns: 20
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - builtin: regex_match
+    pattern: '"tickets"'
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0

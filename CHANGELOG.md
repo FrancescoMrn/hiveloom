@@ -32,14 +32,15 @@ gone.
   rows carry `root_path`, `is_fork` and `parent_id`, and the rail groups by
   containment rather than by harness name — so a renamed fork stays with its
   harness, and two unrelated harnesses that share a name stay two harnesses.
-- **The demo harnesses are generated, and there are now four of them.**
-  `harnesses/` is built by `scripts/build_harnesses.py` from zero, through the
-  same validated `init`/`add`/`set` path the CLI exposes; nothing writes
-  `harness.yaml` directly, so the demos cannot drift from what the tool
-  produces. The set is curated to one harness per layer: `quickstart` (no
-  tools), `example-summarizer` (builtin tools + schema and code verification),
-  `article-extractor` (a custom `@tool`, an output hook, a validator that
-  re-fetches the page), and `routing-lab` (playbooks that move the model *and*
+- **The demo harnesses were rebuilt from zero, and there are now five of
+  them.** Each was constructed through the same validated `init`/`add`/`set`
+  path the CLI exposes — nothing hand-writes `harness.yaml` — and committed
+  as a plain folder. The set is curated to one harness per layer: `quickstart`
+  (no tools), `example-summarizer` (builtin tools + schema and code
+  verification), `article-extractor` (a custom `@tool`, an output hook, a
+  validator that re-fetches the page), `ticket-triage` (an MCP server, FastMCP
+  over stdio, as the harness's only data source), and `routing-lab` (playbooks
+  that move the model *and*
   the tool set mid-run, on an offline provider, and shipping a real fork under
   `.hiveloom/forks/`). `hello`, `hn-extractor` and `company-analyst` were
   folded into those four and removed, along with two stray fork folders that

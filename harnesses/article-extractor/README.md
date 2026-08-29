@@ -37,8 +37,8 @@ hiveloom validate .
 hiveloom run . --input https://example.com/some-article --json
 ```
 
-## Rebuilding
+## Changing it
 
-This folder is generated. Edit `scripts/build_harnesses.py` and re-run it
-rather than editing `harness.yaml` by hand. The two Python assets live in
-`scripts/harness_assets/`.
+Do not hand-edit `harness.yaml`. Make changes through the CLI — `hiveloom
+set`, `hiveloom add`, `hiveloom remove` — which validates every mutation and
+rolls back on error.

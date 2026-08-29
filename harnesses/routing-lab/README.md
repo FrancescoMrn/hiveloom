@@ -62,8 +62,8 @@ exact prefix on a different model:
 hiveloom fork <run_id> --name on-alt --model qa-alt --provider routing_lab
 ```
 
-## Rebuilding
+## Changing it
 
-This folder is generated. Edit `scripts/build_harnesses.py` and re-run it
-rather than editing `harness.yaml` by hand. The provider lives in
-`scripts/harness_assets/qa_provider.py`.
+Do not hand-edit `harness.yaml`. Make changes through the CLI — `hiveloom
+set`, `hiveloom add`, `hiveloom remove` — which validates every mutation and
+rolls back on error.
