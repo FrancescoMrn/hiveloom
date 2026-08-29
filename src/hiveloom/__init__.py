@@ -44,7 +44,11 @@ if TYPE_CHECKING:
         load_eval_spec,
         run_scorers,
     )
-    from hiveloom.execution import RunExecutionEnvelope, VerificationSummary  # noqa: F401
+    from hiveloom.execution import (  # noqa: F401
+        RunExecutionEnvelope,
+        StepExecutionRecord,
+        VerificationSummary,
+    )
     from hiveloom.generate.generator import generate as generate_harness  # noqa: F401
     from hiveloom.logging.hive import Hive  # noqa: F401
     from hiveloom.loop.agent_loop import RunResult  # noqa: F401
@@ -60,6 +64,7 @@ _SDK = {
     "dry_run": ("hiveloom.runner", "dry_run"),
     "RunResult": ("hiveloom.loop.agent_loop", "RunResult"),
     "RunExecutionEnvelope": ("hiveloom.execution", "RunExecutionEnvelope"),
+    "StepExecutionRecord": ("hiveloom.execution", "StepExecutionRecord"),
     "VerificationSummary": ("hiveloom.execution", "VerificationSummary"),
     "ModelProbeResult": ("hiveloom.models.capabilities", "ModelProbeResult"),
     "probe_model": ("hiveloom.models.capabilities", "probe_model"),

@@ -35,7 +35,7 @@ from hiveloom.verify.builtin import build_verifiers
 
 if TYPE_CHECKING:
     from hiveloom.generate.llm import StrongModel
-    from hiveloom.spec.schema import HarnessSpec
+from hiveloom.spec.schema import HarnessSpec, SequentialStep
 
 log = logging.getLogger(__name__)
 
@@ -203,6 +203,42 @@ def dry_run(
             manager = PlaybookManager(load_playbooks(spec, base), registry)
             manager.enter_initial()
             context_manager.set_playbooks(manager)
+        initial_tools = registry.active_names()
+        effective_tools = list(initial_tools)
+        step_plan = []
+        for index, step in enumerate(spec.loop.steps):
+            if isinstance(step, SequentialStep):
+                if step.tools is not None:
+                    effective_tools = [
+                        name for name in step.tools if name in initial_tools
+                    ]
+                step_plan.append(
+                    {
+                        "id": step.id,
+                        "index": index,
+                        "instruction": step.instruction,
+                        "tools": list(effective_tools),
+                        "require_tool_calls": step.require_tool_calls,
+                        "max_model_calls": step.max_model_calls,
+                        "max_tool_calls": step.max_tool_calls,
+                        "enforced": True,
+                    }
+                )
+            else:
+                step_plan.append(
+                    {
+                        "id": f"step-{index + 1}",
+                        "index": index,
+                        "instruction": step,
+                        "tools": list(effective_tools),
+                        "require_tool_calls": [],
+                        "max_model_calls": None,
+                        "max_tool_calls": None,
+                        "enforced": False,
+                    }
+                )
+        if step_plan:
+            registry.set_active(step_plan[0]["tools"])
         system = context_manager.system()
         messages = [*history, {"role": "user", "content": run_input}]
         return {
@@ -213,6 +249,7 @@ def dry_run(
             "system": system,
             "messages": messages,
             "tools": registry.anthropic_payload(),
+            "steps": step_plan,
             "estimated_input_tokens": _estimate_messages_tokens(system, messages),
         }
     finally:
@@ -528,9 +565,9 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
     """The JSON shape of a completed run, shared by the CLI and the HTTP control plane.
 
     ``ok`` reflects only ``status == "success"`` — ``verify_failed``,
-    ``guardrail_halt``, ``max_turns``, ``stopped``, and ``error`` are all completed runs
-    reported here, not raised exceptions, so both callers can never diverge
-    on what a finished run looks like.
+    ``guardrail_halt``, ``step_failed``, ``max_turns``, ``stopped``, and ``error``
+    are all completed runs reported here, not raised exceptions, so both
+    callers can never diverge on what a finished run looks like.
     """
     return {
         "ok": result.status == "success",
@@ -544,6 +581,10 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "reason": result.reason,
         "artifacts": result.artifacts,
         "provider_calls": getattr(result, "provider_calls", []),
+        "steps": [
+            step.model_dump(mode="json")
+            for step in getattr(result, "steps", [])
+        ],
         # Structural fakes and 1.0-era embedding adapters may still return the
         # pre-override result shape. Keep that additive transition readable.
         "runtime_config": getattr(result, "runtime_config", {}),

@@ -180,6 +180,7 @@ def test_run_sync_success_matches_run_result_payload(tmp_path: Path):
         "runtime_config",
         "provider_calls",
         "execution",
+        "steps",
     }
 
 
@@ -209,6 +210,7 @@ def test_run_sync_verify_failed_is_still_200(tmp_path: Path):
         "runtime_config",
         "provider_calls",
         "execution",
+        "steps",
     }
 
 

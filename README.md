@@ -174,6 +174,10 @@ hiveloom validate ./summarizer --json
 # Assemble the first call without contacting the model
 hiveloom run ./summarizer --input-file notes.txt --dry-run --json
 
+# Enforced phases can narrow tools and require successful calls
+hiveloom set loop.steps '[{"id":"read","instruction":"Read notes.","tools":["file_read"],"require_tool_calls":["file_read"]},{"id":"answer","instruction":"Write the summary.","tools":[]}]' --dir ./summarizer
+hiveloom set loop.policy sequential_steps --dir ./summarizer
+
 # Run for real (the default provider uses Anthropic)
 export ANTHROPIC_API_KEY=sk-...
 hiveloom run ./summarizer --input-file notes.txt --json

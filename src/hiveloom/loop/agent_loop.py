@@ -24,13 +24,14 @@ from hiveloom.context.manager import ContextManager
 from hiveloom.events import EventBus
 from hiveloom.execution import (
     RunExecutionEnvelope,
+    StepExecutionRecord,
     VerificationSummary,
     execution_fingerprint,
 )
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
-from hiveloom.loop.policies import LoopPolicy, build_policy
+from hiveloom.loop.policies import LoopPolicy, StepPolicyHalt, build_policy
 from hiveloom.models.provider import (
     ContextOverflowError,
     ModelConfig,
@@ -48,7 +49,8 @@ from hiveloom.verify.base import VerdictResult, Verifier
 class RunResult(BaseModel):
     """The outcome of a harness run."""
 
-    status: str  # success | verify_failed | guardrail_halt | max_turns | stopped | error
+    # success | verify_failed | guardrail_halt | step_failed | max_turns | stopped | error
+    status: str
     output: str = ""
     turns: int = 0
     cost_usd: float = 0.0
@@ -68,6 +70,7 @@ class RunResult(BaseModel):
     # overrides; ``resolved`` is the validated config that the router used.
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     execution: RunExecutionEnvelope | None = None
+    steps: list[StepExecutionRecord] = Field(default_factory=list)
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -125,6 +128,7 @@ class AgentLoop:
         self._base = Path(base_dir)
         self._provider = provider
         self._registry = registry
+        self._initial_active_tools = set(registry.active_names())
         self._guardrails = guardrails
         self._verifiers = verifiers
         self._context = context
@@ -184,6 +188,18 @@ class AgentLoop:
     def state(self) -> RunState:
         return self._state
 
+    def set_step_tools(self, names: list[str] | None) -> None:
+        """Apply one structured step's tool subset without activating deferred tools."""
+        if names is None:
+            return
+        self._registry.set_active(
+            [name for name in names if name in self._initial_active_tools]
+        )
+
+    def emit_step_event(self, event: str, **payload: Any) -> None:
+        """Emit a policy-owned step event through the run's trace."""
+        self._trace.emit(event, **payload)
+
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
         loop = self._spec.loop
@@ -236,6 +252,8 @@ class AgentLoop:
             self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
+        except StepPolicyHalt as exc:
+            return self._finish("step_failed", reason=str(exc))
         except GuardrailHalt as exc:
             return self._finish("guardrail_halt", reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
@@ -264,7 +282,11 @@ class AgentLoop:
                 for request in self._control.drain_playbook_switches():
                     self._switch_playbook_from_operator(**request)
             try:
+                self._policy.before_model_turn(self)
                 response = self.model_turn()
+                self._policy.after_model_turn(self, response)
+            except StepPolicyHalt as exc:
+                return self._finish("step_failed", reason=str(exc))
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
@@ -275,12 +297,23 @@ class AgentLoop:
             if response.tool_calls:
                 try:
                     halt, terminate_output = self._dispatch_tools(response)
+                except StepPolicyHalt as exc:
+                    return self._finish("step_failed", reason=str(exc))
                 except ToolAbort as exc:
                     return self._finish("error", reason=str(exc))
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
                 if terminate_output is None:
+                    nudge = self._policy.after_tool_turn(self, response)
+                    if nudge is not None:
+                        self._context.add_user(nudge)
+                        self._state.policy_nudges += 1
+                    continue
+                nudge = self._policy.wants_continue_after_tools(self, response)
+                if nudge is not None:
+                    self._context.add_user(nudge)
+                    self._state.policy_nudges += 1
                     continue
                 # Every tool result in the batch asked to terminate: treat the
                 # last result as the final output, skipping a model turn.
@@ -627,6 +660,9 @@ class AgentLoop:
             halt = self._finalize_call(call, result)
             if halt is not None:
                 return halt, None
+            self._policy.after_tool_call(
+                self, call.name, succeeded=not result.is_error
+            )
             dispatched.append(result)
             results.append(
                 {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
@@ -673,6 +709,9 @@ class AgentLoop:
             halt = self._finalize_call(call, result)
             if halt is not None:
                 return halt, None
+            self._policy.after_tool_call(
+                self, call.name, succeeded=not result.is_error
+            )
             dispatched.append(result)
             results.append(
                 {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
@@ -682,6 +721,9 @@ class AgentLoop:
 
     def _preflight_call(self, call: Any) -> tuple[str, str] | None:
         """Guardrails then hooks for one call. ``("halt", r)``/``("block", r)``/None."""
+        policy_block = self._policy.before_tool_call(self, call.name)
+        if policy_block is not None:
+            return "block", policy_block
         for guardrail in self._guardrails:
             decision = guardrail.before_tool_call(self._state, call)
             if decision.kind in ("halt", "block"):
@@ -1076,6 +1118,7 @@ class AgentLoop:
     ) -> RunResult:
         duration_seconds = self._state.elapsed_seconds()
         verification = self._verification_summary(status)
+        step_records = self._policy.execution_records()
         models_used = [
             {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
             for s in self._router.path
@@ -1155,6 +1198,7 @@ class AgentLoop:
             model_path=self._router.path_key(),
             models_used=models_used,
             provider_calls=self._provider_calls,
+            steps=[record.model_dump(mode="json") for record in step_records],
         )
         self._events.emit(
             "run_finished",
@@ -1179,6 +1223,7 @@ class AgentLoop:
             provider_calls=list(self._provider_calls),
             runtime_config=self._runtime_config,
             execution=execution,
+            steps=step_records,
         )
 
     def _verification_summary(self, status: str) -> VerificationSummary:

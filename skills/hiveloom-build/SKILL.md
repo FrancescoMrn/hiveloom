@@ -61,6 +61,19 @@ hiveloom set loop.steps '["extract fields", "validate schema", "write report"]' 
 hiveloom set loop.policy sequential_steps --dir ./h
 ```
 
+Use object steps when the workflow needs enforcement, not only guidance:
+
+```bash
+hiveloom set loop.steps '[{"id":"read","instruction":"Read input.","tools":["file_read"],"require_tool_calls":["file_read"],"max_model_calls":2,"max_tool_calls":1},{"id":"answer","instruction":"Return the answer.","tools":[],"max_model_calls":1}]' --dir ./h
+hiveloom set loop.policy sequential_steps --dir ./h
+hiveloom run ./h --input-file sample.txt --dry-run --json
+```
+
+`tools: []` is deliberately tool-free; omitted `tools` preserves the active
+set. A required call must succeed. Hidden calls are blocked before dispatch,
+and a per-step limit ends the run with exit 4. Read the dry-run `steps` array
+before spending model budget. Legacy strings keep their existing behavior.
+
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
