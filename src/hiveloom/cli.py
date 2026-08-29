@@ -72,6 +72,8 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+friction_app = typer.Typer(help="Query recovered retries and other indexed run friction.")
+app.add_typer(friction_app, name="friction")
 keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
@@ -104,6 +106,17 @@ def _fail(message: str, json_output: bool, code: int) -> None:
     else:
         _err_console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code)
+
+
+def _optional_bool(value: str | None, option: str) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise SpecError(f"{option} must be true or false")
 
 
 def _guard(json_output: bool):
@@ -1551,9 +1564,75 @@ def lineage(
             _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
 
 
+@friction_app.command("list")
+def friction_list(
+    target: str = typer.Argument(..., help="Harness name, id, or harness directory."),
+    category: str | None = typer.Option(None, "--category", help="Filter by category."),
+    component: str | None = typer.Option(None, "--component", help="Filter by component."),
+    recovered: str | None = typer.Option(
+        None, "--recovered", help="Filter by recovery state: true or false."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Filter by requested, effective, or legacy model path."
+    ),
+    since: str | None = typer.Option(None, "--since", help="ISO timestamp lower bound."),
+    until: str | None = typer.Option(None, "--until", help="ISO timestamp upper bound."),
+    limit: int = typer.Option(100, "--limit", help="Maximum records to return."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List indexed run friction without opening raw journals."""
+    from hiveloom import runner
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if limit < 1 or limit > 1000:
+            raise SpecError("--limit must be between 1 and 1000")
+        recovered_value = _optional_bool(recovered, "--recovered")
+        with Hive() as hive:
+            key = runner.resolve_and_ingest(target, hive)
+            records = hive.list_friction(
+                key,
+                category=category,
+                component=component,
+                recovered=recovered_value,
+                model=model,
+                since=since,
+                until=until,
+                limit=limit,
+            )
+        if json_output:
+            _emit_json(
+                {"ok": True, "harness_key": key, "count": len(records), "friction": records}
+            )
+            return
+        if not records:
+            _console.print("[dim]no indexed friction matched[/dim]")
+            return
+        table = Table(title=f"run friction for {key}")
+        table.add_column("time", style="dim")
+        table.add_column("run")
+        table.add_column("category", style="yellow")
+        table.add_column("component")
+        table.add_column("recovered", justify="center")
+        table.add_column("summary")
+        for record in records:
+            table.add_row(
+                record.get("timestamp") or "",
+                record["run_id"],
+                record["category"],
+                record.get("component") or "",
+                "yes" if record["recovered"] else "no",
+                record["summary"],
+            )
+        _console.print(table)
+
+
 @app.command()
 def stats(
     target: str = typer.Argument(..., help="Harness name or harness directory."),
+    include_friction: bool = typer.Option(
+        False, "--include-friction", help="Include indexed retries and recovered failures."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show Hive stats for a harness: success rate, cost, and turns per version.
@@ -1579,11 +1658,13 @@ def stats(
             summary = hive.summary(key, display_name=display)
             recent = hive.recent_failures(key, 5)
             outcomes = hive.outcome_summary(key)
+            friction = hive.friction_summary(key) if include_friction else None
 
         if json_output:
-            _emit_json(
-                {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
-            )
+            payload = {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
+            if friction is not None:
+                payload["friction"] = friction
+            _emit_json(payload)
             return
 
         _console.print(
@@ -1654,6 +1735,27 @@ def stats(
                 f"{outcomes['outcome_success_rate']:.0%} held up "
                 f"({outcomes['failures']} rejected by the world)"
             )
+        if friction is not None:
+            _console.print(
+                f"[bold]friction[/bold]: {friction['events']} event(s) across "
+                f"{friction['runs']} run(s), {friction['recovered']} recovered"
+            )
+            if friction["categories"]:
+                table = Table(title="friction by category")
+                table.add_column("category", style="yellow")
+                table.add_column("events", justify="right")
+                table.add_column("runs", justify="right")
+                table.add_column("recovered", justify="right", style="green")
+                table.add_column("unrecovered", justify="right")
+                for row in friction["categories"]:
+                    table.add_row(
+                        row["category"],
+                        str(row["events"]),
+                        str(row["runs"]),
+                        str(row["recovered"]),
+                        str(row["unrecovered"]),
+                    )
+                _console.print(table)
         sigs = summary["failure_signatures"]
         if sigs["verdicts"]:
             _console.print("[yellow]top failure verdicts:[/yellow]")

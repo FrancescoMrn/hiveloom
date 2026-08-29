@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate usage, billed-versus-estimated cost, verification recovery state,
   a reproducible fingerprint, and the durable trace path. The same envelope
   closes the run journal.
+- The Hive now indexes recovered validation failures, tool errors and retries,
+  context recovery, operator steering, guardrail stops, provider failures, and
+  loop limits as bounded friction records. `hiveloom friction list` filters
+  them by category, component, recovery state, model, and time; `hiveloom
+  stats --include-friction` reports aggregate counts without reading traces.
 
 ### Fixed
 
