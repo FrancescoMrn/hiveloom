@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hiveloom traces prune` previews or applies the configured retention policy
   with stable JSON receipts. Applying from the CLI requires `--yes`; harnesses
   without an explicit policy never delete traces automatically.
+- The Hive now indexes recovered validation failures, tool errors and retries,
+  context recovery, operator steering, guardrail stops, provider failures, and
+  loop limits as bounded friction records. `hiveloom friction list` filters
+  them by category, component, recovery state, model, and time; `hiveloom
+  stats --include-friction` reports aggregate counts without reading traces.
 
 ### Fixed
 

@@ -142,6 +142,12 @@ recent failed traces with their verifier feedback. It also carries lineage
 per-version fitness bucket and reported separately, because they did not
 execute the harness as declared.
 
+The Hive also derives a normalized friction index from redacted journal
+events. A recovered output validation failure or tool retry remains separate
+from final success and can be queried by category, component, model, time, and
+recovery state. The index stores bounded summaries and fingerprints, not raw
+tool or model payloads.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a

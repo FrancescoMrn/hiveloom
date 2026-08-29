@@ -189,7 +189,8 @@ hiveloom run ./summarizer --input-file notes.txt \
   --provider openai --model gpt-4.1-mini --run-id eval-case-01 --json
 
 # Inspect evidence and propose a gated improvement after failures
-hiveloom stats ./summarizer --json
+hiveloom stats ./summarizer --include-friction --json
+hiveloom friction list ./summarizer --recovered true --json
 hiveloom evolve ./summarizer --propose --json
 ```
 

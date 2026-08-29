@@ -68,12 +68,21 @@ hiveloom trace run_abc123 --json           # one run: summary + ordered events
 hiveloom trace run_abc123 --dir ./h        # ingest the folder's traces first if unknown
 hiveloom stats ./h --json                  # success rate / cost / turns PER VERSION HASH
 hiveloom stats my-harness-name             # by name, from the Hive
+hiveloom stats ./h --include-friction --json
+hiveloom friction list ./h --recovered true --json
 ```
 
 To debug a failure, read the trace's `verification_result`,
 `guardrail_triggered`, and `tool_result` (`is_error`) events — they name the
 proximate cause. `stats` bucketing by version hash is what proves a later
 mutation helped.
+
+Final success does not mean a clean run. The friction index keeps recovered
+output-validation failures, retries, tool errors, compactions, guardrail
+events, provider errors, operator steering, and loop limits queryable after
+the run finishes. Filter by `--category`, `--component`, `--recovered`,
+`--model`, `--since`, or `--until`; summaries are bounded and come from the
+already-redacted journal.
 
 The trace is a hash-chained journal, so two more things are available:
 
