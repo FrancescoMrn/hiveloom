@@ -1123,7 +1123,14 @@ class AgentLoop:
             effective_provider=(
                 self._provider_calls[-1]["provider"] if self._provider_calls else None
             ),
-            effective_model=effective_models[-1] if effective_models else None,
+            effective_model=next(
+                (
+                    call["effective_model"]
+                    for call in reversed(self._provider_calls)
+                    if call.get("effective_model")
+                ),
+                None,
+            ),
             models_used=models_used,
             started_at=self._started_at,
             finished_at=datetime.now(UTC).isoformat(),

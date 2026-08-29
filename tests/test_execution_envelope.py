@@ -163,3 +163,28 @@ def test_provider_reported_model_changes_execution_identity(tmp_path: Path):
         requested.execution.execution_fingerprint
         != substituted.execution.execution_fingerprint
     )
+
+
+def test_effective_model_is_the_last_call_even_when_a_model_repeats(tmp_path: Path):
+    """A router path like A -> B -> A must report A, not the last *unique* model."""
+    harness = _harness(tmp_path, validator=True)
+    construct.set_value(harness, "verify.on_fail.max_retries", 2)
+
+    result = runner.run_harness(
+        harness,
+        "go",
+        provider=FakeModelProvider(
+            [
+                _response("bad", model="model-a"),
+                _response("worse", model="model-b", request_id="req-2"),
+                _response("good", model="model-a", request_id="req-3"),
+            ]
+        ),
+        literal_input=True,
+        ingest=False,
+    )
+
+    assert result.status == "success"
+    assert result.execution is not None
+    assert len(result.provider_calls) == 3
+    assert result.execution.effective_model == "model-a"
