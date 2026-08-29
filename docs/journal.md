@@ -118,6 +118,52 @@ The old names still load in both `harness.yaml` and `TraceWriter`
 folders keep working. The names changed to say what they cost you: the reason
 to pick one over the other is whether you will be able to fork.
 
+## Redaction and retention
+
+Redaction runs on structured values before a trace event is serialized, kept
+in memory, sent to an `on_event` stream consumer, or later ingested into the
+Hive:
+
+```yaml
+logging:
+  redact:
+    keys: [email, phone, api_key]
+    paths: ["result.candidates[*].cv_text"]
+    patterns: ["secret-[a-z0-9]+"]
+  retention:
+    days: 30
+    max_runs: 5000
+    max_bytes: 1073741824
+```
+
+Keys match recursively and case-insensitively. Paths are case-sensitive and
+relative to each event's `payload`; they support dot-separated dictionary keys
+and `[*]` list wildcards. Patterns run over every remaining string. The old
+bare `redact: [regex, ...]` form still loads and serializes in the same shape,
+so a regex-only harness keeps its behavior hash.
+
+Retention is absent by default. When configured, a completed ingested run
+prunes older raw journals after proposal drafting, while always preserving the
+trace returned for the current run. Preview or apply the same policy directly:
+
+```bash
+hiveloom traces prune ./h --dry-run --json
+hiveloom traces prune ./h --yes --json
+```
+
+Hiveloom deletes only direct, non-symlinked `RUN_ID.jsonl` files under a trace
+root carrying its marker. The first event must identify the same run as the
+filename. Age uses the file modification time, so copying a trace starts a new
+local retention window. Count and byte limits remove the oldest eligible files
+first. An atomic rename lets readers with an open handle finish before unlink.
+
+Pruning keeps the indexed run, verification, and outcome evidence. The Hive
+sets `trace_path` to null and records `trace_pruned_at`, so trace and fork
+commands report pruned evidence instead of following a stale path. If the same
+run was re-ingested from another durable location, pruning an older copy does
+not clear that newer reference. At-rest encryption is not part of this policy;
+it needs a separate key storage, rotation, and recovery design.
+
 ## Forking a run
 
 A fork re-enters a finished run at one of its model calls and replays the

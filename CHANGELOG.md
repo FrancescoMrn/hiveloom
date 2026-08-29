@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate usage, billed-versus-estimated cost, verification recovery state,
   a reproducible fingerprint, and the durable trace path. The same envelope
   closes the run journal.
+- Trace redaction can target dictionary keys, structured payload paths, and
+  regex patterns before persistence or streaming. Optional age, run-count,
+  and byte retention limits prune validated journal files under a marked trace
+  root while keeping Hive run evidence and clearing stale raw-trace paths.
+- `hiveloom traces prune` previews or applies the configured retention policy
+  with stable JSON receipts. Applying from the CLI requires `--yes`; harnesses
+  without an explicit policy never delete traces automatically.
 
 ### Fixed
 

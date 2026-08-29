@@ -72,6 +72,8 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+traces_app = typer.Typer(help="Manage raw trace files under a validated Hiveloom root.")
+app.add_typer(traces_app, name="traces")
 keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
@@ -1225,8 +1227,9 @@ def trace(
             return
 
         events: list[dict[str, Any]] = []
-        trace_file = Path(run.get("trace_path", ""))
-        if trace_file.exists():
+        trace_path = run.get("trace_path")
+        trace_file = Path(trace_path) if trace_path else None
+        if trace_file is not None and trace_file.is_file():
             events = [
                 _json.loads(line)
                 for line in trace_file.read_text(encoding="utf-8").splitlines()
@@ -1234,9 +1237,14 @@ def trace(
             ]
 
         if verify:
-            if not trace_file.exists():
+            if trace_file is None or not trace_file.is_file():
+                detail = (
+                    f"pruned at {run['trace_pruned_at']}"
+                    if run.get("trace_pruned_at")
+                    else "missing"
+                )
                 _fail(
-                    f"trace file for '{run_id}' is missing: {trace_file}",
+                    f"trace file for '{run_id}' is {detail}",
                     json_output,
                     ExitCode.SPEC_ERROR,
                 )
@@ -1313,8 +1321,76 @@ def trace(
         )
         if run.get("reason"):
             _console.print(f"reason: {run['reason']}")
+        if run.get("trace_pruned_at"):
+            _console.print(f"[dim]raw journal pruned at {run['trace_pruned_at']}[/dim]")
         for event in events:
             _console.print(f"  [dim]{event['seq']:>3}[/dim] {event['type']}")
+
+
+@traces_app.command("prune")
+def traces_prune(
+    target: str = typer.Argument(..., help="Harness directory whose trace policy applies."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Plan and report deletions without changing files or the Hive."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Apply the configured retention policy."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Plan or apply explicit age, count, and byte limits for raw journals."""
+    from hiveloom import trust
+    from hiveloom.logging.hive import Hive
+    from hiveloom.logging.retention import prune_trace_root
+    from hiveloom.spec.loader import harness_path, load_spec
+
+    with _guard(json_output):
+        yaml_path = harness_path(target)
+        if not yaml_path.exists():
+            raise SpecError(f"no harness spec found at {yaml_path}")
+        trust.ensure_trusted(yaml_path.parent)
+        spec = load_spec(yaml_path)
+        if spec.logging.retention is None:
+            raise SpecError("logging.retention is not configured")
+        if not dry_run and not yes:
+            raise SpecError("pass --dry-run to inspect the plan or --yes to apply it")
+        configured = Path(spec.logging.trace_dir).expanduser()
+        trace_root = (
+            configured.resolve()
+            if configured.is_absolute()
+            else (yaml_path.parent / configured).resolve()
+        )
+        if dry_run:
+            plan = prune_trace_root(
+                trace_root,
+                spec.logging.retention,
+                dry_run=True,
+            )
+        else:
+            with Hive() as hive:
+                # Raw evidence is not removed until every valid candidate has
+                # an indexed record that can survive its journal.
+                hive.ingest_dir(trace_root)
+                plan = prune_trace_root(
+                    trace_root,
+                    spec.logging.retention,
+                    hive=hive,
+                )
+        payload = {"ok": True, "dry_run": dry_run, **plan.to_dict()}
+        if json_output:
+            _emit_json(payload)
+            return
+        verb = "would prune" if dry_run else "pruned"
+        _console.print(
+            f"[bold]{verb} {payload['selected_runs']} trace(s)[/bold] "
+            f"({payload['selected_bytes']} bytes) under {payload['root']}"
+        )
+        for item in payload["selected"]:
+            _console.print(
+                f"  {item['run_id']}  {item['size']} bytes  {', '.join(item['reasons'])}"
+            )
+        if not payload["limits_satisfied"]:
+            _console.print(
+                "[yellow]configured limits cannot be met while preserving protected files[/yellow]"
+            )
 
 
 @app.command()
@@ -1390,10 +1466,16 @@ def fork(
         if run is None:
             _fail(f"run '{run_id}' not found in the Hive", json_output, ExitCode.SPEC_ERROR)
             return
-        trace_file = Path(run.get("trace_path", ""))
-        if not trace_file.exists():
+        trace_path = run.get("trace_path")
+        trace_file = Path(trace_path) if trace_path else None
+        if trace_file is None or not trace_file.is_file():
+            detail = (
+                f"pruned at {run['trace_pruned_at']}"
+                if run.get("trace_pruned_at")
+                else "missing"
+            )
             _fail(
-                f"the journal for '{run_id}' is missing: {trace_file}",
+                f"the journal for '{run_id}' is {detail}",
                 json_output,
                 ExitCode.SPEC_ERROR,
             )

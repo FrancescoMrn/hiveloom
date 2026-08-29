@@ -355,6 +355,7 @@ hiveloom run ./my-harness --input input.txt --stream
 hiveloom trace <run-id> --json
 hiveloom trace <run-id> --verify
 hiveloom stats ./my-harness --json
+hiveloom traces prune ./my-harness --dry-run --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe

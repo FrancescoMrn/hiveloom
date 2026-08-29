@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     reason TEXT,
     trace_path TEXT,
+    trace_pruned_at TEXT,
     parent_run_id TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
@@ -187,6 +188,7 @@ class Hive:
             ("task", "TEXT"),
             ("harness_id", "TEXT"),
             ("harness_key", "TEXT"),
+            ("trace_pruned_at", "TEXT"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
@@ -278,6 +280,7 @@ class Hive:
             "finished_at": None,
             "reason": "",
             "trace_path": trace_path,
+            "trace_pruned_at": None,
             "parent_run_id": None,
             "forked_at_seq": None,
             "model_path": "",
@@ -351,10 +354,12 @@ class Hive:
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
+            "trace_pruned_at, "
             "parent_run_id, forked_at_seq, model_path, task) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
+            ":trace_pruned_at, "
             ":parent_run_id, :forked_at_seq, :model_path, :task)",
             row,
         )
@@ -594,6 +599,39 @@ class Hive:
             ).fetchall()
         ]
         return entry
+
+    def mark_traces_pruned(
+        self, traces: list[tuple[str, str]], *, pruned_at: str
+    ) -> int:
+        """Clear only Hive paths that still point at the files being pruned.
+
+        The same run may have been re-ingested from durable storage after a
+        retention plan was built. Comparing resolved paths prevents an old
+        copy's deletion from clearing that newer reference.
+        """
+        updated = 0
+        try:
+            for run_id, expected_path in traces:
+                row = self._conn.execute(
+                    "SELECT trace_path FROM runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if row is None or not row["trace_path"]:
+                    continue
+                if Path(row["trace_path"]).expanduser().resolve() != Path(
+                    expected_path
+                ).expanduser().resolve():
+                    continue
+                cursor = self._conn.execute(
+                    "UPDATE runs SET trace_path=NULL, trace_pruned_at=? "
+                    "WHERE run_id=? AND trace_path=?",
+                    (pruned_at, run_id, row["trace_path"]),
+                )
+                updated += cursor.rowcount
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return updated
 
     def lineage(self, run_id: str) -> dict[str, Any]:
         """The fork tree around a run: its ancestors, itself, and its forks.
