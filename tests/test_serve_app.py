@@ -167,8 +167,17 @@ def test_run_sync_success_matches_run_result_payload(tmp_path: Path):
     assert body["status"] == "success"
     assert body["output"] == "HELLO world"
     assert set(body) == {
-        "ok", "status", "output", "turns", "cost_usd", "duration_seconds", "run_id",
-        "trace_path", "reason", "artifacts",
+        "ok",
+        "status",
+        "output",
+        "turns",
+        "cost_usd",
+        "duration_seconds",
+        "run_id",
+        "trace_path",
+        "reason",
+        "artifacts",
+        "runtime_config",
     }
 
 
@@ -185,8 +194,17 @@ def test_run_sync_verify_failed_is_still_200(tmp_path: Path):
     assert body["ok"] is False
     assert body["status"] == "verify_failed"
     assert set(body) == {
-        "ok", "status", "output", "turns", "cost_usd", "duration_seconds", "run_id",
-        "trace_path", "reason", "artifacts",
+        "ok",
+        "status",
+        "output",
+        "turns",
+        "cost_usd",
+        "duration_seconds",
+        "run_id",
+        "trace_path",
+        "reason",
+        "artifacts",
+        "runtime_config",
     }
 
 

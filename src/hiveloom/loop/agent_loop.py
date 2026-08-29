@@ -55,6 +55,9 @@ class RunResult(BaseModel):
     # Populated even on a failed run — a turn that proposed something before
     # hitting max_turns still produced it.
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    # Run-only model/provider choices. ``requested`` retains explicit CLI/SDK
+    # overrides; ``resolved`` is the validated config that the router used.
+    runtime_config: dict[str, Any] = Field(default_factory=dict)
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -166,6 +169,7 @@ class AgentLoop:
             input=self._run_input,
             policy=loop.policy,
             model=self._router.config.id,
+            provider=self._router.config.provider,
             history_turns=len(self._history),
             resumed=self._resume,
             # Where this run came from, when it is a fork: the parent run and
