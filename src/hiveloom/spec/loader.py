@@ -153,7 +153,7 @@ def load_spec(path: str | Path) -> HarnessSpec:
 # --------------------------------------------------------------------------- #
 # Code-hook resolution
 # --------------------------------------------------------------------------- #
-def _import_hook(code_ref: str, base_dir: Path):
+def import_hook(code_ref: str, base_dir: Path):
     """Import ``path.py:function`` relative to ``base_dir`` and return the callable."""
     rel_path, func_name = code_ref.rsplit(":", 1)
     file_path = (base_dir / rel_path).resolve()
@@ -212,7 +212,7 @@ def resolve_hooks(spec: HarnessSpec, base_dir: str | Path) -> None:
 
     for tool in spec.tools:
         if isinstance(tool, CodeToolRef):
-            func = _import_hook(tool.code, base)
+            func = import_hook(tool.code, base)
             if not _accepts_n_params(func, 1):
                 raise SpecError(
                     f"tool hook {tool.code} must accept at least one parameter"
@@ -220,7 +220,7 @@ def resolve_hooks(spec: HarnessSpec, base_dir: str | Path) -> None:
 
     for validator in spec.verify.validators:
         if isinstance(validator, CodeValidatorRef):
-            func = _import_hook(validator.code, base)
+            func = import_hook(validator.code, base)
             if not _accepts_n_params(func, 2):
                 raise SpecError(
                     f"validator hook {validator.code} must accept "
@@ -229,7 +229,7 @@ def resolve_hooks(spec: HarnessSpec, base_dir: str | Path) -> None:
 
     for guardrail in spec.guardrails:
         if isinstance(guardrail, CodeGuardrailRef):
-            func = _import_hook(guardrail.code, base)
+            func = import_hook(guardrail.code, base)
             if not _accepts_n_params(func, 1):
                 raise SpecError(
                     f"guardrail hook {guardrail.code} must accept at least one parameter"
@@ -237,7 +237,7 @@ def resolve_hooks(spec: HarnessSpec, base_dir: str | Path) -> None:
 
     for hook in spec.hooks:
         if isinstance(hook, CodeHookRef):
-            func = _import_hook(hook.code, base)
+            func = import_hook(hook.code, base)
             if not _accepts_n_params(func, 1):
                 raise SpecError(
                     f"event hook {hook.code} must accept the event payload parameter"

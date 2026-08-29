@@ -43,7 +43,7 @@ def test_create_persists_row_with_dedup_key_and_version_hash(tmp_path: Path):
         record = create_proposal(hive, spec, harness, report, model, trigger="manual")
 
     assert record.id.startswith("prop_")
-    assert record.harness_name == "demo"
+    assert record.harness_name == spec.identity
     assert record.spec_version_hash == spec_version_hash(spec, harness)
     assert record.dedup_key == _dedup_key(report)
     assert record.status == "pending"
@@ -100,7 +100,7 @@ def test_list_and_get_filtering(tmp_path: Path):
         assert get_proposal(hive, created.id).id == created.id
         assert get_proposal(hive, "nope") is None
 
-        assert [r.id for r in list_proposals(hive, harness_name="demo")] == [created.id]
+        assert [r.id for r in list_proposals(hive, harness_name=spec.identity)] == [created.id]
         assert list_proposals(hive, harness_name="other") == []
         assert [r.id for r in list_proposals(hive, status="pending")] == [created.id]
         assert list_proposals(hive, status="applied") == []
@@ -387,7 +387,9 @@ def test_cli_proposals_show_rejects_a_mismatched_harness(tmp_path: Path, monkeyp
         ["proposals", "show", str(wrong_harness), proposal_id, "--json"],
     )
     assert result.exit_code == ExitCode.SPEC_ERROR, result.stdout
-    assert "belongs to harness 'demo', not 'wrong'" in json.loads(result.stdout)["error"]
+    right = load_spec(_harness_dir).identity
+    wrong = load_spec(wrong_harness).identity
+    assert f"belongs to harness '{right}', not '{wrong}'" in json.loads(result.stdout)["error"]
 
 
 def test_cli_proposals_apply_rejects_a_mismatched_harness(tmp_path: Path, monkeypatch):
@@ -399,7 +401,9 @@ def test_cli_proposals_apply_rejects_a_mismatched_harness(tmp_path: Path, monkey
         ["proposals", "apply", str(wrong_harness), proposal_id, "--yes", "--json"],
     )
     assert result.exit_code == ExitCode.SPEC_ERROR, result.stdout
-    assert "belongs to harness 'demo', not 'wrong'" in json.loads(result.stdout)["error"]
+    right = load_spec(harness).identity
+    wrong = load_spec(wrong_harness).identity
+    assert f"belongs to harness '{right}', not '{wrong}'" in json.loads(result.stdout)["error"]
     with Hive() as hive:
         assert get_proposal(hive, proposal_id).status == "pending"
     assert load_spec(harness).loop.max_turns != 25
@@ -422,7 +426,9 @@ def test_cli_proposals_reject_rejects_a_mismatched_harness(tmp_path: Path, monke
         ],
     )
     assert result.exit_code == ExitCode.SPEC_ERROR, result.stdout
-    assert "belongs to harness 'demo', not 'wrong'" in json.loads(result.stdout)["error"]
+    right = load_spec(_harness_dir).identity
+    wrong = load_spec(wrong_harness).identity
+    assert f"belongs to harness '{right}', not '{wrong}'" in json.loads(result.stdout)["error"]
     with Hive() as hive:
         assert get_proposal(hive, proposal_id).status == "pending"
 

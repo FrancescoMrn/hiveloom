@@ -12,7 +12,7 @@ from typing import Any
 from hiveloom import ext
 from hiveloom.guardrails.base import Allow, Block, Decision, Guardrail, Halt, RunState
 from hiveloom.models.provider import ModelResponse, ToolCall
-from hiveloom.spec.loader import _import_hook
+from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import (
     BuiltinGuardrailRef,
     CodeGuardrailRef,
@@ -141,7 +141,7 @@ def build_guardrails(
         if isinstance(ref, BuiltinGuardrailRef):
             guardrails.append(_make_builtin(ref, registry))
         elif isinstance(ref, CodeGuardrailRef):
-            func = _import_hook(ref.code, base)
+            func = import_hook(ref.code, base)
             _, func_name = ref.code.rsplit(":", 1)
             guardrails.append(CodeGuardrail(func, name=func_name))
     return guardrails

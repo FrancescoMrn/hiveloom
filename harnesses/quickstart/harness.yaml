@@ -1,0 +1,62 @@
+version: 0.2.0
+name: quickstart
+id: hl-e6652cd26abe
+description: Answer the question you are given, in three sentences or fewer.
+model:
+  provider: claude
+  id: claude-haiku-4-5
+  max_tokens: 1024
+  temperature: 0.0
+system_prompt: |-
+  Answer the question you are given in three sentences or fewer.
+
+  You have no tools. If the question needs information you do not have, say so plainly in one sentence instead of guessing — a harness with no tools cannot go and look, and an invented answer is worse than an admitted gap.
+tools: []
+mcp_servers: []
+playbooks: []
+context:
+  max_input_tokens: 8000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+guardrails:
+- builtin: max_cost_usd
+  value: 0.05
+- builtin: max_wall_clock_seconds
+  value: 60
+loop:
+  policy: react
+  steps: []
+  max_turns: 2
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: false
+verify:
+  validators: []
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0

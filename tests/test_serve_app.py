@@ -392,10 +392,15 @@ def test_run_stream_emits_ordered_sse_frames_ending_in_run_result(tmp_path: Path
             lines = [line for line in response.iter_lines() if line.startswith("data: ")]
 
     frames = [json.loads(line[len("data: ") :]) for line in lines]
-    assert frames[0]["type"] == "run_started"
+    # Same frame vocabulary as `hiveloom serve`'s NDJSON stream: run_accepted
+    # names the run id before any trace event, run_result closes the stream.
+    assert frames[0]["type"] == "run_accepted"
+    assert frames[0]["run_id"]
+    assert frames[1]["type"] == "run_started"
     assert frames[-1]["type"] == "run_result"
     assert frames[-1]["status"] == "success"
-    assert any(f["type"] == "run_finished" for f in frames[:-1])
+    assert frames[-1]["run_id"] == frames[0]["run_id"]
+    assert any(f["type"] == "run_finished" for f in frames[1:-1])
 
 
 # --------------------------------------------------------------------------- #

@@ -12,9 +12,7 @@ Endpoints:
 - ``POST /runs`` — body carries exactly one of ``{"input": "..."}`` (single
   shot) or ``{"messages": [{"role": ..., "content": ...}, ...]}`` (the whole
   conversation, for a multi-turn caller that owns the thread), plus an
-  optional ``"stream": true`` and an optional ``"session_id"`` (letters,
-  digits, ``._-``; ≤64 chars) that groups the run's trace with the other runs
-  of the same conversation under ``<trace_dir>/<session_id>/``. Non-stream responses mirror
+  optional ``"stream": true``. Non-stream responses mirror
   ``hiveloom run --json`` — including ``artifacts``, so a served harness can
   drive a real UI; ``"stream": true`` responds with ``application/x-ndjson``
   chunks: first a ``{"type": "run_accepted", "run_id": ...}`` line (so the
@@ -27,6 +25,8 @@ Endpoints:
   (``{"content": "..."}``) into a running run; the loop folds it in as an
   operator message before its next model call. Queueing a message for *after*
   the run is the caller's concern — it owns the conversation.
+- ``POST /runs/{run_id}/model`` — move the run onto another model/provider at
+  its next turn boundary.
 
 Auth: when ``HIVELOOM_API_KEY`` is set (or ``api_key`` passed), ``/runs``
 requires ``Authorization: Bearer <key>`` or ``X-API-Key: <key>``. The key is
@@ -42,7 +42,6 @@ from __future__ import annotations
 import hmac
 import json
 import os
-import re
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -194,7 +193,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
         parts = [p for p in self.path.split("/") if p]
-        if len(parts) == 3 and parts[0] == "runs" and parts[2] in ("stop", "messages"):
+        if len(parts) == 3 and parts[0] == "runs" and parts[2] in ("stop", "messages", "model"):
             self._control_request(parts[1], parts[2])
             return
         if self.path != "/runs":
@@ -206,6 +205,10 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             self._send_json(400, {"ok": False, "error": "body must be a JSON object"})
+            return
+        unknown = sorted(set(body) - {"input", "messages", "stream"})
+        if unknown:
+            self._send_json(400, {"ok": False, "error": f"unknown fields: {unknown}"})
             return
         # bool() matters: comparing the raw values would make `"x" == [...]`
         # and `False == []` both False, letting "both" and "neither" through.
@@ -223,20 +226,6 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        session_id = body.get("session_id")
-        if session_id is not None and (
-            not isinstance(session_id, str)
-            or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", session_id)
-        ):
-            self._send_json(
-                400,
-                {
-                    "ok": False,
-                    "error": '"session_id" must be 1-64 characters of letters, '
-                    "digits, '.', '_' or '-'",
-                },
-            )
-            return
         if not self.server._slots.acquire(blocking=False):
             self._send_json(
                 429, {"ok": False, "error": "server is at capacity"}, retry_after=5
@@ -247,13 +236,12 @@ class _Handler(BaseHTTPRequestHandler):
                 body.get("input") if has_input else None,
                 body.get("messages") if has_messages else None,
                 stream=bool(body.get("stream")),
-                session_id=session_id,
             )
         finally:
             self.server._slots.release()
 
     def _control_request(self, run_id: str, action: str) -> None:
-        """``POST /runs/{id}/stop`` and ``POST /runs/{id}/messages``."""
+        """``POST /runs/{id}/`` ``stop`` | ``messages`` | ``model``."""
         if not self._authorized():
             self._send_json(401, {"ok": False, "error": "missing or invalid API key"})
             return
@@ -268,6 +256,30 @@ class _Handler(BaseHTTPRequestHandler):
             control.request_stop(str(body.get("reason") or ""))
             self._send_json(200, {"ok": True, "run_id": run_id, "stopping": True})
             return
+        if action == "model":
+            model = body.get("model")
+            provider = body.get("provider")
+            if not isinstance(model, str | None) or not isinstance(provider, str | None):
+                self._send_json(
+                    400, {"ok": False, "error": '"model" and "provider" must be strings'}
+                )
+                return
+            if not model and not provider:
+                self._send_json(
+                    400,
+                    {"ok": False, "error": 'body must carry "model" and/or "provider"'},
+                )
+                return
+            control.switch_model(
+                model or None,
+                provider=provider or None,
+                reason=str(body.get("reason") or ""),
+            )
+            self._send_json(
+                200, {"ok": True, "run_id": run_id, "queued_for_next_turn": True}
+            )
+            return
+
         content = body.get("content")
         if not isinstance(content, str) or not content.strip():
             self._send_json(
@@ -283,7 +295,6 @@ class _Handler(BaseHTTPRequestHandler):
         conversation: list[Any] | None,
         *,
         stream: bool,
-        session_id: str | None = None,
     ) -> None:
         from hiveloom import runner
         from hiveloom.loop.control import RunControl
@@ -299,10 +310,10 @@ class _Handler(BaseHTTPRequestHandler):
         )
         # Pre-allocate the id and register a control channel so the run can be
         # stopped or steered while it executes.
-        run_id = runner._new_run_id()
+        run_id = runner.new_run_id()
         control = RunControl()
         self.server.register_control(run_id, control)
-        run_kwargs.update(run_id=run_id, control=control, session_id=session_id)
+        run_kwargs.update(run_id=run_id, control=control)
 
         if not stream:
             try:

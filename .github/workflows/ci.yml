@@ -89,6 +89,40 @@ jobs:
           uv run hiveloom run harnesses/example-summarizer
           --input harnesses/example-summarizer/notes.txt --dry-run
 
+  workbench:
+    name: Workbench (frontend + distribution)
+    runs-on: ubuntu-latest
+    # The workbench's Python side is already covered by tests/test_devtools_ui.py
+    # in the `test` job. What exists nowhere else is the frontend and the
+    # packaging around it: a TypeScript error, a failing UI test, or a wheel that
+    # installs but carries no bundle would otherwise merge green and only surface
+    # at release. This runs the same script the release workflow runs, so the two
+    # cannot drift apart.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: devtools/ui/package-lock.json
+      - name: Install project
+        run: uv sync --extra dev
+      - name: Validate the bundled copilot harness
+        # It ships inside the workbench wheel, so it is release material rather
+        # than a test fixture, and has to stay loadable.
+        env:
+          HIVELOOM_TRUST: always
+        run: uv run hiveloom validate devtools/ui/copilot --json
+      - name: Typecheck, test, build, and install the workbench
+        # --check installs the packed tarball and launches it, confirming it
+        # serves the interface and reaches its own Python API. It is the only
+        # step that catches a package which is valid but empty, or one that
+        # ships `vite.config.ts` and so mistakes itself for a checkout.
+        run: scripts/build_workbench.sh --check
+
   build:
     name: Build & install smoke test
     runs-on: ubuntu-latest

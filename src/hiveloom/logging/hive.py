@@ -50,10 +50,16 @@ def normalize_feedback(feedback: str) -> str:
     return " ".join(text.split())
 
 
+# How much of a run's task statement the index keeps: enough to title and
+# search a run, not enough to become a shadow copy of the journal.
+_TASK_CHARS = 2000
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     harness_name TEXT,
+    harness_id TEXT,
+    harness_key TEXT,
     harness_version_hash TEXT,
     status TEXT,
     turns INTEGER,
@@ -62,7 +68,11 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at TEXT,
     finished_at TEXT,
     reason TEXT,
-    trace_path TEXT
+    trace_path TEXT,
+    parent_run_id TEXT,
+    forked_at_seq INTEGER,
+    model_path TEXT,
+    task TEXT
 );
 CREATE TABLE IF NOT EXISTS verifications (
     run_id TEXT,
@@ -152,7 +162,49 @@ class Hive:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        The schema is `CREATE TABLE IF NOT EXISTS`, so a Hive from an earlier
+        version keeps its original `runs` shape and would fail on newer
+        columns. The Hive is a derived index that can always be rebuilt by
+        re-ingesting, so obsolete pre-1.0 columns may also be removed here.
+        """
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(runs)")}
+        if "session_id" in existing:
+            # The Hive is a derived index, so discard the obsolete grouping
+            # column rather than preserving a shape no public surface uses.
+            self._conn.execute("DROP INDEX IF EXISTS idx_runs_session")
+            self._conn.execute("ALTER TABLE runs DROP COLUMN session_id")
+            existing.remove("session_id")
+        for column, decl in (
+            ("parent_run_id", "TEXT"),
+            ("forked_at_seq", "INTEGER"),
+            ("model_path", "TEXT"),
+            ("task", "TEXT"),
+            ("harness_id", "TEXT"),
+            ("harness_key", "TEXT"),
+        ):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
+        # Rows ingested before harness identity existed key by name — the
+        # pre-1.0 behaviour those rows were recorded under. Re-ingesting a
+        # trace whose envelope carries an id upgrades its row in place.
+        self._conn.execute(
+            "UPDATE runs SET harness_key=harness_name WHERE harness_key IS NULL"
+        )
+        # Indexes over migrated columns belong here, not in _SCHEMA: on an
+        # existing database the schema script runs before the ALTER, so an
+        # index naming a new column would fail before it could be added.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_key ON runs(harness_key)"
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -195,8 +247,7 @@ class Hive:
     def ingest_dir(self, trace_dir: str | Path) -> int:
         """Ingest every ``*.jsonl`` run trace in a directory. Returns run count.
 
-        Recursive: session-grouped traces live one directory down
-        (``<trace_dir>/<session_id>/<run_id>.jsonl``).
+        Recursive so imported or archived trace trees are ingested too.
         """
         directory = Path(trace_dir)
         if not directory.exists():
@@ -208,9 +259,16 @@ class Hive:
 
     def _ingest_run(self, run_id: str, events: list[dict[str, Any]], trace_path: str) -> None:
         envelope = events[0]
+        harness_name = envelope.get("harness_name", "")
+        # Identity: the envelope's stable harness id when the trace carries
+        # one, the display name for a pre-identity trace. Every query keys on
+        # this, so two harnesses sharing a *name* never share evidence.
+        harness_id = envelope.get("harness_id", "") or ""
         row: dict[str, Any] = {
             "run_id": run_id,
-            "harness_name": envelope.get("harness_name", ""),
+            "harness_name": harness_name,
+            "harness_id": harness_id,
+            "harness_key": harness_id or harness_name,
             "harness_version_hash": envelope.get("harness_version_hash", ""),
             "status": "incomplete",
             "turns": 0,
@@ -220,6 +278,10 @@ class Hive:
             "finished_at": None,
             "reason": "",
             "trace_path": trace_path,
+            "parent_run_id": None,
+            "forked_at_seq": None,
+            "model_path": "",
+            "task": None,
         }
         verifications: list[tuple] = []
         triggers: list[tuple] = []
@@ -230,6 +292,15 @@ class Hive:
             payload = event.get("payload", {})
             if etype == "run_started":
                 row["started_at"] = event.get("timestamp")
+                task = payload.get("input")
+                if isinstance(task, str):
+                    # Capped: a label and a search target, not a second copy of
+                    # the journal, which already holds the full input.
+                    row["task"] = task[:_TASK_CHARS]
+                lineage = payload.get("lineage")
+                if isinstance(lineage, dict):
+                    row["parent_run_id"] = lineage.get("parent_run_id") or None
+                    row["forked_at_seq"] = lineage.get("forked_at_seq")
             elif etype == "run_finished":
                 row["status"] = payload.get("status", "incomplete")
                 row["turns"] = payload.get("turns", 0)
@@ -237,6 +308,7 @@ class Hive:
                 row["duration_seconds"] = payload.get("duration_seconds", 0.0)
                 row["reason"] = payload.get("reason", "")
                 row["finished_at"] = event.get("timestamp")
+                row["model_path"] = payload.get("model_path", "") or ""
             elif etype == "verification_result":
                 verifications.append(
                     (
@@ -276,10 +348,14 @@ class Hive:
         cur.execute("DELETE FROM guardrail_triggers WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
         cur.execute(
-            "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, turns, "
-            "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path) "
-            "VALUES (:run_id, :harness_name, :harness_version_hash, :status, :turns, "
-            ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path)",
+            "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
+            "harness_version_hash, status, turns, "
+            "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
+            "parent_run_id, forked_at_seq, model_path, task) "
+            "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
+            ":harness_version_hash, :status, :turns, "
+            ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
+            ":parent_run_id, :forked_at_seq, :model_path, :task)",
             row,
         )
         cur.executemany(
@@ -301,18 +377,44 @@ class Hive:
     # ------------------------------------------------------------------ #
     # Queries
     # ------------------------------------------------------------------ #
-    def version_stats(self, harness_name: str) -> list[dict[str, Any]]:
-        """Per-version-hash aggregates so evolution can be judged."""
+    def version_stats(
+        self, harness_key: str, *, include_swapped: bool = False
+    ) -> list[dict[str, Any]]:
+        """Per-version-hash aggregates so evolution can be judged.
+
+        A version hash is a fitness bucket: "this harness at this version
+        scored N%". A run whose model changed mid-flight did not execute the
+        harness as declared, so by default it is **excluded** — averaging it in
+        would silently turn the bucket into a distribution over model paths
+        while still reporting a single number. ``swapped_runs`` reports how
+        many were held out, so the exclusion is visible rather than tacit;
+        ``include_swapped`` folds them back in for a caller that wants the
+        raw population.
+
+        A ``model_path`` naming exactly one model is not a swap — that is
+        every ordinary run, including every run recorded before 1.0 (whose
+        ``model_path`` is empty).
+        """
+        clause = "" if include_swapped else " AND (model_path IS NULL OR model_path NOT LIKE '%>%')"
         rows = self._conn.execute(
             "SELECT harness_version_hash AS version, "
             "COUNT(*) AS runs, "
             "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successes, "
             "AVG(cost_usd) AS avg_cost_usd, "
             "AVG(turns) AS avg_turns "
-            "FROM runs WHERE harness_name=? GROUP BY harness_version_hash "
+            f"FROM runs WHERE harness_key=?{clause} GROUP BY harness_version_hash "
             "ORDER BY runs DESC",
-            (harness_name,),
+            (harness_key,),
         ).fetchall()
+        swapped = {
+            row["version"]: row["n"]
+            for row in self._conn.execute(
+                "SELECT harness_version_hash AS version, COUNT(*) AS n FROM runs "
+                "WHERE harness_key=? AND model_path LIKE '%>%' "
+                "GROUP BY harness_version_hash",
+                (harness_key,),
+            )
+        }
         result = []
         for row in rows:
             runs = row["runs"] or 0
@@ -325,12 +427,58 @@ class Hive:
                     "success_rate": (successes / runs) if runs else 0.0,
                     "avg_cost_usd": row["avg_cost_usd"] or 0.0,
                     "avg_turns": row["avg_turns"] or 0.0,
+                    "swapped_runs": 0 if include_swapped else swapped.get(row["version"], 0),
+                }
+            )
+        # A version whose runs *all* swapped disappears from the grouped query
+        # above. Reporting it with zero counted runs is the honest answer.
+        for version, count in swapped.items():
+            if include_swapped or any(r["version"] == version for r in result):
+                continue
+            result.append(
+                {
+                    "version": version,
+                    "runs": 0,
+                    "successes": 0,
+                    "success_rate": 0.0,
+                    "avg_cost_usd": 0.0,
+                    "avg_turns": 0.0,
+                    "swapped_runs": count,
                 }
             )
         return result
 
+    def model_path_stats(self, harness_key: str) -> list[dict[str, Any]]:
+        """Per-(version, model path) aggregates: the buckets a swap creates.
+
+        `version_stats` answers "how does this harness do"; this answers "how
+        does it do on each executor it actually ran on", which is the only
+        honest way to read a population that contains swapped runs.
+        """
+        rows = self._conn.execute(
+            "SELECT harness_version_hash AS version, "
+            "COALESCE(NULLIF(model_path, ''), '(pre-1.0)') AS model_path, "
+            "COUNT(*) AS runs, "
+            "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successes, "
+            "AVG(cost_usd) AS avg_cost_usd "
+            "FROM runs WHERE harness_key=? GROUP BY version, model_path "
+            "ORDER BY runs DESC",
+            (harness_key,),
+        ).fetchall()
+        return [
+            {
+                "version": row["version"],
+                "model_path": row["model_path"],
+                "runs": row["runs"] or 0,
+                "successes": row["successes"] or 0,
+                "success_rate": (row["successes"] or 0) / (row["runs"] or 1),
+                "avg_cost_usd": row["avg_cost_usd"] or 0.0,
+            }
+            for row in rows
+        ]
+
     def failure_signatures(
-        self, harness_name: str, limit: int = 10, *, version: str | None = None
+        self, harness_key: str, limit: int = 10, *, version: str | None = None
     ) -> dict[str, Any]:
         """Most common failure verdicts, guardrail triggers, and statuses.
 
@@ -349,8 +497,8 @@ class Hive:
         """
         # All three queries below share this clause; scoping only some of them
         # reported another version's failures.
-        scope = "r.harness_name=?" + (" AND r.harness_version_hash=?" if version else "")
-        args: tuple[Any, ...] = (harness_name, version) if version else (harness_name,)
+        scope = "r.harness_key=?" + (" AND r.harness_version_hash=?" if version else "")
+        args: tuple[Any, ...] = (harness_key, version) if version else (harness_key,)
         rows = self._conn.execute(
             "SELECT v.feedback AS feedback, r.run_id AS run_id "
             "FROM verifications v JOIN runs r ON v.run_id=r.run_id "
@@ -392,15 +540,15 @@ class Hive:
         }
 
     def recent_failures(
-        self, harness_name: str, n: int = 5, *, version: str | None = None
+        self, harness_key: str, n: int = 5, *, version: str | None = None
     ) -> list[dict[str, Any]]:
         """The N most recent failed runs with their failing verifier feedback.
 
         ``version`` scopes them, so examples cannot come from a version a
         caller's aggregate counts excluded.
         """
-        scope = "harness_name=?" + (" AND harness_version_hash=?" if version else "")
-        args: tuple[Any, ...] = (harness_name, version, n) if version else (harness_name, n)
+        scope = "harness_key=?" + (" AND harness_version_hash=?" if version else "")
+        args: tuple[Any, ...] = (harness_key, version, n) if version else (harness_key, n)
         runs = self._conn.execute(
             f"SELECT * FROM runs WHERE {scope} AND status != 'success' "  # noqa: S608
             "ORDER BY finished_at DESC LIMIT ?",
@@ -446,6 +594,124 @@ class Hive:
             ).fetchall()
         ]
         return entry
+
+    def lineage(self, run_id: str) -> dict[str, Any]:
+        """The fork tree around a run: its ancestors, itself, and its forks.
+
+        A fork re-enters its parent at a journal seq, so the two runs share
+        everything up to that point. Reporting them as unrelated whole runs
+        would throw away the only thing that makes the comparison sharp — that
+        the prefix is identical and exactly one thing downstream changed.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            return {"run": None, "ancestors": [], "forks": []}
+
+        ancestors: list[dict[str, Any]] = []
+        seen = {run_id}
+        cursor = run.get("parent_run_id")
+        while cursor and cursor not in seen:
+            seen.add(cursor)
+            parent = self.get_run(cursor)
+            if parent is None:
+                ancestors.append({"run_id": cursor, "missing": True})
+                break
+            ancestors.append(parent)
+            cursor = parent.get("parent_run_id")
+
+        forks = [
+            dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM runs WHERE parent_run_id=? ORDER BY started_at", (run_id,)
+            )
+        ]
+        return {"run": run, "ancestors": ancestors, "forks": forks}
+
+    def search_runs(
+        self, query: str, *, harness_key: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Runs whose task statement contains ``query`` (case-insensitive).
+
+        A LIKE scan over the indexed task text, not a full-text index over
+        every message. That is the honest scope: the Hive indexes runs, and
+        this makes the thing a person searches for — what they asked — findable
+        without pretending to search the transcript.
+        """
+        term = query.strip()
+        if not term:
+            return []
+        where = ["task IS NOT NULL", "task LIKE ? ESCAPE '\\'"]
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params: list[Any] = [f"%{escaped}%"]
+        if harness_key is not None:
+            where.append("harness_key=?")
+            params.append(harness_key)
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                f"SELECT * FROM runs WHERE {' AND '.join(where)} "
+                "ORDER BY started_at DESC LIMIT ?",
+                (*params, limit),
+            )
+        ]
+
+    # ------------------------------------------------------------------ #
+    # Comparison
+    # ------------------------------------------------------------------ #
+    def compare_versions(self, harness_key: str, left: str, right: str) -> dict[str, Any]:
+        """Two harness versions side by side, with the deltas spelled out.
+
+        This is what makes an evolution or a fork *judgeable*: not "the new one
+        scored 71%" but "+18 points, -$0.004 per run, and this failure
+        signature stopped appearing". Deltas are right-minus-left, so a
+        positive ``success_rate`` means the right-hand version is better.
+        """
+        by_version = {row["version"]: row for row in self.version_stats(harness_key)}
+
+        def side(version: str) -> dict[str, Any]:
+            stats = by_version.get(version) or {
+                "version": version,
+                "runs": 0,
+                "successes": 0,
+                "success_rate": 0.0,
+                "avg_cost_usd": 0.0,
+                "avg_turns": 0.0,
+                "swapped_runs": 0,
+            }
+            return {
+                **stats,
+                "failures": self.failure_signatures(harness_key, version=version),
+            }
+
+        a, b = side(left), side(right)
+        # A signature present on one side and absent on the other is the most
+        # actionable single fact in the comparison, so name both directions.
+        def _keys(entry: dict[str, Any]) -> set[str]:
+            # `failure_signatures` groups verdicts by normalised feedback, so
+            # that string *is* the signature identity.
+            return {
+                str(item["feedback"])
+                for item in entry["failures"].get("verdicts", [])
+                if item.get("feedback")
+            }
+
+        left_keys, right_keys = _keys(a), _keys(b)
+        return {
+            "harness_key": harness_key,
+            "left": a,
+            "right": b,
+            "delta": {
+                "success_rate": b["success_rate"] - a["success_rate"],
+                "avg_cost_usd": b["avg_cost_usd"] - a["avg_cost_usd"],
+                "avg_turns": b["avg_turns"] - a["avg_turns"],
+                "runs": b["runs"] - a["runs"],
+            },
+            "fixed_failures": sorted(left_keys - right_keys),
+            "new_failures": sorted(right_keys - left_keys),
+            # Neither side is comparable on one run each; say so rather than
+            # letting a UI render a confident delta over a sample of two.
+            "underpowered": a["runs"] < 5 or b["runs"] < 5,
+        }
 
     def prune_runs(
         self, retention_days: int, *, now: datetime | None = None
@@ -513,15 +779,15 @@ class Hive:
         return [dict(r) for r in rows]
 
     def failure_count(
-        self, harness_name: str, *, since: str | None = None, version: str | None = None
+        self, harness_key: str, *, since: str | None = None, version: str | None = None
     ) -> int:
         """COUNT(*) of non-success runs, optionally since an ISO timestamp.
 
         Gate on this and then analyse? Pass the same ``version`` to both, or the
         gate opens on evidence the analysis will not see.
         """
-        query = "SELECT COUNT(*) AS n FROM runs WHERE harness_name=? AND status != 'success'"
-        params: list[Any] = [harness_name]
+        query = "SELECT COUNT(*) AS n FROM runs WHERE harness_key=? AND status != 'success'"
+        params: list[Any] = [harness_key]
         if version is not None:
             query += " AND harness_version_hash=?"
             params.append(version)
@@ -711,7 +977,7 @@ class Hive:
         return dict(row) if row is not None else None
 
     def outcome_summary(
-        self, harness_name: str, *, version: str | None = None
+        self, harness_key: str, *, version: str | None = None
     ) -> dict[str, Any]:
         """Labelled-outcome stats for one harness.
 
@@ -723,9 +989,9 @@ class Hive:
         query = (
             "SELECT o.outcome AS outcome, COUNT(*) AS n "
             "FROM run_outcomes o JOIN runs r ON r.run_id = o.run_id "
-            "WHERE r.harness_name=?"
+            "WHERE r.harness_key=?"
         )
-        params: list[Any] = [harness_name]
+        params: list[Any] = [harness_key]
         if version is not None:
             query += " AND r.harness_version_hash=?"
             params.append(version)
@@ -734,7 +1000,7 @@ class Hive:
         labelled = sum(counts.values())
         successes = counts.get("success", 0)
         return {
-            "harness_name": harness_name,
+            "harness_key": harness_key,
             "labelled_runs": labelled,
             "successes": successes,
             "failures": counts.get("failure", 0),
@@ -742,15 +1008,15 @@ class Hive:
         }
 
     def failed_outcome_traces(
-        self, harness_name: str, limit: int = 5, *, version: str | None = None
+        self, harness_key: str, limit: int = 5, *, version: str | None = None
     ) -> list[dict[str, Any]]:
         """Recent runs the world labelled as failures, newest first."""
         query = (
             "SELECT r.run_id, r.trace_path, r.status, o.detail, o.source, o.recorded_at "
             "FROM run_outcomes o JOIN runs r ON r.run_id = o.run_id "
-            "WHERE r.harness_name=? AND o.outcome='failure'"
+            "WHERE r.harness_key=? AND o.outcome='failure'"
         )
-        params: list[Any] = [harness_name]
+        params: list[Any] = [harness_key]
         if version is not None:
             query += " AND r.harness_version_hash=?"
             params.append(version)
@@ -759,7 +1025,7 @@ class Hive:
         return [dict(r) for r in self._conn.execute(query, params).fetchall()]
 
     def playbook_stats(
-        self, harness_name: str, *, version: str | None = None
+        self, harness_key: str, *, version: str | None = None
     ) -> list[dict[str, Any]]:
         """Success, cost, and turns per playbook.
 
@@ -781,9 +1047,9 @@ class Hive:
             "SUM(CASE WHEN v.ok=0 THEN 1 ELSE 0 END) AS refusals, "
             "AVG(r.cost_usd) AS avg_cost_usd, AVG(r.turns) AS avg_turns "
             "FROM playbook_visits v JOIN runs r ON r.run_id = v.run_id "
-            "WHERE r.harness_name=?"
+            "WHERE r.harness_key=?"
         )
-        params: list[Any] = [harness_name]
+        params: list[Any] = [harness_key]
         if version is not None:
             query += " AND r.harness_version_hash=?"
             params.append(version)
@@ -804,24 +1070,42 @@ class Hive:
             )
         return out
 
-    def summary(self, harness_name: str) -> dict[str, Any]:
-        """A rolled-up stats view for one harness (all versions + per version)."""
+    def summary(self, harness_key: str, *, display_name: str | None = None) -> dict[str, Any]:
+        """A rolled-up stats view for one harness (all versions + per version).
+
+        ``display_name`` labels the result when the caller knows the spec's
+        human name; without it the name is resolved from the newest run.
+        """
         totals = self._conn.execute(
             "SELECT COUNT(*) AS runs, "
             "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successes, "
             "AVG(cost_usd) AS avg_cost_usd, AVG(turns) AS avg_turns "
-            "FROM runs WHERE harness_name=?",
-            (harness_name,),
+            "FROM runs WHERE harness_key=?",
+            (harness_key,),
         ).fetchone()
         runs = totals["runs"] or 0
         successes = totals["successes"] or 0
+        # The key is an opaque id for a post-1.0 harness; resolve the display
+        # name from its newest run so headers stay human-readable.
+        name_row = self._conn.execute(
+            "SELECT harness_name FROM runs WHERE harness_key=? AND harness_name != '' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (harness_key,),
+        ).fetchone()
+        resolved = name_row["harness_name"] if name_row else harness_key
         return {
-            "harness_name": harness_name,
+            "harness_key": harness_key,
+            "harness_name": display_name or resolved,
             "total_runs": runs,
             "success_rate": (successes / runs) if runs else 0.0,
             "avg_cost_usd": totals["avg_cost_usd"] or 0.0,
             "avg_turns": totals["avg_turns"] or 0.0,
-            "versions": self.version_stats(harness_name),
-            "failure_signatures": self.failure_signatures(harness_name),
-            "playbooks": self.playbook_stats(harness_name),
+            "versions": self.version_stats(harness_key),
+            "failure_signatures": self.failure_signatures(harness_key),
+            "playbooks": self.playbook_stats(harness_key),
+            # Only worth showing when a run actually changed models; for every
+            # other harness this is a single row that repeats `versions`.
+            "model_paths": [
+                row for row in self.model_path_stats(harness_key) if ">" in row["model_path"]
+            ],
         }

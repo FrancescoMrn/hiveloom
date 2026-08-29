@@ -10,7 +10,6 @@ discovery is eager.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +22,8 @@ from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.loop.control import RunControl
-from hiveloom.models.provider import ModelProvider
+from hiveloom.models.provider import ModelConfig, ModelProvider
+from hiveloom.models.router import ModelRouter
 from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
@@ -115,8 +115,19 @@ def _resolve_trace_dir(base: Path, trace_dir: str) -> Path:
     return (base / trace_dir).resolve()
 
 
-def _new_run_id() -> str:
+def new_run_id() -> str:
+    """Allocate a run id ahead of the run itself.
+
+    Public because pre-allocation is how a caller addresses a run *while it is
+    still going*: announce the id, hand :func:`run_harness` the same id and a
+    :class:`~hiveloom.loop.control.RunControl`, and stop/steer/model-switch
+    calls have somewhere to land before the first model call returns.
+    """
     return f"run_{uuid.uuid4().hex[:16]}"
+
+
+# Kept for callers written against the private name.
+_new_run_id = new_run_id
 
 
 def dry_run(
@@ -189,7 +200,9 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
-    session_id: str | None = None,
+    resume_messages: list[dict[str, Any]] | None = None,
+    lineage: dict[str, Any] | None = None,
+    providers: dict[str, ModelProvider] | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -223,10 +236,18 @@ def run_harness(
     steering messages, both consumed at the loop's next turn boundary.
     ``run_id`` lets the caller pre-allocate the id (so it can be announced to
     a client before the run finishes); by default one is generated.
-    ``session_id`` groups related runs (the turns of one conversation, say):
-    traces land in ``<trace_dir>/<session_id>/`` and every trace event carries
-    the id. Letters, digits, ``.``, ``_`` and ``-`` only — it names a
-    directory.
+    ``providers`` pre-registers model provider instances by name, for the
+    cross-provider case: a playbook or an operator may move the run onto a
+    provider the spec never named, and the router would otherwise construct one
+    from ambient credentials. Supplying it keeps an embedding caller (and the
+    test suite) in control of what a swap actually talks to.
+
+    ``resume_messages`` re-enters a run part-way through: the folded
+    conversation from a parent run's journal is seeded verbatim and **no new
+    task statement is appended**, because the seeded thread already ends where
+    the parent was. This is what ``hiveloom run <fork> --resume`` passes; see
+    :mod:`hiveloom.fork`. ``lineage`` is the accompanying provenance record
+    (parent run id, journal seq) written into ``run_started``.
 
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
@@ -241,10 +262,24 @@ def run_harness(
     spec = load_spec(yaml_path)
     resolve_hooks(spec, base)
 
-    history, run_input = _resolve_conversation(
-        base, input_value, conversation, literal_input=literal_input
-    )
+    if resume_messages is not None:
+        if input_value is not None or conversation is not None:
+            raise ValueError(
+                "pass 'resume_messages' alone — a resumed run's conversation "
+                "comes from the parent journal, not from a new input"
+            )
+        history = list(resume_messages)
+        # The parent's task statement is already inside the folded thread; the
+        # trace records what this run re-entered rather than a fresh input.
+        run_input = (lineage or {}).get("parent_run_id", "")
+    else:
+        history, run_input = _resolve_conversation(
+            base, input_value, conversation, literal_input=literal_input
+        )
     registry = build_registry(spec, base)
+    # Bound before the try: several steps below it can raise, and an unbound
+    # name in the finally would mask the real error with a NameError.
+    router: ModelRouter | None = None
     try:
         guardrails = build_guardrails(spec, registry, base)
         verifiers = build_verifiers(spec, base)
@@ -258,17 +293,25 @@ def run_harness(
         if provider is None:
             provider = _default_provider(base, spec.model.provider)
 
+        router = ModelRouter.create(
+            base,
+            ModelConfig(
+                id=spec.model.id,
+                max_tokens=spec.model.max_tokens,
+                temperature=spec.model.temperature,
+                provider=spec.model.provider,
+            ),
+            provider,
+            providers=providers,
+        )
+
         version_hash = spec_version_hash(spec, base)
-        run_id = run_id or _new_run_id()
-        if session_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", session_id):
-            raise ValueError(
-                "session_id must be 1-64 characters of letters, digits, '.', '_' or '-'"
-            )
+        run_id = run_id or new_run_id()
         trace = TraceWriter(
             _resolve_trace_dir(base, spec.logging.trace_dir),
             run_id=run_id,
-            session_id=session_id,
             harness_name=spec.name,
+            harness_id=spec.id,
             version_hash=version_hash,
             redact_patterns=spec.logging.redact,
             level=spec.logging.level,
@@ -296,10 +339,15 @@ def run_harness(
             context_values=context,
             playbooks=playbooks,
             control=control,
+            resume=resume_messages is not None,
+            lineage=lineage,
+            router=router,
         )
         result = loop.run()
     finally:
         registry.close()
+        if router is not None:
+            router.close()
 
     if ingest:
         _ingest_trace(trace.path, hive_path)
@@ -357,8 +405,8 @@ def _maybe_auto_propose(
         with Hive(hive_path) as hive:
             # One version for both: the gate must count what the report carries.
             version = spec_version_hash(spec, base)
-            since = last_auto_proposal_at(hive, spec.name)
-            if hive.failure_count(spec.name, since=since, version=version) < auto.min_failures:
+            since = last_auto_proposal_at(hive, spec.identity)
+            if hive.failure_count(spec.identity, since=since, version=version) < auto.min_failures:
                 return
             if since is not None:
                 elapsed_hours = (
@@ -368,7 +416,7 @@ def _maybe_auto_propose(
                     return
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.name, version=version)
+            report = analyze(hive, spec.identity, version=version)
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a
@@ -408,11 +456,14 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
 
 
 def resolve_and_ingest(target: str | Path, hive) -> str:
-    """Resolve a harness name-or-dir to a harness name, ingesting its traces.
+    """Resolve a harness name-or-dir to its Hive key, ingesting its traces.
 
     If ``target`` is a harness directory (or ``harness.yaml`` path), its
-    in-folder traces are ingested into ``hive`` and the spec's name returned.
-    Otherwise ``target`` is treated as a harness name (nothing to ingest).
+    in-folder traces are ingested into ``hive`` and the spec's identity
+    returned — its stable ``id``, or its name for a pre-1.0 spec without one.
+    The Hive keys evidence on that identity, so two harnesses that merely
+    share a name never read each other's stats. Otherwise ``target`` is
+    treated as a bare key (nothing to ingest).
     """
     path = Path(target)
     yaml_path = path / "harness.yaml" if path.is_dir() else path
@@ -422,7 +473,7 @@ def resolve_and_ingest(target: str | Path, hive) -> str:
         trust.ensure_trusted(yaml_path.parent)
         spec = load_spec(yaml_path)
         hive.ingest_dir(_resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
-        return spec.name
+        return spec.identity
     return str(target)
 
 

@@ -24,13 +24,13 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |
 | `extensions` | Harness-local extension modules | paths/modules loaded before validation; **always frozen** |
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
-| `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `on_enter`/`on_exit` (**always frozen**), `entry` |
+| `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `model`/`model_provider` (**always frozen**), `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned` |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
-| `logging` | Trace policy | `trace_dir` (in-folder by default), `level`, `redact` (regexes; **frozen**) |
+| `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact` (regexes; **frozen**) |
 | `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change), `auto_propose.{enabled,min_failures,cooldown_hours,model}` (opt-in post-run DRAFT trigger — never auto-applies; `auto_propose` itself is never mutable) |
 
 ## Builtins
@@ -113,10 +113,18 @@ Refusals reach the model as a tool error and are not retried.
 and the failure report localizes a problem to one mode. Attribution is *by
 visit*: a run that worked in two modes counts once for each.
 
-**Freeze.** `on_enter`/`on_exit` execute code and can never be changed by
-evolution, including through a rewrite of the surrounding `playbooks` list.
-Prompts are the evolvable part — which is the point: evolution rewrites one
-mode's guidance on that mode's own evidence.
+**Its own model.** A playbook may declare `model:` (and `model_provider:`),
+so a mode runs on a different executor: profile cheaply, decide expensively,
+inside one harness and one conversation. Leaving the mode restores the
+harness default — a mode is a configuration, not a one-way door. The switch
+happens at a turn boundary, where prior turns are stripped of content only the
+previous model can validate.
+
+**Freeze.** `on_enter`/`on_exit` execute code, and `model`/`model_provider`
+are the same cost-and-capability decision that already keeps top-level `model`
+frozen. None can be changed by evolution, including through a rewrite of the
+surrounding `playbooks` list. Prompts are the evolvable part — which is the
+point: evolution rewrites one mode's guidance on that mode's own evidence.
 
 ## MCP servers
 
@@ -168,7 +176,7 @@ inspect what a harness's declared servers actually expose with
 
 ## Safety invariants (enforced in code)
 
-1. The evolver can never modify `guardrails`, `model`, `logging.redact`,
+1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
    `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose` — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
@@ -185,9 +193,11 @@ inspect what a harness's declared servers actually expose with
 <harness-name>/
 ├── harness.yaml          # the spec
 ├── tools/  validators/  schemas/  playbooks/
-├── .hiveloom/traces/     # in-folder trace dir (memory travels with the harness)
+├── .hiveloom/
+│   ├── traces/           # in-folder trace dir (memory travels with the harness)
+│   └── forks/<name>/     # experiments on this harness (`hiveloom fork`)
 ├── .env.example          # every env var the spec/hooks reference
-├── requirements.txt      # hiveloom==<pinned> + hook deps
+├── pyproject.toml        # PEP 621 deps: hiveloom==<pinned> + hook deps
 └── README.md
 ```
 
@@ -195,3 +205,13 @@ The folder is portable and versionable, like a `docker-compose.yml`; it needs th
 runtime (`pip install hiveloom`) wherever it lands. `hiveloom package` bundles it
 into `<name>-<version_hash>.zip` (+ optional Dockerfile), excluding `.env` and
 `.hiveloom/`.
+
+A fork is a full harness directory of its own — spec, code hooks, and a
+`fork.yaml` naming the run and seq it re-entered — kept under
+`.hiveloom/forks/<name>` rather than beside the harness. It is an experiment
+*on* this harness, not a harness of its own: archiving or packaging the folder
+therefore leaves the experiments behind with the traces, a directory of
+harnesses stays a directory of harnesses, and the file tools — rooted here and
+not descending into `.hiveloom` — cannot read or mutate a running experiment.
+Forking a fork produces a sibling under the same original harness rather than a
+deeper nest; `fork.yaml` is the only record of generation.

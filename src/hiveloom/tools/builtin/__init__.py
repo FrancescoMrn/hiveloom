@@ -4,12 +4,13 @@ All builtins are sandboxed to the harness working directory (files) or an
 allowlist (shell). ``shell`` is disabled unless the spec provides an allowlist.
 ``file_read``/``file_write`` are further refused ``package.py``'s "never
 leaves the harness" paths (``.hiveloom/``, ``.env*``, the trace dir) via
-``_safe_path`` — a model can no more read its own harness's auth store or
+``safe_path`` — a model can no more read its own harness's auth store or
 credentials through a tool call than an HTTP caller can through `input_file`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import shlex
 import socket
@@ -25,7 +26,7 @@ from hiveloom import ext
 from hiveloom.catalog import BUILTIN_TOOLS
 from hiveloom.package import is_sensitive_path
 from hiveloom.spec.schema import BuiltinToolRef
-from hiveloom.tools.registry import Tool, ToolError
+from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 
 _MAX_HTTP_BYTES = 200_000
 
@@ -49,7 +50,7 @@ _EXTRA_ARGS_SAFE_BINARIES = {
 }
 
 
-def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
+def safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
     """Resolve ``path``, ensure it stays within ``base`` (no traversal), and
     refuse anything ``package.py`` would never ship either (``.hiveloom/``,
     ``.env*`` except checked-in templates, VCS/cache noise, and — when the
@@ -64,7 +65,7 @@ def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
     containment, the HTTP control plane's ``input_file``) already goes
     through for containment — so nothing has to remember a second check.
     ``trace_dir`` is optional only because a caller without a loaded spec
-    (there is none today, but ``_safe_path`` doesn't require one) has
+    (there is none today, but ``safe_path`` doesn't require one) has
     nothing to pass; every current caller resolves and supplies it, so a
     reconfigured (non-default) trace directory is covered everywhere, not
     just the default location under ``.hiveloom/``.
@@ -96,10 +97,19 @@ class FileReadTool(Tool):
         }
 
     def run(self, path: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
+        target = safe_path(self._base, path, trace_dir=self._trace_dir)
         if not target.exists():
             raise ToolError(f"file not found: {path}")
         return target.read_text(encoding="utf-8")
+
+
+def _file_state(target: Path) -> dict[str, Any] | None:
+    """Size and sha256 of a file, or None when it does not exist yet."""
+    try:
+        raw = target.read_bytes()
+    except OSError:
+        return None
+    return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
 class FileWriteTool(Tool):
@@ -121,14 +131,42 @@ class FileWriteTool(Tool):
             "required": ["path", "content"],
         }
 
-    def run(self, path: str = "", content: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
+    def run(self, path: str = "", content: str = "", **_: Any) -> ToolResult:
+        target = safe_path(self._base, path, trace_dir=self._trace_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Serialize writes per resolved path: with loop.tool_execution set to
         # parallel, two calls in one batch may target the same file.
         with _path_write_lock(target):
+            previous = _file_state(target)
             target.write_text(content, encoding="utf-8")
-        return f"wrote {len(content)} chars to {path}"
+            after = _file_state(target)
+
+        # The model reads the string; the caller reads the artifact. A write is
+        # both a deliverable ("here is the file this run produced") and a
+        # mutation ("this path changed, from this content to that"), and
+        # neither is recoverable from the result string.
+        #
+        # Hashes and sizes, not the content itself: a journal that inlined
+        # every version of every written file would grow without bound, and the
+        # new content is already in the call's `input`. What the before-hash
+        # buys is the one thing the journal genuinely could not otherwise say —
+        # whether this write changed anything, and what it replaced.
+        return ToolResult(
+            content=f"wrote {len(content)} chars to {path}",
+            artifacts=[
+                Artifact(
+                    kind="file",
+                    data={
+                        "path": path,
+                        "action": "created" if previous is None else "modified",
+                        "unchanged": previous is not None and previous == after,
+                        "bytes": after["bytes"],
+                        "sha256": after["sha256"],
+                        "previous": previous,
+                    },
+                )
+            ],
+        )
 
 
 class LoadSkillTool(Tool):

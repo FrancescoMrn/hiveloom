@@ -421,7 +421,8 @@ def test_hive_reports_success_per_playbook(tmp_path: Path):
     )
 
     with Hive(hive_path) as hive:
-        stats = {row["playbook"]: row for row in hive.playbook_stats("pb-harness")}
+        key = load_spec(directory / "harness.yaml").identity
+        stats = {row["playbook"]: row for row in hive.playbook_stats(key)}
 
     assert stats["overview"]["runs"] == 2  # both runs started here
     assert stats["targeting"]["runs"] == 1
@@ -447,7 +448,8 @@ def test_refused_switches_are_counted(tmp_path: Path):
         hive_path=hive_path,
     )
     with Hive(hive_path) as hive:
-        stats = {row["playbook"]: row for row in hive.playbook_stats("pb-harness")}
+        key = load_spec(directory / "harness.yaml").identity
+        stats = {row["playbook"]: row for row in hive.playbook_stats(key)}
     assert stats["gated"]["refusals"] == 1
     assert stats["gated"]["runs"] == 0
 
@@ -477,7 +479,7 @@ def test_playbook_code_hooks_are_never_evolvable(tmp_path: Path):
     construct.set_value(directory, "evolution.mutable", ["playbooks"])
     result = _gate(directory, "playbooks.0.on_enter", "hooks/evil.py:run")
     assert not result.accepted
-    assert result.rejected[0]["reason"] == "playbook code hooks are frozen from evolution"
+    assert "frozen from evolution" in result.rejected[0]["reason"]
 
 
 def test_a_hook_cannot_be_smuggled_in_by_rewriting_the_list(tmp_path: Path):
@@ -489,4 +491,102 @@ def test_a_hook_cannot_be_smuggled_in_by_rewriting_the_list(tmp_path: Path):
         [{"name": "overview", "description": "O", "on_enter": "hooks/evil.py:run"}],
     )
     assert not result.accepted
-    assert result.rejected[0]["reason"] == "playbook code hooks are frozen from evolution"
+    assert "frozen from evolution" in result.rejected[0]["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# Operator-driven playbook switch
+# --------------------------------------------------------------------------- #
+def test_an_operator_can_switch_the_playbook_mid_run(tmp_path: Path):
+    from hiveloom.loop.control import RunControl
+
+    directory = _two_playbooks(tmp_path)
+    control = RunControl()
+    control.switch_playbook("targeting", reason="operator knows better")
+
+    provider = FakeModelProvider(
+        [tool_response("read_data", {"query": "q"}, call_id="c1"), text_response("done")]
+    )
+    result = runner.run_harness(directory, "task", provider=provider, control=control)
+
+    events = [json.loads(line) for line in Path(result.trace_path).read_text().splitlines()]
+    switch = next(
+        e for e in events
+        if e["type"] == "playbook_switch" and e["payload"].get("source") == "operator"
+    )
+    assert switch["payload"]["from"] == "overview"
+    assert switch["payload"]["to"] == "targeting"
+    assert switch["payload"]["ok"] is True
+
+
+def test_the_model_is_told_when_an_operator_moves_it(tmp_path: Path):
+    """A mode change the model cannot see is a mode change it will misread."""
+    from hiveloom.loop.control import RunControl
+
+    directory = _two_playbooks(tmp_path)
+    control = RunControl()
+    control.switch_playbook("targeting")
+
+    provider = FakeModelProvider(
+        [tool_response("read_data", {"query": "q"}, call_id="c1"), text_response("done")]
+    )
+    runner.run_harness(directory, "task", provider=provider, control=control, ingest=False)
+
+    sent = json.dumps(provider.calls[-1]["messages"])
+    assert "Operator switched you into playbook 'targeting'" in sent
+
+
+def test_an_exit_gate_refuses_an_operator_switch_too(tmp_path: Path):
+    """An operator switch is a request through the same door, not a way around it."""
+    from hiveloom.loop.control import RunControl
+
+    directory = _base_harness(tmp_path)
+    (directory / "hooks").mkdir(exist_ok=True)
+    (directory / "hooks" / "exit.py").write_text(BLOCKING_EXIT)
+    # The gated playbook is the entry, so *leaving* it is what gets refused.
+    construct.add_playbook(
+        directory,
+        name="gated",
+        description="G",
+        on_exit="hooks/exit.py:on_exit",
+        entry=True,
+    )
+    construct.add_playbook(directory, name="start", description="S")
+
+    control = RunControl()
+    control.switch_playbook("start")
+    provider = FakeModelProvider([text_response("done")])
+    result = runner.run_harness(directory, "task", provider=provider, control=control)
+
+    events = [json.loads(line) for line in Path(result.trace_path).read_text().splitlines()]
+    refused = next(
+        e for e in events
+        if e["type"] == "playbook_switch" and e["payload"].get("source") == "operator"
+    )
+    assert refused["payload"]["ok"] is False
+    assert "proposed nothing" in refused["payload"]["refused_reason"]
+
+
+def test_an_operator_switch_on_a_harness_without_playbooks_is_traced(tmp_path: Path):
+    from hiveloom.loop.control import RunControl
+
+    directory = _base_harness(tmp_path)
+    control = RunControl()
+    control.switch_playbook("nope")
+
+    provider = FakeModelProvider([text_response("done")])
+    result = runner.run_harness(directory, "task", provider=provider, ingest=False)
+    assert result.status == "success"
+
+    control2 = RunControl()
+    control2.switch_playbook("nope")
+    result2 = runner.run_harness(
+        directory,
+        "task",
+        provider=FakeModelProvider([text_response("done")]),
+        control=control2,
+        ingest=False,
+    )
+    events = [json.loads(line) for line in Path(result2.trace_path).read_text().splitlines()]
+    failed = next(e for e in events if e["type"] == "playbook_switch_failed")
+    assert "declares no playbooks" in failed["payload"]["refused_reason"]

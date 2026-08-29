@@ -1,0 +1,14 @@
+INCIDENT-4471  checkout-worker
+================================
+
+19:02  Queue depth on checkout-worker begins climbing from a steady ~200 to
+       ~4,900 over eleven minutes.
+19:06  p99 latency on POST /checkout crosses 30s; the client-side timeout is
+       30s, so callers start seeing failures.
+19:09  Worker process RSS flat. CPU flat at 40%. No restarts, no OOM kills.
+19:13  Upstream payment provider reports normal latency from their side.
+19:20  Depth still rising. No dropped messages: every enqueued job is still in
+       the queue, so nothing has been lost — the workers are simply not
+       draining it.
+
+Deploys in the window: none. Config changes in the window: none.

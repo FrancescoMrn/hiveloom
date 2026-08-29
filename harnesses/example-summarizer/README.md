@@ -1,35 +1,45 @@
 # example-summarizer
 
-A complete, working hiveloom harness: it summarizes a text file into a
-structured JSON object with `title`, `summary`, and `key_points`.
+Summarizes a text file into a structured JSON object with `title`, `summary`
+and `key_points`.
 
-It runs the small executor model (`claude-haiku-4-5`) inside a harness that:
+This is the harness to read first if you want to see verification working. The
+model gets two builtin tools and a cost ceiling, and its output has to survive
+two independent checks before the run is allowed to succeed:
 
-- gives it `file_read` / `file_write` tools (sandboxed to this folder),
-- caps cost (`max_cost_usd: 0.25`) and wall-clock time, and allowlists tools,
-- **verifies** the output two ways: a JSON-schema check (`schemas/output.json`)
-  and a code hook (`validators/check_summary.py`) that also asserts the summary
-  is shorter than the source. On failure, the loop retries with the validator's
-  feedback injected.
+- **`schemas/output.json`** — a JSON-schema check on the *shape*: the three
+  keys, the right types, no extras.
+- **`validators/check_summary.py`** — a code check on the *content*: the
+  fields carry something, and the summary is genuinely shorter than the source
+  it summarised. A schema cannot express that second one.
+
+When either fails, `retry_with_feedback` puts the validator's own message back
+into the conversation and the loop goes again — up to twice. The feedback
+strings are written to be read by a model, which is why they say what to
+change rather than what was wrong.
 
 ## Run it
 
 ```bash
+uv sync                       # install the pinned runtime
 cp .env.example .env          # add ANTHROPIC_API_KEY
 hiveloom validate .
 hiveloom run . --input notes.txt --json
 ```
 
-A sample `notes.txt` is included. Inspect the run afterwards:
+`notes.txt` ships with the harness, so the command above works as written.
+
+## Watch verification bite
+
+Loosen the prompt and the checks start failing where before they passed:
 
 ```bash
-hiveloom stats .              # success rate / cost / turns per version hash
-hiveloom trace <run_id>       # the full ordered trace
+hiveloom set system_prompt "Summarize the file." && hiveloom run . --input notes.txt
+hiveloom stats .              # the two versions, side by side
 ```
 
-## How it's tested
+## Changing it
 
-The repository's integration test drives this harness end to end with a
-`FakeModelProvider` (scripted tool call + final answer) — so it exercises the
-tools, guardrails, verification, retry-with-feedback, and trace emission with no
-API key required.
+Do not hand-edit `harness.yaml`. Make changes through the CLI — `hiveloom
+set`, `hiveloom add`, `hiveloom remove` — which validates every mutation and
+rolls back on error.

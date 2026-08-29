@@ -1,0 +1,128 @@
+name: Release workbench
+
+# `hiveloom-workbench` is published to npm, on its own cadence, so it gets its
+# own tag namespace: `workbench-v0.1.0`, never `v0.1.0`. A plain `v*` tag is the
+# framework's and belongs to release.yml. The two versions are unrelated and a
+# shared tag would force them to move together.
+
+on:
+  push:
+    tags: ["workbench-v*"]
+  workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: "Publish the built package to npm (needs a configured trusted publisher)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Verify and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: devtools/ui/package-lock.json
+          registry-url: https://registry.npmjs.org
+      - name: Check tag matches the package version
+        # Dispatch runs must be pointed at the tag, not a branch: on a branch ref
+        # GITHUB_REF_NAME is e.g. "main" and can never equal a version, so say so
+        # rather than fail on a confusing comparison.
+        if: github.ref_type == 'tag'
+        run: |
+          TAG="${GITHUB_REF_NAME#workbench-v}"
+          PKG=$(node -p "require('./devtools/ui/package.json').version")
+          PY=$(uv run python -c \
+            "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('devtools/ui/server.py').read_text()).group(1))")
+          # The launcher warns at runtime when these disagree; a release must
+          # not be able to produce that state at all.
+          if [ "$TAG" != "$PKG" ] || [ "$PKG" != "$PY" ]; then
+            echo "::error::version mismatch — tag=$TAG package.json=$PKG server.py=$PY"
+            exit 1
+          fi
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+      - name: Test the workbench backend
+        run: |
+          uv run pytest -q tests/test_devtools_ui.py
+          uv run ruff check devtools/ui/server.py devtools/ui/copilot/tools/workbench.py
+      - name: Validate the bundled copilot harness
+        env:
+          HIVELOOM_TRUST: always
+        run: uv run hiveloom validate devtools/ui/copilot --json
+      - name: Build and verify the package
+        # Typechecks, tests, compiles the frontend, packs, checks the tarball's
+        # contents, then installs it and confirms it serves and reaches its API.
+        run: scripts/build_workbench.sh --check
+      - uses: actions/upload-artifact@v7
+        with:
+          name: workbench-npm-package
+          path: devtools/ui/pack/*.tgz
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    # Deliberate and manual, exactly as the framework's PyPI release is: a tag
+    # builds and cuts a GitHub Release but never uploads. Requires npm trusted
+    # publishing configured for this repo/workflow, and the "npm" environment
+    # below (add required reviewers there to gate publishing further).
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/hiveloom-workbench
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v8
+        with:
+          name: workbench-npm-package
+          path: pack/
+      - name: Publish
+        # npm 11.5+ uses OIDC when the workflow is a configured trusted
+        # publisher, so no long-lived NPM_TOKEN has to live in this repository.
+        run: |
+          npm install -g npm@latest
+          npm publish pack/*.tgz --provenance --access public
+
+  github-release:
+    name: Create GitHub release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: workbench-npm-package
+          path: pack/
+      - name: Create release with artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Idempotent, so re-running a tag refreshes the assets rather than
+        # failing on "release already exists", and never rewrites notes edited
+        # by hand on the release page.
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" pack/*.tgz --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" pack/*.tgz \
+              --title "workbench ${GITHUB_REF_NAME#workbench-}" \
+              --generate-notes
+          fi

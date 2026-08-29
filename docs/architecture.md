@@ -29,6 +29,8 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                                                                     │
   │  runtime:                                                           │
   │    models/        ModelProvider ABC → Claude | OpenAI-compat | Fake │
+  │      router.py    which model is current, and which provider serves │
+  │                   it — mid-run hot-swap at a turn boundary          │
   │    tools/         registry (active/deferred) + sandboxed builtins; │
   │                   ToolRegistry owns the MCP sync/async bridge       │
   │    context/       assembly, budgeting, pluggable compaction, skills │
@@ -36,11 +38,15 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │    events.py      lifecycle event bus (spec `hooks:` + ambient)     │
   │    verify/        validators = the reward signal                    │
   │    loop/          engine + pluggable policies (react | plan | …)    │
+  │      control.py   RunControl: stop · steer · switch playbook/model  │
   │    skills.py      progressive-disclosure SKILL.md folders           │
   │    runner.py      assemble + drive a run; `hiveloom run [--stream]` │
   │    serve.py       stdlib HTTP wrapper: POST /runs, GET /healthz     │
   │                                                                     │
+  │  fork.py          re-enter a finished run at a model call; lineage  │
+  │                                                                     │
   │  logging/         trace.py (append-only JSONL) + hive.py (SQLite)   │
+  │      journal.py   the fold events → context state, + chain verify   │
   │                                                                     │
   │  generate/        strong model → construction plan → construct.py   │
   │                   (+ blueprints: house-style prompt fragments)      │
@@ -57,6 +63,10 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │    app.py         Starlette app: auth + spec lock + endpoints       │
   │  guide.py         AGENTS.md + skills/, packaged; `hiveloom guide`   │
   │  cli.py           Typer CLI over all of the above                   │
+  │                                                                     │
+  │  devtools/                                                          │
+  │    ui/            the workbench — published to npm as               │
+  │                   `hiveloom-workbench`; see docs/workbench.md       │
   └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -78,21 +88,59 @@ hiveloom run ./h --input notes.txt
   │     append tool_results ───────────┘
   │     on completion → verify → retry_with_feedback | success/fail
   │
-  ├─ TraceWriter emits every step to .hiveloom/traces/<run_id>.jsonl
-  └─ auto-ingest the trace into the Hive
+  ├─ TraceWriter appends every step, hash-chained, to
+  │    .hiveloom/traces/<run_id>.jsonl
+  └─ auto-ingest the journal into the Hive
 ```
 
-## Logging as memory (the Hive)
+A run's identity is the `run_id`, and it is the *only* execution identity across
+the CLI, the API, the Hive, the journal, and the workbench. Branching a run
+always produces a derived run rather than a grouping above it.
 
-Every run is an append-only JSONL trace with a common envelope (`run_id`,
-`harness_name`, `harness_version_hash`, `seq`, `timestamp`) and typed events
-(`run_started`, `model_call`, `model_response`, `tool_call`, `tool_update`,
-`tool_result`, `guardrail_triggered`, `hook_triggered`, `hook_error`,
-`context_compaction`, `verification_result`, `run_finished`). The **Hive** is a SQLite index over those traces
-(`~/.hiveloom/hive.db`, `$HIVELOOM_DB` to override), ingested idempotently by
-`run_id`. It answers, **per version hash**, the questions evolution needs:
-success rate / cost / turns, the most common failure verdicts and guardrail
-triggers, and the N most recent failed traces with their verifier feedback.
+`RunControl` (`loop/control.py`) is the operator seam into a run already in
+flight: stop, addressable steering messages, a playbook switch, or a model swap,
+all applied at the next turn boundary, where no model call or tool is
+outstanding. `hiveloom serve`, the control plane, and the workbench are clients
+of it, not privileged paths around it.
+
+## Logging as memory (the journal and the Hive)
+
+Every run is an append-only JSONL **journal** with a common envelope (`run_id`,
+`harness_name`, `harness_version_hash`, `seq`, `timestamp`, `prev`) and typed
+events (`run_started`, `context_append`, `context_system`, `context_tools`,
+`model_call`, `model_response`, `tool_call`, `tool_update`, `tool_result`,
+`guardrail_triggered`, `hook_triggered`, `hook_error`, `context_compaction`,
+`playbook_switch`, `model_swap`, `verification_result`, `run_finished`).
+
+Three properties make it more than a log, and each buys something concrete:
+
+- **Progressive.** The conversation is appended once, message by message. A
+  `model_call` references the folded context (`context_head`, `system_hash`,
+  `tools_hash`, `messages_hash`) instead of re-snapshotting it, so the file is
+  linear in turns rather than quadratic. `logging/journal.py` is the fold back
+  to state, and it is the single implementation `trace --materialize`, `fork`,
+  and the workbench all share.
+- **Tamper-evident.** Each line carries `prev`, the sha256 of the line before
+  it. `hiveloom trace --verify` walks the chain and names the first break.
+- **Self-describing.** `run_started` carries the dumped spec plus a
+  `path -> sha256` manifest of every behavioural file, so the harness that ran
+  is reconstructible from the record — which is what makes forking possible at
+  all.
+
+`fork.py` turns that record back into somewhere to start from: it rebuilds the
+harness that actually ran, verifies it against the manifest, folds the
+conversation to a chosen model call, and writes an experiment under
+`<harness>/.hiveloom/forks/<name>`. See [`journal.md`](journal.md).
+
+The **Hive** is a SQLite index over those journals (`~/.hiveloom/hive.db`,
+`$HIVELOOM_DB` to override), ingested idempotently by `run_id`. It answers,
+**per version hash**, the questions evolution needs: success rate / cost /
+turns, the most common failure verdicts and guardrail triggers, and the N most
+recent failed traces with their verifier feedback. It also carries lineage
+(`parent_run_id`, `forked_at_seq`), the run's `task` for search, and its
+`model_path` — runs whose model moved mid-flight are held out of the
+per-version fitness bucket and reported separately, because they did not
+execute the harness as declared.
 
 ## Evolution and the safety boundary
 
@@ -133,5 +181,11 @@ model → collect in-folder traces → evolve deliberately on a dev/CI box → r
   policies, and hooks expand what a human or generator may pick; the frozen
   paths and human code approval are untouched, and foreign folders are
   trust-gated before their code loads.
+- **The record is checkable, not merely written.** Append-only is a claim the
+  hash chain lets a reader test, and "we cannot tell" (a pre-1.0 trace with no
+  chain) is reported as a distinct answer from "it was tampered with".
+- **Evidence is bucketed by what actually executed.** A version hash covers the
+  spec and its local code; a run whose model moved mid-flight is excluded from
+  that bucket rather than averaged into it.
 - **Safety invariants live in code, not convention** — see `docs/spec.md` and
   `evolve/evolver.py`.

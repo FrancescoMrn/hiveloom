@@ -8,6 +8,12 @@ in-context with a marker (the full result is persisted to the trace by the
 loop). Every compaction is a trace event, and the ``before_compaction`` event
 lets hooks cancel a round or supply the summary themselves.
 
+Every mutation of the message list is journalled as it happens — an append as
+``context_append``, a compaction as ``context_compaction`` carrying the
+rewritten list — so the conversation is recorded once rather than
+re-snapshotted on every model call. :mod:`hiveloom.logging.journal` folds
+those events back into the state that went to the model.
+
 The system prompt is assembled from the spec's ``system_prompt`` plus, when
 present: the pinned plan (plan_then_act), the skills index, and active tools'
 usage guidelines.
@@ -153,7 +159,8 @@ class ContextManager:
         """
         if not messages:
             return
-        self.messages.extend(messages)
+        for message in messages:
+            self._append(message)
         self._history_count += len(messages)
 
     def set_compaction_model_call(
@@ -172,11 +179,19 @@ class ContextManager:
     # ------------------------------------------------------------------ #
     # Building the conversation
     # ------------------------------------------------------------------ #
+    def _append(self, message: dict[str, Any]) -> None:
+        """Append a message and journal it. The one write path for history."""
+        self.messages.append(message)
+        if self._trace is not None:
+            self._trace.emit(
+                "context_append", index=len(self.messages) - 1, message=message
+            )
+
     def add_user(self, content: str) -> None:
-        self.messages.append({"role": "user", "content": content})
+        self._append({"role": "user", "content": content})
 
     def add_assistant(self, content_blocks: list[dict[str, Any]]) -> None:
-        self.messages.append({"role": "assistant", "content": content_blocks})
+        self._append({"role": "assistant", "content": content_blocks})
 
     def add_tool_results(self, results: list[dict[str, Any]]) -> None:
         """Append a user message of tool_result blocks (truncating large ones)."""
@@ -197,7 +212,7 @@ class ContextManager:
                     "is_error": result.get("is_error", False),
                 }
             )
-        self.messages.append({"role": "user", "content": blocks})
+        self._append({"role": "user", "content": blocks})
 
     def set_plan(self, plan: str) -> None:
         """Pin a plan (plan_then_act) into the system prompt so it is never dropped."""
@@ -331,6 +346,10 @@ class ContextManager:
                 tokens_after=self.estimated_input_tokens(),
                 messages_before=before,
                 messages_after=len(self.messages),
+                # Compaction rewrites history rather than extending it, so the
+                # journal carries the result: the fold replaces on this event.
+                # Cheap by construction — a compaction only ever shrinks.
+                messages=list(self.messages),
             )
         return True
 

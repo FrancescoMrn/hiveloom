@@ -14,8 +14,8 @@ from hiveloom.tools.builtin import (
     FileWriteTool,
     HttpGetTool,
     ShellTool,
-    _safe_path,
     _validate_public_http_url,
+    safe_path,
 )
 from hiveloom.tools.registry import (
     FunctionTool,
@@ -119,13 +119,13 @@ def test_file_write_refuses_configured_trace_dir(tmp_path: Path):
 def test_safe_path_refuses_configured_trace_dir_case_insensitively(tmp_path: Path):
     """`trace_dir` is opt-in (only the HTTP control plane currently has a
     spec loaded to supply it — file_read/file_write don't pass one, so they
-    fall back to the `.hiveloom/`-only coverage above), but `_safe_path`
+    fall back to the `.hiveloom/`-only coverage above), but `safe_path`
     itself must honor it correctly, case-insensitively, when given one.
     """
     (tmp_path / "MyLogs").mkdir()
     (tmp_path / "MyLogs" / "run_x.jsonl").write_text('{"type": "run_started"}\n')
     with pytest.raises(ToolError):
-        _safe_path(tmp_path, "mylogs/run_x.jsonl", trace_dir=Path("MyLogs"))
+        safe_path(tmp_path, "mylogs/run_x.jsonl", trace_dir=Path("MyLogs"))
 
 
 def test_shell_disabled_without_allowlist(tmp_path: Path):

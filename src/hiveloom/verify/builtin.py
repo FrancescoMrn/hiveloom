@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from hiveloom import ext
-from hiveloom.spec.loader import _import_hook
+from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import (
     BuiltinValidatorRef,
     CodeValidatorRef,
@@ -149,7 +149,7 @@ def build_verifiers_from_refs(refs: list[Any], base_dir: str | Path) -> list[Ver
         if isinstance(ref, BuiltinValidatorRef):
             verifiers.append(_make_builtin(ref, base))
         elif isinstance(ref, CodeValidatorRef):
-            func = _import_hook(ref.code, base)
+            func = import_hook(ref.code, base)
             _, func_name = ref.code.rsplit(":", 1)
             verifiers.append(CodeVerifier(func, name=func_name))
     return verifiers

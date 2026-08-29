@@ -92,7 +92,15 @@ def build_mcp_server(
             structured_output=True,
         )
         catalog.append(
-            {"tool": tool_name, "name": spec.name, "description": spec.description}
+            {
+                "tool": tool_name,
+                "name": spec.name,
+                # The Hive key; fitness in list_harnesses is measured by it,
+                # so a same-named harness elsewhere never inflates the numbers
+                # a remote agent picks on.
+                "key": spec.identity,
+                "description": spec.description,
+            }
         )
     server.add_tool(
         _make_list_tool(catalog),
@@ -114,10 +122,10 @@ def _make_list_tool(catalog: list[dict[str, str]]) -> Callable[[], dict[str, Any
         payload: list[dict[str, Any]] = []
         with Hive() as hive:
             for entry in catalog:
-                stats = hive.summary(entry["name"])
+                stats = hive.summary(entry["key"])
                 payload.append(
                     {
-                        **entry,
+                        **{k: v for k, v in entry.items() if k != "key"},
                         "total_runs": stats["total_runs"],
                         "success_rate": round(stats["success_rate"], 3),
                         "avg_cost_usd": round(stats["avg_cost_usd"], 4),

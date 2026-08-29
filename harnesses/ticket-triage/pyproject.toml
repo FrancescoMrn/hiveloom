@@ -1,0 +1,17 @@
+# What this harness needs to run. The folder is the harness; this file pins
+# the runtime that executes it, plus anything its tools, validators and
+# extensions import.
+#
+#     uv sync                        # or: pip install hiveloom==1.0.0
+[project]
+name = "ticket-triage"
+version = "0.1.0"
+description = "Triage the open support tickets exposed by the tickets MCP server: assign each open ticket a category and priority and emit one JSON report."
+requires-python = ">=3.11"
+dependencies = [
+    "hiveloom==1.0.0",
+]
+
+# Not a library: nothing here is built or installed, only the pins resolved.
+[tool.uv]
+package = false

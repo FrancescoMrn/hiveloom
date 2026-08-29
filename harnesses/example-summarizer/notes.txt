@@ -1,10 +1,17 @@
-Quarterly Engineering Review — Q2
+Harness engineering notes
+=========================
 
-The platform team shipped the new ingestion pipeline, cutting median event
-latency from 4.2s to 0.9s. Reliability improved: there were two incidents this
-quarter, both resolved within the SLA, down from five last quarter. The team
-also paid down significant tech debt by retiring the legacy queue.
+A model is not an agent. What turns one into the other is everything around
+the call: the tools it may reach for, the context it is shown, the loop that
+decides whether to go again, and the check that decides whether the work is
+done. That surrounding structure is the harness.
 
-Hiring came in under plan: three of five open roles were filled. The biggest
-risk for next quarter is the database migration, which is on the critical path
-for the billing rework and has no slack in the schedule.
+Treating the harness as a first-class artifact has three consequences. It can
+be versioned, so a change to a prompt is a change you can point at. It can be
+measured, because every run lands in a bucket keyed by the version that
+produced it. And it can be changed on evidence rather than on recollection:
+the failures are on record, so the next edit can be argued for.
+
+The cost of not doing this is familiar. Prompts live in a chat window, a
+change that helped is remembered rather than recorded, and a regression is
+noticed weeks later with no way to say which edit caused it.
