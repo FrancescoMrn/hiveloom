@@ -685,6 +685,95 @@ class PlaybookRef(BaseModel):
         return value
 
 
+_REDACTION_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?)*$"
+)
+
+
+class RedactionConfig(BaseModel):
+    """Structured values removed before a trace event leaves the process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[str] = Field(
+        default_factory=list,
+        description="Dictionary keys whose values are replaced recursively (case-insensitive).",
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Payload paths whose values are replaced. Dot segments and [*] list wildcards "
+            "are supported, for example tool.result.candidates[*].cv_text."
+        ),
+    )
+    patterns: list[str] = Field(
+        default_factory=list,
+        description="Regexes replaced inside every string value.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_pattern_list(cls, value: Any) -> Any:
+        # The 0.x/1.0 contract was a bare list of regexes. Keep loading it and
+        # preserve that compact shape when no structured rules are present.
+        if isinstance(value, list):
+            return {"patterns": value}
+        return value
+
+    @field_validator("keys")
+    @classmethod
+    def _check_keys(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("redaction keys cannot be empty")
+        if len({value.casefold() for value in cleaned}) != len(cleaned):
+            raise ValueError("redaction keys must be unique (case-insensitive)")
+        return cleaned
+
+    @field_validator("paths")
+    @classmethod
+    def _check_paths(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not _REDACTION_PATH_RE.fullmatch(value):
+                raise ValueError(
+                    f"invalid redaction path {value!r}; use dot-separated keys and [*]"
+                )
+        if len(set(values)) != len(values):
+            raise ValueError("redaction paths must be unique")
+        return values
+
+    @field_validator("patterns")
+    @classmethod
+    def _check_patterns(cls, values: list[str]) -> list[str]:
+        for value in values:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"invalid redaction regex {value!r}: {exc}") from exc
+        return values
+
+
+class RetentionConfig(BaseModel):
+    """Explicit limits for raw journal files under one managed trace root."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: int | None = Field(default=None, gt=0, description="Delete traces older than N days.")
+    max_runs: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw run traces."
+    )
+    max_bytes: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw trace bytes."
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one_limit(self) -> RetentionConfig:
+        if self.days is None and self.max_runs is None and self.max_bytes is None:
+            raise ValueError("retention must set days, max_runs, or max_bytes")
+        return self
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -713,9 +802,18 @@ class LoggingConfig(BaseModel):
         failing validation on a rename.
         """
         return {"full": "journal", "tool_calls_only": "summary"}.get(value, value)
-    redact: list[str] = Field(
-        default_factory=list,
-        description="Regexes scrubbed from persisted traces (frozen from evolution).",
+    redact: RedactionConfig = Field(
+        default_factory=RedactionConfig,
+        description=(
+            "Keys, payload paths, and regexes scrubbed before trace persistence or stream "
+            "delivery. A legacy list is read as patterns. Frozen from evolution."
+        ),
+    )
+    retention: RetentionConfig | None = Field(
+        default=None,
+        description=(
+            "Optional raw-trace age, count, and byte limits. No files are removed when absent."
+        ),
     )
     snapshot_files: bool = Field(
         default=False,
@@ -726,6 +824,14 @@ class LoggingConfig(BaseModel):
             "size. The manifest of hashes is always recorded either way."
         ),
     )
+
+    @model_validator(mode="after")
+    def _retention_needs_dedicated_root(self) -> LoggingConfig:
+        if self.retention is not None and self.trace_dir.strip() in {"", ".", "./"}:
+            raise ValueError(
+                "logging.retention requires a dedicated trace_dir, not the harness root"
+            )
+        return self
 
 
 def _default_mutable() -> list[str]:

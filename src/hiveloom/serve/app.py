@@ -498,8 +498,9 @@ def create_app(
             if run is None or run.get("harness_key") != harness_key:
                 raise NotFoundError(f"run '{run_id}' not found in the Hive")
             events: list[dict[str, Any]] = []
-            trace_file = Path(run.get("trace_path", ""))
-            if trace_file.exists():
+            trace_path = run.get("trace_path")
+            trace_file = Path(trace_path) if trace_path else None
+            if trace_file is not None and trace_file.is_file():
                 events = [
                     json.loads(line)
                     for line in trace_file.read_text(encoding="utf-8").splitlines()

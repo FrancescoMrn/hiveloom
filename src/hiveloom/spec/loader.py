@@ -54,6 +54,12 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     for optional_list in ("extensions", "hooks", "skills"):
         if not data.get(optional_list):
             data.pop(optional_list, None)
+    # Preserve the pre-structured representation when regexes are the only
+    # policy. Loading an existing harness must not change its behavior hash or
+    # rewrite its YAML merely because the runtime learned keys and paths.
+    redaction = data.get("logging", {}).get("redact")
+    if isinstance(redaction, dict) and not redaction.get("keys") and not redaction.get("paths"):
+        data["logging"]["redact"] = redaction.get("patterns", [])
     return data
 
 

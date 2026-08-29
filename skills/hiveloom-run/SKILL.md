@@ -107,7 +107,15 @@ The trace is a hash-chained journal, so two more things are available:
 ```bash
 hiveloom trace run_abc123 --verify         # append-only chain intact? (exit 4 if broken)
 hiveloom trace run_abc123 --materialize 42 # the exact request sent at that seq
+hiveloom traces prune ./h --dry-run --json  # preview explicit age/count/byte retention
 ```
+
+`logging.redact` accepts `keys`, payload-relative `paths` with `[*]`, and
+`patterns`; legacy regex lists still work. Redaction happens before persistence
+and stream delivery. `logging.retention` is opt-in. Apply a previewed plan with
+`hiveloom traces prune ./h --yes --json`; the current run is preserved during
+automatic cleanup, and the Hive marks removed raw evidence with
+`trace_pruned_at` instead of leaving stale paths.
 
 When reading the events is not enough, **fork the run** and reproduce the
 failure from the turn it happened on, against a changed harness:

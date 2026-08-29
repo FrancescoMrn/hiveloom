@@ -375,6 +375,7 @@ hiveloom eval report <eval-run-id> --format json
 hiveloom eval compare <baseline-id> <candidate-id> --format markdown
 hiveloom models probe ./my-harness --provider openrouter \
   --model qwen3.5-9b --identity exact --live --json
+hiveloom traces prune ./my-harness --dry-run --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe
