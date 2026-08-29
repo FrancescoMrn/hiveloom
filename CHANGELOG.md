@@ -5,6 +5,58 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Provider responses can report the served model, provider request ID, billed
+  amount and currency, a USD conversion, opaque reasoning replay data, and
+  bounded JSON metadata. Each call exposes whether Hiveloom used a billed or
+  estimated USD cost, and the public run result keeps a receipt for every
+  provider call.
+- `normalize_openai_response`, `to_openai_messages`, and `to_openai_tool` are
+  supported public codecs for OpenAI-compatible extensions. The old private
+  names remain aliases for compatibility.
+- `hiveloom run` now separates literal and file input with `--input-text` and
+  `--input-file`, accepts run-only `--model` and `--provider` overrides, lets
+  batch callers allocate `--run-id`, and writes durable evidence under a
+  caller-selected `--trace-dir`. Runtime model selection is validated and
+  versioned without changing `harness.yaml`; JSON results expose requested and
+  resolved runtime config.
+- Completed runs now return one typed execution envelope with runtime and
+  harness identity, requested/resolved/provider-reported models, timestamps,
+  aggregate usage, billed-versus-estimated cost, verification recovery state,
+  a reproducible fingerprint, and the durable trace path. The same envelope
+  closes the run journal.
+- Trace redaction can target dictionary keys, structured payload paths, and
+  regex patterns before persistence or streaming. Optional age, run-count,
+  and byte retention limits prune validated journal files under a marked trace
+  root while keeping Hive run evidence and clearing stale raw-trace paths.
+- `hiveloom traces prune` previews or applies the configured retention policy
+  with stable JSON receipts. Applying from the CLI requires `--yes`; harnesses
+  without an explicit policy never delete traces automatically.
+- The Hive now indexes recovered validation failures, tool errors and retries,
+  context recovery, operator steering, guardrail stops, provider failures, and
+  loop limits as bounded friction records. `hiveloom friction list` filters
+  them by category, component, recovery state, model, and time; `hiveloom
+  stats --include-friction` reports aggregate counts without reading traces.
+- Evolution can opt in to bounded incident packets selected from indexed
+  friction and failed runs. Structured redaction runs before deterministic
+  byte and token budgeting, missing or pruned journals fall back to indexed
+  summaries, and proposals retain an evidence receipt without copying event
+  payloads.
+- Auto-proposal policies can now declare ordered `final_failure` and
+  `repeated_friction` triggers over bounded recent-run windows. Recovered
+  friction can draft after a successful run, while time and optional run-count
+  cooldowns, fingerprint deduplication, and explicit human apply remain in
+  force. Empty trigger lists preserve the legacy `min_failures` behavior.
+
+### Fixed
+
+- Legacy `--input` no longer raises `ENAMETOOLONG` when a large literal is
+  checked as a possible filename. It remains available for one deprecation
+  cycle; scripts should move to the explicit flags.
+
 ## [1.0.0] - 2026-08-28
 
 The observability release. A run now leaves behind a progressive,

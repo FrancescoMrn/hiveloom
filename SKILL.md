@@ -76,7 +76,10 @@ Interpret the **exit code**: `0` success, `1` verify failed, `2` guardrail halt,
 `3` spec/validation error, `4` runtime error. Traces land in
 `./h/.hiveloom/traces/<run_id>.jsonl`; inspect with `hiveloom trace <run_id>` and
 aggregate with `hiveloom stats ./h` (success rate / cost / turns **per version
-hash**). Running needs credentials for the configured provider when required
+hash**). Use `hiveloom stats ./h --include-friction --json` or `hiveloom
+friction list ./h --recovered true --json` to distinguish clean runs from
+successful runs that recovered after retries or validation failures. Running
+needs credentials for the configured provider when required
 (for example, `ANTHROPIC_API_KEY` for the default provider, loaded from the
 harness `.env`).
 
@@ -84,7 +87,8 @@ harness `.env`).
 
 When asked to improve a failing harness, **do not** hand-edit it — and never
 touch `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-`mcp_servers`, or `evolution.auto_propose` through evolution. Run:
+`mcp_servers`, `evolution.auto_propose`, or `evolution.trace_excerpts` through
+evolution. Run:
 ```bash
 hiveloom evolve ./h            # analyze Hive failures → propose a gated mutation
 ```

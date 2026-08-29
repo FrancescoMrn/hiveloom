@@ -1,6 +1,7 @@
 """Evolution: analyze Hive failures and propose gated harness mutations."""
 
 from hiveloom.evolve.analyzer import FailureReport, analyze
+from hiveloom.evolve.evidence import IncidentEvidence, IncidentPacket
 from hiveloom.evolve.evolver import (
     ApplyResult,
     MutationProposal,
@@ -14,6 +15,8 @@ from hiveloom.evolve.evolver import (
 __all__ = [
     "ApplyResult",
     "FailureReport",
+    "IncidentEvidence",
+    "IncidentPacket",
     "MutationProposal",
     "analyze",
     "apply_proposal",

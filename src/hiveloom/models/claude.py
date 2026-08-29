@@ -199,4 +199,6 @@ class ClaudeProvider(ModelProvider):
             stop_reason=raw.stop_reason or "end_turn",
             usage=usage,
             content_blocks=content_blocks,
+            model=str(getattr(raw, "model", "") or ""),
+            provider_request_id=str(getattr(raw, "id", "") or ""),
         )

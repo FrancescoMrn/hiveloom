@@ -14,6 +14,7 @@ Default database: ``~/.hiveloom/hive.db`` (override with ``$HIVELOOM_DB``).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -53,6 +54,7 @@ def normalize_feedback(feedback: str) -> str:
 # How much of a run's task statement the index keeps: enough to title and
 # search a run, not enough to become a shadow copy of the journal.
 _TASK_CHARS = 2000
+_FRICTION_SUMMARY_CHARS = 500
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -69,6 +71,7 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     reason TEXT,
     trace_path TEXT,
+    trace_pruned_at TEXT,
     parent_run_id TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
@@ -107,6 +110,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     rationale TEXT,
     proposal_json TEXT,
     gate_json TEXT,
+    evidence_json TEXT,
     apply_result_json TEXT,
     created_at TEXT,
     resolved_at TEXT
@@ -126,6 +130,20 @@ CREATE TABLE IF NOT EXISTS run_outcomes (
     detail TEXT,
     recorded_at TEXT
 );
+CREATE TABLE IF NOT EXISTS friction_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    phase TEXT,
+    attempt INTEGER,
+    component TEXT,
+    fingerprint TEXT NOT NULL,
+    recovered INTEGER NOT NULL,
+    timestamp TEXT,
+    summary TEXT NOT NULL,
+    UNIQUE(run_id, seq, category, component)
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
@@ -133,9 +151,55 @@ CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_name ON playbook_visits(playbook);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
 CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
+CREATE INDEX IF NOT EXISTS idx_friction_run ON friction_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_friction_category ON friction_events(category);
+CREATE INDEX IF NOT EXISTS idx_friction_fingerprint ON friction_events(fingerprint);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
     ON proposals(harness_name, spec_version_hash, dedup_key) WHERE status='pending';
 """
+
+
+def _friction_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["recovered"] = bool(result["recovered"])
+    return result
+
+
+def _friction_filters(
+    harness_key: str,
+    *,
+    category: str | None,
+    component: str | None,
+    recovered: bool | None,
+    model: str | None,
+    since: str | None,
+    until: str | None,
+    version: str | None,
+) -> tuple[list[str], list[Any]]:
+    where = ["r.harness_key=?"]
+    params: list[Any] = [harness_key]
+    if category is not None:
+        where.append("f.category=?")
+        params.append(category)
+    if component is not None:
+        where.append("f.component=?")
+        params.append(component)
+    if recovered is not None:
+        where.append("f.recovered=?")
+        params.append(1 if recovered else 0)
+    if model is not None:
+        where.append("(r.effective_model=? OR r.requested_model=? OR r.model_path=?)")
+        params.extend((model, model, model))
+    if since is not None:
+        where.append("f.timestamp>=?")
+        params.append(since)
+    if until is not None:
+        where.append("f.timestamp<=?")
+        params.append(until)
+    if version is not None:
+        where.append("r.harness_version_hash=?")
+        params.append(version)
+    return where, params
 
 
 def default_db_path() -> Path:
@@ -187,6 +251,12 @@ class Hive:
             ("task", "TEXT"),
             ("harness_id", "TEXT"),
             ("harness_key", "TEXT"),
+            ("trace_pruned_at", "TEXT"),
+            ("requested_provider", "TEXT"),
+            ("requested_model", "TEXT"),
+            ("effective_provider", "TEXT"),
+            ("effective_model", "TEXT"),
+            ("execution_fingerprint", "TEXT"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
@@ -205,6 +275,14 @@ class Hive:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_key ON runs(harness_key)"
         )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_effective_model ON runs(effective_model)"
+        )
+        proposal_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(proposals)")
+        }
+        if "evidence_json" not in proposal_columns:
+            self._conn.execute("ALTER TABLE proposals ADD COLUMN evidence_json TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -278,10 +356,16 @@ class Hive:
             "finished_at": None,
             "reason": "",
             "trace_path": trace_path,
+            "trace_pruned_at": None,
             "parent_run_id": None,
             "forked_at_seq": None,
             "model_path": "",
             "task": None,
+            "requested_provider": "",
+            "requested_model": "",
+            "effective_provider": "",
+            "effective_model": "",
+            "execution_fingerprint": "",
         }
         verifications: list[tuple] = []
         triggers: list[tuple] = []
@@ -309,6 +393,15 @@ class Hive:
                 row["reason"] = payload.get("reason", "")
                 row["finished_at"] = event.get("timestamp")
                 row["model_path"] = payload.get("model_path", "") or ""
+                execution = payload.get("execution")
+                if isinstance(execution, dict):
+                    row["requested_provider"] = execution.get("requested_provider", "") or ""
+                    row["requested_model"] = execution.get("requested_model", "") or ""
+                    row["effective_provider"] = execution.get("effective_provider", "") or ""
+                    row["effective_model"] = execution.get("effective_model", "") or ""
+                    row["execution_fingerprint"] = (
+                        execution.get("execution_fingerprint", "") or ""
+                    )
             elif etype == "verification_result":
                 verifications.append(
                     (
@@ -347,15 +440,21 @@ class Hive:
         cur.execute("DELETE FROM verifications WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM guardrail_triggers WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
+        cur.execute("DELETE FROM friction_events WHERE run_id=?", (run_id,))
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "parent_run_id, forked_at_seq, model_path, task) "
+            "trace_pruned_at, "
+            "parent_run_id, forked_at_seq, model_path, task, requested_provider, "
+            "requested_model, effective_provider, effective_model, execution_fingerprint) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":parent_run_id, :forked_at_seq, :model_path, :task)",
+            ":trace_pruned_at, "
+            ":parent_run_id, :forked_at_seq, :model_path, :task, :requested_provider, "
+            ":requested_model, :effective_provider, :effective_model, "
+            ":execution_fingerprint)",
             row,
         )
         cur.executemany(
@@ -373,6 +472,186 @@ class Hive:
             "VALUES (?, ?, ?, ?, ?, ?)",
             visits,
         )
+        cur.executemany(
+            "INSERT INTO friction_events (run_id, seq, category, phase, attempt, "
+            "component, fingerprint, recovered, timestamp, summary) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self._derive_friction(run_id, events, row),
+        )
+
+    @staticmethod
+    def _derive_friction(
+        run_id: str, events: list[dict[str, Any]], run: dict[str, Any]
+    ) -> list[tuple[Any, ...]]:
+        """Build bounded, redacted incident rows from one run journal.
+
+        Trace payloads have already passed through the logging redactor. The
+        Hive keeps only short diagnostics or generic descriptions, never tool
+        inputs, tool output bodies, model text, or operator messages.
+        """
+        records: list[tuple[Any, ...]] = []
+        final_success = run["status"] == "success"
+        current_phase = ""
+        current_turn = 0
+        verification_attempt = 0
+        previous_type = ""
+        unmatched_model_call: dict[str, Any] | None = None
+
+        def add(
+            event: dict[str, Any],
+            category: str,
+            *,
+            component: str = "",
+            summary: str = "",
+            phase: str | None = None,
+            attempt: int | None = None,
+            recovered: bool | None = None,
+        ) -> None:
+            safe_summary = normalize_feedback(str(summary or category))[:_FRICTION_SUMMARY_CHARS]
+            event_phase = current_phase if phase is None else phase
+            material = json.dumps(
+                {
+                    "category": category,
+                    "phase": event_phase,
+                    "component": component,
+                    "summary": safe_summary,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            fingerprint = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+            records.append(
+                (
+                    run_id,
+                    int(event.get("seq", 0)),
+                    category,
+                    event_phase or None,
+                    current_turn if attempt is None else attempt,
+                    component or None,
+                    fingerprint,
+                    1 if (final_success if recovered is None else recovered) else 0,
+                    event.get("timestamp"),
+                    safe_summary,
+                )
+            )
+
+        ordered = sorted(events, key=lambda event: int(event.get("seq", 0)))
+        for event in ordered:
+            etype = event.get("type", "")
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+
+            if etype == "model_call":
+                current_phase = str(payload.get("phase") or "act")
+                current_turn = int(payload.get("turn") or current_turn or 0) + 1
+                unmatched_model_call = event
+            elif etype == "model_response":
+                current_phase = str(payload.get("phase") or current_phase)
+                current_turn = int(payload.get("turn") or current_turn or 0)
+                unmatched_model_call = None
+            elif etype == "verification_result":
+                if previous_type != "verification_result":
+                    verification_attempt += 1
+                if not payload.get("passed"):
+                    verifier = str(payload.get("verifier") or "verification")
+                    lowered = verifier.lower()
+                    category = (
+                        "output_validation"
+                        if "schema" in lowered or "output" in lowered or "json" in lowered
+                        else "verifier_failure"
+                    )
+                    add(
+                        event,
+                        category,
+                        component=verifier,
+                        summary=str(payload.get("feedback") or f"{verifier} failed"),
+                        phase="verification",
+                        attempt=verification_attempt,
+                    )
+            elif etype == "tool_retry":
+                add(
+                    event,
+                    "retry",
+                    component=str(payload.get("name") or "tool"),
+                    summary="tool call retried after a retryable error",
+                )
+            elif etype == "tool_result" and payload.get("is_error"):
+                add(
+                    event,
+                    "tool_error",
+                    component=str(payload.get("name") or "tool"),
+                    summary="tool returned an error",
+                )
+            elif etype == "tool_truncated":
+                add(
+                    event,
+                    "tool_error",
+                    component=str(payload.get("name") or "tool"),
+                    summary="tool call was not executed because its arguments were truncated",
+                )
+            elif etype == "context_overflow_recovery":
+                add(
+                    event,
+                    "retry",
+                    component="context_window",
+                    summary=str(payload.get("error") or "provider context overflow recovered"),
+                    phase=str(payload.get("phase") or current_phase),
+                )
+            elif etype == "context_compaction":
+                add(
+                    event,
+                    "context_compaction",
+                    component=str(payload.get("method") or "context"),
+                    summary="context was compacted",
+                    phase="compaction",
+                )
+            elif etype == "user_steer":
+                add(
+                    event,
+                    "user_steer",
+                    component="operator",
+                    summary="operator steering was applied",
+                )
+            elif etype == "guardrail_triggered":
+                kind = str(payload.get("kind") or "")
+                if kind in {"halt", "block"}:
+                    add(
+                        event,
+                        "guardrail_halt" if kind == "halt" else "guardrail_block",
+                        component=str(payload.get("guardrail") or "guardrail"),
+                        summary=str(payload.get("reason") or f"guardrail {kind}"),
+                        recovered=False if kind == "halt" else None,
+                    )
+            elif etype == "model_swap_failed":
+                add(
+                    event,
+                    "provider_error",
+                    component=str(payload.get("requested_model") or "model_router"),
+                    summary=str(payload.get("error") or "model swap failed"),
+                )
+
+            previous_type = etype
+
+        finished = ordered[-1] if ordered else {"seq": 0, "timestamp": None}
+        if run["status"] == "max_turns":
+            add(
+                finished,
+                "loop_limit",
+                component="max_turns",
+                summary=str(run.get("reason") or "loop reached its model-call limit"),
+                recovered=False,
+            )
+        if run["status"] == "error" and unmatched_model_call is not None:
+            add(
+                finished,
+                "provider_error",
+                component=str(run.get("effective_model") or run.get("requested_model") or "model"),
+                summary=str(run.get("reason") or "provider request failed"),
+                phase=str(unmatched_model_call.get("payload", {}).get("phase") or current_phase),
+                recovered=False,
+            )
+        return records
 
     # ------------------------------------------------------------------ #
     # Queries
@@ -572,7 +851,7 @@ class Hive:
         return result
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        """Fetch a single run with its verifications and guardrail triggers."""
+        """Fetch a single run with its verification, guardrail, and friction records."""
         run = self._conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
         if run is None:
             return None
@@ -593,7 +872,147 @@ class Hive:
                 (run_id,),
             ).fetchall()
         ]
+        entry["friction"] = [
+            _friction_row(row)
+            for row in self._conn.execute(
+                "SELECT id AS friction_id, seq, category, phase, attempt, component, "
+                "fingerprint, recovered, timestamp, summary FROM friction_events "
+                "WHERE run_id=? ORDER BY seq, id",
+                (run_id,),
+            ).fetchall()
+        ]
         return entry
+
+    def mark_traces_pruned(
+        self, traces: list[tuple[str, str]], *, pruned_at: str
+    ) -> int:
+        """Clear only Hive paths that still point at the files being pruned.
+
+        The same run may have been re-ingested from durable storage after a
+        retention plan was built. Comparing resolved paths prevents an old
+        copy's deletion from clearing that newer reference.
+        """
+        updated = 0
+        try:
+            for run_id, expected_path in traces:
+                row = self._conn.execute(
+                    "SELECT trace_path FROM runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if row is None or not row["trace_path"]:
+                    continue
+                if Path(row["trace_path"]).expanduser().resolve() != Path(
+                    expected_path
+                ).expanduser().resolve():
+                    continue
+                cursor = self._conn.execute(
+                    "UPDATE runs SET trace_path=NULL, trace_pruned_at=? "
+                    "WHERE run_id=? AND trace_path=?",
+                    (pruned_at, run_id, row["trace_path"]),
+                )
+                updated += cursor.rowcount
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return updated
+
+    def list_friction(
+        self,
+        harness_key: str,
+        *,
+        category: str | None = None,
+        component: str | None = None,
+        recovered: bool | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        version: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List friction records with stable filters over run provenance."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        where, params = _friction_filters(
+            harness_key,
+            category=category,
+            component=component,
+            recovered=recovered,
+            model=model,
+            since=since,
+            until=until,
+            version=version,
+        )
+        rows = self._conn.execute(
+            "SELECT f.id AS friction_id, f.run_id, f.seq, f.category, f.phase, "
+            "f.attempt, f.component, "
+            "f.fingerprint, f.recovered, f.timestamp, f.summary, r.status AS run_status, "
+            "COALESCE(NULLIF(r.effective_model, ''), NULLIF(r.requested_model, ''), "
+            "NULLIF(r.model_path, ''), '') AS model "
+            "FROM friction_events f JOIN runs r ON r.run_id=f.run_id "
+            f"WHERE {' AND '.join(where)} ORDER BY f.timestamp DESC, f.seq DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [_friction_row(row) for row in rows]
+
+    def friction_summary(
+        self,
+        harness_key: str,
+        *,
+        category: str | None = None,
+        component: str | None = None,
+        recovered: bool | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate friction without reading raw journals."""
+        where, params = _friction_filters(
+            harness_key,
+            category=category,
+            component=component,
+            recovered=recovered,
+            model=model,
+            since=since,
+            until=until,
+            version=version,
+        )
+        scope = " AND ".join(where)
+        totals = self._conn.execute(
+            "SELECT COUNT(*) AS events, COUNT(DISTINCT f.run_id) AS runs, "
+            "SUM(CASE WHEN f.recovered=1 THEN 1 ELSE 0 END) AS recovered "
+            "FROM friction_events f JOIN runs r ON r.run_id=f.run_id "
+            f"WHERE {scope}",
+            params,
+        ).fetchone()
+        categories = self._conn.execute(
+            "SELECT f.category, COUNT(*) AS events, COUNT(DISTINCT f.run_id) AS runs, "
+            "SUM(CASE WHEN f.recovered=1 THEN 1 ELSE 0 END) AS recovered "
+            "FROM friction_events f JOIN runs r ON r.run_id=f.run_id "
+            f"WHERE {scope} GROUP BY f.category ORDER BY events DESC, f.category",
+            params,
+        ).fetchall()
+
+        def aggregate(row: sqlite3.Row) -> dict[str, Any]:
+            events = row["events"] or 0
+            recovered_events = row["recovered"] or 0
+            return {
+                "category": row["category"],
+                "events": events,
+                "runs": row["runs"] or 0,
+                "recovered": recovered_events,
+                "unrecovered": events - recovered_events,
+            }
+
+        total_events = totals["events"] or 0
+        recovered_events = totals["recovered"] or 0
+        return {
+            "events": total_events,
+            "runs": totals["runs"] or 0,
+            "recovered": recovered_events,
+            "unrecovered": total_events - recovered_events,
+            "categories": [aggregate(row) for row in categories],
+        }
 
     def lineage(self, run_id: str) -> dict[str, Any]:
         """The fork tree around a run: its ancestors, itself, and its forks.
@@ -749,6 +1168,9 @@ class Hive:
         self._conn.execute(
             f"DELETE FROM run_outcomes WHERE run_id IN ({placeholders})", run_ids
         )
+        self._conn.execute(
+            f"DELETE FROM friction_events WHERE run_id IN ({placeholders})", run_ids
+        )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()
         return len(run_ids)
@@ -797,6 +1219,104 @@ class Hive:
         row = self._conn.execute(query, params).fetchone()
         return row["n"] or 0
 
+    def run_count(
+        self, harness_key: str, *, since: str | None = None, version: str | None = None
+    ) -> int:
+        """Count completed runs for cooldowns scoped to one harness version."""
+        query = "SELECT COUNT(*) AS n FROM runs WHERE harness_key=?"
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND harness_version_hash=?"
+            params.append(version)
+        if since is not None:
+            query += " AND finished_at>=?"
+            params.append(since)
+        row = self._conn.execute(query, params).fetchone()
+        return row["n"] or 0
+
+    def recent_run_window(
+        self, harness_key: str, *, version: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """Newest completed runs forming an auto-trigger evidence window."""
+        rows = self._conn.execute(
+            "SELECT run_id, status, started_at, finished_at FROM runs "
+            "WHERE harness_key=? AND harness_version_hash=? "
+            "ORDER BY finished_at DESC, run_id DESC LIMIT ?",
+            (harness_key, version, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def repeated_friction_pattern(
+        self,
+        *,
+        run_ids: list[str],
+        current_run_id: str,
+        category: str,
+        minimum_runs: int,
+        recovered: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Best matching fingerprint contributed by the just-finished run.
+
+        Requiring the current run to carry the fingerprint prevents an
+        unrelated clean run from re-triggering old evidence that merely
+        remains inside the configured recent-run window.
+        """
+        if current_run_id not in run_ids or not run_ids:
+            return None
+        recovered_clause = "" if recovered is None else " AND recovered=?"
+        current_params: list[Any] = [current_run_id, category]
+        if recovered is not None:
+            current_params.append(1 if recovered else 0)
+        current = self._conn.execute(
+            "SELECT DISTINCT fingerprint FROM friction_events "
+            f"WHERE run_id=? AND category=?{recovered_clause}",
+            current_params,
+        ).fetchall()
+        fingerprints = [row["fingerprint"] for row in current]
+        if not fingerprints:
+            return None
+
+        run_slots = ",".join("?" for _ in run_ids)
+        fingerprint_slots = ",".join("?" for _ in fingerprints)
+        params: list[Any] = [*run_ids, category, *fingerprints]
+        if recovered is not None:
+            params.append(1 if recovered else 0)
+        rows = self._conn.execute(
+            "SELECT fingerprint, MIN(component) AS component, MIN(summary) AS summary, "
+            "COUNT(*) AS events, COUNT(DISTINCT run_id) AS runs, "
+            "MAX(timestamp) AS latest_at FROM friction_events "
+            f"WHERE run_id IN ({run_slots}) AND category=? "
+            f"AND fingerprint IN ({fingerprint_slots}){recovered_clause} "
+            "GROUP BY fingerprint HAVING COUNT(DISTINCT run_id)>=? "
+            "ORDER BY runs DESC, events DESC, latest_at DESC, fingerprint LIMIT 1",
+            (*params, minimum_runs),
+        ).fetchone()
+        if rows is None:
+            return None
+
+        matched = self._conn.execute(
+            "SELECT DISTINCT run_id FROM friction_events "
+            f"WHERE run_id IN ({run_slots}) AND category=? AND fingerprint=?"
+            f"{recovered_clause}",
+            (
+                *run_ids,
+                category,
+                rows["fingerprint"],
+                *([] if recovered is None else [1 if recovered else 0]),
+            ),
+        ).fetchall()
+        matched_ids = {row["run_id"] for row in matched}
+        return {
+            "category": category,
+            "fingerprint": rows["fingerprint"],
+            "component": rows["component"],
+            "summary": rows["summary"],
+            "events": rows["events"],
+            "runs": rows["runs"],
+            "recovered": recovered,
+            "run_ids": [run_id for run_id in run_ids if run_id in matched_ids],
+        }
+
     # ------------------------------------------------------------------ #
     # Proposals queue
     # ------------------------------------------------------------------ #
@@ -809,13 +1329,15 @@ class Hive:
         here and that existing row is returned instead of raising — dedup by
         construction, safe even under a race with another inserter.
         """
+        row = {**row, "evidence_json": row.get("evidence_json")}
         try:
             self._conn.execute(
                 "INSERT INTO proposals (id, harness_name, spec_version_hash, dedup_key, "
-                "status, trigger, rationale, proposal_json, gate_json, apply_result_json, "
+                "status, trigger, rationale, proposal_json, gate_json, evidence_json, "
+                "apply_result_json, "
                 "created_at, resolved_at) VALUES (:id, :harness_name, :spec_version_hash, "
                 ":dedup_key, :status, :trigger, :rationale, :proposal_json, :gate_json, "
-                ":apply_result_json, :created_at, :resolved_at)",
+                ":evidence_json, :apply_result_json, :created_at, :resolved_at)",
                 row,
             )
             self._conn.commit()

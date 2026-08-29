@@ -22,6 +22,8 @@ def _response(
     cache_write: int = 0,
 ) -> types.SimpleNamespace:
     return types.SimpleNamespace(
+        id="msg_fixture",
+        model="claude-served-fixture",
         content=[types.SimpleNamespace(type="text", text=text)],
         stop_reason="end_turn",
         usage=types.SimpleNamespace(
@@ -124,6 +126,8 @@ def test_usage_reports_cache_tokens(monkeypatch):
     assert result.usage.cache_read_tokens == 800
     assert result.usage.cache_write_tokens == 200
     assert result.usage.input_tokens == 10
+    assert result.model == "claude-served-fixture"
+    assert result.provider_request_id == "msg_fixture"
 
 
 def test_overflow_bad_request_maps_to_context_overflow(monkeypatch):

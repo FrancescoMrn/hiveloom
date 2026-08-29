@@ -3,8 +3,8 @@
 Every run produces a JSONL trace. Events share a common envelope (``run_id``,
 ``harness_name``, ``harness_id``, ``harness_version_hash``, ``timestamp``,
 ``seq``, ``type``)
-plus a type-specific ``payload``. The spec's ``redact`` patterns are applied
-before anything is persisted.
+plus a type-specific ``payload``. The spec's redaction keys, paths, and
+patterns are applied before anything is persisted or streamed.
 
 Events are **chained**: each carries ``prev``, the sha256 of the preceding
 line as written. Editing or removing a line therefore breaks the chain at that
@@ -36,6 +36,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.logging.journal import CONTEXT_EVENTS
+from hiveloom.logging.retention import ensure_trace_root
 from hiveloom.spec.loader import dump_spec
 from hiveloom.spec.schema import HarnessSpec
 
@@ -204,6 +205,47 @@ class TraceEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class TraceRedactor:
+    """Apply the same structured policy to persistence and downstream evidence."""
+
+    def __init__(
+        self,
+        *,
+        patterns: list[str] | None = None,
+        keys: list[str] | None = None,
+        paths: list[str] | None = None,
+    ):
+        self._patterns = [re.compile(pattern, re.IGNORECASE) for pattern in (patterns or [])]
+        self._keys = {key.casefold() for key in (keys or [])}
+        self._paths = [_parse_redaction_path(path) for path in (paths or [])]
+
+    def redact(self, value: Any) -> Any:
+        """Return a redacted copy; never mutate caller-owned values."""
+        redacted = self._redact_recursive(value)
+        for path in self._paths:
+            _apply_redaction_path(redacted, path)
+        return redacted
+
+    def _redact_recursive(self, value: Any) -> Any:
+        if isinstance(value, str):
+            redacted = value
+            for pattern in self._patterns:
+                redacted = pattern.sub("[REDACTED]", redacted)
+            return redacted
+        if isinstance(value, dict):
+            return {
+                key: (
+                    "[REDACTED]"
+                    if str(key).casefold() in self._keys
+                    else self._redact_recursive(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._redact_recursive(item) for item in value]
+        return value
+
+
 class TraceWriter:
     """Writes trace events to ``<trace_dir>/<run_id>.jsonl`` (redacted).
     """
@@ -215,19 +257,24 @@ class TraceWriter:
         harness_name: str,
         version_hash: str,
         redact_patterns: list[str] | None = None,
+        redact_keys: list[str] | None = None,
+        redact_paths: list[str] | None = None,
         level: str = "journal",
         on_event=None,
         harness_id: str = "",
     ):
-        self._dir = Path(trace_dir)
-        self._dir.mkdir(parents=True, exist_ok=True)
+        self._dir = ensure_trace_root(trace_dir)
         self._path = self._dir / f"{run_id}.jsonl"
         self._run_id = run_id
         self._name = harness_name
         self._harness_id = harness_id
         self._version = version_hash
         self._seq = 0
-        self._patterns = [re.compile(p, re.IGNORECASE) for p in (redact_patterns or [])]
+        self._redactor = TraceRedactor(
+            patterns=redact_patterns,
+            keys=redact_keys,
+            paths=redact_paths,
+        )
         # Normalise the 0.x names here as well as in the spec: TraceWriter is
         # public, and an embedding caller may pass either.
         self._level = {"full": "journal", "tool_calls_only": "summary"}.get(level, level)
@@ -324,13 +371,40 @@ class TraceWriter:
         return event
 
     def _redact(self, value: Any) -> Any:
-        if isinstance(value, str):
-            redacted = value
-            for pattern in self._patterns:
-                redacted = pattern.sub("[REDACTED]", redacted)
-            return redacted
-        if isinstance(value, dict):
-            return {k: self._redact(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._redact(v) for v in value]
-        return value
+        return self._redactor.redact(value)
+
+
+_REDACTION_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?$")
+
+
+def _parse_redaction_path(path: str) -> tuple[tuple[str, bool], ...]:
+    segments: list[tuple[str, bool]] = []
+    for raw in path.split("."):
+        if not _REDACTION_SEGMENT_RE.fullmatch(raw):
+            raise ValueError(
+                f"invalid redaction path {path!r}; use dot-separated keys and [*]"
+            )
+        wildcard = raw.endswith("[*]")
+        segments.append((raw[:-3] if wildcard else raw, wildcard))
+    return tuple(segments)
+
+
+def _apply_redaction_path(value: Any, path: tuple[tuple[str, bool], ...]) -> None:
+    if not path or not isinstance(value, dict):
+        return
+    key, wildcard = path[0]
+    if key not in value:
+        return
+    if len(path) == 1:
+        if wildcard and isinstance(value[key], list):
+            value[key] = ["[REDACTED]" for _ in value[key]]
+        elif not wildcard:
+            value[key] = "[REDACTED]"
+        return
+    target = value[key]
+    if wildcard:
+        if isinstance(target, list):
+            for item in target:
+                _apply_redaction_path(item, path[1:])
+        return
+    _apply_redaction_path(target, path[1:])

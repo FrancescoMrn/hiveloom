@@ -142,13 +142,31 @@ recent failed traces with their verifier feedback. It also carries lineage
 per-version fitness bucket and reported separately, because they did not
 execute the harness as declared.
 
+The Hive also derives a normalized friction index from redacted journal
+events. A recovered output validation failure or tool retry remains separate
+from final success and can be queried by category, component, model, time, and
+recovery state. The index stores bounded summaries and fingerprints, not raw
+tool or model payloads.
+
+An opt-in auto-proposal policy can match a final-failure count or one friction
+fingerprint repeated across distinct runs in a bounded current-version window.
+The just-finished run must contribute the matched signal. Trigger receipts and
+cooldowns are Hive-backed, so restarts do not reset either decision.
+
+When explicitly enabled, evolution uses those rows as incident anchors and
+selects a bounded window from each validated journal. It re-applies structured
+redaction before truncation and budgeting; a missing or retention-pruned
+journal falls back to its indexed summary. Proposals store an evidence digest
+and selection receipt, never a second copy of the selected payloads.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
 minimal mutation, then **gates it in code**:
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, and `evolution.auto_propose` (`schema.ALWAYS_FROZEN`) — plus
+  `mcp_servers`, `evolution.auto_propose`, and `evolution.trace_excerpts`
+  (`schema.ALWAYS_FROZEN`) — plus
   any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;
 - regenerated code hooks always require explicit human approval.

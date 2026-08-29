@@ -685,6 +685,95 @@ class PlaybookRef(BaseModel):
         return value
 
 
+_REDACTION_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?)*$"
+)
+
+
+class RedactionConfig(BaseModel):
+    """Structured values removed before a trace event leaves the process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[str] = Field(
+        default_factory=list,
+        description="Dictionary keys whose values are replaced recursively (case-insensitive).",
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Payload paths whose values are replaced. Dot segments and [*] list wildcards "
+            "are supported, for example tool.result.candidates[*].cv_text."
+        ),
+    )
+    patterns: list[str] = Field(
+        default_factory=list,
+        description="Regexes replaced inside every string value.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_pattern_list(cls, value: Any) -> Any:
+        # The 0.x/1.0 contract was a bare list of regexes. Keep loading it and
+        # preserve that compact shape when no structured rules are present.
+        if isinstance(value, list):
+            return {"patterns": value}
+        return value
+
+    @field_validator("keys")
+    @classmethod
+    def _check_keys(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("redaction keys cannot be empty")
+        if len({value.casefold() for value in cleaned}) != len(cleaned):
+            raise ValueError("redaction keys must be unique (case-insensitive)")
+        return cleaned
+
+    @field_validator("paths")
+    @classmethod
+    def _check_paths(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not _REDACTION_PATH_RE.fullmatch(value):
+                raise ValueError(
+                    f"invalid redaction path {value!r}; use dot-separated keys and [*]"
+                )
+        if len(set(values)) != len(values):
+            raise ValueError("redaction paths must be unique")
+        return values
+
+    @field_validator("patterns")
+    @classmethod
+    def _check_patterns(cls, values: list[str]) -> list[str]:
+        for value in values:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"invalid redaction regex {value!r}: {exc}") from exc
+        return values
+
+
+class RetentionConfig(BaseModel):
+    """Explicit limits for raw journal files under one managed trace root."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: int | None = Field(default=None, gt=0, description="Delete traces older than N days.")
+    max_runs: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw run traces."
+    )
+    max_bytes: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw trace bytes."
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one_limit(self) -> RetentionConfig:
+        if self.days is None and self.max_runs is None and self.max_bytes is None:
+            raise ValueError("retention must set days, max_runs, or max_bytes")
+        return self
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -713,9 +802,18 @@ class LoggingConfig(BaseModel):
         failing validation on a rename.
         """
         return {"full": "journal", "tool_calls_only": "summary"}.get(value, value)
-    redact: list[str] = Field(
-        default_factory=list,
-        description="Regexes scrubbed from persisted traces (frozen from evolution).",
+    redact: RedactionConfig = Field(
+        default_factory=RedactionConfig,
+        description=(
+            "Keys, payload paths, and regexes scrubbed before trace persistence or stream "
+            "delivery. A legacy list is read as patterns. Frozen from evolution."
+        ),
+    )
+    retention: RetentionConfig | None = Field(
+        default=None,
+        description=(
+            "Optional raw-trace age, count, and byte limits. No files are removed when absent."
+        ),
     )
     snapshot_files: bool = Field(
         default=False,
@@ -726,6 +824,14 @@ class LoggingConfig(BaseModel):
             "size. The manifest of hashes is always recorded either way."
         ),
     )
+
+    @model_validator(mode="after")
+    def _retention_needs_dedicated_root(self) -> LoggingConfig:
+        if self.retention is not None and self.trace_dir.strip() in {"", ".", "./"}:
+            raise ValueError(
+                "logging.retention requires a dedicated trace_dir, not the harness root"
+            )
+        return self
 
 
 def _default_mutable() -> list[str]:
@@ -751,34 +857,137 @@ def _default_frozen() -> list[str]:
 MIN_COOLDOWN_HOURS = 1 / 60
 
 
+class FinalFailureTrigger(BaseModel):
+    """Draft after final failures repeat inside a bounded recent-run window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["final_failure"]
+    minimum_runs: int = Field(default=1, ge=1)
+    window: int = Field(default=20, ge=1, le=1000)
+
+    @model_validator(mode="after")
+    def _minimum_fits_window(self) -> FinalFailureTrigger:
+        if self.minimum_runs > self.window:
+            raise ValueError("minimum_runs cannot exceed window")
+        return self
+
+
+class RepeatedFrictionTrigger(BaseModel):
+    """Draft when one indexed friction fingerprint repeats across runs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["repeated_friction"]
+    category: str = Field(min_length=1, max_length=64)
+    minimum_runs: int = Field(default=5, ge=1)
+    window: int = Field(default=20, ge=1, le=1000)
+    recovered: bool | None = Field(
+        default=None,
+        description="Optionally require recovered or unrecovered friction records.",
+    )
+
+    @field_validator("category")
+    @classmethod
+    def _category_is_bounded_name(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
+            raise ValueError("category must match [a-z][a-z0-9_]*")
+        return value
+
+    @model_validator(mode="after")
+    def _minimum_fits_window(self) -> RepeatedFrictionTrigger:
+        if self.minimum_runs > self.window:
+            raise ValueError("minimum_runs cannot exceed window")
+        return self
+
+
+AutoProposeTrigger = Annotated[
+    FinalFailureTrigger | RepeatedFrictionTrigger,
+    Field(discriminator="kind"),
+]
+
+
 class AutoProposeConfig(BaseModel):
-    """Opt-in: draft (never apply) an evolution proposal after a failing run."""
+    """Opt-in: draft (never apply) a proposal from failures or friction."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(
         default=False,
-        description="Draft a gated proposal after a failing run. Never auto-applies.",
+        description="Draft gated proposals from configured evidence. Never auto-applies.",
     )
     min_failures: int = Field(
         default=5, ge=1,
         description=(
-            "Non-success runs of the current harness version (since the last "
-            "auto-proposal) required before drafting."
+            "Legacy failure-only threshold used when triggers is empty. Non-success runs "
+            "of the current harness version since the last auto-proposal are counted."
+        ),
+    )
+    triggers: list[AutoProposeTrigger] = Field(
+        default_factory=list,
+        description=(
+            "Ordered proposal triggers. Empty preserves the legacy min_failures behavior."
         ),
     )
     cooldown_hours: float = Field(
         default=24.0, ge=MIN_COOLDOWN_HOURS,
         description=(
             "Minimum gap between auto-drafted proposals for this harness. Cannot be "
-            "removed: values below one minute are rejected. Each qualifying failing run "
+            "removed: values below one minute are rejected. Each qualifying run "
             "costs a strong-model call unless the dedup pre-check catches it, so this is "
-            "partly a spend guard; use `min_failures` for a different shape of restraint."
+            "partly a spend guard; use trigger thresholds for another restraint."
+        ),
+    )
+    cooldown_runs: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional minimum completed runs of this harness version between auto-drafts."
         ),
     )
     model: str | None = Field(
         default=None,
         description="Strong-model override for auto-drafted proposals; else the CLI/env default.",
+    )
+
+
+class TraceExcerptConfig(BaseModel):
+    """Bounded, redacted incident evidence supplied to the proposing model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Include incident packets in evolution analysis. Opt-in by default.",
+    )
+    max_incidents: int = Field(
+        default=5, ge=1, le=20, description="Newest incidents considered per analysis."
+    )
+    before_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained before each incident."
+    )
+    after_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained after each incident."
+    )
+    max_event_bytes: int = Field(
+        default=2048,
+        ge=128,
+        le=16_384,
+        description="Maximum redacted payload bytes retained for one event.",
+    )
+    max_bytes: int = Field(
+        default=32_768,
+        ge=1024,
+        le=262_144,
+        description="Hard serialized-byte budget across all incident packets.",
+    )
+    max_tokens: int = Field(
+        default=8192,
+        ge=256,
+        le=65_536,
+        description=(
+            "Hard budget using the deterministic estimate ceil(serialized UTF-8 bytes / 4)."
+        ),
     )
 
 
@@ -800,6 +1009,13 @@ class EvolutionConfig(BaseModel):
         default_factory=AutoProposeConfig,
         description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
+    trace_excerpts: TraceExcerptConfig = Field(
+        default_factory=TraceExcerptConfig,
+        description=(
+            "Opt-in redacted incident packets for evolution. Configuration is frozen from "
+            "evolution because it controls private evidence sent to the proposing model."
+        ),
+    )
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
@@ -812,6 +1028,8 @@ class EvolutionConfig(BaseModel):
 # `evolution.auto_propose` is its own paid, post-run trigger — a harness must
 # never be able to enable that trigger via evolution itself (docs/spec.md
 # documents it as never mutable; this is what makes that claim true).
+# `evolution.trace_excerpts` controls which private journal evidence can reach
+# the proposing model, so evolution cannot widen its own evidence boundary.
 # `id` is identity, not behaviour: letting evolution (or a remote caller)
 # rewrite it would detach a harness from its own accumulated evidence.
 ALWAYS_FROZEN: tuple[str, ...] = (
@@ -823,6 +1041,7 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "hooks",
     "mcp_servers",
     "evolution.auto_propose",
+    "evolution.trace_excerpts",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They

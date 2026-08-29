@@ -36,7 +36,8 @@ assumed.
 - **One validated construction path:** CLI edits and model-generated plans use
   the same transactional API; invalid changes roll back.
 - **Closed-loop evidence:** every run produces a version-hashed trace, so
-  `stats` can show whether a harness change improved success, cost, or turns.
+  `stats` can show whether a harness change improved success, cost, or turns,
+  while recovered friction stays visible for gated evolution proposals.
 - **Safety outside the model:** cost limits, tool allowlists, redaction,
   verification, and frozen evolution fields are enforced in code.
 - **Open and portable:** builtins, extension packs, custom providers, and MCP
@@ -172,11 +173,11 @@ hiveloom add validator --builtin regex_match --pattern '"summary"' \
 hiveloom validate ./summarizer --json
 
 # Assemble the first call without contacting the model
-hiveloom run ./summarizer --input notes.txt --dry-run --json
+hiveloom run ./summarizer --input-file notes.txt --dry-run --json
 
 # Run for real (the default provider uses Anthropic)
 export ANTHROPIC_API_KEY=sk-...
-hiveloom run ./summarizer --input notes.txt --json
+hiveloom run ./summarizer --input-file notes.txt --json
 
 # …or any other lab. `hiveloom models` lists every provider and its key
 # variable; OpenAI, Gemini, Mistral, DeepSeek, xAI, Groq, OpenRouter,
@@ -184,8 +185,13 @@ hiveloom run ./summarizer --input notes.txt --json
 hiveloom models
 hiveloom set model openai/gpt-4.1-mini --dir ./summarizer
 
+# A run-only override leaves harness.yaml unchanged, useful for eval matrices
+hiveloom run ./summarizer --input-file notes.txt \
+  --provider openai --model gpt-4.1-mini --run-id eval-case-01 --json
+
 # Inspect evidence and propose a gated improvement after failures
-hiveloom stats ./summarizer --json
+hiveloom stats ./summarizer --include-friction --json
+hiveloom friction list ./summarizer --recovered true --json
 hiveloom evolve ./summarizer --propose --json
 ```
 
@@ -351,6 +357,7 @@ hiveloom run ./my-harness --input input.txt --stream
 hiveloom trace <run-id> --json
 hiveloom trace <run-id> --verify
 hiveloom stats ./my-harness --json
+hiveloom traces prune ./my-harness --dry-run --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe
@@ -416,7 +423,9 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Safety invariants
 
 - Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
+  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`, or
+  `evolution.trace_excerpts`. Opt-in excerpts are re-redacted and bounded
+  before they reach the proposing model.
 - The cost guardrail defaults on at `$1.00`.
 - The shell tool is disabled unless explicitly configured and remains
   allowlist-only.

@@ -72,6 +72,10 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+traces_app = typer.Typer(help="Manage raw trace files under a validated Hiveloom root.")
+app.add_typer(traces_app, name="traces")
+friction_app = typer.Typer(help="Query recovered retries and other indexed run friction.")
+app.add_typer(friction_app, name="friction")
 keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
@@ -104,6 +108,17 @@ def _fail(message: str, json_output: bool, code: int) -> None:
     else:
         _err_console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code)
+
+
+def _optional_bool(value: str | None, option: str) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise SpecError(f"{option} must be true or false")
 
 
 def _guard(json_output: bool):
@@ -901,7 +916,27 @@ def mcp_list_tools_cmd(
 def run(
     harness_dir: str = typer.Argument(".", help="Harness directory to run."),
     input_value: str = typer.Option(
-        None, "--input", help="Input FILE path or literal TEXT (omit with --resume)."
+        None,
+        "--input",
+        help="Legacy FILE-or-TEXT input heuristic (deprecated; use an explicit input flag).",
+    ),
+    input_text: str = typer.Option(
+        None, "--input-text", help="Literal input text; never interpreted as a path."
+    ),
+    input_file: str = typer.Option(
+        None, "--input-file", help="Read input from this file; missing files are errors."
+    ),
+    model: str = typer.Option(
+        None, "--model", help="Override model id for this run without editing the harness."
+    ),
+    provider: str = typer.Option(
+        None, "--provider", help="Override provider for this run without editing the harness."
+    ),
+    run_id: str = typer.Option(
+        None, "--run-id", help="Use this caller-allocated run id."
+    ),
+    trace_dir: str = typer.Option(
+        None, "--trace-dir", help="Write this run's trace under a durable directory."
     ),
     resume: bool = typer.Option(
         False,
@@ -945,9 +980,12 @@ def run(
     from hiveloom import trust as trust_mod
 
     with _guard(json_output):
-        if resume == (input_value is not None):
+        input_count = sum(
+            value is not None for value in (input_value, input_text, input_file)
+        )
+        if (resume and input_count) or (not resume and input_count != 1):
             _fail(
-                "pass exactly one of --input or --resume",
+                "pass exactly one of --input-text, --input-file, legacy --input, or --resume",
                 json_output,
                 ExitCode.SPEC_ERROR,
             )
@@ -960,12 +998,33 @@ def run(
                 _console.print(f"[green]pulled[/green] @ {pulled['version_hash']}")
         if approve:
             trust_mod.record_trust(harness_dir)
-        if dry_run and input_value is None:
-            _fail("--dry-run needs --input", json_output, ExitCode.SPEC_ERROR)
+        if dry_run and resume:
+            _fail(
+                "--dry-run needs an input and cannot be used with --resume",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
             return
+        literal_input = input_text is not None or input_file is not None
+        resolved_input = input_text if input_text is not None else input_value
+        if input_file is not None:
+            from hiveloom.spec.loader import harness_path
+
+            base = harness_path(harness_dir).parent
+            direct = Path(input_file)
+            candidates = [direct] if direct.is_absolute() else [direct, base / direct]
+            selected = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if selected is None:
+                raise SpecError(f"input file not found: {input_file}")
+            resolved_input = selected.read_text(encoding="utf-8")
         if dry_run:
             info = runner.dry_run(
-                harness_dir, input_value, approve_trust=_trust_prompt(json_output)
+                harness_dir,
+                resolved_input,
+                literal_input=literal_input,
+                model_override=model,
+                provider_override=provider,
+                approve_trust=_trust_prompt(json_output),
             )
             if json_output:
                 _emit_json({"ok": True, "dry_run": True, **info})
@@ -1002,13 +1061,22 @@ def run(
                     "parent_line_hash": record.get("parent_line_hash", ""),
                 },
                 on_event=on_event,
+                run_id=run_id,
+                trace_dir=trace_dir,
+                model_override=model,
+                provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
             )
         else:
             result = runner.run_harness(
                 harness_dir,
-                input_value,
+                resolved_input,
+                literal_input=literal_input,
                 on_event=on_event,
+                run_id=run_id,
+                trace_dir=trace_dir,
+                model_override=model,
+                provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
             )
         payload = runner.run_result_payload(result)
@@ -1172,8 +1240,9 @@ def trace(
             return
 
         events: list[dict[str, Any]] = []
-        trace_file = Path(run.get("trace_path", ""))
-        if trace_file.exists():
+        trace_path = run.get("trace_path")
+        trace_file = Path(trace_path) if trace_path else None
+        if trace_file is not None and trace_file.is_file():
             events = [
                 _json.loads(line)
                 for line in trace_file.read_text(encoding="utf-8").splitlines()
@@ -1181,9 +1250,14 @@ def trace(
             ]
 
         if verify:
-            if not trace_file.exists():
+            if trace_file is None or not trace_file.is_file():
+                detail = (
+                    f"pruned at {run['trace_pruned_at']}"
+                    if run.get("trace_pruned_at")
+                    else "missing"
+                )
                 _fail(
-                    f"trace file for '{run_id}' is missing: {trace_file}",
+                    f"trace file for '{run_id}' is {detail}",
                     json_output,
                     ExitCode.SPEC_ERROR,
                 )
@@ -1260,8 +1334,76 @@ def trace(
         )
         if run.get("reason"):
             _console.print(f"reason: {run['reason']}")
+        if run.get("trace_pruned_at"):
+            _console.print(f"[dim]raw journal pruned at {run['trace_pruned_at']}[/dim]")
         for event in events:
             _console.print(f"  [dim]{event['seq']:>3}[/dim] {event['type']}")
+
+
+@traces_app.command("prune")
+def traces_prune(
+    target: str = typer.Argument(..., help="Harness directory whose trace policy applies."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Plan and report deletions without changing files or the Hive."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Apply the configured retention policy."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Plan or apply explicit age, count, and byte limits for raw journals."""
+    from hiveloom import trust
+    from hiveloom.logging.hive import Hive
+    from hiveloom.logging.retention import prune_trace_root
+    from hiveloom.spec.loader import harness_path, load_spec
+
+    with _guard(json_output):
+        yaml_path = harness_path(target)
+        if not yaml_path.exists():
+            raise SpecError(f"no harness spec found at {yaml_path}")
+        trust.ensure_trusted(yaml_path.parent)
+        spec = load_spec(yaml_path)
+        if spec.logging.retention is None:
+            raise SpecError("logging.retention is not configured")
+        if not dry_run and not yes:
+            raise SpecError("pass --dry-run to inspect the plan or --yes to apply it")
+        configured = Path(spec.logging.trace_dir).expanduser()
+        trace_root = (
+            configured.resolve()
+            if configured.is_absolute()
+            else (yaml_path.parent / configured).resolve()
+        )
+        if dry_run:
+            plan = prune_trace_root(
+                trace_root,
+                spec.logging.retention,
+                dry_run=True,
+            )
+        else:
+            with Hive() as hive:
+                # Raw evidence is not removed until every valid candidate has
+                # an indexed record that can survive its journal.
+                hive.ingest_dir(trace_root)
+                plan = prune_trace_root(
+                    trace_root,
+                    spec.logging.retention,
+                    hive=hive,
+                )
+        payload = {"ok": True, "dry_run": dry_run, **plan.to_dict()}
+        if json_output:
+            _emit_json(payload)
+            return
+        verb = "would prune" if dry_run else "pruned"
+        _console.print(
+            f"[bold]{verb} {payload['selected_runs']} trace(s)[/bold] "
+            f"({payload['selected_bytes']} bytes) under {payload['root']}"
+        )
+        for item in payload["selected"]:
+            _console.print(
+                f"  {item['run_id']}  {item['size']} bytes  {', '.join(item['reasons'])}"
+            )
+        if not payload["limits_satisfied"]:
+            _console.print(
+                "[yellow]configured limits cannot be met while preserving protected files[/yellow]"
+            )
 
 
 @app.command()
@@ -1337,10 +1479,16 @@ def fork(
         if run is None:
             _fail(f"run '{run_id}' not found in the Hive", json_output, ExitCode.SPEC_ERROR)
             return
-        trace_file = Path(run.get("trace_path", ""))
-        if not trace_file.exists():
+        trace_path = run.get("trace_path")
+        trace_file = Path(trace_path) if trace_path else None
+        if trace_file is None or not trace_file.is_file():
+            detail = (
+                f"pruned at {run['trace_pruned_at']}"
+                if run.get("trace_pruned_at")
+                else "missing"
+            )
             _fail(
-                f"the journal for '{run_id}' is missing: {trace_file}",
+                f"the journal for '{run_id}' is {detail}",
                 json_output,
                 ExitCode.SPEC_ERROR,
             )
@@ -1498,9 +1646,75 @@ def lineage(
             _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
 
 
+@friction_app.command("list")
+def friction_list(
+    target: str = typer.Argument(..., help="Harness name, id, or harness directory."),
+    category: str | None = typer.Option(None, "--category", help="Filter by category."),
+    component: str | None = typer.Option(None, "--component", help="Filter by component."),
+    recovered: str | None = typer.Option(
+        None, "--recovered", help="Filter by recovery state: true or false."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Filter by requested, effective, or legacy model path."
+    ),
+    since: str | None = typer.Option(None, "--since", help="ISO timestamp lower bound."),
+    until: str | None = typer.Option(None, "--until", help="ISO timestamp upper bound."),
+    limit: int = typer.Option(100, "--limit", help="Maximum records to return."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List indexed run friction without opening raw journals."""
+    from hiveloom import runner
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if limit < 1 or limit > 1000:
+            raise SpecError("--limit must be between 1 and 1000")
+        recovered_value = _optional_bool(recovered, "--recovered")
+        with Hive() as hive:
+            key = runner.resolve_and_ingest(target, hive)
+            records = hive.list_friction(
+                key,
+                category=category,
+                component=component,
+                recovered=recovered_value,
+                model=model,
+                since=since,
+                until=until,
+                limit=limit,
+            )
+        if json_output:
+            _emit_json(
+                {"ok": True, "harness_key": key, "count": len(records), "friction": records}
+            )
+            return
+        if not records:
+            _console.print("[dim]no indexed friction matched[/dim]")
+            return
+        table = Table(title=f"run friction for {key}")
+        table.add_column("time", style="dim")
+        table.add_column("run")
+        table.add_column("category", style="yellow")
+        table.add_column("component")
+        table.add_column("recovered", justify="center")
+        table.add_column("summary")
+        for record in records:
+            table.add_row(
+                record.get("timestamp") or "",
+                record["run_id"],
+                record["category"],
+                record.get("component") or "",
+                "yes" if record["recovered"] else "no",
+                record["summary"],
+            )
+        _console.print(table)
+
+
 @app.command()
 def stats(
     target: str = typer.Argument(..., help="Harness name or harness directory."),
+    include_friction: bool = typer.Option(
+        False, "--include-friction", help="Include indexed retries and recovered failures."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show Hive stats for a harness: success rate, cost, and turns per version.
@@ -1526,11 +1740,13 @@ def stats(
             summary = hive.summary(key, display_name=display)
             recent = hive.recent_failures(key, 5)
             outcomes = hive.outcome_summary(key)
+            friction = hive.friction_summary(key) if include_friction else None
 
         if json_output:
-            _emit_json(
-                {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
-            )
+            payload = {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
+            if friction is not None:
+                payload["friction"] = friction
+            _emit_json(payload)
             return
 
         _console.print(
@@ -1601,6 +1817,27 @@ def stats(
                 f"{outcomes['outcome_success_rate']:.0%} held up "
                 f"({outcomes['failures']} rejected by the world)"
             )
+        if friction is not None:
+            _console.print(
+                f"[bold]friction[/bold]: {friction['events']} event(s) across "
+                f"{friction['runs']} run(s), {friction['recovered']} recovered"
+            )
+            if friction["categories"]:
+                table = Table(title="friction by category")
+                table.add_column("category", style="yellow")
+                table.add_column("events", justify="right")
+                table.add_column("runs", justify="right")
+                table.add_column("recovered", justify="right", style="green")
+                table.add_column("unrecovered", justify="right")
+                for row in friction["categories"]:
+                    table.add_row(
+                        row["category"],
+                        str(row["events"]),
+                        str(row["runs"]),
+                        str(row["recovered"]),
+                        str(row["unrecovered"]),
+                    )
+                _console.print(table)
         sigs = summary["failure_signatures"]
         if sigs["verdicts"]:
             _console.print("[yellow]top failure verdicts:[/yellow]")
@@ -1732,7 +1969,13 @@ def evolve(
             name = runner.resolve_and_ingest(harness_dir, hive)
             # Scoped to one version — see analyze().
             version = _analysis_version(harness_dir, spec, base, from_parent=from_parent)
-            report = evolve_mod.analyze(hive, name, version=version)
+            report = evolve_mod.analyze(
+                hive,
+                name,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+            )
             if report.is_empty():
                 reason = _nothing_to_evolve_reason(
                     hive, name, version, from_parent=from_parent
@@ -1814,32 +2057,41 @@ def _analysis_version(
 def _nothing_to_evolve_reason(
     hive: Any, name: str, version: str, *, from_parent: bool = False
 ) -> str:
-    """Why the report is empty — the cases need different next steps.
+    """Why the report has no failure, outcome, or friction signal.
 
     Analysis is scoped to one spec version, so a harness edited since its last
-    failing run has failures on record that deliberately do not count.
-    Reporting that as "no recorded failures" would send the user looking for a
+    incident may have older evidence that deliberately does not count.
+    Reporting that as no evidence at all would send the user looking for a
     logging bug instead of re-running the harness.
 
     Under ``--from-parent`` the scoped version is the parent's, so "re-run it"
     is the wrong advice: the runs that would matter already happened, and an
     empty report means the fork is pointed somewhere with nothing on record.
     """
-    stale = hive.failure_count(name)
+    stale_failures = hive.failure_count(name)
+    stale_friction = hive.friction_summary(name)["events"]
+    stale = stale_failures or stale_friction
     if from_parent:
         if stale:
             return (
-                f"no failures recorded for the parent version {version} "
-                f"({stale} on other versions of '{name}') — the parent run may "
+                f"no evolution evidence recorded for the parent version {version} "
+                f"({stale} signals on other versions of '{name}') — the parent run may "
                 "have succeeded, or its journal was never ingested"
             )
-        return f"no failures recorded for '{name}' at any version"
+        return f"no evolution evidence recorded for '{name}' at any version"
     if stale:
+        if stale_failures:
+            return (
+                f"no failures recorded for the current harness version "
+                f"({stale_failures} on earlier versions) — re-run the harness "
+                "to collect fresh ones"
+            )
         return (
-            f"no failures recorded for the current harness version "
-            f"({stale} on earlier versions) — re-run the harness to collect fresh ones"
+            f"no evolution evidence recorded for the current harness version "
+            f"({stale_friction} friction events on earlier versions) — re-run the harness to "
+            "collect fresh ones"
         )
-    return "no recorded failures"
+    return "no recorded failure, deferred-outcome, or friction evidence"
 
 
 def _emit_proposal_created(record: Any, json_output: bool) -> None:

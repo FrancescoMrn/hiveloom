@@ -23,10 +23,19 @@ The evolver reads the Hive's clustered failures (ingesting the folder's
 in-folder traces on the fly), asks a strong model for a minimal mutation, and
 gates it **in code**.
 
+If a bounded Hive summary is not enough to explain a retry, opt in to
+`evolution.trace_excerpts.enabled` through `hiveloom set`. The selector uses
+indexed friction as an anchor, re-applies `logging.redact`, and enforces hard
+event, byte, and token-estimate budgets before evidence reaches the proposing
+model. Missing or retention-pruned journals fall back to indexed summaries.
+Queued proposals keep the selection receipt and digest, not the event
+payloads. Inspect that receipt with `proposals show --json`.
+
 ## Hard rules (enforced by the tool — don't fight them)
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, and `evolution.auto_propose` can **never** be changed by
+  `mcp_servers`, `evolution.auto_propose`, and `evolution.trace_excerpts` can
+  **never** be changed by
   evolution. Don't try to weaken them by other means either; if a guardrail is
   genuinely wrong, change it deliberately via `hiveloom add guardrail` /
   `hiveloom set` and say so.
@@ -36,10 +45,18 @@ gates it **in code**.
 
 ## Prerequisites
 
-Evolve needs failure signal. If `hiveloom stats ./h` shows no (or too few)
-failed runs, run the harness on representative inputs first, or copy back
-traces from where it actually ran (see `hiveloom-ship`). Both `stats` and
-`evolve` ingest `./h/.hiveloom/traces/` idempotently by `run_id`.
+Evolve needs a grounded signal: final failures, failed deferred outcomes, or
+indexed friction such as repeated retries. If `hiveloom stats ./h` and
+`hiveloom stats ./h --include-friction` show none, run the harness on
+representative inputs first, or copy back traces from where it actually ran
+(see `hiveloom-ship`). Both `stats` and `evolve` ingest
+`./h/.hiveloom/traces/` idempotently by `run_id`.
+
+For automatic drafts from recovered incidents, configure an ordered
+`evolution.auto_propose.triggers` list with `kind: repeated_friction`, a Hive
+category, `minimum_runs`, and a bounded `window`. The current run must carry
+the matched fingerprint. The proposal remains a draft and its JSON evidence
+receipt names the exact run window.
 
 ## Evolving a fork
 

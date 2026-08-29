@@ -144,6 +144,10 @@ def test_mcp_servers_is_always_frozen():
     assert "mcp_servers" in ALWAYS_FROZEN
 
 
+def test_trace_excerpt_policy_is_always_frozen():
+    assert "evolution.trace_excerpts" in ALWAYS_FROZEN
+
+
 def test_builtin_required_param_missing_rejected():
     with pytest.raises(ValidationError, match="requires parameter"):
         HarnessSpec.model_validate(
@@ -176,7 +180,9 @@ def test_auto_propose_defaults():
     auto = spec.evolution.auto_propose
     assert auto.enabled is False
     assert auto.min_failures == 5
+    assert auto.triggers == []
     assert auto.cooldown_hours == 24.0
+    assert auto.cooldown_runs is None
     assert auto.model is None
 
 
@@ -215,4 +221,58 @@ def test_auto_propose_forbids_extra_fields():
     with pytest.raises(ValidationError):
         HarnessSpec.model_validate(
             _minimal(evolution={"auto_propose": {"unexpected": True}})
+        )
+
+
+def test_auto_propose_trigger_variants_validate():
+    spec = HarnessSpec.model_validate(
+        _minimal(
+            evolution={
+                "auto_propose": {
+                    "triggers": [
+                        {"kind": "final_failure", "minimum_runs": 2, "window": 10},
+                        {
+                            "kind": "repeated_friction",
+                            "category": "output_validation",
+                            "minimum_runs": 5,
+                            "window": 20,
+                            "recovered": True,
+                        },
+                    ],
+                    "cooldown_runs": 20,
+                }
+            }
+        )
+    )
+
+    [failure, friction] = spec.evolution.auto_propose.triggers
+    assert failure.kind == "final_failure"
+    assert friction.kind == "repeated_friction"
+    assert friction.category == "output_validation"
+    assert spec.evolution.auto_propose.cooldown_runs == 20
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"kind": "unknown"},
+        {"kind": "final_failure", "minimum_runs": 6, "window": 5},
+        {
+            "kind": "repeated_friction",
+            "category": "Not A Category",
+            "minimum_runs": 1,
+            "window": 5,
+        },
+        {
+            "kind": "repeated_friction",
+            "category": "retry",
+            "minimum_runs": 6,
+            "window": 5,
+        },
+    ],
+)
+def test_auto_propose_invalid_triggers_rejected(trigger):
+    with pytest.raises(ValidationError):
+        HarnessSpec.model_validate(
+            _minimal(evolution={"auto_propose": {"triggers": [trigger]}})
         )

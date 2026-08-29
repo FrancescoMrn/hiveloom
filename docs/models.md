@@ -71,8 +71,19 @@ harness folder stays self-contained:
 
 ```console
 $ echo 'OPENAI_API_KEY=sk-...' >> my-harness/.env
-$ hiveloom run my-harness --input "…"
+$ hiveloom run my-harness --input-text "…"
 ```
+
+For a one-run comparison, override the runtime config instead of mutating the
+harness:
+
+```console
+$ hiveloom run my-harness --input-file case.txt \
+    --provider openrouter --model qwen3.5-9b --json
+```
+
+The override is validated and included in the run's version hash, but
+`harness.yaml` remains byte-identical.
 
 ## Open vs fixed catalogs
 

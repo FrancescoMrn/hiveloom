@@ -11,8 +11,25 @@ description: >-
 # Running a hiveloom harness
 
 ```bash
-hiveloom run ./h --input notes.txt --json     # --input takes a FILE path or literal TEXT
+hiveloom run ./h --input-file notes.txt --json
+hiveloom run ./h --input-text "literal task" --json
 ```
+
+Use the explicit flags in scripts and evals. Legacy `--input` still guesses
+whether its value is a file or literal text for one deprecation cycle.
+
+Run-only model selection and evidence paths do not rewrite the harness:
+
+```bash
+hiveloom run ./h --input-file case.txt \
+  --provider openrouter --model qwen3.5-9b \
+  --run-id case-17 --trace-dir ./eval-traces --json
+```
+
+The JSON result's `runtime_config` keeps explicit `requested` overrides apart
+from the validated `resolved` model and provider. A runtime model override is
+included in that run's harness snapshot and version hash, so Hive statistics
+do not mix it with the model stored in `harness.yaml`.
 
 Needs credentials for the configured provider when required (for example,
 `ANTHROPIC_API_KEY` for the default provider, loaded from the harness `.env`
@@ -33,7 +50,7 @@ inside; guardrails and validators gate it.
 
 ```bash
 hiveloom validate ./h                          # structure + code-hook checks
-hiveloom run ./h --input x.txt --dry-run       # no model call; MCP discovery still does I/O
+hiveloom run ./h --input-file x.txt --dry-run  # no model call; MCP discovery still does I/O
 ```
 
 A harness folder that arrived from elsewhere (unzipped artifact, clone) is
@@ -51,6 +68,8 @@ hiveloom trace run_abc123 --json           # one run: summary + ordered events
 hiveloom trace run_abc123 --dir ./h        # ingest the folder's traces first if unknown
 hiveloom stats ./h --json                  # success rate / cost / turns PER VERSION HASH
 hiveloom stats my-harness-name             # by name, from the Hive
+hiveloom stats ./h --include-friction --json
+hiveloom friction list ./h --recovered true --json
 ```
 
 To debug a failure, read the trace's `verification_result`,
@@ -58,12 +77,27 @@ To debug a failure, read the trace's `verification_result`,
 proximate cause. `stats` bucketing by version hash is what proves a later
 mutation helped.
 
+Final success does not mean a clean run. The friction index keeps recovered
+output-validation failures, retries, tool errors, compactions, guardrail
+events, provider errors, operator steering, and loop limits queryable after
+the run finishes. Filter by `--category`, `--component`, `--recovered`,
+`--model`, `--since`, or `--until`; summaries are bounded and come from the
+already-redacted journal.
+
 The trace is a hash-chained journal, so two more things are available:
 
 ```bash
 hiveloom trace run_abc123 --verify         # append-only chain intact? (exit 4 if broken)
 hiveloom trace run_abc123 --materialize 42 # the exact request sent at that seq
+hiveloom traces prune ./h --dry-run --json  # preview explicit age/count/byte retention
 ```
+
+`logging.redact` accepts `keys`, payload-relative `paths` with `[*]`, and
+`patterns`; legacy regex lists still work. Redaction happens before persistence
+and stream delivery. `logging.retention` is opt-in. Apply a previewed plan with
+`hiveloom traces prune ./h --yes --json`; the current run is preserved during
+automatic cleanup, and the Hive marks removed raw evidence with
+`trace_pruned_at` instead of leaving stale paths.
 
 When reading the events is not enough, **fork the run** and reproduce the
 failure from the turn it happened on, against a changed harness:
@@ -84,7 +118,7 @@ therefore cannot be forked. See [docs/journal.md](../../docs/journal.md).
 ## Embedding in another program
 
 ```bash
-hiveloom run ./h --input x --stream        # every trace event as a JSON line; result last
+hiveloom run ./h --input-text x --stream   # every trace event as a JSON line; result last
 ```
 
 Or the Python SDK:
@@ -93,6 +127,13 @@ Or the Python SDK:
 from hiveloom import run_harness
 result = run_harness("./h", "notes.txt", on_event=lambda e: print(e.type))
 ```
+
+Read `result.execution` instead of scraping its trace for batch receipts. It
+contains the behavior hash, runtime version, requested/resolved/effective
+model identity, timestamps, total usage, cost source, verification attempts,
+execution fingerprint, and durable trace path. A clean first pass and a
+recovered success both have `status == "success"`; distinguish them with
+`result.execution.verification`.
 
 ## Next steps
 

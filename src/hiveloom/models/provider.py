@@ -16,12 +16,28 @@ provider SDK type escapes this package.
 
 from __future__ import annotations
 
+import json
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Message = dict[str, Any]
+
+PROVIDER_METADATA_MAX_BYTES = 16 * 1024
+PROVIDER_REASONING_MAX_BYTES = 256 * 1024
+
+
+def _bounded_json(value: Any, *, field: str, max_bytes: int) -> Any:
+    """Validate a provider-owned payload before it can enter public records."""
+    try:
+        encoded = json.dumps(value, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must contain only JSON-safe values") from exc
+    if len(encoded) > max_bytes:
+        raise ValueError(f"{field} exceeds the {max_bytes}-byte limit")
+    return value
 
 
 class Usage(BaseModel):
@@ -38,6 +54,15 @@ class Usage(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+
+    def __add__(self, other: Usage) -> Usage:
+        """Add provider-call usage without losing cache accounting."""
+        return Usage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+        )
 
 
 class ContextOverflowError(RuntimeError):
@@ -65,6 +90,79 @@ class ModelResponse(BaseModel):
         default_factory=list,
         description="Assistant content blocks to append to history verbatim.",
     )
+    model: str = Field(
+        default="",
+        description="Effective model identity reported by the provider, when available.",
+    )
+    provider_request_id: str = Field(
+        default="", description="Provider request/response identifier, when available."
+    )
+    billed_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description="Provider-reported charge for this call in billed_currency.",
+    )
+    billed_currency: str = Field(
+        default="", description="Currency code for billed_cost, normally ISO 4217."
+    )
+    billed_cost_usd: float | None = Field(
+        default=None,
+        ge=0,
+        description="Optional provider/extension conversion of billed_cost to USD.",
+    )
+    reasoning: Any | None = Field(
+        default=None,
+        description="Opaque JSON replay data required by the same provider on later turns.",
+    )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Bounded JSON-safe routing/provenance metadata owned by the provider.",
+    )
+
+    @field_validator("billed_cost", "billed_cost_usd")
+    @classmethod
+    def _finite_cost(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("provider cost must be finite")
+        return value
+
+    @field_validator("billed_currency")
+    @classmethod
+    def _currency_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized and (not normalized.isalpha() or not 3 <= len(normalized) <= 8):
+            raise ValueError("billed_currency must be a 3-8 letter currency code")
+        return normalized
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def _bounded_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _bounded_json(
+            value, field="provider_metadata", max_bytes=PROVIDER_METADATA_MAX_BYTES
+        )
+
+    @field_validator("reasoning")
+    @classmethod
+    def _bounded_reasoning(cls, value: Any | None) -> Any | None:
+        if value is None:
+            return None
+        return _bounded_json(value, field="reasoning", max_bytes=PROVIDER_REASONING_MAX_BYTES)
+
+    @model_validator(mode="after")
+    def _cost_has_currency(self) -> ModelResponse:
+        if self.billed_cost is not None and not self.billed_currency:
+            raise ValueError("billed_currency is required when billed_cost is set")
+        if self.billed_cost_usd is not None and self.billed_cost is None:
+            raise ValueError("billed_cost is required when billed_cost_usd is set")
+        return self
+
+    def resolved_cost_usd(self, estimated_cost_usd: float) -> tuple[float, str]:
+        """Return the charge usable by USD guardrails and how it was obtained."""
+        if self.billed_cost_usd is not None:
+            return self.billed_cost_usd, "billed"
+        if self.billed_cost is not None and self.billed_currency == "USD":
+            return self.billed_cost, "billed"
+        return estimated_cost_usd, "estimated"
 
 
 class ModelConfig(BaseModel):

@@ -9,20 +9,23 @@ discovery is eager.
 
 from __future__ import annotations
 
+import errno
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hiveloom import trust
+from hiveloom import __version__, trust
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
 from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.loop.control import RunControl
-from hiveloom.models.provider import ModelConfig, ModelProvider
+from hiveloom.models.provider import ModelConfig as ProviderModelConfig
+from hiveloom.models.provider import ModelProvider
 from hiveloom.models.router import ModelRouter
 from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.skills import load_skills
@@ -36,16 +39,28 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
 
 def _resolve_input(base: Path, value: str) -> str:
     """If ``value`` names an existing file, read it; otherwise treat it as text."""
     direct = Path(value)
-    if direct.is_file():
+    if _is_file(direct):
         return direct.read_text(encoding="utf-8")
     nested = base / value
-    if nested.is_file():
+    if _is_file(nested):
         return nested.read_text(encoding="utf-8")
     return value
+
+
+def _is_file(path: Path) -> bool:
+    """Like :meth:`Path.is_file`, but an overlong literal is not a path."""
+    try:
+        return path.is_file()
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return False
+        raise
 
 
 def split_conversation(
@@ -126,6 +141,16 @@ def new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:16]}"
 
 
+def validate_run_id(value: str) -> str:
+    """Validate a caller-allocated run id before it becomes a trace filename."""
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError(
+            "run_id must be 1-128 characters: letters, numbers, '.', '_' or '-'; "
+            "it must start with a letter or number"
+        )
+    return value
+
+
 # Kept for callers written against the private name.
 _new_run_id = new_run_id
 
@@ -135,6 +160,9 @@ def dry_run(
     input_value: str | None = None,
     *,
     conversation: list[dict[str, Any]] | None = None,
+    literal_input: bool = False,
+    model_override: str | None = None,
+    provider_override: str | None = None,
     approve_trust=None,
 ) -> dict[str, Any]:
     """Assemble the first model call without calling the model provider.
@@ -147,11 +175,15 @@ def dry_run(
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
+    spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    runtime_config = _runtime_config(
+        spec, model_override=model_override, provider_override=provider_override
+    )
     resolve_hooks(spec, base)
     registry = build_registry(spec, base)
     try:
         history, run_input = _resolve_conversation(
-            base, input_value, conversation, literal_input=False
+            base, input_value, conversation, literal_input=literal_input
         )
 
         from hiveloom.models.provider import _estimate_messages_tokens
@@ -176,6 +208,8 @@ def dry_run(
         return {
             "name": spec.name,
             "model": spec.model.id,
+            "provider": spec.model.provider,
+            "runtime_config": runtime_config,
             "system": system,
             "messages": messages,
             "tools": registry.anthropic_payload(),
@@ -200,6 +234,9 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
+    trace_dir: str | Path | None = None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
     resume_messages: list[dict[str, Any]] | None = None,
     lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
@@ -223,8 +260,9 @@ def run_harness(
 
     Unless ``ingest`` is false, the completed run's trace is ingested into the
     Hive so ``hiveloom trace``/``stats`` see it immediately, and (if the spec
-    opts in via ``evolution.auto_propose``) a failing run may auto-draft a
-    gated evolution proposal — see :func:`_maybe_auto_propose`. ``on_event``
+    opts in via ``evolution.auto_propose``) a final failure or repeated
+    friction pattern may auto-draft a gated evolution proposal — see
+    :func:`_maybe_auto_propose`. ``on_event``
     receives every :class:`TraceEvent` as it is emitted (the in-process
     equivalent of ``hiveloom run --stream``). ``approve_trust`` is asked once
     when the harness folder is not yet trusted on this machine. ``strong_model``
@@ -236,6 +274,10 @@ def run_harness(
     steering messages, both consumed at the loop's next turn boundary.
     ``run_id`` lets the caller pre-allocate the id (so it can be announced to
     a client before the run finishes); by default one is generated.
+    ``trace_dir`` selects a durable trace root for this run. ``model_override``
+    and ``provider_override`` build a validated in-memory model config: they
+    never write the harness, but they do participate in its runtime snapshot
+    and version hash so evidence from different executors is not combined.
     ``providers`` pre-registers model provider instances by name, for the
     cross-provider case: a playbook or an operator may move the run onto a
     provider the spec never named, and the router would otherwise construct one
@@ -260,6 +302,11 @@ def run_harness(
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
+    spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    runtime_config = _runtime_config(
+        spec, model_override=model_override, provider_override=provider_override
+    )
+    run_id = validate_run_id(run_id) if run_id is not None else new_run_id()
     resolve_hooks(spec, base)
 
     if resume_messages is not None:
@@ -295,7 +342,7 @@ def run_harness(
 
         router = ModelRouter.create(
             base,
-            ModelConfig(
+            ProviderModelConfig(
                 id=spec.model.id,
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
@@ -306,14 +353,19 @@ def run_harness(
         )
 
         version_hash = spec_version_hash(spec, base)
-        run_id = run_id or new_run_id()
         trace = TraceWriter(
-            _resolve_trace_dir(base, spec.logging.trace_dir),
+            (
+                Path(trace_dir).expanduser().resolve()
+                if trace_dir is not None
+                else _resolve_trace_dir(base, spec.logging.trace_dir)
+            ),
             run_id=run_id,
             harness_name=spec.name,
             harness_id=spec.id,
             version_hash=version_hash,
-            redact_patterns=spec.logging.redact,
+            redact_patterns=spec.logging.redact.patterns,
+            redact_keys=spec.logging.redact.keys,
+            redact_paths=spec.logging.redact.paths,
             level=spec.logging.level,
             on_event=on_event,
         )
@@ -342,6 +394,9 @@ def run_harness(
             resume=resume_messages is not None,
             lineage=lineage,
             router=router,
+            harness_version_hash=version_hash,
+            runtime_version=__version__,
+            runtime_config=runtime_config,
         )
         result = loop.run()
     finally:
@@ -350,21 +405,51 @@ def run_harness(
             router.close()
 
     if ingest:
-        _ingest_trace(trace.path, hive_path)
-        # Auto-propose needs this run ingested before it can count the failure.
-        _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+        indexed = _ingest_trace(trace.path, hive_path)
+        if indexed:
+            # Auto-propose needs this run ingested before it can count the failure.
+            _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+            _apply_trace_retention(spec, trace.path, hive_path)
     return result
 
 
-def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> None:
+def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> bool:
     """Best-effort ingest of a finished run's trace into the Hive."""
     from hiveloom.logging.hive import Hive
 
     try:
         with Hive(hive_path) as hive:
             hive.ingest_trace_file(trace_path)
+        return True
     except Exception:  # noqa: BLE001 - ingestion must never fail a completed run
-        pass
+        return False
+
+
+def _apply_trace_retention(
+    spec: HarnessSpec, trace_path: Path, hive_path: str | Path | None
+) -> None:
+    """Apply an explicit policy without invalidating the just-finished result."""
+    if spec.logging.retention is None:
+        return
+    try:
+        from hiveloom.logging.hive import Hive
+        from hiveloom.logging.retention import prune_trace_root
+
+        with Hive(hive_path) as hive:
+            hive.ingest_dir(trace_path.parent)
+            prune_trace_root(
+                trace_path.parent,
+                spec.logging.retention,
+                hive=hive,
+                preserve=[trace_path],
+            )
+    except Exception as exc:  # noqa: BLE001 - maintenance cannot erase a completed result
+        log.warning(
+            "trace retention failed for harness %s: %s: %s",
+            spec.name,
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _maybe_auto_propose(
@@ -394,11 +479,16 @@ def _maybe_auto_propose(
         auto = spec.evolution.auto_propose
         if not auto.enabled:
             return
-        if result.status == "success":
+        explicit_triggers = bool(auto.triggers)
+        friction_can_trigger = any(
+            trigger.kind == "repeated_friction" for trigger in auto.triggers
+        )
+        if result.status == "success" and not friction_can_trigger:
             return
 
         from hiveloom.evolve.analyzer import analyze
         from hiveloom.evolve.proposals import create_proposal, last_auto_proposal_at
+        from hiveloom.evolve.triggers import match_auto_trigger
         from hiveloom.generate.llm import build_strong_model
         from hiveloom.logging.hive import Hive
 
@@ -406,17 +496,56 @@ def _maybe_auto_propose(
             # One version for both: the gate must count what the report carries.
             version = spec_version_hash(spec, base)
             since = last_auto_proposal_at(hive, spec.identity)
-            if hive.failure_count(spec.identity, since=since, version=version) < auto.min_failures:
-                return
             if since is not None:
                 elapsed_hours = (
                     datetime.now(UTC) - datetime.fromisoformat(since)
                 ).total_seconds() / 3600
                 if elapsed_hours < auto.cooldown_hours:
                     return
+                if (
+                    auto.cooldown_runs is not None
+                    and hive.run_count(spec.identity, since=since, version=version)
+                    < auto.cooldown_runs
+                ):
+                    return
+
+            if explicit_triggers:
+                trigger_evidence = match_auto_trigger(
+                    hive,
+                    harness_key=spec.identity,
+                    version=version,
+                    current_run_id=result.run_id,
+                    current_status=result.status,
+                    triggers=auto.triggers,
+                )
+                if trigger_evidence is None:
+                    return
+            else:
+                failure_count = hive.failure_count(
+                    spec.identity,
+                    since=since,
+                    version=version,
+                )
+                if failure_count < auto.min_failures:
+                    return
+                trigger_evidence = {
+                    "kind": "final_failure",
+                    "legacy": True,
+                    "configured": {"minimum_runs": auto.min_failures},
+                    "window_started_at": since,
+                    "window_ended_at": datetime.now(UTC).isoformat(),
+                    "matched": {"runs": failure_count},
+                }
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.identity, version=version)
+            report = analyze(
+                hive,
+                spec.identity,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+            )
+            report = report.model_copy(update={"trigger_evidence": trigger_evidence})
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a
@@ -452,6 +581,47 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "trace_path": result.trace_path,
         "reason": result.reason,
         "artifacts": result.artifacts,
+        "provider_calls": getattr(result, "provider_calls", []),
+        # Structural fakes and 1.0-era embedding adapters may still return the
+        # pre-override result shape. Keep that additive transition readable.
+        "runtime_config": getattr(result, "runtime_config", {}),
+        "execution": (
+            result.execution.model_dump(mode="json")
+            if getattr(result, "execution", None) is not None
+            else None
+        ),
+    }
+
+
+def _apply_runtime_model_overrides(
+    spec: HarnessSpec,
+    model_override: str | None,
+    provider_override: str | None,
+) -> HarnessSpec:
+    """Return a validated in-memory spec with run-only model selection."""
+    if model_override is None and provider_override is None:
+        return spec
+
+    from hiveloom.spec.schema import ModelConfig as SpecModelConfig
+
+    model = SpecModelConfig(
+        id=model_override or spec.model.id,
+        provider=provider_override or spec.model.provider,
+        max_tokens=spec.model.max_tokens,
+        temperature=spec.model.temperature,
+    )
+    return spec.model_copy(update={"model": model})
+
+
+def _runtime_config(
+    spec: HarnessSpec,
+    *,
+    model_override: str | None,
+    provider_override: str | None,
+) -> dict[str, Any]:
+    return {
+        "requested": {"model": model_override, "provider": provider_override},
+        "resolved": {"model": spec.model.id, "provider": spec.model.provider},
     }
 
 

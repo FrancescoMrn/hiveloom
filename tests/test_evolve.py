@@ -79,10 +79,13 @@ def test_analyze_scopes_counts_clusters_and_examples_to_one_version(tmp_path: Pa
         scoped = analyze(hive, "demo", version="v2")
 
     assert pooled.total_runs == 3
-    assert len(pooled.clusters) == 3  # two verdicts + one verify_failed status
+    assert len(pooled.clusters) == 4  # two verdicts + status + indexed friction
     assert scoped.total_runs == 2
     assert scoped.success_rate == 0.5
     assert [c.signature for c in scoped.clusters if c.kind == "verdict"] == ["headings are wrong"]
+    assert [c.signature for c in scoped.clusters if c.kind == "friction"] == [
+        "verifier_failure"
+    ]
     assert [f["run_id"] for f in scoped.recent_failures] == ["new_fail"]
 
 

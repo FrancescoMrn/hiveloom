@@ -30,8 +30,8 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
-| `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact` (regexes; **frozen**) |
-| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change), `auto_propose.{enabled,min_failures,cooldown_hours,model}` (opt-in post-run DRAFT trigger — never auto-applies; `auto_propose` itself is never mutable) |
+| `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
+| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change), `auto_propose.{enabled,triggers,min_failures,cooldown_hours,cooldown_runs,model}` (`final_failure` and `repeated_friction` DRAFT triggers, never auto-applies), `trace_excerpts.{enabled,max_incidents,before_events,after_events,max_event_bytes,max_bytes,max_tokens}` (bounded incident evidence); both nested policies are frozen |
 
 ## Builtins
 
@@ -177,7 +177,8 @@ inspect what a harness's declared servers actually expose with
 ## Safety invariants (enforced in code)
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
-   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose` — nor any
+   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`, or
+   `evolution.trace_excerpts` — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
    never side-effecting code.

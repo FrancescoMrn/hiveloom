@@ -167,8 +167,19 @@ def test_run_sync_success_matches_run_result_payload(tmp_path: Path):
     assert body["status"] == "success"
     assert body["output"] == "HELLO world"
     assert set(body) == {
-        "ok", "status", "output", "turns", "cost_usd", "duration_seconds", "run_id",
-        "trace_path", "reason", "artifacts",
+        "ok",
+        "status",
+        "output",
+        "turns",
+        "cost_usd",
+        "duration_seconds",
+        "run_id",
+        "trace_path",
+        "reason",
+        "artifacts",
+        "runtime_config",
+        "provider_calls",
+        "execution",
     }
 
 
@@ -185,8 +196,19 @@ def test_run_sync_verify_failed_is_still_200(tmp_path: Path):
     assert body["ok"] is False
     assert body["status"] == "verify_failed"
     assert set(body) == {
-        "ok", "status", "output", "turns", "cost_usd", "duration_seconds", "run_id",
-        "trace_path", "reason", "artifacts",
+        "ok",
+        "status",
+        "output",
+        "turns",
+        "cost_usd",
+        "duration_seconds",
+        "run_id",
+        "trace_path",
+        "reason",
+        "artifacts",
+        "runtime_config",
+        "provider_calls",
+        "execution",
     }
 
 
@@ -619,6 +641,8 @@ def test_remove_tool_refused_over_http(tmp_path: Path):
         ("hooks", []),
         ("evolution.auto_propose", {}),
         ("evolution.auto_propose.enabled", True),
+        ("evolution.trace_excerpts", {}),
+        ("evolution.trace_excerpts.enabled", True),
     ],
 )
 def test_set_refuses_every_always_frozen_root(tmp_path: Path, path: str, value):

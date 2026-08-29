@@ -59,7 +59,14 @@ def test_explain_evolution_auto_propose_lists_subfields():
     needed — same mechanism `context.compaction` already exercises above."""
     info = annotate.explain("evolution.auto_propose")
     assert "fields" in info
-    assert set(info["fields"]) == {"enabled", "min_failures", "cooldown_hours", "model"}
+    assert set(info["fields"]) == {
+        "enabled",
+        "min_failures",
+        "triggers",
+        "cooldown_hours",
+        "cooldown_runs",
+        "model",
+    }
 
 
 def test_annotated_template_surfaces_auto_propose():

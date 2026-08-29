@@ -70,6 +70,108 @@ def _write_failure(
         hive.ingest_trace_file(trace_path)
 
 
+def _write_friction(
+    hive_path: Path,
+    tmp_path: Path,
+    harness: Path,
+    run_id: str,
+    at: str,
+    *,
+    category: str = "retry",
+) -> None:
+    """Ingest one successful run carrying a repeatable recovered incident."""
+    spec = load_spec(harness)
+    version = spec_version_hash(spec, harness)
+    envelope = {
+        "run_id": run_id,
+        "harness_name": spec.name,
+        "harness_id": spec.id,
+        "harness_version_hash": version,
+        "timestamp": at,
+    }
+    events = [{**envelope, "seq": 0, "type": "run_started", "payload": {}}]
+    if category == "output_validation":
+        events.extend(
+            [
+                {
+                    **envelope,
+                    "seq": 1,
+                    "type": "verification_result",
+                    "payload": {
+                        "verifier": "output_schema",
+                        "passed": False,
+                        "feedback": "required field was missing",
+                    },
+                },
+                {
+                    **envelope,
+                    "seq": 2,
+                    "type": "verification_result",
+                    "payload": {
+                        "verifier": "output_schema",
+                        "passed": True,
+                        "feedback": "",
+                    },
+                },
+            ]
+        )
+    elif category == "retry":
+        events.append(
+            {
+                **envelope,
+                "seq": 1,
+                "type": "tool_retry",
+                "payload": {"name": "search", "id": "call"},
+            }
+        )
+    events.append(
+        {
+            **envelope,
+            "seq": len(events),
+            "type": "run_finished",
+            "payload": {
+                "status": "success",
+                "turns": 2,
+                "cost_usd": 0.01,
+                "duration_seconds": 0.1,
+                "reason": "",
+            },
+        }
+    )
+    trace_path = tmp_path / f"{run_id}.jsonl"
+    trace_path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+    with Hive(hive_path) as hive:
+        hive.ingest_trace_file(trace_path)
+
+
+def _set_friction_trigger(
+    harness: Path,
+    *,
+    category: str = "retry",
+    minimum_runs: int = 3,
+    window: int = 10,
+    cooldown_runs: int | None = None,
+) -> None:
+    construct.set_value(
+        harness,
+        "evolution.auto_propose.triggers",
+        [
+            {
+                "kind": "repeated_friction",
+                "category": category,
+                "minimum_runs": minimum_runs,
+                "window": window,
+            }
+        ],
+    )
+    if cooldown_runs is not None:
+        construct.set_value(
+            harness,
+            "evolution.auto_propose.cooldown_runs",
+            cooldown_runs,
+        )
+
+
 def _seed_auto_proposal(hive_path: Path, harness: Path, *, feedback: str, created_at: str) -> str:
     """Insert an auto-triggered proposal with a precisely controlled created_at."""
     spec = load_spec(harness)
@@ -221,3 +323,277 @@ def test_ungateable_auto_proposal_records_attempt_and_is_not_repaid(tmp_path: Pa
     _write_failure(hive_path, tmp_path, harness, "run_bad2", "same issue", now)
     _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
     assert len(model.prompts) == 1
+
+
+def test_repeated_recovered_friction_drafts_after_success(tmp_path: Path):
+    harness = _harness(tmp_path, cooldown_hours=1.0)
+    _set_friction_trigger(
+        harness,
+        category="output_validation",
+        minimum_runs=3,
+        window=5,
+    )
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    for index in range(3):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"run_{index}",
+            (now + timedelta(seconds=index)).isoformat(),
+            category="output_validation",
+        )
+
+    model = FakeStrongModel([_PAYLOAD])
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        RunResult(status="success", run_id="run_2"),
+        hive_path,
+        strong_model=model,
+    )
+
+    with Hive(hive_path) as hive:
+        [proposal] = hive.list_proposals(harness_name=load_spec(harness).identity)
+    evidence = json.loads(proposal["evidence_json"])["auto_trigger"]
+    assert proposal["trigger"] == "auto"
+    assert evidence["kind"] == "repeated_friction"
+    assert evidence["matched"]["runs"] == 3
+    assert evidence["matched"]["category"] == "output_validation"
+    assert evidence["matched"]["fingerprint"]
+    assert evidence["window_run_ids"] == ["run_2", "run_1", "run_0"]
+    assert len(model.prompts) == 1
+    assert evidence["matched"]["fingerprint"] in model.prompts[0]["user"]
+
+
+def test_repeated_friction_below_threshold_does_not_draft(tmp_path: Path):
+    harness = _harness(tmp_path)
+    _set_friction_trigger(harness, minimum_runs=3)
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    for index in range(2):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"run_{index}",
+            (now + timedelta(seconds=index)).isoformat(),
+        )
+
+    model = FakeStrongModel([])
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        RunResult(status="success", run_id="run_1"),
+        hive_path,
+        strong_model=model,
+    )
+
+    with Hive(hive_path) as hive:
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
+    assert model.prompts == []
+
+
+def test_unrelated_success_does_not_retrigger_old_friction(tmp_path: Path):
+    harness = _harness(tmp_path)
+    _set_friction_trigger(harness, minimum_runs=2)
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    for index in range(2):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"run_{index}",
+            (now + timedelta(seconds=index)).isoformat(),
+        )
+    _write_friction(
+        hive_path,
+        tmp_path,
+        harness,
+        "clean",
+        (now + timedelta(seconds=3)).isoformat(),
+        category="none",
+    )
+
+    model = FakeStrongModel([])
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        RunResult(status="success", run_id="clean"),
+        hive_path,
+        strong_model=model,
+    )
+
+    assert model.prompts == []
+
+
+def test_friction_cooldown_runs_survives_reopen(tmp_path: Path):
+    harness = _harness(tmp_path, cooldown_hours=1.0)
+    _set_friction_trigger(harness, minimum_runs=2, cooldown_runs=3)
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    _seed_auto_proposal(
+        hive_path,
+        harness,
+        feedback="old issue",
+        created_at=(now - timedelta(hours=2)).isoformat(),
+    )
+    model = FakeStrongModel([_PAYLOAD])
+
+    for index in range(2):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"new_{index}",
+            (now + timedelta(seconds=index)).isoformat(),
+        )
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        RunResult(status="success", run_id="new_1"),
+        hive_path,
+        strong_model=model,
+    )
+    assert model.prompts == []
+
+    _write_friction(
+        hive_path,
+        tmp_path,
+        harness,
+        "new_2",
+        (now + timedelta(seconds=2)).isoformat(),
+    )
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        RunResult(status="success", run_id="new_2"),
+        hive_path,
+        strong_model=model,
+    )
+
+    assert len(model.prompts) == 1
+    with Hive(hive_path) as hive:
+        assert len(hive.list_proposals(harness_name=load_spec(harness).identity)) == 2
+
+
+def test_same_friction_window_dedups_before_model_call(tmp_path: Path):
+    harness = _harness(tmp_path, cooldown_hours=1.0)
+    _set_friction_trigger(harness, minimum_runs=2)
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    for index in range(2):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"run_{index}",
+            (now + timedelta(seconds=index)).isoformat(),
+        )
+    model = FakeStrongModel([_PAYLOAD])
+    spec = load_spec(harness)
+    result = RunResult(status="success", run_id="run_1")
+    _maybe_auto_propose(spec, harness, result, hive_path, strong_model=model)
+    with Hive(hive_path) as hive:
+        [proposal] = hive.list_proposals(harness_name=spec.identity)
+        hive.update_proposal(
+            proposal["id"],
+            created_at=(now - timedelta(hours=2)).isoformat(),
+        )
+
+    _maybe_auto_propose(spec, harness, result, hive_path, strong_model=model)
+
+    assert len(model.prompts) == 1
+
+
+def test_explicit_final_failure_trigger_uses_its_own_window(tmp_path: Path):
+    harness = _harness(tmp_path, min_failures=99)
+    construct.set_value(
+        harness,
+        "evolution.auto_propose.triggers",
+        [{"kind": "final_failure", "minimum_runs": 2, "window": 3}],
+    )
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    for index in range(2):
+        _write_failure(
+            hive_path,
+            tmp_path,
+            harness,
+            f"failed_{index}",
+            "same issue",
+            (now + timedelta(seconds=index)).isoformat(),
+        )
+
+    model = FakeStrongModel([_PAYLOAD])
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        RunResult(status="verify_failed", run_id="failed_1"),
+        hive_path,
+        strong_model=model,
+    )
+
+    with Hive(hive_path) as hive:
+        [proposal] = hive.list_proposals(harness_name=load_spec(harness).identity)
+    trigger = json.loads(proposal["evidence_json"])["auto_trigger"]
+    assert trigger["kind"] == "final_failure"
+    assert trigger["matched"]["run_ids"] == ["failed_1", "failed_0"]
+    assert len(model.prompts) == 1
+
+
+def test_behavior_change_allows_fresh_friction_proposal(tmp_path: Path):
+    harness = _harness(tmp_path, cooldown_hours=1.0)
+    _set_friction_trigger(harness, minimum_runs=2)
+    hive_path = tmp_path / "hive.db"
+    now = datetime.now(UTC)
+    model = FakeStrongModel([_PAYLOAD, _PAYLOAD])
+
+    for index in range(2):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"before_{index}",
+            (now + timedelta(seconds=index)).isoformat(),
+        )
+    spec_before = load_spec(harness)
+    _maybe_auto_propose(
+        spec_before,
+        harness,
+        RunResult(status="success", run_id="before_1"),
+        hive_path,
+        strong_model=model,
+    )
+    with Hive(hive_path) as hive:
+        [first] = hive.list_proposals(harness_name=spec_before.identity)
+        hive.update_proposal(
+            first["id"],
+            created_at=(now - timedelta(hours=2)).isoformat(),
+        )
+
+    construct.set_value(harness, "loop.max_turns", 9)
+    for index in range(2):
+        _write_friction(
+            hive_path,
+            tmp_path,
+            harness,
+            f"after_{index}",
+            (now + timedelta(seconds=10 + index)).isoformat(),
+        )
+    spec_after = load_spec(harness)
+    _maybe_auto_propose(
+        spec_after,
+        harness,
+        RunResult(status="success", run_id="after_1"),
+        hive_path,
+        strong_model=model,
+    )
+
+    with Hive(hive_path) as hive:
+        proposals = hive.list_proposals(harness_name=spec_after.identity)
+    assert spec_version_hash(spec_before, harness) != spec_version_hash(spec_after, harness)
+    assert len(proposals) == 2
+    assert len(model.prompts) == 2

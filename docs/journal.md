@@ -88,7 +88,16 @@ Set `logging.snapshot_files: true` to inline the file *bodies* too, bounded at
 the cost of size; the default records hashes only.
 
 `run_finished` closes the record with the run's `output`, `verdicts`,
-`artifacts`, `model_path`, and `models_used`.
+`artifacts`, `model_path`, `models_used`, and the same `execution` envelope
+returned by the SDK and CLI. That envelope keeps the requested, resolved, and
+provider-reported model identities separate; sums provider-call usage; labels
+cost as billed, estimated, or mixed; and records whether verification passed
+on the first output, recovered, failed, or never ran.
+
+`behavior_hash` is the current name of the version hash inside this public
+envelope. `schema_version` reflects the existing harness `version` field. The
+identity migration keeps those meanings explicit without changing the 1.0
+journal envelope retroactively.
 
 ## Levels
 
@@ -108,6 +117,52 @@ The old names still load in both `harness.yaml` and `TraceWriter`
 (`full` → `journal`, `tool_calls_only` → `summary`), so existing harness
 folders keep working. The names changed to say what they cost you: the reason
 to pick one over the other is whether you will be able to fork.
+
+## Redaction and retention
+
+Redaction runs on structured values before a trace event is serialized, kept
+in memory, sent to an `on_event` stream consumer, or later ingested into the
+Hive:
+
+```yaml
+logging:
+  redact:
+    keys: [email, phone, api_key]
+    paths: ["result.candidates[*].cv_text"]
+    patterns: ["secret-[a-z0-9]+"]
+  retention:
+    days: 30
+    max_runs: 5000
+    max_bytes: 1073741824
+```
+
+Keys match recursively and case-insensitively. Paths are case-sensitive and
+relative to each event's `payload`; they support dot-separated dictionary keys
+and `[*]` list wildcards. Patterns run over every remaining string. The old
+bare `redact: [regex, ...]` form still loads and serializes in the same shape,
+so a regex-only harness keeps its behavior hash.
+
+Retention is absent by default. When configured, a completed ingested run
+prunes older raw journals after proposal drafting, while always preserving the
+trace returned for the current run. Preview or apply the same policy directly:
+
+```bash
+hiveloom traces prune ./h --dry-run --json
+hiveloom traces prune ./h --yes --json
+```
+
+Hiveloom deletes only direct, non-symlinked `RUN_ID.jsonl` files under a trace
+root carrying its marker. The first event must identify the same run as the
+filename. Age uses the file modification time, so copying a trace starts a new
+local retention window. Count and byte limits remove the oldest eligible files
+first. An atomic rename lets readers with an open handle finish before unlink.
+
+Pruning keeps the indexed run, verification, and outcome evidence. The Hive
+sets `trace_path` to null and records `trace_pruned_at`, so trace and fork
+commands report pruned evidence instead of following a stale path. If the same
+run was re-ingested from another durable location, pruning an older copy does
+not clear that newer reference. At-rest encryption is not part of this policy;
+it needs a separate key storage, rotation, and recovery design.
 
 ## Forking a run
 
@@ -292,6 +347,7 @@ with Hive() as hive:
     hive.search_runs("invoice reconciliation")      # runs by what was asked
     hive.compare_versions("my-harness", "9f2c1a", "c05e8d")
     hive.lineage("run_abc123")
+    hive.list_friction("my-harness", recovered=True)
 ```
 
 `runs` carries `task` (the opening statement, capped at 2000 chars — a title and
@@ -301,6 +357,26 @@ search target, not a shadow copy of the journal) and `model_path`.
 left), plus which failure signatures stopped appearing and which started. It
 reports `underpowered` when either side has fewer than five runs, because a
 confident delta over a sample of two is worse than no delta.
+
+### Friction is not final failure
+
+A run can finish successfully after a schema retry, tool error, context
+recovery, guardrail block, or operator steer. The Hive derives bounded
+`friction_events` rows from the already-redacted journal so those incidents do
+not disappear behind the final status:
+
+```bash
+hiveloom friction list ./h --category output_validation --recovered true --json
+hiveloom friction list ./h --model qwen3.5-9b --since 2026-08-01T00:00:00Z --json
+hiveloom stats ./h --include-friction --json
+```
+
+Each record names its run, journal sequence, category, phase, attempt,
+component, stable error fingerprint, recovery state, timestamp, and a summary
+capped at 500 characters. Tool bodies, model text, task input, and operator
+messages are not copied into the friction table. Re-ingesting a run replaces
+its derived rows, so counts remain idempotent. Unknown future category strings
+remain readable by older Hive clients.
 
 ## See also
 
