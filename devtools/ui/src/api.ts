@@ -235,11 +235,20 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ model, from_parent: fromParent }) },
     ),
 
-  /** A code change not named in `approve_code` stays pending: silence is refusal. */
-  applyProposal: (id: string, proposalId: string, approveCode: string[]) =>
+  /** File changes stay pending unless named in their matching approval list. */
+  applyProposal: (
+    id: string,
+    proposalId: string,
+    approveCode: string[],
+    approveProse: string[],
+  ) =>
     call<ApplyResult>(`/api/harnesses/${id}/proposals/${proposalId}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ approve_code: approveCode, apply_yaml: true }),
+      body: JSON.stringify({
+        approve_code: approveCode,
+        approve_prose: approveProse,
+        apply_yaml: true,
+      }),
     }),
 
   rejectProposal: (proposalId: string, reason: string) =>

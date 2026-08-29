@@ -8,8 +8,8 @@
  * `mcp_servers` and `evolution.auto_propose` can never be evolved, and a
  * refusal here is that rule working, not an error.
  *
- * Code changes are approved per file. A file left unchecked stays pending:
- * silence is a refusal, not consent.
+ * Code and prompt-prose changes are approved per file. A file left unchecked
+ * stays pending: silence is a refusal, not consent.
  *
  * Judging the result is the version graph's job, not this screen's: whether an
  * evolution helped is a question about two versions' evidence, and that is
@@ -34,7 +34,8 @@ export function Evolve({
 }) {
   const [proposals, setProposals] = useState<Proposal[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const [approved, setApproved] = useState<string[]>([])
+  const [approvedCode, setApprovedCode] = useState<string[]>([])
+  const [approvedProse, setApprovedProse] = useState<string[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -88,7 +89,12 @@ export function Evolve({
     setBusy('apply')
     setError(null)
     try {
-      const result = await api.applyProposal(harness.id, open.id, approved)
+      const result = await api.applyProposal(
+        harness.id,
+        open.id,
+        approvedCode,
+        approvedProse,
+      )
       setApplied(result)
       await Promise.all([load(), onApplied()])
     } catch (exc) {
@@ -183,6 +189,10 @@ export function Evolve({
               applied.applied_code.length
             } code file(s) written${
               applied.pending_code?.length ? `, ${applied.pending_code.length} left pending` : ''
+            }; ${applied.applied_prose?.length ?? 0} prompt file(s) written${
+              applied.pending_prose?.length
+                ? `, ${applied.pending_prose.length} left pending`
+                : ''
             }. Run the harness again to give the new version evidence of its own.`}
             action={
               <button className="v-btn v-btn-ghost v-btn-sm" onClick={onCompare}>
@@ -211,7 +221,8 @@ export function Evolve({
                 data-on={selected === row.id ? '1' : '0'}
                 onClick={() => {
                   setSelected(row.id)
-                  setApproved([])
+                  setApprovedCode([])
+                  setApprovedProse([])
                   setApplied(null)
                 }}
               >
@@ -227,10 +238,18 @@ export function Evolve({
           {open && (
             <ProposalDetail
               proposal={open}
-              approved={approved}
+              approvedCode={approvedCode}
+              approvedProse={approvedProse}
               busy={busy}
               onToggleCode={(file) =>
-                setApproved((current) =>
+                setApprovedCode((current) =>
+                  current.includes(file)
+                    ? current.filter((item) => item !== file)
+                    : [...current, file],
+                )
+              }
+              onToggleProse={(file) =>
+                setApprovedProse((current) =>
                   current.includes(file)
                     ? current.filter((item) => item !== file)
                     : [...current, file],
@@ -248,16 +267,20 @@ export function Evolve({
 
 function ProposalDetail({
   proposal,
-  approved,
+  approvedCode,
+  approvedProse,
   busy,
   onToggleCode,
+  onToggleProse,
   onApply,
   onReject,
 }: {
   proposal: Proposal
-  approved: string[]
+  approvedCode: string[]
+  approvedProse: string[]
   busy: string | null
   onToggleCode: (file: string) => void
+  onToggleProse: (file: string) => void
   onApply: () => void
   onReject: () => void
 }) {
@@ -305,9 +328,33 @@ function ProposalDetail({
               <label className="code-approve">
                 <input
                   type="checkbox"
-                  checked={approved.includes(change.file)}
+                  checked={approvedCode.includes(change.file)}
                   disabled={!pending}
                   onChange={() => onToggleCode(change.file)}
+                />
+                <code>{change.file}</code>
+              </label>
+              {change.rationale && <span className="evolve-note">{change.rationale}</span>}
+              <pre className="code-source">{change.source}</pre>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {(gate.prose_changes ?? []).length > 0 && (
+        <section>
+          <Label>Prompt prose · {(gate.prose_changes ?? []).length}</Label>
+          <p className="evolve-note">
+            These files are declared playbook prompts. They use a separate approval from code.
+          </p>
+          {(gate.prose_changes ?? []).map((change) => (
+            <div className="change-row code" key={change.file}>
+              <label className="code-approve">
+                <input
+                  type="checkbox"
+                  checked={approvedProse.includes(change.file)}
+                  disabled={!pending}
+                  onChange={() => onToggleProse(change.file)}
                 />
                 <code>{change.file}</code>
               </label>
@@ -330,7 +377,10 @@ function ProposalDetail({
             ) : (
               <i className="ph ph-check" />
             )}
-            Apply {approved.length > 0 ? `with ${approved.length} code file(s)` : 'YAML only'}
+            Apply{' '}
+            {approvedCode.length + approvedProse.length > 0
+              ? `with ${approvedCode.length} code and ${approvedProse.length} prompt file(s)`
+              : 'YAML only'}
           </button>
         </div>
       ) : (

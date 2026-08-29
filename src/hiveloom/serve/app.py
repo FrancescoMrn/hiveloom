@@ -619,9 +619,13 @@ def create_app(
         def work() -> dict[str, Any]:
             body = _parse_body(raw)
             approved_files = set(body.get("approve_code") or [])
+            approved_prose = set(body.get("approve_prose") or [])
 
             def approve_code(change: Any) -> bool:
                 return change.file in approved_files
+
+            def approve_prose(change: Any) -> bool:
+                return change.file in approved_prose
 
             harness_name = _harness_key()
             # Also under the spec lock: apply_proposal_by_id may write
@@ -635,6 +639,7 @@ def create_app(
                         harness_dir,
                         proposal_id,
                         approve_code=approve_code,
+                        approve_prose=approve_prose,
                         apply_yaml=bool(body.get("apply_yaml", False)),
                     )
             return {"ok": True, "proposal_id": proposal_id, **result.model_dump()}

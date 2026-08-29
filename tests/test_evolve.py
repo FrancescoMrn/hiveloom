@@ -19,6 +19,7 @@ from hiveloom.evolve.evolver import (
     CodeChange,
     MutationProposal,
     ProposalError,
+    ProseChange,
     YamlChange,
     apply_proposal,
     build_evolve_prompt,
@@ -385,6 +386,87 @@ def test_apply_code_change_requires_approval(tmp_path: Path):
     assert applied.applied_code == ["validators/check.py"]
     assert (harness / "validators" / "check.py.bak").exists()
     assert "return {'passed': True}" in (harness / "validators" / "check.py").read_text()
+
+
+def test_playbook_prompt_uses_separate_prose_approval(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_playbook(harness, name="targeting", description="Find candidates.")
+    prompt = harness / "playbooks" / "targeting.md"
+    before = prompt.read_text()
+    proposal = MutationProposal(
+        prose_changes=[
+            ProseChange(
+                file="playbooks/targeting.md",
+                source="# Targeting\n\nUse verified candidates only.\n",
+                rationale="ground the shortlist",
+            )
+        ]
+    )
+
+    pending = apply_proposal(harness, proposal)
+    assert pending.pending_prose == ["playbooks/targeting.md"]
+    assert pending.applied_prose == []
+    assert prompt.read_text() == before
+
+    applied = apply_proposal(harness, proposal, approve_prose=lambda _change: True)
+    assert applied.applied_prose == ["playbooks/targeting.md"]
+    assert applied.applied_code == []
+    assert "verified candidates" in prompt.read_text()
+    assert applied.old_version_hash != applied.new_version_hash
+
+
+def test_gate_rejects_undeclared_prose_and_reclassifies_legacy_prompt_code(
+    tmp_path: Path,
+):
+    harness = _harness(tmp_path)
+    construct.add_playbook(harness, name="targeting", description="Find candidates.")
+    spec = load_spec(harness)
+    result = gate(
+        spec,
+        MutationProposal(
+            code_changes=[
+                CodeChange(file="playbooks/targeting.md", source="# replacement\n")
+            ],
+            prose_changes=[
+                ProseChange(file="notes/undeclared.md", source="# not a prompt\n")
+            ],
+        ),
+    )
+
+    assert result.code_changes == []
+    assert [change.file for change in result.prose_changes] == [
+        "playbooks/targeting.md"
+    ]
+    assert result.rejected == [
+        {
+            "path": "notes/undeclared.md",
+            "reason": "prose changes may only target declared playbook prompt files",
+        }
+    ]
+
+
+def test_playbook_hook_never_uses_prose_approval(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_playbook(
+        harness,
+        name="targeting",
+        description="Find candidates.",
+        on_enter="hooks/targeting.py:on_enter",
+    )
+    target = harness / "hooks" / "targeting.py"
+    before = target.read_text()
+    proposal = MutationProposal(
+        code_changes=[CodeChange(file="hooks/targeting.py", source="# executable\n")]
+    )
+
+    result = apply_proposal(
+        harness,
+        proposal,
+        approve_prose=lambda _change: True,
+    )
+    assert result.pending_code == ["hooks/targeting.py"]
+    assert result.applied_prose == []
+    assert target.read_text() == before
 
 
 def test_apply_rolls_back_when_validation_fails(tmp_path: Path, monkeypatch):

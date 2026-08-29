@@ -61,16 +61,26 @@ class CodeChange(BaseModel):
     rationale: str = ""
 
 
+class ProseChange(BaseModel):
+    """A rewrite of a prompt file already declared by the harness."""
+
+    file: str
+    source: str
+    rationale: str = ""
+
+
 class MutationProposal(BaseModel):
     rationale: str = ""
     yaml_changes: list[YamlChange] = Field(default_factory=list)
     code_changes: list[CodeChange] = Field(default_factory=list)
+    prose_changes: list[ProseChange] = Field(default_factory=list)
 
 
 class GateResult(BaseModel):
     accepted: list[YamlChange] = Field(default_factory=list)
     rejected: list[dict[str, str]] = Field(default_factory=list)  # {path, reason}
     code_changes: list[CodeChange] = Field(default_factory=list)
+    prose_changes: list[ProseChange] = Field(default_factory=list)
 
 
 class ApplyResult(BaseModel):
@@ -83,6 +93,8 @@ class ApplyResult(BaseModel):
     rejected: list[dict[str, str]] = Field(default_factory=list)
     applied_code: list[str] = Field(default_factory=list)
     pending_code: list[str] = Field(default_factory=list)
+    applied_prose: list[str] = Field(default_factory=list)
+    pending_prose: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -201,10 +213,11 @@ def touches_frozen(path: str, patterns: set[str]) -> bool:
 def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
     """Split proposed YAML changes into accepted and rejected.
 
-    Code changes pass through unchanged — they are gated separately by human
-    approval at apply time. The accepted YAML batch must also produce a
-    schema-valid spec; otherwise every provisionally accepted change is
-    rejected as part of that invalid batch.
+    Code and prose changes are gated separately by human approval at apply
+    time. Prose is limited to prompt files already declared by a playbook.
+    The accepted YAML batch must also produce a schema-valid spec; otherwise
+    every provisionally accepted change is rejected as part of that invalid
+    batch.
     """
     frozen = set(spec.evolution.frozen) | set(ALWAYS_FROZEN)
     mutable = set(spec.evolution.mutable)
@@ -249,7 +262,41 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
             rejected.extend({"path": change.path, "reason": reason} for change in accepted)
             accepted = []
 
-    return GateResult(accepted=accepted, rejected=rejected, code_changes=proposal.code_changes)
+    prompt_files = {
+        Path(playbook.prompt).as_posix()
+        for playbook in spec.playbooks
+        if playbook.prompt
+    }
+    prose_changes = list(proposal.prose_changes)
+    code_changes: list[CodeChange] = []
+    # Proposal artifacts created before prose_changes existed used
+    # code_changes for prompt Markdown. Reclassify those at the gate so queued
+    # proposals keep the narrower approval path after an upgrade.
+    for change in proposal.code_changes:
+        if Path(change.file).as_posix() in prompt_files:
+            prose_changes.append(ProseChange.model_validate(change.model_dump()))
+        else:
+            code_changes.append(change)
+
+    accepted_prose: list[ProseChange] = []
+    for change in prose_changes:
+        normalized = Path(change.file).as_posix()
+        if normalized not in prompt_files:
+            rejected.append(
+                {
+                    "path": change.file,
+                    "reason": "prose changes may only target declared playbook prompt files",
+                }
+            )
+        else:
+            accepted_prose.append(change)
+
+    return GateResult(
+        accepted=accepted,
+        rejected=rejected,
+        code_changes=code_changes,
+        prose_changes=accepted_prose,
+    )
 
 
 def _touches_playbook_code(change: YamlChange) -> bool:
@@ -436,12 +483,14 @@ def apply_proposal(
     *,
     hive: Hive | None = None,
     approve_code: Callable[[CodeChange], bool] | None = None,
+    approve_prose: Callable[[ProseChange], bool] | None = None,
     apply_yaml: bool = True,
 ) -> ApplyResult:
     """Gate and apply a proposal, versioning the spec and recording in the Hive.
 
-    ``approve_code`` is asked for each code change (defaults to reject). YAML
-    changes apply when ``apply_yaml`` is true and they pass the gate.
+    ``approve_code`` and ``approve_prose`` are asked for each corresponding
+    file change and default to reject. YAML changes apply when ``apply_yaml``
+    is true and they pass the gate.
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -469,8 +518,14 @@ def apply_proposal(
         (change, resolve_code_change_path(base, change.file, trace_dir=trace_dir))
         for change in result.code_changes
     ]
+    prose_targets = [
+        (change, resolve_code_change_path(base, change.file, trace_dir=trace_dir))
+        for change in result.prose_changes
+    ]
     applied_code: list[str] = []
     pending_code: list[str] = []
+    applied_prose: list[str] = []
+    pending_prose: list[str] = []
     # Full re-validation needs the code changes already on disk, because it
     # imports the hooks — so writing has to precede validating, and a failure
     # there would leave the harness mutated and invalid. Snapshot everything
@@ -487,7 +542,17 @@ def apply_proposal(
             else:
                 pending_code.append(change.file)
 
-        changed = bool(applied_yaml or applied_code)
+        for change, target in prose_targets:
+            approved = approve_prose(change) if approve_prose is not None else False
+            if approved:
+                snapshot.take(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(change.source, encoding="utf-8")
+                applied_prose.append(change.file)
+            else:
+                pending_prose.append(change.file)
+
+        changed = bool(applied_yaml or applied_code or applied_prose)
         counter = read_counter(yaml_path)
         new_hash = old_hash
         if changed:
@@ -518,4 +583,6 @@ def apply_proposal(
         rejected=result.rejected,
         applied_code=applied_code,
         pending_code=pending_code,
+        applied_prose=applied_prose,
+        pending_prose=pending_prose,
     )

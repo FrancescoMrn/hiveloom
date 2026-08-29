@@ -2549,9 +2549,9 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
     async def apply_proposal(request: Request) -> Response:
         """Apply a queued proposal to a harness.
 
-        ``approve_code`` is the HTTP substitute for the CLI's per-file y/n:
-        a code change not named in it stays pending. Silence is a refusal, not
-        consent — a caller that forgets the field applies no code.
+        ``approve_code`` and ``approve_prose`` are the HTTP substitutes for
+        the CLI's per-file y/n. A file not named in its matching list stays
+        pending. Silence is a refusal.
         """
         entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
         proposal_id = request.path_params["proposal_id"]
@@ -2559,6 +2559,9 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         approved = body.get("approve_code") or []
         if not isinstance(approved, list):
             raise ValueError("'approve_code' must be a list of file paths")
+        approved_prose = body.get("approve_prose") or []
+        if not isinstance(approved_prose, list):
+            raise ValueError("'approve_prose' must be a list of file paths")
         apply_yaml = body.get("apply_yaml", True)
 
         def work() -> dict[str, Any]:
@@ -2568,6 +2571,7 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                     entry["path"],
                     proposal_id,
                     approve_code=lambda change: change.file in approved,
+                    approve_prose=lambda change: change.file in approved_prose,
                     apply_yaml=bool(apply_yaml),
                 )
             return {"ok": True, **json.loads(result.model_dump_json())}

@@ -326,6 +326,8 @@ export interface CodeChange {
   rationale: string
 }
 
+export type ProseChange = CodeChange
+
 export interface Proposal {
   id: string
   harness_name: string
@@ -335,9 +337,19 @@ export interface Proposal {
   rationale: string
   created_at: string
   resolved_at: string | null
-  proposal: { rationale: string; yaml_changes: YamlChange[]; code_changes: CodeChange[] }
+  proposal: {
+    rationale: string
+    yaml_changes: YamlChange[]
+    code_changes: CodeChange[]
+    prose_changes?: ProseChange[]
+  }
   /** What the gate allowed: frozen fields never reach `accepted`. */
-  gate: { accepted: YamlChange[]; rejected: { path: string; reason: string }[]; code_changes: CodeChange[] }
+  gate: {
+    accepted: YamlChange[]
+    rejected: { path: string; reason: string }[]
+    code_changes: CodeChange[]
+    prose_changes?: ProseChange[]
+  }
   apply_result: Record<string, unknown> | null
 }
 
@@ -352,6 +364,8 @@ export interface ApplyResult {
   rejected: { path: string; reason: string }[]
   applied_code: string[]
   pending_code?: string[]
+  applied_prose?: string[]
+  pending_prose?: string[]
 }
 
 /* ----------------------------------------------------------- comparison */

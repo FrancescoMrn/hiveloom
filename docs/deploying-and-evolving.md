@@ -28,9 +28,9 @@ The running deployment does **not** evolve itself:
 - Evolution is a **gated, versioned, auditable mutation**, not silent drift.
   The evolver can never change `id`, `guardrails`, `model`, `logging.redact`,
   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`;
-  regenerated code hooks require explicit y/n approval; every applied change
-  bumps an `# evolved: N` counter and records old→new version hashes in the
-  Hive.
+  regenerated code hooks require code approval; declared playbook prompt files
+  use a separate prose approval. Every applied change bumps an `# evolved: N`
+  counter and records old→new version hashes in the Hive.
 
 "Still evolving" therefore means the harness *emits the signal* (traces) wherever
 it runs, and you close the loop deliberately — not that it mutates live.
@@ -96,6 +96,20 @@ hiveloom proposals apply ./harness <id>       # apply it (re-checks the harness
                                                # hasn't changed since drafting)
 hiveloom proposals reject ./harness <id> --reason "not worth it"
 ```
+
+A proposal can replace a Markdown prompt already declared by a playbook. The
+proposal stores that replacement under `prose_changes`, separate from
+executable `code_changes`. Apply it with an interactive confirmation or an
+explicit allowlist:
+
+```text
+hiveloom proposals apply ./harness <id> \
+  --approve-prose playbooks/targeting.md --json
+```
+
+The prose route accepts only prompt files named by the current validated spec.
+Playbook `on_enter` and `on_exit` hooks still require code approval, and an
+undeclared Markdown path is rejected by the gate.
 
 There is no auto-apply: a human always calls `proposals apply` or
 `proposals reject`. This is the additive extension the trace sink / networked

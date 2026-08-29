@@ -28,7 +28,13 @@ from hiveloom import trust as trust_mod
 from hiveloom.errors import ProposalQueueError
 from hiveloom.evolve import evolver
 from hiveloom.evolve.analyzer import FailureReport
-from hiveloom.evolve.evolver import ApplyResult, CodeChange, GateResult, MutationProposal
+from hiveloom.evolve.evolver import (
+    ApplyResult,
+    CodeChange,
+    GateResult,
+    MutationProposal,
+    ProseChange,
+)
 from hiveloom.generate.llm import StrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
@@ -118,7 +124,9 @@ def create_proposal(
 
     proposal = evolver.propose(spec, report, model)
     gate_result = evolver.gate(spec, proposal)
-    queueable = bool(gate_result.accepted or gate_result.code_changes)
+    queueable = bool(
+        gate_result.accepted or gate_result.code_changes or gate_result.prose_changes
+    )
     if not queueable and not record_empty_as_rejected:
         raise ProposalQueueError("proposal has no applicable changes after gating")
 
@@ -186,6 +194,7 @@ def apply_proposal_by_id(
     proposal_id: str,
     *,
     approve_code: Callable[[CodeChange], bool] | None = None,
+    approve_prose: Callable[[ProseChange], bool] | None = None,
     apply_yaml: bool = True,
     confirm_apply_yaml: Callable[[], bool] | None = None,
 ) -> ApplyResult:
@@ -232,7 +241,12 @@ def apply_proposal_by_id(
     proposal = MutationProposal.model_validate_json(row["proposal_json"])
     try:
         result = evolver.apply_proposal(
-            harness_dir, proposal, hive=hive, approve_code=approve_code, apply_yaml=apply_yaml
+            harness_dir,
+            proposal,
+            hive=hive,
+            approve_code=approve_code,
+            approve_prose=approve_prose,
+            apply_yaml=apply_yaml,
         )
     except BaseException:
         hive.release_proposal_claim(proposal_id)

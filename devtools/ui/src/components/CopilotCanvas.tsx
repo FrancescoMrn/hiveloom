@@ -416,7 +416,7 @@ function Proposal({ data, onChanged }: { data: Record<string, unknown>; onChange
   const apply = async () => {
     setError(null)
     try {
-      await api.applyProposal(String(data.harness_id), String(data.id), [])
+      await api.applyProposal(String(data.harness_id), String(data.id), [], [])
       setStatus('applied')
       await onChanged()
     } catch (exc) {
@@ -436,6 +436,7 @@ function Proposal({ data, onChanged }: { data: Record<string, unknown>; onChange
         </button>
       )}
       {array(gate.code_changes).length > 0 && <p className="canvas-warning">Code changes remain unapproved. This action applies YAML only.</p>}
+      {array(gate.prose_changes).length > 0 && <p className="canvas-warning">Prompt prose changes remain unapproved. This action applies YAML only.</p>}
       {error && <div className="copilot-error">{error}</div>}
     </div>
   )

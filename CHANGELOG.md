@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Evolution proposals can rewrite Markdown files already declared as playbook
+  prompts through `prose_changes`. CLI, HTTP, and Workbench callers approve
+  them separately from executable `code_changes`; undeclared files are
+  rejected, and existing queued prompt edits are reclassified at the gate.
+
 ## [1.0.0] - 2026-08-28
 
 The observability release. A run now leaves behind a progressive,

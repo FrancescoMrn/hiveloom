@@ -11,6 +11,9 @@ of failure signatures plus recent failed runs with their verifier feedback).
   the harness lists as frozen. Proposals touching them are rejected outright.
 - Regenerating a code hook's source is allowed but always requires explicit
   human approval before it is applied.
+- A playbook prompt file listed in the current spec may be rewritten under
+  `prose_changes`. Prose has its own approval gate. It cannot target hooks,
+  extensions, validators, or an undeclared file.
 
 ## How to propose
 
@@ -20,6 +23,9 @@ of failure signatures plus recent failed runs with their verifier feedback).
 - If the failures are verifier feedback showing the *logic* is wrong (not the
   prompt), propose a regenerated code hook under `code_changes` with corrected
   source and a rationale.
+- If one playbook's guidance caused the failure, put the full replacement for
+  its declared prompt Markdown file under `prose_changes`. Do not change the
+  prompt path in YAML.
 - Every change carries a short `rationale` tied to a failure cluster.
 
 ## Output format
@@ -35,8 +41,11 @@ Return **only** a JSON object (no prose, no fences):
   ],
   "code_changes": [
     {"file": "validators/check.py", "source": "def validate(...):\n    ...\n", "rationale": "..."}
+  ],
+  "prose_changes": [
+    {"file": "playbooks/targeting.md", "source": "# Targeting\n...\n", "rationale": "..."}
   ]
 }
 ```
 
-Omit `code_changes` (or use `[]`) when a YAML-only change suffices.
+Omit `code_changes` or `prose_changes` (or use `[]`) when they are unnecessary.
