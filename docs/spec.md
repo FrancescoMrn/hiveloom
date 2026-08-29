@@ -31,7 +31,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
-| `evolution` | What the evolver may change | `enabled`, `mutable` (paths it MAY change), `frozen` (paths it must NEVER change), `auto_propose.{enabled,min_failures,cooldown_hours,model}` (opt-in post-run DRAFT trigger, never auto-applies), `trace_excerpts.{enabled,max_incidents,before_events,after_events,max_event_bytes,max_bytes,max_tokens}` (bounded incident evidence); both nested policies are frozen |
+| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all three nested policies are frozen |
 
 ## Builtins
 
@@ -66,6 +66,29 @@ parameter is hidden from the tool's JSON schema and cannot be forged by a
 model-supplied key of the same name. A tool that returns a `ToolResult` may
 attach `Artifact(kind=..., data=...)` side-products, which reach the caller on
 `RunResult.artifacts` without passing through the model's text channel.
+
+Metric objectives let evolution use numeric evaluator history without treating
+it as a binary outcome:
+
+```yaml
+evolution:
+  objectives:
+    - metric: recall_at_5
+      direction: maximize
+      unit: ratio
+    - metric: hallucination_rate
+      direction: minimize
+      ceiling: 0
+    - metric: billed_cost_usd
+      direction: minimize
+      unit: USD
+```
+
+Construct the list with `hiveloom set evolution.objectives '...' --dir ./h
+--json`; never edit the YAML directly. `metric` names are unique within the
+list. Optional `source`, `scope`, and `unit` filters narrow the series. A finite
+`floor` or `ceiling` is a hard per-observation constraint, not a weighted
+preference. Objective policy is frozen from evolution.
 
 ## Playbooks
 
@@ -211,8 +234,8 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 ## Safety invariants (enforced in code)
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
-   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`, or
-   `evolution.trace_excerpts` — nor any
+   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
+   `evolution.trace_excerpts`, or `evolution.objectives` — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
    never side-effecting code.

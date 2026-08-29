@@ -12,9 +12,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.logging.hive import Hive
-from hiveloom.spec.schema import RedactionConfig, TraceExcerptConfig
+from hiveloom.spec.schema import MetricObjective, RedactionConfig, TraceExcerptConfig
 
 from .evidence import IncidentEvidence, build_incident_evidence
+from .metric_evidence import MetricEvidence, build_metric_evidence
 
 
 class FailureCluster(BaseModel):
@@ -43,6 +44,7 @@ class FailureReport(BaseModel):
     friction: dict[str, Any] = Field(default_factory=dict)
     recent_friction: list[dict[str, Any]] = Field(default_factory=list)
     incident_evidence: IncidentEvidence | None = None
+    metric_evidence: MetricEvidence | None = None
 
     def is_empty(self) -> bool:
         return (
@@ -50,11 +52,23 @@ class FailureReport(BaseModel):
             and not self.recent_failures
             and not self.outcome_failures
             and not self.recent_friction
+            and not (
+                self.metric_evidence is not None
+                and self.metric_evidence.has_observations()
+            )
         )
 
     def evidence_receipt(self) -> dict[str, Any] | None:
         """Selection provenance suitable for proposal storage."""
-        return self.incident_evidence.receipt() if self.incident_evidence is not None else None
+        receipt = (
+            self.incident_evidence.receipt()
+            if self.incident_evidence is not None
+            else {}
+        )
+        if self.metric_evidence is not None:
+            receipt["metric_history"] = self.metric_evidence.receipt()
+            receipt.setdefault("digest", self.metric_evidence.digest)
+        return receipt or None
 
 
 def analyze(
@@ -65,6 +79,7 @@ def analyze(
     version: str | None = None,
     excerpt_config: TraceExcerptConfig | None = None,
     redaction: RedactionConfig | None = None,
+    objectives: list[MetricObjective] | None = None,
 ) -> FailureReport:
     """Build a :class:`FailureReport` for ``harness_name`` from the Hive.
 
@@ -136,6 +151,12 @@ def analyze(
             config=excerpt_config,
             redaction=redaction or RedactionConfig(),
         )
+    metric_evidence = build_metric_evidence(
+        hive,
+        harness_name,
+        objectives=objectives or [],
+        version=version,
+    )
 
     return FailureReport(
         harness_name=harness_name,
@@ -149,4 +170,5 @@ def analyze(
         friction=friction,
         recent_friction=recent_friction,
         incident_evidence=incident_evidence,
+        metric_evidence=metric_evidence,
     )

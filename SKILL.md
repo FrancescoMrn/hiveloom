@@ -88,6 +88,9 @@ record`, import validated NDJSON batches with `hiveloom metrics import`, and
 query scope-safe aggregates with `hiveloom metrics list --json`. Inspect the
 machine-readable ingestion contract first with `hiveloom metrics schema
 --json`; aggregate sample and missing-value counts must be read together.
+Configure `evolution.objectives` through `hiveloom set` when those metrics
+should guide proposals. Objective history stays split by unit, source, scope,
+and behavior/model cohort; hard floors and ceilings cannot be traded for cost.
 
 For held-out datasets and post-verification scorers, inspect `hiveloom eval
 schema --json`, then `hiveloom catalog datasets` and `catalog scorers`. Validate
@@ -118,7 +121,8 @@ relabelling a served model.
 
 When asked to improve a failing harness, **do not** hand-edit it — and never
 touch `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-`mcp_servers`, `evolution.auto_propose`, or `evolution.trace_excerpts` through
+`mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, or
+`evolution.objectives` through
 evolution. Run:
 ```bash
 hiveloom evolve ./h            # analyze Hive failures → propose a gated mutation

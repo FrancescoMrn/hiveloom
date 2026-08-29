@@ -155,7 +155,8 @@ A stdio server is arbitrary local exec — trust-gated like any code hook.
 
 Extensions **widen choice, never the evolution gate**: `guardrails`, `model`,
 `logging.redact`, `extensions`, `hooks`, `mcp_servers`, and
-`evolution.auto_propose` and `evolution.trace_excerpts` stay frozen from
+`evolution.auto_propose`, `evolution.trace_excerpts`, and
+`evolution.objectives` stay frozen from
 evolution, and foreign harness
 folders stay trust-gated before their code loads.
 

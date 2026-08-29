@@ -64,6 +64,8 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     trace_excerpts = data.get("evolution", {}).get("trace_excerpts")
     if trace_excerpts == TraceExcerptConfig().model_dump(mode="json"):
         data["evolution"].pop("trace_excerpts", None)
+    if not data.get("evolution", {}).get("objectives"):
+        data["evolution"].pop("objectives", None)
     return data
 
 

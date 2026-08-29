@@ -83,7 +83,7 @@ def _dedup_key(report: FailureReport) -> str:
     signatures = sorted(f"{cluster.kind}:{cluster.signature}" for cluster in report.clusters)
     evidence = report.evidence_receipt() or {}
     material = json.dumps(
-        {"signatures": signatures, "evidence_digest": evidence.get("digest", "")},
+        {"signatures": signatures, "evidence": evidence},
         sort_keys=True,
         separators=(",", ":"),
     )

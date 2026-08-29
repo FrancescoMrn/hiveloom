@@ -188,6 +188,15 @@ aggregate JSON and paired comparisons are reproducible after trace retention
 prunes the journals. Pairing uses hashed case identity plus repetition; cost
 sources remain separate and unmatched cells stay visible.
 
+Configured evolution objectives select bounded numeric history by metric name,
+source, scope, and unit. Aggregation never mixes units or recorded directions.
+Runs are grouped into explicit cohorts by behavior hash and requested/effective
+provider and model; individual execution fingerprints and bounded evidence run
+IDs remain in the receipt. When eval case and repetition keys exist, the same
+evidence also carries paired cohort comparisons. Metric metadata and raw traces
+do not enter this path. Missing values remain missing, and floors or ceilings
+are reported as hard violations rather than folded into a weighted score.
+
 When explicitly enabled, evolution uses those rows as incident anchors and
 selects a bounded window from each validated journal. It re-applies structured
 redaction before truncation and budgeting; a missing or retention-pruned
@@ -200,7 +209,8 @@ and selection receipt, never a second copy of the selected payloads.
 minimal mutation, then **gates it in code**:
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, `evolution.auto_propose`, and `evolution.trace_excerpts`
+  `mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, and
+  `evolution.objectives`
   (`schema.ALWAYS_FROZEN`) — plus
   any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;

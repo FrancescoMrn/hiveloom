@@ -1389,6 +1389,75 @@ class Hive:
     # ------------------------------------------------------------------ #
     # Numeric run metrics
     # ------------------------------------------------------------------ #
+    def metric_history(
+        self,
+        harness_key: str,
+        *,
+        name: str,
+        source: str | None = None,
+        scope: str | None = None,
+        unit: str | None = None,
+        version: str | None = None,
+        limit: int = 2000,
+    ) -> dict[str, Any]:
+        """Return bounded numeric observations with execution and eval provenance.
+
+        Metric metadata is deliberately excluded: evolution needs values and
+        reproducibility receipts, not evaluator-owned private payloads.
+        """
+        if limit < 1:
+            raise ValueError("metric history limit must be at least 1")
+        where = ["r.harness_key=?", "m.name=?"]
+        params: list[Any] = [harness_key, name]
+        for column, value in (
+            ("m.source", source),
+            ("m.scope", scope),
+            ("m.unit", unit),
+            ("r.harness_version_hash", version),
+        ):
+            if value is not None:
+                where.append(f"{column}=?")
+                params.append(value)
+        rows = self._conn.execute(
+            "SELECT m.id, m.run_id, m.name, m.value, m.direction, m.unit, "
+            "m.source, m.scope, m.recorded_at, r.harness_version_hash AS behavior_hash, "
+            "r.requested_provider, r.requested_model, r.effective_provider, "
+            "r.effective_model, r.execution_fingerprint, r.finished_at, "
+            "c.eval_run_id, c.case_key, c.repetition "
+            "FROM run_metrics m JOIN runs r ON r.run_id=m.run_id "
+            "LEFT JOIN eval_cells c ON c.run_id=m.run_id "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY r.finished_at DESC, m.id DESC LIMIT ?",
+            (*params, limit + 1),
+        ).fetchall()
+        return {
+            "records": [dict(row) for row in rows[:limit]],
+            "truncated": len(rows) > limit,
+            "limit": limit,
+        }
+
+    def execution_cohort_populations(
+        self, harness_key: str, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Count runs without mixing behavior or requested/effective model identity."""
+        where = ["harness_key=?"]
+        params: list[Any] = [harness_key]
+        if version is not None:
+            where.append("harness_version_hash=?")
+            params.append(version)
+        rows = self._conn.execute(
+            "SELECT harness_version_hash AS behavior_hash, requested_provider, "
+            "requested_model, effective_provider, effective_model, COUNT(*) AS run_count "
+            "FROM runs "
+            f"WHERE {' AND '.join(where)} "
+            "GROUP BY harness_version_hash, requested_provider, requested_model, "
+            "effective_provider, effective_model "
+            "ORDER BY behavior_hash, requested_provider, requested_model, "
+            "effective_provider, effective_model",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _same_metric(left: dict[str, Any], right: dict[str, Any]) -> bool:
         fields = (

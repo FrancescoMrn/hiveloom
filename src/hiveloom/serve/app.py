@@ -586,9 +586,14 @@ def create_app(
                     version=spec_version_hash(spec, base),
                     excerpt_config=spec.evolution.trace_excerpts,
                     redaction=spec.logging.redact,
+                    objectives=spec.evolution.objectives,
                 )
                 if report.is_empty():
-                    return {"ok": True, "changed": False, "reason": "no failures to learn from"}
+                    return {
+                        "ok": True,
+                        "changed": False,
+                        "reason": "no failures or metric observations to learn from",
+                    }
                 model = strong_model or build_strong_model(body.get("model"), base)
                 record = proposals_mod.create_proposal(
                     hive, spec, harness_dir, report, model, trigger="http"

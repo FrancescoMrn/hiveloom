@@ -27,8 +27,8 @@ The running deployment does **not** evolve itself:
   the hot path, and never in production latency or cost.
 - Evolution is a **gated, versioned, auditable mutation**, not silent drift.
   The evolver can never change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`, or
-  `evolution.trace_excerpts`;
+  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
+  `evolution.trace_excerpts`, or `evolution.objectives`;
   regenerated code hooks require explicit y/n approval; every applied change
   bumps an `# evolved: N` counter and records old→new version hashes in the
   Hive.
@@ -136,6 +136,38 @@ report. The queued proposal stores only selection rules, run and friction IDs,
 budgets, and a digest. It does not copy event payloads into the proposal queue.
 `evolution.trace_excerpts` is frozen from evolution because it controls what
 evidence may leave the local journal boundary.
+
+### Metric objectives
+
+External scorers can record numeric metrics after verification. To let the
+evolver use those observations, configure evaluator-owned objectives through
+the validated construction path:
+
+```bash
+hiveloom set evolution.objectives '[
+  {"metric":"recall_at_5","direction":"maximize","unit":"ratio"},
+  {"metric":"hallucination_rate","direction":"minimize","ceiling":0},
+  {"metric":"billed_cost_usd","direction":"minimize","unit":"USD"}
+]' --dir ./h --json
+```
+
+Evolution receives bounded aggregates with sample and missing-value counts,
+behavior/model cohorts, execution fingerprints, and evidence run IDs. Eval
+observations with matching case and repetition keys also produce paired
+comparisons. Units, sources, scopes, recorded directions, and cohorts remain
+separate. This avoids treating a model swap or a different evaluator series as
+one continuous baseline.
+
+Metric metadata is excluded from the proposing request. When trace excerpts
+are enabled, they remain independently redacted and budgeted. Missing metrics
+stay missing. A hard floor or ceiling violation must be addressed and cannot
+be offset by lower cost or another soft improvement. The proposal records its
+expected objective change plus the aggregate evidence receipt; paired history
+supports comparison but does not prove causation.
+
+`evolution.objectives` is always frozen. The proposing model cannot rewrite its
+own scorecard. Metric-aware evolution still only drafts or presents a gated
+change; applying a queued proposal remains an explicit command.
 
 ## Auto-DRAFT (opt-in) — auto-APPLY still does not exist
 

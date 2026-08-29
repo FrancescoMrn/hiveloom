@@ -2417,9 +2417,9 @@ def evolve(
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
 
-    Guardrails/model/logging.redact can never be changed. YAML changes within the
-    mutable set auto-apply with ``--yes``; regenerated code always needs y/n
-    approval. Recorded in the Hive under a new version hash. With ``--propose``,
+    Safety configuration and metric objectives can never be changed. YAML
+    changes within the mutable set auto-apply with ``--yes``; regenerated code
+    always needs y/n approval. Recorded in the Hive under a new version hash. With ``--propose``,
     the gated proposal is queued (see ``hiveloom proposals``) instead of applied;
     a human reviews and applies it later via ``proposals apply``.
 
@@ -2455,6 +2455,7 @@ def evolve(
                 version=version,
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
+                objectives=spec.evolution.objectives,
             )
             if report.is_empty():
                 reason = _nothing_to_evolve_reason(
