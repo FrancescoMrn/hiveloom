@@ -22,11 +22,11 @@ Endpoints:
   next turn boundary; it finishes with status ``"stopped"``, trace intact.
   Optional body ``{"reason": "..."}``.
 - ``POST /runs/{run_id}/messages`` — inject a steering message
-- ``POST /runs/{run_id}/model`` — move the run onto another model/provider at
-  its next turn boundary
   (``{"content": "..."}``) into a running run; the loop folds it in as an
   operator message before its next model call. Queueing a message for *after*
   the run is the caller's concern — it owns the conversation.
+- ``POST /runs/{run_id}/model`` — move the run onto another model/provider at
+  its next turn boundary.
 
 Auth: when ``HIVELOOM_API_KEY`` is set (or ``api_key`` passed), ``/runs``
 requires ``Authorization: Bearer <key>`` or ``X-API-Key: <key>``. The key is

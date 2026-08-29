@@ -1894,8 +1894,10 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         """Run a harness, streaming its trace as NDJSON.
 
         NDJSON rather than SSE because it is the format `hiveloom run --stream`
-        and the HTTP control plane already emit, so the UI learns one event
-        vocabulary that matches what the CLI prints.
+        and `hiveloom serve` already emit, so the UI learns one event
+        vocabulary that matches what the CLI prints. (The HTTP control plane
+        streams the same frames over SSE — same vocabulary, different
+        transport.)
         """
         # The workbench's keys, before a provider is built rather than only
         # when the directory is asked for: a run must not depend on the browser

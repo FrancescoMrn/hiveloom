@@ -88,7 +88,7 @@ uses.
 | Method/path | Scope | Wraps |
 | --- | --- | --- |
 | `GET /health` | none | Harness name, spec version hash, evolved counter. |
-| `POST /run` | `run` | `runner.run_harness`. `?stream=true` → SSE of trace events, ending in a `run_result` frame. |
+| `POST /run` | `run` | `runner.run_harness`. `?stream=true` → SSE: a `run_accepted` frame naming the run id, then every trace event, then a final `run_result` frame (also on failure, with `"status": "error"`) — the same frames `hiveloom serve` streams as NDJSON. |
 | `GET /stats` | `read` | Hive summary + recent failures. |
 | `GET /trace/{run_id}` | `read` | Hive lookup + trace read, bound to the served harness; 404 if unknown *or if the run belongs to a different harness* (the Hive is global — see below). |
 | `POST /validate` | `read` | Full spec + code-hook validation. |

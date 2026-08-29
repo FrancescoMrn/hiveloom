@@ -331,7 +331,7 @@ def create_app(
         """
         return load_spec(harness_dir).identity
 
-    def _run(run_input: str, *, on_event=None):
+    def _run(run_input: str, *, on_event=None, run_id: str | None = None):
         """Build the provider (test seam or real) and call run_harness — the
         one call site shared by /run's sync and streaming branches.
         """
@@ -343,6 +343,7 @@ def create_app(
             strong_model=strong_model,
             literal_input=True,
             on_event=on_event,
+            run_id=run_id,
         )
 
     # ----------------------------------------------------------------- #
@@ -420,24 +421,43 @@ def create_app(
             return JSONResponse(payload, status_code=200)
 
         # Streaming: the on_event callback fires from the worker thread;
-        # bridge it to an async generator with a thread-safe queue, ending in
-        # the final run_result frame (or an error frame) then a sentinel —
-        # matching `hiveloom run --stream`'s ordering.
+        # bridge it to an async generator with a thread-safe queue. The frame
+        # vocabulary is the one `hiveloom serve` streams and `hiveloom run
+        # --stream` prints: a `run_accepted` frame naming the run id first (so
+        # the client can address `/trace/{run_id}` while the run is going),
+        # then every trace event, then a final `run_result` frame — also on
+        # failure, where it carries `"status": "error"`. Only the transport
+        # differs: SSE here, NDJSON on `serve`.
         events: queue.Queue = queue.Queue()
 
         def on_event(event: Any) -> None:
             events.put(event.model_dump_json())
 
+        run_id = runner_mod.new_run_id()
+
         def stream_work() -> None:
             try:
-                result = _run(run_input, on_event=on_event)
+                result = _run(run_input, on_event=on_event, run_id=run_id)
                 payload = runner_mod.run_result_payload(result)
                 events.put(json.dumps({"type": "run_result", **payload}))
             except Exception as exc:  # noqa: BLE001 - already streaming; report inline
-                events.put(json.dumps({"type": "error", "error": str(exc)}))
+                events.put(
+                    json.dumps(
+                        {
+                            "type": "run_result",
+                            "ok": False,
+                            "status": "error",
+                            "run_id": run_id,
+                            "reason": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                )
             finally:
                 events.put(_SSE_DONE)
 
+        # Queued before the worker starts so it is always the first frame;
+        # on a full queue the error response wins and the queue is discarded.
+        events.put(json.dumps({"type": "run_accepted", "run_id": run_id}))
         try:
             runslots.submit(stream_work)
         except RunQueueFullError as exc:
