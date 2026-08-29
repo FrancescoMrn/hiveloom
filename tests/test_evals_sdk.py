@@ -130,6 +130,18 @@ def test_eval_catalog_and_schema_accept_short_scorer_refs():
     assert catalog.CATALOGS["scorers"]["fake_exact"].source == "test:eval"
 
 
+def test_eval_alias_identity_requires_an_explicit_alias_set():
+    _register_eval_components()
+
+    with pytest.raises(ValueError, match="requires at least one model alias"):
+        EvalSpec(
+            harness="./h",
+            dataset={"loader": "fake_cases"},
+            scorers=["fake_exact"],
+            model_identity="alias",
+        )
+
+
 def test_fake_dataset_and_scorer_ingest_without_provider_credentials(tmp_path: Path):
     _register_eval_components()
     spec = _eval_spec()

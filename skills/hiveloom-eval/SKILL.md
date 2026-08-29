@@ -1,9 +1,9 @@
 ---
 name: hiveloom-eval
 description: >-
-  Define and validate local Hiveloom eval datasets and scorers, attach numeric
-  metrics, and inspect eval identity. Use for evaluator, dataset, scorer,
-  RunMetric, eval.yaml, or held-out expected-data work.
+  Define, run, and resume local Hiveloom eval datasets and scorers, attach
+  numeric metrics, and inspect eval identity. Use for evaluator, dataset,
+  scorer, RunMetric, eval.yaml, or held-out expected-data work.
 ---
 
 # Evaluate a Hiveloom harness
@@ -25,6 +25,20 @@ repetition count. Validate it before spending model budget:
 hiveloom eval validate eval.yaml --json
 ```
 
+Run the matrix only after validation:
+
+```bash
+hiveloom eval run eval.yaml --model MODEL --repetitions 3 --json
+hiveloom eval status EVAL_RUN_ID --json
+hiveloom eval resume EVAL_RUN_ID --json
+```
+
+`eval run` performs a live provider probe that can make up to two possibly
+billed calls. Exact model identity is the eval default. Use an alias policy
+only with an explicit alias list. The atomic manifest stores digests and cell
+receipts, not raw case IDs or expected data. Resume refuses changed inputs and
+skips completed cells, so never replace the manifest or edit it by hand.
+
 Dataset loaders and scorers are extension code. A foreign eval folder must be
 trusted before its local extension runs. Never copy private cases, expected
 data, CV evidence, or raw traces into the repository.
@@ -39,6 +53,6 @@ Return validated `RunMetric` values plus bounded diagnostics. Keep model status
 and scorer status separate: a scorer exception must not relabel a successful or
 failed harness run.
 
-Read `docs/evaluating.md` for extension examples, identity digests, and privacy
-rules. Use `hiveloom metrics list ... --json` to inspect ingested signals, and
-always compare sample and missing-value counts together.
+Read `docs/evaluating.md` for extension examples, identity digests, runner
+states, and privacy rules. Use `hiveloom metrics list ... --json` to inspect
+ingested signals, and always compare sample and missing-value counts together.

@@ -23,6 +23,8 @@ scorers:
     params:
       k: 5
 repetitions: 3
+model_identity: exact
+# model_aliases: [provider/canonical-model]
 ```
 
 Inspect the schema without loading extensions, then validate the complete
@@ -100,6 +102,38 @@ Scorer exceptions do not rewrite the model result. `ScoringResult.run_status`
 keeps the harness outcome while each scorer gets its own success/error receipt.
 Valid metrics from other scorers can still be ingested.
 
+## Run and resume a batch
+
+The native runner executes the case and repetition matrix through the normal
+harness runtime, writes each trace below a durable Hiveloom-managed directory,
+and checkpoints one atomic manifest:
+
+```bash
+hiveloom eval run eval.yaml --model qwen3.5-9b --repetitions 3 \
+  --concurrency 2 --json
+hiveloom eval status eval_0123456789abcdef --json
+hiveloom eval resume eval_0123456789abcdef --json
+```
+
+`eval run` performs a live provider probe before scheduling cases. That probe
+can make up to two provider calls and may incur cost. Eval documents default
+to `model_identity: exact`; use `alias` only with an explicit `model_aliases`
+set. A rejected identity or missing required capability stops the batch before
+the first case runs.
+
+The manifest records eval, dataset, scorer, and harness identities plus every
+cell's case digest, repetition, requested and effective model, execution
+fingerprint, run ID, trace state, scorer state, and metric-ingestion state.
+Raw case IDs and expected values are not stored in the manifest. Resume refuses
+to mix work after the eval, dataset, scorer, harness behavior, provider adapter,
+or effective model changes. Completed cells are neither executed nor scored
+again.
+
+`--infrastructure-retries` applies only when the runner cannot obtain a
+completed model result. Each retry has a distinct run ID. Harness verification
+failures, guardrail halts, and provider responses recorded as run outcomes are
+completed cells and are not reclassified as infrastructure errors.
+
 ## Identity and privacy
 
 Every validated eval has four receipts:
@@ -114,5 +148,4 @@ expected values stay in the evaluator process. Scorers should put aggregates,
 bounded diagnostics, and non-sensitive identifiers in their outputs, never CV
 text, application rows, or full model/tool payloads.
 
-The scorer SDK is the foundation for the native resumable runner. Normal
-`hiveloom run` behavior is unchanged.
+Normal `hiveloom run` behavior is unchanged.

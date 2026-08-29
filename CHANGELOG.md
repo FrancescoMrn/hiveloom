@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning-replay probe. Results retain requested/effective model identity,
   distinguish declared from observed facts, enforce exact or alias policies,
   and cache against provider, model, and adapter implementation.
+- `hiveloom eval run|status|resume` executes a deterministic case and
+  repetition matrix through the normal harness path. A live model probe gates
+  the batch, atomic manifests retain per-cell run, trace, scorer, and metric
+  state, and resume rejects changed content or execution identity while
+  skipping every completed cell.
 
 ### Fixed
 

@@ -1948,6 +1948,105 @@ def eval_validate(
             )
 
 
+def _eval_manifest_payload(manifest: Any) -> dict[str, Any]:
+    from hiveloom.eval_runner import manifest_path as eval_manifest_path
+
+    return {
+        "ok": manifest.status == "completed",
+        "eval_run_id": manifest.eval_run_id,
+        "status": manifest.status,
+        "summary": manifest.summary(),
+        "manifest_path": str(eval_manifest_path(manifest.eval_run_id)),
+        "manifest": manifest.model_dump(mode="json"),
+    }
+
+
+def _emit_eval_manifest(manifest: Any, json_output: bool) -> None:
+    payload = _eval_manifest_payload(manifest)
+    if json_output:
+        _emit_json(payload)
+    else:
+        summary = payload["summary"]
+        _console.print(
+            f"[green]{manifest.eval_run_id}[/green] {manifest.status}: "
+            f"{summary['completed']}/{summary['total']} completed"
+        )
+        _console.print(f"manifest: {payload['manifest_path']}")
+    if manifest.status != "completed":
+        raise typer.Exit(ExitCode.RUNTIME_ERROR)
+
+
+@eval_app.command("run")
+def eval_run_command(
+    path: str = typer.Argument(..., help="Path to an eval YAML document."),
+    model: str | None = typer.Option(None, "--model", help="Run-only model override."),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Run-only provider override."
+    ),
+    repetitions: int | None = typer.Option(
+        None, "--repetitions", min=1, max=10_000
+    ),
+    concurrency: int = typer.Option(1, "--concurrency", min=1, max=128),
+    infrastructure_retries: int = typer.Option(
+        0, "--infrastructure-retries", min=0, max=20
+    ),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Run a model/case/repetition matrix with an atomic resumable manifest."""
+    from hiveloom.eval_runner import run_eval
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        manifest = run_eval(
+            path,
+            model_override=model,
+            provider_override=provider,
+            repetitions=repetitions,
+            concurrency=concurrency,
+            infrastructure_retries=infrastructure_retries,
+            approve_trust=approval,
+        )
+        _emit_eval_manifest(manifest, json_output)
+
+
+@eval_app.command("resume")
+def eval_resume_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Resume only unfinished cells after revalidating every content digest."""
+    from hiveloom.eval_runner import resume_eval
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        manifest = resume_eval(eval_run_id, approve_trust=approval)
+        _emit_eval_manifest(manifest, json_output)
+
+
+@eval_app.command("status")
+def eval_status_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Read an eval checkpoint without loading evaluator or harness code."""
+    from hiveloom.eval_runner import load_eval_manifest
+
+    with _guard(json_output):
+        manifest = load_eval_manifest(eval_run_id)
+        payload = _eval_manifest_payload(manifest)
+        payload["ok"] = True
+        if json_output:
+            _emit_json(payload)
+        else:
+            summary = payload["summary"]
+            _console.print(
+                f"[green]{manifest.eval_run_id}[/green] {manifest.status}: "
+                f"{summary['completed']}/{summary['total']} completed"
+            )
+
+
 @metrics_app.command("schema")
 def metrics_schema(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),

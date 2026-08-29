@@ -175,6 +175,13 @@ context, and artifacts. Scorer failures have their own receipts and cannot
 rewrite the run status. Content digests cover the eval document, loaded
 dataset, and scorer implementations before a batch starts.
 
+The native eval runner expands that resolved contract into deterministic case
+and repetition cells. It checkpoints an atomic manifest below
+`HIVELOOM_HOME/evals`, keeps traces in the same durable managed tree, and
+revalidates eval, harness, adapter, effective-model, and case identities before
+resume. Infrastructure attempts have distinct run IDs; completed harness
+outcomes and scorer receipts are never retried or conflated.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
