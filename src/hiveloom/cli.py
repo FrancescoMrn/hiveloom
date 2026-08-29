@@ -86,6 +86,8 @@ registry_app = typer.Typer(
     help="The local harness registry: what `hiveloom mcp serve --registered` offers to agents."
 )
 app.add_typer(registry_app, name="registry")
+metrics_app = typer.Typer(help="Record, import, and query numeric run metrics.")
+app.add_typer(metrics_app, name="metrics")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -1798,6 +1800,169 @@ def stats(
             _console.print("[yellow]top guardrail triggers:[/yellow]")
             for g in sigs["guardrails"]:
                 _console.print(f"  {g['count']}× {g['guardrail']} ({g['kind']})")
+
+
+def _metric_target(target: str, hive: Any) -> str:
+    """Resolve a harness directory or already-indexed harness key."""
+    from hiveloom import runner
+
+    return runner.resolve_and_ingest(target, hive)
+
+
+@metrics_app.command("schema")
+def metrics_schema(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),
+) -> None:
+    """Emit the machine-readable RunMetric ingestion contract."""
+    from hiveloom.metrics import RunMetric
+
+    schema = RunMetric.model_json_schema()
+    if json_output:
+        _emit_json({"ok": True, "schema": schema})
+    else:
+        _console.print_json(data=schema)
+
+
+@metrics_app.command("record")
+def metrics_record(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    run_id: str = typer.Option(..., "--run-id", help="Indexed run receiving the metric."),
+    name: str = typer.Option(..., "--name", help="User-defined metric name."),
+    value: float = typer.Option(..., "--value", help="Finite numeric value."),
+    direction: str = typer.Option(..., "--direction", help="maximize or minimize."),
+    unit: str = typer.Option(..., "--unit", help="Metric unit, for example ratio or usd."),
+    source: str = typer.Option(..., "--source", help="Scorer/evaluator identity."),
+    scope: str = typer.Option("run", "--scope", help="case, run, or eval."),
+    metadata: str = typer.Option("{}", "--metadata", help="JSON object with bounded metadata."),
+    idempotency_key: str | None = typer.Option(
+        None, "--idempotency-key", help="Optional caller-owned deduplication key."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Attach one validated numeric metric to an indexed run."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.metrics import RunMetric, record_run_metrics
+
+    with _guard(json_output):
+        parsed_metadata = json.loads(metadata)
+        if not isinstance(parsed_metadata, dict):
+            raise ValueError("--metadata must be a JSON object")
+        metric = RunMetric(
+            run_id=run_id,
+            name=name,
+            value=value,
+            direction=direction,
+            unit=unit,
+            source=source,
+            scope=scope,
+            metadata=parsed_metadata,
+            idempotency_key=idempotency_key,
+        )
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            receipt = record_run_metrics(hive, harness_key, [metric])
+        payload = {
+            "ok": True,
+            "harness_key": harness_key,
+            **receipt,
+            "idempotency_key": metric.resolved_idempotency_key(),
+        }
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]recorded[/green] {metric.name}={metric.value:g} {metric.unit} "
+                f"for {metric.run_id} ({receipt['duplicates']} duplicate)"
+            )
+
+
+@metrics_app.command("import")
+def metrics_import(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    path: str = typer.Argument(..., help="NDJSON file containing RunMetric objects."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Transactionally import metrics after validating every NDJSON row."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.metrics import load_metrics_ndjson, record_run_metrics
+
+    with _guard(json_output):
+        metrics = load_metrics_ndjson(path)
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            receipt = record_run_metrics(hive, harness_key, metrics)
+        payload = {"ok": True, "harness_key": harness_key, **receipt}
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]imported[/green] {receipt['inserted']} metric(s), "
+                f"{receipt['duplicates']} duplicate(s)"
+            )
+
+
+@metrics_app.command("list")
+def metrics_list(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    name: str | None = typer.Option(None, "--name"),
+    source: str | None = typer.Option(None, "--source"),
+    scope: str | None = typer.Option(None, "--scope"),
+    model: str | None = typer.Option(None, "--model"),
+    since: str | None = typer.Option(None, "--since", help="Run finish time, ISO 8601."),
+    until: str | None = typer.Option(None, "--until", help="Run finish time, ISO 8601."),
+    limit: int = typer.Option(1000, "--limit", min=1, max=100_000),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List metrics and scope-safe aggregates with explicit missing counts."""
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if scope is not None and scope not in {"case", "run", "eval"}:
+            raise ValueError("--scope must be case, run, or eval")
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            filters = {
+                "run_id": run_id,
+                "name": name,
+                "source": source,
+                "scope": scope,
+                "model": model,
+                "since": since,
+                "until": until,
+            }
+            metrics = hive.list_metrics(harness_key, limit=limit, **filters)
+            aggregates = hive.metric_aggregates(harness_key, **filters)
+        payload = {
+            "ok": True,
+            "harness_key": harness_key,
+            "metrics": metrics,
+            "aggregates": aggregates,
+        }
+        if json_output:
+            _emit_json(payload)
+            return
+        table = Table(title=f"metrics: {harness_key}")
+        for column in ("run", "name", "value", "unit", "scope", "source", "model"):
+            table.add_column(column)
+        for metric in metrics:
+            table.add_row(
+                metric["run_id"],
+                metric["name"],
+                f"{metric['value']:g}",
+                metric["unit"],
+                metric["scope"],
+                metric["source"],
+                metric["model"] or "-",
+            )
+        _console.print(table)
+        for aggregate in aggregates:
+            _console.print(
+                f"[cyan]{aggregate['name']}[/cyan] ({aggregate['scope']}, "
+                f"{aggregate['source']}): mean={aggregate['mean']:g}, "
+                f"n={aggregate['sample_count']}, "
+                f"missing={aggregate['missing_value_count']}"
+            )
 
 
 @app.command()

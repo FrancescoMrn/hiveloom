@@ -191,6 +191,10 @@ hiveloom run ./summarizer --input-file notes.txt \
 # Inspect evidence and propose a gated improvement after failures
 hiveloom stats ./summarizer --include-friction --json
 hiveloom friction list ./summarizer --recovered true --json
+hiveloom metrics record ./summarizer --run-id eval-case-01 \
+  --name recall_at_5 --value 0.4 --direction maximize \
+  --unit ratio --source matching_eval_v1 --json
+hiveloom metrics list ./summarizer --name recall_at_5 --json
 hiveloom evolve ./summarizer --propose --json
 ```
 
@@ -357,6 +361,9 @@ hiveloom run ./my-harness --input input.txt --stream
 hiveloom trace <run-id> --json
 hiveloom trace <run-id> --verify
 hiveloom stats ./my-harness --json
+hiveloom metrics schema --json
+hiveloom metrics import ./my-harness metrics.ndjson --json
+hiveloom metrics list ./my-harness --source matching_eval_v1 --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe

@@ -142,11 +142,27 @@ CREATE TABLE IF NOT EXISTS friction_events (
     summary TEXT NOT NULL,
     UNIQUE(run_id, seq, category, component)
 );
+CREATE TABLE IF NOT EXISTS run_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value REAL NOT NULL,
+    direction TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    source TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_name ON playbook_visits(playbook);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_run ON run_metrics(run_id);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_name ON run_metrics(name);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_source ON run_metrics(source);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
 CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
 CREATE INDEX IF NOT EXISTS idx_friction_run ON friction_events(run_id);
@@ -1117,6 +1133,9 @@ class Hive:
         self._conn.execute(
             f"DELETE FROM friction_events WHERE run_id IN ({placeholders})", run_ids
         )
+        self._conn.execute(
+            f"DELETE FROM run_metrics WHERE run_id IN ({placeholders})", run_ids
+        )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()
         return len(run_ids)
@@ -1164,6 +1183,253 @@ class Hive:
             params.append(since)
         row = self._conn.execute(query, params).fetchone()
         return row["n"] or 0
+
+    # ------------------------------------------------------------------ #
+    # Numeric run metrics
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _same_metric(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        fields = (
+            "run_id",
+            "name",
+            "value",
+            "direction",
+            "unit",
+            "source",
+            "scope",
+            "metadata_json",
+        )
+        return all(left[field] == right[field] for field in fields)
+
+    def record_metrics(
+        self, harness_key: str, rows: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Transactionally insert validated metric rows.
+
+        Exact idempotency collisions are skipped. Reusing a key for different
+        content fails the entire batch before any row is inserted.
+        """
+        unique: dict[str, dict[str, Any]] = {}
+        duplicates = 0
+        for row in rows:
+            key = row["idempotency_key"]
+            prior = unique.get(key)
+            if prior is None:
+                unique[key] = row
+            elif self._same_metric(prior, row):
+                duplicates += 1
+            else:
+                raise ValueError(
+                    f"idempotency key {key!r} is reused for different metric content"
+                )
+
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for row in unique.values():
+                run = self._conn.execute(
+                    "SELECT harness_key FROM runs WHERE run_id=?", (row["run_id"],)
+                ).fetchone()
+                if run is None:
+                    raise ValueError(f"metric run_id {row['run_id']!r} is not indexed")
+                if run["harness_key"] != harness_key:
+                    raise ValueError(
+                        f"metric run_id {row['run_id']!r} belongs to a different harness"
+                    )
+                existing = self._conn.execute(
+                    "SELECT * FROM run_metrics WHERE idempotency_key=?",
+                    (row["idempotency_key"],),
+                ).fetchone()
+                if existing is None:
+                    continue
+                if not self._same_metric(dict(existing), row):
+                    raise ValueError(
+                        f"idempotency key {row['idempotency_key']!r} already records "
+                        "different metric content"
+                    )
+                duplicates += 1
+
+            inserted = 0
+            for row in unique.values():
+                cursor = self._conn.execute(
+                    "INSERT OR IGNORE INTO run_metrics "
+                    "(idempotency_key, run_id, name, value, direction, unit, source, "
+                    "scope, metadata_json, recorded_at) VALUES "
+                    "(:idempotency_key, :run_id, :name, :value, :direction, :unit, "
+                    ":source, :scope, :metadata_json, :recorded_at)",
+                    row,
+                )
+                inserted += cursor.rowcount
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return {"received": len(rows), "inserted": inserted, "duplicates": duplicates}
+
+    @staticmethod
+    def _metric_filters(
+        harness_key: str,
+        *,
+        run_id: str | None,
+        name: str | None,
+        source: str | None,
+        scope: str | None,
+        model: str | None,
+        since: str | None,
+        until: str | None,
+    ) -> tuple[list[str], list[Any]]:
+        where = ["r.harness_key=?"]
+        params: list[Any] = [harness_key]
+        for column, value in (
+            ("m.run_id", run_id),
+            ("m.name", name),
+            ("m.source", source),
+            ("m.scope", scope),
+        ):
+            if value is not None:
+                where.append(f"{column}=?")
+                params.append(value)
+        if model is not None:
+            where.append(
+                "COALESCE(NULLIF(r.effective_model, ''), "
+                "NULLIF(r.requested_model, ''), NULLIF(r.model_path, ''), '')=?"
+            )
+            params.append(model)
+        if since is not None:
+            where.append("r.finished_at>=?")
+            params.append(since)
+        if until is not None:
+            where.append("r.finished_at<=?")
+            params.append(until)
+        return where, params
+
+    def list_metrics(
+        self,
+        harness_key: str,
+        *,
+        run_id: str | None = None,
+        name: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = 1000,
+    ) -> list[dict[str, Any]]:
+        """List immutable metrics with their run provenance."""
+        if limit is not None and limit < 1:
+            raise ValueError("metric limit must be at least 1")
+        where, params = self._metric_filters(
+            harness_key,
+            run_id=run_id,
+            name=name,
+            source=source,
+            scope=scope,
+            model=model,
+            since=since,
+            until=until,
+        )
+        query = (
+            "SELECT m.id, m.idempotency_key, m.run_id, m.name, m.value, m.direction, "
+            "m.unit, m.source, m.scope, m.metadata_json, m.recorded_at, "
+            "r.finished_at AS run_finished_at, r.harness_version_hash AS behavior_hash, "
+            "COALESCE(NULLIF(r.effective_model, ''), NULLIF(r.requested_model, ''), "
+            "NULLIF(r.model_path, ''), '') AS model "
+            "FROM run_metrics m JOIN runs r ON r.run_id=m.run_id "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY r.finished_at DESC, m.id DESC"
+        )
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json"))
+            result.append(item)
+        return result
+
+    def metric_aggregates(
+        self,
+        harness_key: str,
+        *,
+        run_id: str | None = None,
+        name: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Aggregate without mixing names, sources, scopes, units, or directions."""
+        metrics = self.list_metrics(
+            harness_key,
+            run_id=run_id,
+            name=name,
+            source=source,
+            scope=scope,
+            model=model,
+            since=since,
+            until=until,
+            limit=None,
+        )
+        run_where = ["harness_key=?"]
+        run_params: list[Any] = [harness_key]
+        if run_id is not None:
+            run_where.append("run_id=?")
+            run_params.append(run_id)
+        if model is not None:
+            run_where.append(
+                "COALESCE(NULLIF(effective_model, ''), NULLIF(requested_model, ''), "
+                "NULLIF(model_path, ''), '')=?"
+            )
+            run_params.append(model)
+        if since is not None:
+            run_where.append("finished_at>=?")
+            run_params.append(since)
+        if until is not None:
+            run_where.append("finished_at<=?")
+            run_params.append(until)
+        eligible = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM runs WHERE {' AND '.join(run_where)}",
+            run_params,
+        ).fetchone()["n"]
+
+        groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+        for metric in metrics:
+            key = (
+                metric["name"],
+                metric["source"],
+                metric["scope"],
+                metric["unit"],
+                metric["direction"],
+            )
+            groups.setdefault(key, []).append(metric)
+
+        output: list[dict[str, Any]] = []
+        for key, records in sorted(groups.items()):
+            metric_name, metric_source, metric_scope, metric_unit, direction = key
+            values = [record["value"] for record in records]
+            observed_runs = len({record["run_id"] for record in records})
+            population = len(records) if metric_scope == "eval" else eligible
+            missing = 0 if metric_scope == "eval" else max(0, eligible - observed_runs)
+            output.append(
+                {
+                    "name": metric_name,
+                    "source": metric_source,
+                    "scope": metric_scope,
+                    "unit": metric_unit,
+                    "direction": direction,
+                    "sample_count": len(values),
+                    "observed_run_count": observed_runs,
+                    "population_count": population,
+                    "missing_value_count": missing,
+                    "mean": sum(values) / len(values),
+                    "min": min(values),
+                    "max": max(values),
+                }
+            )
+        return output
 
     # ------------------------------------------------------------------ #
     # Proposals queue

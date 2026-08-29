@@ -83,6 +83,12 @@ needs credentials for the configured provider when required
 (for example, `ANTHROPIC_API_KEY` for the default provider, loaded from the
 harness `.env`).
 
+External evaluators can attach finite numeric signals with `hiveloom metrics
+record`, import validated NDJSON batches with `hiveloom metrics import`, and
+query scope-safe aggregates with `hiveloom metrics list --json`. Inspect the
+machine-readable ingestion contract first with `hiveloom metrics schema
+--json`; aggregate sample and missing-value counts must be read together.
+
 ## Improving a harness — use evolve, not the editor
 
 When asked to improve a failing harness, **do not** hand-edit it — and never

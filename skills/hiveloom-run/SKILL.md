@@ -70,6 +70,7 @@ hiveloom stats ./h --json                  # success rate / cost / turns PER VER
 hiveloom stats my-harness-name             # by name, from the Hive
 hiveloom stats ./h --include-friction --json
 hiveloom friction list ./h --recovered true --json
+hiveloom metrics list ./h --name recall_at_5 --json
 ```
 
 To debug a failure, read the trace's `verification_result`,
@@ -83,6 +84,23 @@ events, provider errors, operator steering, and loop limits queryable after
 the run finishes. Filter by `--category`, `--component`, `--recovered`,
 `--model`, `--since`, or `--until`; summaries are bounded and come from the
 already-redacted journal.
+
+External evaluators can attach numeric quality signals without copying private
+inputs or trace bodies into the Hive:
+
+```bash
+hiveloom metrics schema --json
+hiveloom metrics record ./h --run-id run_abc123 \
+  --name recall_at_5 --value 0.4 --direction maximize \
+  --unit ratio --source matching_eval_v1 --scope case --json
+hiveloom metrics import ./h metrics.ndjson --json
+hiveloom metrics list ./h --source matching_eval_v1 --model qwen3.5-9b --json
+```
+
+Imports validate fully before one transaction. Repeating the same logical
+metric is idempotent; changing a value under the same key is rejected. Read
+`sample_count` and `missing_value_count` together, and compare only aggregates
+whose scope, source, unit, and direction match.
 
 The trace is a hash-chained journal, so two more things are available:
 

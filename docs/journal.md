@@ -333,6 +333,36 @@ messages are not copied into the friction table. Re-ingesting a run replaces
 its derived rows, so counts remain idempotent. Unknown future category strings
 remain readable by older Hive clients.
 
+### Numeric evaluator signals
+
+Deferred outcomes answer an eventual yes/no question. Ranked quality,
+latency, cost-quality tradeoffs, and other numeric observations use a separate
+`RunMetric` record joined to the run:
+
+```bash
+hiveloom metrics schema --json
+hiveloom metrics record ./h --run-id run_abc123 \
+  --name recall_at_5 --value 0.4 --direction maximize \
+  --unit ratio --source matching_eval_v1 --scope case --json
+hiveloom metrics import ./h metrics.ndjson --json
+hiveloom metrics list ./h --name recall_at_5 --model qwen3.5-9b --json
+```
+
+Metric writes are immutable. Without an explicit `idempotency_key`, Hiveloom
+allows one logical observation per run, name, source, and scope. Replaying the
+same observation is a no-op; reusing its key with different content rejects
+the whole batch. Supply distinct explicit keys only when a scorer deliberately
+emits repeated observations for the same logical slot.
+
+NDJSON imports parse and validate every row before one database transaction.
+Names are user-defined, values must be finite, metadata must be JSON-safe and
+bounded, and the referenced run must belong to the target harness. Queries can
+filter by run, source, name, scope, effective model, and run finish time.
+Aggregates never combine scopes, units, directions, or sources and always
+report `sample_count` and `missing_value_count`. Case and run scopes count
+missing indexed runs in the filtered population; eval scope reports its
+observed records because Hiveloom has no external eval-population manifest yet.
+
 ## See also
 
 - [The workbench](workbench.md) — the graphical front end to all of this

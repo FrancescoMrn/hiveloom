@@ -160,6 +160,13 @@ from final success and can be queried by category, component, model, time, and
 recovery state. The index stores bounded summaries and fingerprints, not raw
 tool or model payloads.
 
+External scorers can attach immutable numeric observations to an indexed run.
+These `RunMetric` records remain separate from binary deferred outcomes and
+join to execution provenance through `run_id`. Aggregation groups by metric
+name, source, scope, unit, and direction, so a case score cannot silently mix
+with a run or eval score. Every group reports its sample and missing-value
+counts; raw traces are not needed to regenerate the aggregate.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
