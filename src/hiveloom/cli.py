@@ -88,6 +88,8 @@ registry_app = typer.Typer(
 app.add_typer(registry_app, name="registry")
 metrics_app = typer.Typer(help="Record, import, and query numeric run metrics.")
 app.add_typer(metrics_app, name="metrics")
+eval_app = typer.Typer(help="Validate and run versioned local evaluations.")
+app.add_typer(eval_app, name="eval")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -175,7 +177,11 @@ def schema(
 @app.command()
 def catalog(
     kind: str = typer.Argument(
-        ..., help="One of: tools, guardrails, validators, policies, compaction, hooks."
+        ...,
+        help=(
+            "One of: tools, guardrails, validators, policies, compaction, hooks, "
+            "datasets, scorers."
+        ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -1807,6 +1813,52 @@ def _metric_target(target: str, hive: Any) -> str:
     from hiveloom import runner
 
     return runner.resolve_and_ingest(target, hive)
+
+
+@eval_app.command("schema")
+def eval_schema(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),
+) -> None:
+    """Emit the machine-readable eval document contract without loading code."""
+    from hiveloom.evals import EvalSpec
+
+    schema = EvalSpec.model_json_schema()
+    if json_output:
+        _emit_json({"ok": True, "schema": schema})
+    else:
+        _console.print_json(data=schema)
+
+
+@eval_app.command("validate")
+def eval_validate(
+    path: str = typer.Argument(..., help="Path to an eval YAML document."),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Resolve a dataset and scorers without running a model or exposing cases."""
+    from hiveloom.evals import validate_eval_spec
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        validated = validate_eval_spec(path, approve_trust=approval)
+        payload = {
+            "ok": True,
+            "path": str(validated.path),
+            "harness_path": str(validated.harness_path),
+            "schema_version": validated.spec.schema_version,
+            "case_count": validated.case_count,
+            "repetitions": validated.spec.repetitions,
+            "dataset": validated.spec.dataset.loader,
+            "scorers": [scorer.name for scorer in validated.spec.scorers],
+            "identity": validated.identity.model_dump(mode="json"),
+        }
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]valid[/green] {validated.case_count} case(s), "
+                f"eval {validated.identity.eval_id[:12]}"
+            )
 
 
 @metrics_app.command("schema")

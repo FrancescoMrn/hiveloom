@@ -364,6 +364,8 @@ hiveloom stats ./my-harness --json
 hiveloom metrics schema --json
 hiveloom metrics import ./my-harness metrics.ndjson --json
 hiveloom metrics list ./my-harness --source matching_eval_v1 --json
+hiveloom eval schema --json
+hiveloom eval validate eval.yaml --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe
@@ -405,11 +407,15 @@ The root package exposes the small semver-stable embedding surface:
 
 ```python
 from hiveloom import (
+    EvalCase,
     Hive,
+    RunMetric,
+    ScorerOutput,
     dry_run,
     generate_harness,
     load_spec,
     run_harness,
+    run_scorers,
     validate_harness,
 )
 
@@ -444,6 +450,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 
 - [Agent entry point](https://github.com/FrancescoMrn/hiveloom/blob/main/AGENTS.md) and [lifecycle skills](https://github.com/FrancescoMrn/hiveloom/blob/main/skills/README.md)
 - [Evaluations](https://github.com/FrancescoMrn/hiveloom/blob/main/evals/README.md)
+- [Local eval SDK and spec](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/evaluating.md)
 - [Harness spec](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/spec.md)
 - [Architecture](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/architecture.md)
 - [The workbench](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/workbench.md)

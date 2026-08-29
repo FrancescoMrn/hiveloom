@@ -1,4 +1,4 @@
-"""Declarative catalog of builtin tools, guardrails, validators, and policies.
+"""Declarative catalog of builtin runtime and evaluation components.
 
 This module is the single source of truth for what builtins exist and what
 spec-time parameters they accept. It is consumed by:
@@ -265,6 +265,13 @@ BUILTIN_HOOKS: dict[str, CatalogEntry] = _entries(
 )
 
 
+# Dataset loaders and scorers are extension surfaces. Core intentionally ships
+# no domain dataset or scoring policy; installed packs and trusted eval-local
+# extensions widen these catalogs.
+DATASETS: dict[str, CatalogEntry] = {}
+SCORERS: dict[str, CatalogEntry] = {}
+
+
 CATALOGS: dict[str, dict[str, CatalogEntry]] = {
     "tools": BUILTIN_TOOLS,
     "guardrails": BUILTIN_GUARDRAILS,
@@ -272,6 +279,8 @@ CATALOGS: dict[str, dict[str, CatalogEntry]] = {
     "policies": POLICIES,
     "compaction": BUILTIN_COMPACTION,
     "hooks": BUILTIN_HOOKS,
+    "datasets": DATASETS,
+    "scorers": SCORERS,
 }
 
 

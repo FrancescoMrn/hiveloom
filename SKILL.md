@@ -89,6 +89,12 @@ query scope-safe aggregates with `hiveloom metrics list --json`. Inspect the
 machine-readable ingestion contract first with `hiveloom metrics schema
 --json`; aggregate sample and missing-value counts must be read together.
 
+For held-out datasets and post-verification scorers, inspect `hiveloom eval
+schema --json`, then `hiveloom catalog datasets` and `catalog scorers`. Validate
+the versioned document with `hiveloom eval validate eval.yaml --json`. Expected
+data stays out of model input unless the eval explicitly opts in; local eval
+extensions are trust-gated like harness code.
+
 ## Improving a harness — use evolve, not the editor
 
 When asked to improve a failing harness, **do not** hand-edit it — and never

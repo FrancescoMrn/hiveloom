@@ -167,6 +167,13 @@ name, source, scope, unit, and direction, so a case score cannot silently mix
 with a run or eval score. Every group reports its sample and missing-value
 counts; raw traces are not needed to regenerate the aggregate.
 
+An eval document resolves outside the runtime loop. Its dataset loader creates
+held-out `EvalCase` values; the normal harness path produces a public
+`RunResult`; only then do scorers receive the case, result, verification
+context, and artifacts. Scorer failures have their own receipts and cannot
+rewrite the run status. Content digests cover the eval document, loaded
+dataset, and scorer implementations before a batch starts.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a

@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immutable and idempotent, NDJSON imports validate before one transaction,
   and `hiveloom metrics list` filters by run provenance while reporting
   scope-safe aggregates with sample and missing-value counts.
+- Versioned `eval.yaml` documents now select extension-registered dataset
+  loaders and post-verification scorers. The public scorer SDK keeps held-out
+  expected data out of model input by default, validates metrics before Hive
+  ingestion, reports scorer failures separately from run failures, and hashes
+  the spec, dataset, and scorer implementations into one eval identity.
 
 ### Fixed
 

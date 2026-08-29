@@ -1,7 +1,8 @@
 # Extending hiveloom
 
 hiveloom's catalog is open: tools, guardrails, validators, loop policies,
-compaction methods, event hooks, and model providers are **catalog entries**,
+compaction methods, event hooks, eval datasets/scorers, and model providers are
+**catalog entries**,
 and extensions register new entries through one API. A registered entry shows
 up in `hiveloom catalog`, validates in specs like a builtin, and appears in the
 generator's meta-prompt — so `hiveloom generate` can weave harnesses with a
@@ -44,6 +45,10 @@ def hiveloom_extension(hive: ExtensionAPI) -> None:
                              description="File-aware summarization.")
     hive.register_hook("audit_log", make_audit_handler,
                        description="Record every tool call to the audit sink.")
+    hive.register_dataset("local_cases", make_dataset,
+                          description="Load held-out local eval cases.")
+    hive.register_scorer("task_quality", make_scorer,
+                         description="Score a verified run against expected data.")
     hive.register_blueprint("scraper", "Always add no_network_write. Task: $ARGUMENTS")
 
     # ambient: runs for every harness in this process (e.g. org-wide audit)
@@ -56,6 +61,8 @@ Base classes to implement: `hiveloom.tools.registry.Tool`,
 `hiveloom.guardrails.base.Guardrail`, `hiveloom.verify.base.Verifier`,
 `hiveloom.loop.policies.LoopPolicy`,
 `hiveloom.context.manager.CompactionMethod`.
+Eval factories return a loader with `load()` or a scorer with
+`score(ScorerContext)`; see [evaluating.md](evaluating.md).
 
 ## Where extensions load from
 
