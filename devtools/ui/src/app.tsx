@@ -94,7 +94,6 @@ export function App() {
     setInspectorView(record.selection.run_id ? 'trace' : 'interface')
     setInspectorViewKey((value) => value + 1)
     setInspectorOpen(Boolean(record.selection.harness_id))
-    setRailCollapsed(Boolean(record.selection.harness_id))
     setMobileRail(false)
   }, [])
 
@@ -269,7 +268,9 @@ export function App() {
     setInspectorOpen(Boolean(id))
     setInspectorView('interface')
     setInspectorViewKey((value) => value + 1)
-    setRailCollapsed(Boolean(id))
+    // Selecting never collapses the rail: the rail is how you got here, and
+    // yanking it away punishes browsing. Collapsing stays a deliberate act
+    // (the toggle) or a canvas opening that genuinely needs the width.
     setMobileRail(false)
   }
 
@@ -279,7 +280,6 @@ export function App() {
     setInspectorOpen(true)
     setInspectorView(id ? 'trace' : 'runs')
     setInspectorViewKey((value) => value + 1)
-    setRailCollapsed(true)
     setMobileRail(false)
   }
 
