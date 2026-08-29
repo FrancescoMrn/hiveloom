@@ -394,7 +394,10 @@ def _run_one_cell(
 
     if cell.status == "ran" and recovered is not None:
         try:
-            scoring = _score_cell(manifest, cell, case, spec, recovered)
+            # SQLite is a single-writer store. Keep provider execution concurrent,
+            # but serialize the short trace-ingestion and metric-scoring boundary.
+            with lock:
+                scoring = _score_cell(manifest, cell, case, spec, recovered)
         except Exception as exc:  # noqa: BLE001 - scoring can resume without rebilling
             with lock:
                 cell.error_phase = "scoring"
@@ -441,7 +444,8 @@ def _run_one_cell(
             _apply_result(cell, result)
         _save_manifest(manifest, lock)
         try:
-            scoring = _score_cell(manifest, cell, case, spec, result)
+            with lock:
+                scoring = _score_cell(manifest, cell, case, spec, result)
         except Exception as exc:  # noqa: BLE001 - preserve the completed model call
             with lock:
                 cell.error_phase = "scoring"

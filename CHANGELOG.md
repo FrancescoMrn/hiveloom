@@ -106,6 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy `--input` no longer raises `ENAMETOOLONG` when a large literal is
   checked as a possible filename. It remains available for one deprecation
   cycle; scripts should move to the explicit flags.
+- Native eval cells keep provider execution concurrent but serialize their
+  short trace-ingestion and metric-scoring writes, avoiding intermittent
+  incomplete manifests when SQLite writers race.
 
 ## [1.0.0] - 2026-08-28
 
