@@ -314,7 +314,7 @@ class Hive:
             # The Hive is a derived index, so discard the obsolete grouping
             # column rather than preserving a shape no public surface uses.
             self._conn.execute("DROP INDEX IF EXISTS idx_runs_session")
-            self._conn.execute("ALTER TABLE runs DROP COLUMN session_id")
+            self._alter_runs("DROP COLUMN session_id", benign_error="no such column")
             existing.remove("session_id")
         for column, decl in (
             ("parent_run_id", "TEXT"),
@@ -331,7 +331,9 @@ class Hive:
             ("trace_pruned_at", "TEXT"),
         ):
             if column not in existing:
-                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
+                self._alter_runs(
+                    f"ADD COLUMN {column} {decl}", benign_error="duplicate column name"
+                )
         # Rows ingested before harness identity existed key by name — the
         # pre-1.0 behaviour those rows were recorded under. Re-ingesting a
         # trace whose envelope carries an id upgrades its row in place.
@@ -355,6 +357,20 @@ class Hive:
         }
         if "evidence_json" not in proposal_columns:
             self._conn.execute("ALTER TABLE proposals ADD COLUMN evidence_json TEXT")
+
+    def _alter_runs(self, clause: str, *, benign_error: str) -> None:
+        """Apply one migration step, tolerating a concurrent connection winning it.
+
+        Connections race the inspect-then-alter sequence whenever two are
+        opened at once (the eval runner scores cells from worker threads); the
+        loser's ALTER fails with an already-applied error that is safe to
+        swallow because the winner left the schema in the intended shape.
+        """
+        try:
+            self._conn.execute(f"ALTER TABLE runs {clause}")
+        except sqlite3.OperationalError as exc:
+            if benign_error not in str(exc):
+                raise
 
     def close(self) -> None:
         self._conn.close()
