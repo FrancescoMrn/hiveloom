@@ -203,6 +203,46 @@ def test_scorer_failure_is_separate_from_model_failure():
     assert scoring.diagnostics[0].code == "scorer_exception"
 
 
+def test_scorers_accept_the_documented_convenience_return_values():
+    _register_eval_components()
+    api = ext.ExtensionAPI(source="test:scorer-return-values")
+    metric = RunMetric(
+        run_id="run_return_values",
+        name="convenience_metric",
+        value=1.0,
+        direction="maximize",
+        unit="ratio",
+        source="fixture",
+    )
+    api.register_scorer(
+        "none_scorer", lambda _params, _ctx: lambda _context: None,
+        description="Returns no metrics.",
+    )
+    api.register_scorer(
+        "metric_scorer", lambda _params, _ctx: lambda _context: metric,
+        description="Returns one metric directly.",
+    )
+    api.register_scorer(
+        "mapping_scorer", lambda _params, _ctx: lambda _context: {"metrics": []},
+        description="Returns an output mapping.",
+    )
+    spec = EvalSpec(
+        harness="./h",
+        dataset={"loader": "fake_cases"},
+        scorers=["none_scorer", "metric_scorer", "mapping_scorer"],
+    )
+
+    scoring = run_scorers(
+        spec,
+        EvalCase(id="case", input="input"),
+        RunResult(status="success", output="yes", run_id="run_return_values"),
+    )
+
+    assert scoring.status == "success"
+    assert [receipt.metric_count for receipt in scoring.scorers] == [0, 1, 0]
+    assert scoring.metrics == [metric]
+
+
 def test_dataset_and_scorer_digests_both_contribute_to_eval_identity():
     _register_eval_components()
     spec = _eval_spec()
@@ -243,6 +283,37 @@ def test_eval_loader_trust_gates_local_extensions(monkeypatch, tmp_path: Path):
 
     with pytest.raises(SpecError, match="not trusted"):
         load_eval_spec(eval_file)
+
+
+@pytest.mark.parametrize(
+    ("name", "factory", "message"),
+    [
+        ("empty_eval_cases", lambda: [], "returned no cases"),
+        (
+            "duplicate_eval_cases",
+            lambda: [
+                {"id": "duplicate", "input": "first"},
+                {"id": "duplicate", "input": "second"},
+            ],
+            "duplicate case ids",
+        ),
+        ("invalid_eval_cases", lambda: 42, "must return an iterable"),
+    ],
+)
+def test_eval_loader_reports_invalid_dataset_shapes(
+    name: str, factory, message: str
+):
+    _register_eval_components()
+    api = ext.ExtensionAPI(source="test:invalid-eval-datasets")
+    api.register_dataset(
+        name, lambda _params, _ctx: factory, description="Invalid test dataset."
+    )
+    spec = EvalSpec(
+        harness="./h", dataset={"loader": name}, scorers=["fake_exact"]
+    )
+
+    with pytest.raises(SpecError, match=message):
+        load_eval_cases(spec, ".")
 
 
 def test_eval_cli_schema_catalog_and_validate_hide_case_data(tmp_path: Path):

@@ -13,7 +13,12 @@ from typer.testing import CliRunner
 
 from hiveloom import construct, ext
 from hiveloom.cli import app
-from hiveloom.eval_runner import load_eval_manifest, resume_eval, run_eval
+from hiveloom.eval_runner import (
+    load_eval_manifest,
+    manifest_path,
+    resume_eval,
+    run_eval,
+)
 from hiveloom.evals import EvalCase, EvalSpec, ScorerOutput
 from hiveloom.execution import RunExecutionEnvelope
 from hiveloom.logging.hive import Hive
@@ -356,3 +361,172 @@ def test_trace_disabled_is_explicit_and_status_json_is_valid(tmp_path: Path):
     assert payload["status"] == "completed"
     assert payload["manifest"]["cells"][0]["trace_disabled"] is True
     assert load_eval_manifest(manifest.eval_run_id).status == "completed"
+
+
+def test_resume_scores_a_traced_run_without_executing_it_again(tmp_path: Path):
+    """An interruption after the model trace is durable must not bill it twice."""
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    manifest = run_eval(
+        eval_file,
+        execute_cell=_completed_result,
+        model_probe=probe,
+        max_cells=0,
+        eval_run_id="eval_recover_trace_fixture",
+    )
+    [cell] = manifest.cells
+    spec = EvalSpec(
+        harness="harness",
+        dataset={"loader": "runner_cases"},
+        scorers=["runner_quality"],
+    )
+    result = _completed_result(
+        manifest=manifest,
+        cell=cell,
+        case=EvalCase(id="case-0", input="synthetic input 0", expected={"answer": "answer-0"}),
+        spec=spec,
+    )
+    cell.status = "ran"
+    cell.trace_path = result.trace_path
+    manifest_path(manifest.eval_run_id).write_text(
+        manifest.model_dump_json(), encoding="utf-8"
+    )
+    calls: list[str] = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["cell"].cell_id)
+        return _completed_result(**kwargs)
+
+    resumed = resume_eval(
+        manifest.eval_run_id, execute_cell=execute, model_probe=probe
+    )
+
+    assert resumed.status == "completed"
+    assert calls == []
+    assert resumed.cells[0].scorer_status == "success"
+    assert resumed.cells[0].metric_ingestion["inserted"] == 1
+
+
+def test_resume_replays_a_ran_cell_when_its_trace_is_missing(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    manifest = run_eval(
+        eval_file,
+        execute_cell=_completed_result,
+        model_probe=probe,
+        max_cells=0,
+        eval_run_id="eval_missing_trace_fixture",
+    )
+    [cell] = manifest.cells
+    cell.status = "ran"
+    cell.trace_path = str(tmp_path / "missing.jsonl")
+    manifest_path(manifest.eval_run_id).write_text(
+        manifest.model_dump_json(), encoding="utf-8"
+    )
+    calls: list[str] = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["cell"].run_id)
+        return _completed_result(**kwargs)
+
+    resumed = resume_eval(
+        manifest.eval_run_id, execute_cell=execute, model_probe=probe
+    )
+
+    assert resumed.status == "completed"
+    assert len(calls) == 1
+    assert resumed.cells[0].infrastructure_attempts == 1
+
+
+def test_execution_exception_uses_the_trace_written_before_the_interrupt(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+
+    def write_then_interrupt(**kwargs):
+        _completed_result(**kwargs)
+        raise ConnectionError("connection closed after the trace was written")
+
+    manifest = run_eval(
+        eval_file,
+        execute_cell=write_then_interrupt,
+        model_probe=probe,
+        eval_run_id="eval_interrupted_trace_fixture",
+    )
+
+    assert manifest.status == "completed"
+    assert manifest.cells[0].run_status == "success"
+    assert manifest.cells[0].infrastructure_attempts == 1
+
+
+def test_scoring_failure_preserves_the_completed_model_outcome(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+
+    def missing_trace(**kwargs):
+        result = RunResult(
+            status="success",
+            output=kwargs["case"].expected["answer"],
+            run_id=kwargs["cell"].run_id,
+            trace_path=str(tmp_path / "lost-trace.jsonl"),
+        )
+        return result
+
+    manifest = run_eval(
+        eval_file,
+        execute_cell=missing_trace,
+        model_probe=probe,
+        eval_run_id="eval_scoring_failure_fixture",
+    )
+
+    assert manifest.status == "incomplete"
+    assert manifest.cells[0].status == "ran"
+    assert manifest.cells[0].run_status == "success"
+    assert manifest.cells[0].error_phase == "scoring"
+
+
+def test_manifest_lookup_rejects_unknown_and_malformed_ids():
+    with pytest.raises(ValueError, match="eval run not found"):
+        load_eval_manifest("eval_missing_fixture")
+    with pytest.raises(ValueError, match="invalid eval run id"):
+        load_eval_manifest("not an eval id")
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"adapter_digest": "different-adapter"}, "provider adapter changed"),
+        ({"effective_models": ["different-model"]}, "effective model identity changed"),
+    ],
+)
+def test_resume_rejects_changed_model_execution_identity(
+    tmp_path: Path, change: dict[str, object], message: str
+):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    manifest = run_eval(
+        eval_file,
+        execute_cell=_completed_result,
+        model_probe=probe,
+        max_cells=0,
+        eval_run_id="eval_probe_identity_fixture",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        resume_eval(
+            manifest.eval_run_id,
+            execute_cell=_completed_result,
+            model_probe=probe.model_copy(update=change),
+        )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"concurrency": 0}, "concurrency"),
+        ({"infrastructure_retries": -1}, "infrastructure retries"),
+        ({"max_cells": -1}, "max_cells"),
+        ({"repetitions": 0}, "repetitions"),
+    ],
+)
+def test_run_eval_rejects_invalid_scheduling_limits(
+    tmp_path: Path, kwargs: dict[str, int], message: str
+):
+    eval_file, probe = _fixture(tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        run_eval(eval_file, execute_cell=_completed_result, model_probe=probe, **kwargs)
