@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate usage, billed-versus-estimated cost, verification recovery state,
   a reproducible fingerprint, and the durable trace path. The same envelope
   closes the run journal.
+- `hiveloom models probe HARNESS` reports declared model capabilities without
+  provider I/O; `--live` explicitly runs a bounded, possibly billed tool and
+  reasoning-replay probe. Results retain requested/effective model identity,
+  distinguish declared from observed facts, enforce exact or alias policies,
+  and cache against provider, model, and adapter implementation.
 
 ### Fixed
 

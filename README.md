@@ -355,6 +355,8 @@ hiveloom run ./my-harness --input input.txt --stream
 hiveloom trace <run-id> --json
 hiveloom trace <run-id> --verify
 hiveloom stats ./my-harness --json
+hiveloom models probe ./my-harness --provider openrouter \
+  --model qwen3.5-9b --identity exact --live --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe

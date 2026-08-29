@@ -12,7 +12,8 @@ construction API that the CLI and generator both drive, and the embedding SDK:
 SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :class:`RunResult`, :func:`generate_harness`, :func:`load_spec`,
 :func:`validate_harness`, :class:`HarnessSpec`, :class:`Hive`,
-:class:`HarnessServer`. The other, language-agnostic embedding interfaces are
+:class:`ModelProbeResult`, :func:`probe_model`, :class:`HarnessServer`. The
+other, language-agnostic embedding interfaces are
 ``hiveloom run --stream`` (trace events as JSONL on stdout, final
 ``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
 """
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from hiveloom.generate.generator import generate as generate_harness  # noqa: F401
     from hiveloom.logging.hive import Hive  # noqa: F401
     from hiveloom.loop.agent_loop import RunResult  # noqa: F401
+    from hiveloom.models.capabilities import ModelProbeResult, probe_model  # noqa: F401
     from hiveloom.runner import dry_run, run_harness  # noqa: F401
     from hiveloom.serve import HarnessServer  # noqa: F401
     from hiveloom.spec.loader import load_spec, validate_harness  # noqa: F401
@@ -40,6 +42,8 @@ _SDK = {
     "RunResult": ("hiveloom.loop.agent_loop", "RunResult"),
     "RunExecutionEnvelope": ("hiveloom.execution", "RunExecutionEnvelope"),
     "VerificationSummary": ("hiveloom.execution", "VerificationSummary"),
+    "ModelProbeResult": ("hiveloom.models.capabilities", "ModelProbeResult"),
+    "probe_model": ("hiveloom.models.capabilities", "probe_model"),
     # named generate_harness: plain `generate` would shadow the subpackage
     "generate_harness": ("hiveloom.generate.generator", "generate"),
     "load_spec": ("hiveloom.spec.loader", "load_spec"),

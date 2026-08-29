@@ -80,6 +80,12 @@ hash**). Running needs credentials for the configured provider when required
 (for example, `ANTHROPIC_API_KEY` for the default provider, loaded from the
 harness `.env`).
 
+Before a model batch, run `hiveloom models probe ./h --provider PROVIDER
+--model MODEL --json` for free declared capabilities. Add `--live --identity
+exact` only when up to two possibly billed calls are intended. The result keeps
+requested and effective identity separate; use explicit aliases rather than
+relabelling a served model.
+
 ## Improving a harness — use evolve, not the editor
 
 When asked to improve a failing harness, **do not** hand-edit it — and never

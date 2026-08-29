@@ -179,6 +179,26 @@ class ModelConfig(BaseModel):
     provider: str = ""
 
 
+class ModelCapabilities(BaseModel):
+    """Provider-neutral capability declarations or live observations."""
+
+    tool_calling: bool | None = None
+    structured_output: bool | None = None
+    reasoning_replay: bool | None = None
+
+
+class ProviderCapabilityObservation(BaseModel):
+    """Bounded evidence returned by a provider's live capability probe."""
+
+    effective_models: list[str] = Field(default_factory=list)
+    provider_request_ids: list[str] = Field(default_factory=list)
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    usage: Usage = Field(default_factory=Usage)
+    cost_usd: float = 0.0
+    cost_source: str = "none"
+    calls: int = 0
+
+
 # Fallback per-1M-token pricing (input, output) in USD when a model id is not
 # in the registry: assume Haiku-class pricing rather than zero, so budget
 # guardrails stay conservative. Real pricing lives in the model registry
@@ -243,6 +263,130 @@ class ModelProvider(ABC):
         real token-counting API.
         """
         return _estimate_messages_tokens(system, messages)
+
+    def declared_capabilities(self, model_id: str) -> ModelCapabilities:
+        """Return registry declarations without contacting the provider."""
+        from hiveloom import ext
+
+        info = ext.model_info(model_id)
+        if info is None:
+            return ModelCapabilities()
+        return ModelCapabilities(
+            tool_calling=info.supports_tool_calling,
+            structured_output=info.supports_structured_output,
+            reasoning_replay=info.supports_reasoning_replay,
+        )
+
+    def probe_capabilities(self, config: ModelConfig) -> ProviderCapabilityObservation:
+        """Perform a generic tool/reasoning probe; adapters may override it."""
+        tool = {
+            "name": "hiveloom_capability_probe",
+            "description": "Return the fixed capability probe token.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"token": {"type": "string", "const": "ok"}},
+                "required": ["token"],
+                "additionalProperties": False,
+            },
+        }
+        messages: list[Message] = [
+            {
+                "role": "user",
+                "content": (
+                    "Call hiveloom_capability_probe once with token set to ok. "
+                    "Do not answer in text."
+                ),
+            }
+        ]
+        probe_config = config.model_copy(update={"max_tokens": min(config.max_tokens, 128)})
+        first = self.complete(
+            system="This is a framework capability probe.",
+            messages=messages,
+            tools=[tool],
+            config=probe_config,
+        )
+        calls = [first]
+        tool_supported = any(
+            call.name == "hiveloom_capability_probe" for call in first.tool_calls
+        )
+        has_reasoning = first.reasoning is not None or any(
+            block.get("type") in {"thinking", "redacted_thinking", "provider_reasoning"}
+            for block in first.content_blocks
+        )
+        reasoning_replay: bool | None = None
+        if tool_supported and has_reasoning:
+            assistant_blocks = list(first.content_blocks)
+            if first.reasoning is not None:
+                assistant_blocks.append(
+                    {"type": "provider_reasoning", "data": first.reasoning}
+                )
+            call = next(
+                call
+                for call in first.tool_calls
+                if call.name == "hiveloom_capability_probe"
+            )
+            replay_messages = [
+                *messages,
+                {"role": "assistant", "content": assistant_blocks},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call.id,
+                            "content": '{"ok":true}',
+                            "is_error": False,
+                        }
+                    ],
+                },
+            ]
+            try:
+                second = self.complete(
+                    system="This is a framework capability probe.",
+                    messages=replay_messages,
+                    tools=[],
+                    config=probe_config,
+                )
+                calls.append(second)
+                reasoning_replay = True
+            except Exception:  # noqa: BLE001 - failure is the observed capability
+                reasoning_replay = False
+
+        usage = Usage()
+        effective_models: list[str] = []
+        request_ids: list[str] = []
+        costs: list[tuple[float, str]] = []
+        for response in calls:
+            usage += response.usage
+            if response.model and response.model not in effective_models:
+                effective_models.append(response.model)
+            if response.provider_request_id:
+                request_ids.append(response.provider_request_id)
+            estimate = self.estimated_cost(response.usage, config.id, config.provider)
+            costs.append(response.resolved_cost_usd(estimate))
+        cost_sources = {source for _, source in costs}
+        cost_source = (
+            "none"
+            if not costs
+            else next(iter(cost_sources))
+            if len(cost_sources) == 1
+            else "mixed"
+        )
+        return ProviderCapabilityObservation(
+            effective_models=effective_models,
+            provider_request_ids=request_ids,
+            capabilities=ModelCapabilities(
+                tool_calling=tool_supported,
+                # The generic complete() contract has no response-format
+                # parameter, so only a provider override can observe this.
+                structured_output=None,
+                reasoning_replay=reasoning_replay,
+            ),
+            usage=usage,
+            cost_usd=sum(cost for cost, _ in costs),
+            cost_source=cost_source,
+            calls=len(calls),
+        )
 
     def estimated_cost(self, usage: Usage, model_id: str, provider: str = "") -> float:
         """Return the USD cost of ``usage`` for ``model_id`` (registry-priced).
