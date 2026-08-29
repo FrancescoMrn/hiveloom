@@ -16,7 +16,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 
 | Section | Purpose | Notable fields |
 |---|---|---|
-| `version` | Spec format version | defaults to `0.2.0` |
+| `schema_version` | Harness document format | defaults to `0.2.0`; legacy `version` still loads and `hiveloom migrate HARNESS --json` rewrites it atomically |
 | `name` / `description` | Identity (Hive + packaging) | required |
 | `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
@@ -173,6 +173,21 @@ mcp_servers:
 Add one with `hiveloom add mcp-server` (see `hiveloom add mcp-server --help`);
 inspect what a harness's declared servers actually expose with
 `hiveloom mcp list-tools --dir ./h`.
+
+## Three identities, three jobs
+
+- `schema_version` identifies the `harness.yaml` document format.
+- The behavior hash identifies the validated spec plus referenced prompts,
+  hooks, extensions, skills, and output schemas.
+- The execution fingerprint identifies one reproducible run configuration:
+  behavior hash, Hiveloom runtime, requested and effective model identity,
+  runtime overrides, input digest, model path, and lineage.
+
+The legacy top-level `version` key remains readable for a transition. A
+document containing conflicting `version` and `schema_version` values is
+rejected. Run `hiveloom migrate HARNESS --json`; never edit either field by
+hand. Migration validates hooks before and after its atomic write, restores the
+original bytes on failure, and does not change the behavior hash.
 
 ## Safety invariants (enforced in code)
 

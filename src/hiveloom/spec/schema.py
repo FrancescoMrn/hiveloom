@@ -852,7 +852,13 @@ class HarnessSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: str = Field(default="0.2.0", description="Spec format version.")
+    schema_version: str = Field(
+        default="0.2.0",
+        description=(
+            "Harness document format version. Legacy `version` loads as this field; "
+            "use `hiveloom migrate` to rewrite it canonically."
+        ),
+    )
     name: str = Field(description="Harness name (used for display and packaging).")
     id: str = Field(
         default="",
@@ -928,6 +934,26 @@ class HarnessSpec(BaseModel):
     evolution: EvolutionConfig = Field(
         default_factory=EvolutionConfig, description="Evolution policy."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_version_field(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "version" not in value:
+            return value
+        data = dict(value)
+        legacy = data.pop("version")
+        if "schema_version" in data and data["schema_version"] != legacy:
+            raise ValueError(
+                "conflicting version and schema_version values; migrate from a "
+                "document with one unambiguous format version"
+            )
+        data.setdefault("schema_version", legacy)
+        return data
+
+    @property
+    def version(self) -> str:
+        """Compatibility alias for SDK callers; serialize ``schema_version``."""
+        return self.schema_version
 
     @property
     def identity(self) -> str:

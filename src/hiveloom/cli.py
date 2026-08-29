@@ -394,6 +394,39 @@ def validate(
             _console.print(f"[green]valid[/green] — {spec.name}")
 
 
+@app.command()
+def migrate(
+    harness_dir: str = typer.Argument(".", help="Harness directory to migrate."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Atomically migrate legacy harness document fields.
+
+    The current migration renames the document-format field from ``version``
+    to ``schema_version``. Full validation runs before and after the write,
+    with rollback on error. Harness behavior identity does not change.
+    """
+    from hiveloom.spec.migrate import migrate_harness
+
+    with _guard(json_output):
+        result = migrate_harness(
+            harness_dir,
+            approve_trust=_trust_prompt(json_output),
+        )
+        payload = {"ok": True, **result.model_dump(mode="json")}
+        if json_output:
+            _emit_json(payload)
+        elif result.changed:
+            _console.print(
+                f"[green]migrated[/green] {result.from_field} -> {result.to_field} "
+                f"(behavior {result.behavior_hash_after})"
+            )
+        else:
+            _console.print(
+                f"[green]already current[/green] — {result.to_field}: "
+                f"{result.schema_version}"
+            )
+
+
 # --------------------------------------------------------------------------- #
 # Construct commands
 # --------------------------------------------------------------------------- #

@@ -345,6 +345,7 @@ request, and `4` runtime failure.
 ```bash
 # Explore and construct
 hiveloom schema --json
+hiveloom migrate ./legacy-harness --json
 hiveloom explain context.compaction --json
 hiveloom catalog validators --json
 hiveloom set loop.max_turns 20 --dir ./my-harness --json
@@ -412,6 +413,10 @@ result = run_harness(
 )
 spec = generate_harness("Reconcile invoices", "./invoice-reconciler")
 ```
+
+`schema_version` names the harness document format. Legacy `version` files
+still load; migrate them through the command or `migrate_harness()` SDK rather
+than editing YAML. Migration is atomic and does not change the behavior hash.
 
 Inject a `ModelProvider` into `run_harness` or a `StrongModel` into
 `generate_harness` for custom embedding and deterministic tests. For

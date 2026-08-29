@@ -1,4 +1,4 @@
-version: 0.2.0
+schema_version: 0.2.0
 name: ticket-triage
 id: hl-740161dbe484
 description: 'Triage the open support tickets exposed by the tickets MCP server: assign each open ticket

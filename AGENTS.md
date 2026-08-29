@@ -11,8 +11,8 @@ the library; humans should start at [README.md](README.md).
 ## Ground rules
 
 1. **Never hand-edit `harness.yaml`.** Construct via `init`/`add`/`set`/
-   `remove`; improve via `evolve`. Both validate and roll back — hand edits
-   bypass that.
+   `remove`; improve via `evolve`; rename a legacy document field via
+   `migrate`. These paths validate and roll back — hand edits bypass that.
 2. **Always pass `--json`** and branch on the result and the exit code:
    `0` success · `1` verify failed · `2` guardrail halt · `3` spec/validation
    error · `4` runtime error.

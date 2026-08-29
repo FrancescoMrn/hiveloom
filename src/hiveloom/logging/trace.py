@@ -36,7 +36,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.logging.journal import CONTEXT_EVENTS
-from hiveloom.spec.loader import dump_spec
+from hiveloom.spec.loader import dump_spec, dump_spec_for_behavior_hash
 from hiveloom.spec.schema import HarnessSpec
 
 
@@ -59,7 +59,7 @@ def spec_version_hash(spec: HarnessSpec, base_dir: str | Path | None = None) -> 
     have an in-memory spec.
     """
     hasher = hashlib.sha256()
-    hasher.update(dump_spec(spec).encode("utf-8"))
+    hasher.update(dump_spec_for_behavior_hash(spec).encode("utf-8"))
     if base_dir is not None:
         base = Path(base_dir).resolve()
         for relative in _versioned_files(spec, base):

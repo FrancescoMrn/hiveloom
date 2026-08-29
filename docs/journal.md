@@ -94,10 +94,11 @@ provider-reported model identities separate; sums provider-call usage; labels
 cost as billed, estimated, or mixed; and records whether verification passed
 on the first output, recovered, failed, or never ran.
 
-`behavior_hash` is the current name of the version hash inside this public
-envelope. `schema_version` reflects the existing harness `version` field. The
-identity migration keeps those meanings explicit without changing the 1.0
-journal envelope retroactively.
+`behavior_hash` is the current name of the harness version hash inside this
+public envelope. `schema_version` reflects the canonical harness document
+field. Legacy documents using `version` load with the same meaning and migrate
+without changing the behavior hash, so their existing journal and Hive buckets
+remain comparable.
 
 ## Levels
 

@@ -29,6 +29,7 @@ one-off, unverifiable, or creative work, do the task inline instead.
 ```bash
 hiveloom schema --annotated        # a valid, commented YAML template
 hiveloom schema --json             # the JSON schema
+hiveloom migrate ./h --json        # atomic legacy version -> schema_version rewrite
 hiveloom catalog tools             # also: guardrails|validators|policies|compaction|hooks
 hiveloom explain context.compaction  # field-level docs for any spec path
 hiveloom extensions                # loaded packs/providers — the catalog may be extended

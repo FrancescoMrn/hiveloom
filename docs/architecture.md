@@ -142,6 +142,18 @@ recent failed traces with their verifier feedback. It also carries lineage
 per-version fitness bucket and reported separately, because they did not
 execute the harness as declared.
 
+Identity is deliberately split before evidence reaches evolution:
+
+- `schema_version` says which harness document contract was parsed;
+- the behavior hash covers the validated spec and every referenced behavior
+  file, including playbook prompts;
+- the execution fingerprint adds the runtime, requested and effective models,
+  run-only overrides, input digest, model path, and lineage.
+
+Renaming legacy `version` to `schema_version` is a document migration, not a
+behavior change. The behavior hash normalizes that one spelling transition so
+old Hive buckets stay usable.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
