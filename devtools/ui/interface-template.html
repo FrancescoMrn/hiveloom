@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* http://localhost:*">
+  <title>__TITLE__</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #ededed;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    main { width: min(680px, 100%); }
+    .mark {
+      width: 38px; height: 38px; border: 1px solid #2b8fff; border-radius: 12px;
+      display: grid; place-items: center; color: #2b8fff; margin-bottom: 20px;
+    }
+    h1 { margin: 0; font-size: 30px; letter-spacing: -.04em; }
+    .lede { color: #999; line-height: 1.6; margin: 8px 0 26px; }
+    form, .result { border: 1px solid #2a2a2a; background: #111; border-radius: 16px; padding: 18px; }
+    label {
+      display: block; color: #aaa; font-size: 12px; text-transform: uppercase;
+      letter-spacing: .08em; margin-bottom: 9px;
+    }
+    input, textarea {
+      width: 100%; border: 1px solid #333; border-radius: 10px; background: #0b0b0b;
+      color: #fff; padding: 13px 14px; font: inherit;
+    }
+    button {
+      margin-top: 12px; border: 0; border-radius: 10px; background: #ededed;
+      color: #0a0a0a; padding: 11px 16px; font-weight: 650; cursor: pointer;
+    }
+    button:disabled { opacity: .45; cursor: wait; }
+    .hint, .run-meta { color: #777; font-size: 12px; line-height: 1.5; }
+    .hint { margin: 8px 0 0; }
+    .result { margin-top: 14px; display: none; }
+    .result.on { display: block; }
+    .result.err { border-color: #7f3131; }
+    pre {
+      white-space: pre-wrap; word-break: break-word; margin: 0;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, monospace;
+    }
+    .run-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .run-meta:empty { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">✦</div>
+    <h1>__TITLE__</h1>
+    <p class="lede">__DESCRIPTION__</p>
+    <form id="form">
+      <label for="task">__INPUT_LABEL__</label>
+      __FIELD__
+      <p class="hint">__INPUT_HELP__</p>
+      <button id="submit" type="submit">__SUBMIT_LABEL__</button>
+    </form>
+    <section id="result" class="result" aria-live="polite">
+      <pre id="output"></pre>
+      <div id="run-meta" class="run-meta"></div>
+    </section>
+  </main>
+  <script>
+    const config = __CONFIG__;
+    const form = document.getElementById('form');
+    const field = document.getElementById('task');
+    const submit = document.getElementById('submit');
+    const result = document.getElementById('result');
+    const output = document.getElementById('output');
+    const runMeta = document.getElementById('run-meta');
+    let pending = null;
+
+    function requestId() {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+      return 'preview-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    }
+
+    function show(value, error = false) {
+      result.className = 'result on' + (error ? ' err' : '');
+      let rendered = value;
+      if (typeof value !== 'string') rendered = JSON.stringify(value, null, 2);
+      else { try { rendered = JSON.stringify(JSON.parse(value), null, 2); } catch {} }
+      output.textContent = rendered;
+      submit.disabled = false;
+      submit.removeAttribute('aria-busy');
+    }
+
+    window.addEventListener('message', event => {
+      const message = event.data || {};
+      if (message.type === 'hiveloom:progress' && message.requestId === pending) {
+        output.textContent = message.status || 'Running…';
+        return;
+      }
+      if (message.type !== 'hiveloom:result' || message.requestId !== pending) return;
+      const meta = message.meta || {};
+      runMeta.textContent = [meta.status, meta.runId, meta.turns == null ? '' : meta.turns + ' turns']
+        .filter(Boolean).join(' · ');
+      show(message.result ?? message.error, Boolean(message.error));
+      pending = null;
+    });
+
+    async function execute() {
+      if (pending || submit.disabled) return;
+      let input = field.value.trim();
+      if (config.kind !== 'file' && !input) {
+        return show('Enter an input before running the harness.', true);
+      }
+      if (config.kind === 'url') {
+        try {
+          const parsed = new URL(input);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error();
+        } catch {
+          return show('Enter a complete URL beginning with http:// or https://.', true);
+        }
+      }
+      submit.disabled = true;
+      submit.setAttribute('aria-busy', 'true');
+      result.className = 'result on';
+      output.textContent = 'Starting harness…';
+      runMeta.textContent = '';
+      let filePayload = null;
+      if (config.kind === 'file') {
+        const file = field.files[0];
+        if (!file) return show('Choose a file first.', true);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+        for (let index = 0; index < bytes.length; index += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
+        }
+        filePayload = {name: file.name, type: file.type, contentBase64: btoa(binary)};
+      }
+      if (window.parent !== window) {
+        pending = requestId();
+        window.parent.postMessage({
+          type: 'hiveloom:run', requestId: pending, harnessId: config.harnessId,
+          input, file: filePayload
+        }, '*');
+        return;
+      }
+      if (filePayload) {
+        return show('This file interface needs a Hiveloom workbench or deployment upload bridge.', true);
+      }
+      try {
+        const response = await fetch('/run', {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify({input})
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || response.statusText);
+        show(payload.output ?? payload);
+      } catch (error) {
+        show(String(error), true);
+      }
+    }
+
+    function requestRun(event) {
+      event.preventDefault();
+      void execute();
+    }
+
+    form.addEventListener('submit', requestRun);
+    submit.addEventListener('click', requestRun);
+  </script>
+</body>
+</html>

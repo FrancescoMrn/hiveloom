@@ -1,0 +1,84 @@
+version: 0.2.0
+name: routing-lab
+id: hl-f5d0213e1c93
+description: Read an incident, triage it on a cheap model, then route to a decision model and emit a verified
+  JSON decision.
+extensions:
+- extensions/qa_provider.py
+model:
+  provider: routing_lab
+  id: qa-triage
+  max_tokens: 4096
+system_prompt: |-
+  You handle one incident, in two stages.
+
+  First `triage`: read the incident file and establish what is actually happening. Then `decide`: commit to a severity, an owner and a next action, as exactly one JSON object.
+
+  The active playbook tells you which stage you are in and what you may use there. Finish with the JSON object and nothing else.
+tools:
+- builtin: file_read
+mcp_servers: []
+playbooks:
+- name: triage
+  description: Collect incident evidence with the inexpensive model.
+  prompt: playbooks/triage.md
+  tools:
+  - file_read
+  - switch_playbook
+  validators: []
+  entry: true
+- name: decide
+  description: Turn collected evidence into the final verified decision.
+  prompt: playbooks/decide.md
+  tools:
+  - switch_playbook
+  validators: []
+  model: qa-decision
+  model_provider: routing_lab
+  entry: false
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+loop:
+  policy: react
+  steps: []
+  max_turns: 8
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - builtin: output_schema
+    schema_file: ./schemas/decision.json
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0

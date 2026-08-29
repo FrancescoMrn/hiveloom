@@ -109,7 +109,10 @@ def create_proposal(
     version_hash = spec_version_hash(spec, base)
     dedup_key = _dedup_key(report)
 
-    existing = hive.find_pending_proposal(spec.name, version_hash, dedup_key)
+    # Proposals bind to the harness's stable identity (its `id`, or the name
+    # for a pre-identity spec) so a same-named harness elsewhere can neither
+    # see nor apply them.
+    existing = hive.find_pending_proposal(spec.identity, version_hash, dedup_key)
     if existing is not None:
         return ProposalRecord.model_validate(existing)
 
@@ -122,7 +125,7 @@ def create_proposal(
     now = datetime.now(UTC).isoformat()
     row = {
         "id": f"prop_{uuid4().hex[:16]}",
-        "harness_name": spec.name,
+        "harness_name": spec.identity,
         "spec_version_hash": version_hash,
         "dedup_key": dedup_key,
         "status": "pending" if queueable else "rejected",
@@ -204,10 +207,10 @@ def apply_proposal_by_id(
     row = _require_pending(hive, proposal_id)
 
     spec = load_spec(harness_dir)
-    if spec.name != row["harness_name"]:
+    if spec.identity != row["harness_name"]:
         raise ProposalQueueError(
             f"proposal '{proposal_id}' belongs to harness '{row['harness_name']}', "
-            f"not '{spec.name}'"
+            f"not '{spec.identity}'"
         )
     base = harness_path(harness_dir).parent
     live_hash = spec_version_hash(spec, base)

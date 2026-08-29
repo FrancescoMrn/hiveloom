@@ -25,3 +25,5 @@ anthropic.token
 
 # Internal design artifacts, never part of the distribution.
 .superpowers/
+
+.archive/

@@ -88,7 +88,7 @@ uses.
 | Method/path | Scope | Wraps |
 | --- | --- | --- |
 | `GET /health` | none | Harness name, spec version hash, evolved counter. |
-| `POST /run` | `run` | `runner.run_harness`. `?stream=true` → SSE of trace events, ending in a `run_result` frame. |
+| `POST /run` | `run` | `runner.run_harness`. `?stream=true` → SSE: a `run_accepted` frame naming the run id, then every trace event, then a final `run_result` frame (also on failure, with `"status": "error"`) — the same frames `hiveloom serve` streams as NDJSON. |
 | `GET /stats` | `read` | Hive summary + recent failures. |
 | `GET /trace/{run_id}` | `read` | Hive lookup + trace read, bound to the served harness; 404 if unknown *or if the run belongs to a different harness* (the Hive is global — see below). |
 | `POST /validate` | `read` | Full spec + code-hook validation. |
@@ -117,7 +117,7 @@ at an attacker-controlled endpoint (exfiltrating every prompt and tool
 result), setting `logging.redact` could strip redaction so secrets land in
 traces in cleartext, setting `guardrails` could remove the cost cap
 entirely. So `/set`, every `/add/{kind}`, and `/remove` refuse any of
-`ALWAYS_FROZEN`'s roots — `guardrails`, `model`, `logging.redact`,
+`ALWAYS_FROZEN`'s roots — `id`, `guardrails`, `model`, `logging.redact`,
 `extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` — with
 **403**, not 400: this is "your scope does not permit that," not "your request
 was malformed." The local CLI is completely unaffected; this check lives
@@ -204,7 +204,7 @@ HTTP:
   about what counts as sensitive.
 - This is the SAME protection the harness's own `file_read`/`file_write`
   tools get, and the evolver's code-change containment: all four callers go
-  through `_safe_path`, which now enforces the identical sensitivity check —
+  through `safe_path`, which now enforces the identical sensitivity check —
   `.hiveloom/`, `.env*`, and the configured trace directory (default or
   reconfigured) — for every one of them, not just `input_file`. A harness
   with `file_read` configured cannot read its own auth store, `.env`, or a

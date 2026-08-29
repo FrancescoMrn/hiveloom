@@ -23,7 +23,15 @@ jobs:
         with:
           enable-cache: true
       - name: Check tag matches project version
+        # Publishing runs are dispatched against the TAG, not a branch: on a
+        # branch ref GITHUB_REF_NAME is e.g. "main", which can never equal the
+        # version, so fail with an instruction rather than a confusing
+        # "main != 0.5.1".
         run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::run this workflow against the release tag v<version>, picked in the Run workflow ref dropdown — not branch $GITHUB_REF_NAME"
+            exit 1
+          fi
           TAG="${GITHUB_REF_NAME#v}"
           VERSION=$(uv run python -c \
             "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")

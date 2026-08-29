@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import EventBus
 from hiveloom.guardrails.base import Guardrail, RunState
-from hiveloom.logging.trace import TraceWriter
+from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
 from hiveloom.loop.policies import LoopPolicy, build_policy
 from hiveloom.models.provider import (
@@ -32,6 +32,7 @@ from hiveloom.models.provider import (
     ModelResponse,
     Usage,
 )
+from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry, ToolResult
@@ -100,6 +101,9 @@ class AgentLoop:
         context_values: dict[str, Any] | None = None,
         playbooks: PlaybookManager | None = None,
         control: RunControl | None = None,
+        router: ModelRouter | None = None,
+        resume: bool = False,
+        lineage: dict[str, Any] | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -112,6 +116,10 @@ class AgentLoop:
         self._run_input = run_input
         self._run_id = run_id
         self._history = list(history or [])
+        # A resumed fork seeds a folded conversation that already ends where
+        # the parent run was, so there is no new task statement to append.
+        self._resume = resume
+        self._lineage = lineage
         # Kept by reference, not copied: a tool may accumulate run-scoped state
         # in it across calls, and the caller reads it back after the run.
         self._context_values = context_values if context_values is not None else {}
@@ -125,11 +133,15 @@ class AgentLoop:
         self._policy = policy if policy is not None else build_policy(
             spec.loop.policy, {"steps": spec.loop.steps}
         )
-        self._model_config = ModelConfig(
-            id=spec.model.id,
-            max_tokens=spec.model.max_tokens,
-            temperature=spec.model.temperature,
-            provider=spec.model.provider,
+        self._router = router if router is not None else ModelRouter.create(
+            self._base,
+            ModelConfig(
+                id=spec.model.id,
+                max_tokens=spec.model.max_tokens,
+                temperature=spec.model.temperature,
+                provider=spec.model.provider,
+            ),
+            provider,
         )
         self._control = control
         self._state = RunState(tool_names=set(registry.names()))
@@ -153,15 +165,29 @@ class AgentLoop:
             "run_started",
             input=self._run_input,
             policy=loop.policy,
-            model=self._model_config.id,
+            model=self._router.config.id,
             history_turns=len(self._history),
+            resumed=self._resume,
+            # Where this run came from, when it is a fork: the parent run and
+            # the exact journal point it re-entered. This is what lets the Hive
+            # compare a fork against its parent on the prefix they share.
+            **({"lineage": self._lineage} if self._lineage else {}),
+            # What produced this run, not just its 12-hex fingerprint: the
+            # dumped spec plus a manifest of every local behavioural file. A
+            # journal that only names a version hash cannot be forked without
+            # the original folder, and cannot prove the folder never moved.
+            harness=harness_snapshot(
+                self._spec,
+                self._base,
+                include_files=self._spec.logging.snapshot_files,
+            ),
         )
         self._events.emit(
             "run_started",
             {
                 "input": self._run_input,
                 "policy": loop.policy,
-                "model": self._model_config.id,
+                "model": self._router.config.id,
                 "history": self._history,
             },
         )
@@ -175,7 +201,8 @@ class AgentLoop:
         # Prior turns first, so the current input stays the newest message —
         # policies and compaction both rely on that position.
         self._context.seed_history(self._history)
-        self._context.add_user(self._run_input)
+        if not self._resume:
+            self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
         except GuardrailHalt as exc:
@@ -201,6 +228,10 @@ class AgentLoop:
                         "[Operator message received while you were working — "
                         f"take it into account from here on]\n{steer}"
                     )
+                for request in self._control.drain_model_switches():
+                    self._switch_model(**request)
+                for request in self._control.drain_playbook_switches():
+                    self._switch_playbook_from_operator(**request)
             try:
                 response = self.model_turn()
             except GuardrailHalt as exc:
@@ -269,6 +300,61 @@ class AgentLoop:
         )
 
     # ------------------------------------------------------------------ #
+    # Model routing
+    # ------------------------------------------------------------------ #
+    def _switch_model(
+        self,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        reason: str = "",
+        source: str = "operator",
+    ) -> bool:
+        """Move the executing model. Returns True if anything actually changed.
+
+        Called at a turn boundary only — the same discipline as stop and steer,
+        for the same reason: no model call and no tool is in flight, so the
+        conversation is in a state another model can be handed.
+        """
+        previous = self._router.config
+        try:
+            switch = self._router.switch(
+                model=model,
+                provider=provider,
+                turn=self._state.turns,
+                reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad target must not kill the run
+            self._trace.emit(
+                "model_swap_failed",
+                requested_model=model,
+                requested_provider=provider,
+                source=source,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+        if switch is None:
+            return False
+
+        # Prior turns may carry blocks only the previous model can validate.
+        # Strip them here, once, rather than hoping every provider ignores
+        # what it does not recognise.
+        dropped = 0
+        if switch.provider != previous.provider or switch.model != previous.id:
+            self._context.messages, dropped = portable_messages(self._context.messages)
+
+        self._trace.emit(
+            "model_swap",
+            **{"from": f"{previous.provider}:{previous.id}"},
+            to=switch.key,
+            turn=switch.turn,
+            reason=reason,
+            source=source,
+            blocks_dropped=dropped,
+        )
+        return True
+
+    # ------------------------------------------------------------------ #
     def model_turn(self, *, phase: str = "act") -> ModelResponse:
         system, messages = self._context.assemble()
         tools = self._registry.anthropic_payload()
@@ -296,25 +382,60 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         phase: str,
     ) -> ModelResponse:
-        input_tokens = self._provider.count_tokens(system=system, messages=messages, tools=tools)
-        self._state.pending_cost_usd = self._provider.estimated_cost(
-            Usage(input_tokens=input_tokens, output_tokens=self._model_config.max_tokens),
-            self._model_config.id,
-            self._model_config.provider,
+        input_tokens = self._router.provider.count_tokens(
+            system=system, messages=messages, tools=tools
+        )
+        self._state.pending_cost_usd = self._router.provider.estimated_cost(
+            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
+            self._router.config.id,
+            self._router.config.provider,
         )
         halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
         if halt is not None:
             self._state.pending_cost_usd = 0.0
             raise GuardrailHalt(halt)
-        self._trace.emit(
-            "model_call",
-            turn=self._state.turns,
-            phase=phase,
-            num_messages=len(messages),
-            system=system,
-            messages=messages,
-            tools=tools,
-        )
+        if phase == "compaction":
+            # An out-of-band request: a one-off summarisation prompt that is
+            # not part of the conversation. It is recorded inline (it is small,
+            # and it has no context events of its own) and flagged so the
+            # journal fold skips it instead of mistaking it for history.
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                inline=True,
+                system=system,
+                messages=messages,
+            )
+        else:
+            # The conversation itself is already journalled message by message;
+            # the system prompt and tool payload are journalled only when they
+            # change. So a model_call records what it *consumed*, not a copy of
+            # it — see hiveloom.logging.journal for the fold that reads it back.
+            system_hash = self._trace.emit_context_system(system)
+            tools_hash = self._trace.emit_context_tools(tools)
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                context_head=self._trace.context_head,
+                system_hash=system_hash,
+                tools_hash=tools_hash,
+                # The context meter. Both numbers are already known here —
+                # `input_tokens` was just counted for the cost guardrail — and
+                # recording them is what lets a reader see how close a call ran
+                # to the budget without re-tokenizing the whole conversation.
+                input_tokens=input_tokens,
+                max_input_tokens=self._spec.context.max_input_tokens,
+                # A checksum of what actually went on the wire. The fold
+                # reconstructs the persisted conversation; a `context_assemble`
+                # hook patches one request without persisting it, so this is
+                # how a reader detects that the reconstruction is not the whole
+                # story rather than silently believing it.
+                messages_hash=payload_hash(messages),
+            )
         self._events.emit("before_model_call", {"turn": self._state.turns, "phase": phase})
         # Request middleware: patches apply to this request only, and run
         # after guardrails so a hook can never widen what a guardrail vetoed.
@@ -325,7 +446,7 @@ class AgentLoop:
                     "system": system,
                     "messages": messages,
                     "tools": tools,
-                    "model": self._model_config.id,
+                    "model": self._router.config.id,
                     "phase": phase,
                 },
             ):
@@ -346,16 +467,16 @@ class AgentLoop:
                         hook=outcome["_handler"],
                         action="patch_request",
                     )
-        response = self._provider.complete(
+        response = self._router.provider.complete(
             system=system,
             messages=messages,
             tools=tools,
-            config=self._model_config,
+            config=self._router.config,
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
-        cost = self._provider.estimated_cost(
-            response.usage, self._model_config.id, self._model_config.provider
+        cost = self._router.provider.estimated_cost(
+            response.usage, self._router.config.id, self._router.config.provider
         )
         self._state.cost_usd += cost
         self._state.pending_cost_usd = 0.0
@@ -363,7 +484,7 @@ class AgentLoop:
             "after_provider_response",
             {
                 "phase": phase,
-                "model": self._model_config.id,
+                "model": self._router.config.id,
                 "stop_reason": response.stop_reason,
                 "usage": response.usage.model_dump(),
                 "cost_usd": cost,
@@ -679,6 +800,7 @@ class AgentLoop:
             "playbook_switch", to=name, **{"from": None}, reason="run start",
             ok=outcome.ok, notes=outcome.notes,
         )
+        self._apply_playbook_model(name)
         self._events.emit(
             "playbook_enter", {"playbook": name, "from": None, "reason": "run start"}
         )
@@ -705,6 +827,7 @@ class AgentLoop:
         if not outcome.ok:
             return ToolResult(content=outcome.reason, is_error=True, retryable=False)
 
+        self._apply_playbook_model(name)
         self._events.emit(
             "playbook_exit", {"playbook": previous, "to": name, "reason": reason}
         )
@@ -715,6 +838,87 @@ class AgentLoop:
         message = [f"Now in playbook '{name}'. Active tools: {active}."]
         message += outcome.notes
         return ToolResult(content=" ".join(message))
+
+    def _apply_playbook_model(self, name: str | None) -> None:
+        """Put the run on the entered playbook's model, or back on the spec's.
+
+        A playbook that declares no ``model`` restores the harness default, so
+        leaving a mode always undoes what entering it did — a mode is a
+        configuration, not a one-way door. The switch happens between turns,
+        which is where the conversation is in a state another model can be
+        handed.
+        """
+        if self._playbooks is None or name is None:
+            return
+        playbook = self._playbooks.get(name)
+        if playbook is None:
+            return
+        self._switch_model(
+            model=playbook.ref.model or self._spec.model.id,
+            provider=playbook.ref.model_provider or self._spec.model.provider,
+            reason=f"playbook '{name}'",
+            source="playbook",
+        )
+
+    def _switch_playbook_from_operator(self, *, name: str, reason: str = "") -> bool:
+        """Move the run into another playbook on an operator's instruction.
+
+        Routed through the same :class:`PlaybookManager` the ``switch_playbook``
+        tool uses, so the mode's ``on_enter``/``on_exit`` gates still run and
+        may refuse. An operator switch is a request through the same door the
+        model uses — a gate that exists to stop a premature exit should stop
+        one that arrives over HTTP too.
+
+        The model is told, as a user turn: it has just had its tools narrowed
+        and its prompt fragment swapped, and a mode change it cannot see is a
+        mode change it will misread.
+        """
+        if self._playbooks is None or not self._playbooks.names:
+            self._trace.emit(
+                "playbook_switch_failed",
+                to=name,
+                source="operator",
+                reason=reason,
+                refused_reason="this harness declares no playbooks",
+            )
+            return False
+
+        previous = self._playbooks.current_name
+        why = reason or "operator request"
+        outcome = self._playbooks.switch(
+            name,
+            run_context=self._run_context(),
+            reason=why,
+            on_hook_error=self._hook_error,
+        )
+        self._trace.emit(
+            "playbook_switch",
+            to=name,
+            **{"from": previous},
+            reason=why,
+            source="operator",
+            ok=outcome.ok,
+            notes=outcome.notes,
+            refused_reason=outcome.reason,
+        )
+        if not outcome.ok:
+            return False
+
+        self._apply_playbook_model(name)
+        self._events.emit(
+            "playbook_exit", {"playbook": previous, "to": name, "reason": why}
+        )
+        self._events.emit(
+            "playbook_enter", {"playbook": name, "from": previous, "reason": why}
+        )
+        active = ", ".join(sorted(self._registry.active_names()))
+        note = [
+            f"[Operator switched you into playbook '{name}' while you were "
+            f"working. Active tools: {active}.]"
+        ]
+        note += outcome.notes
+        self._context.add_user(" ".join(note))
+        return True
 
     def _run_context(self, **extra: Any) -> dict[str, Any]:
         """The per-run dict handed to code tools and validators.
@@ -808,6 +1012,21 @@ class AgentLoop:
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
             duration_seconds=self._state.elapsed_seconds(),
+            # The answer and the judgements on it. A journal that reports a
+            # run's status but not what it produced is not a complete record
+            # of the run it describes.
+            output=output,
+            verdicts=[v.model_dump() for v in (verdicts or [])],
+            artifacts=self._state.artifacts,
+            # Which model(s) actually executed. A run that changed models is
+            # not a clean sample of "this harness at this version", and the
+            # Hive must be able to say so rather than blend it into a bucket
+            # with runs that did not.
+            model_path=self._router.path_key(),
+            models_used=[
+                {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
+                for s in self._router.path
+            ],
         )
         self._events.emit(
             "run_finished",

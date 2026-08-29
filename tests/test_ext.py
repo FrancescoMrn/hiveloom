@@ -232,6 +232,33 @@ def test_missing_harness_extension_is_spec_error(harness_dir: Path):
         spec_from_dict(raw, base_dir=harness_dir)
 
 
+def test_byte_identical_extension_in_a_fork_loads_once(tmp_path: Path):
+    parent = tmp_path / "parent"
+    fork = tmp_path / "fork"
+    parent.mkdir()
+    fork.mkdir()
+    (parent / "mine.py").write_text(_GOOD_EXT, encoding="utf-8")
+    (fork / "mine.py").write_text(_GOOD_EXT, encoding="utf-8")
+
+    ext.load_harness_extensions(["mine.py"], parent)
+    ext.load_harness_extensions(["mine.py"], fork)
+
+    assert "ping" in catalog.BUILTIN_TOOLS
+
+
+def test_different_extension_copy_still_reports_a_name_collision(tmp_path: Path):
+    parent = tmp_path / "parent"
+    fork = tmp_path / "fork"
+    parent.mkdir()
+    fork.mkdir()
+    (parent / "mine.py").write_text(_GOOD_EXT, encoding="utf-8")
+    (fork / "mine.py").write_text(_GOOD_EXT.replace('return "pong"', 'return "changed"'))
+
+    ext.load_harness_extensions(["mine.py"], parent)
+    with pytest.raises(SpecError, match="already registered"):
+        ext.load_harness_extensions(["mine.py"], fork)
+
+
 def test_extensions_path_is_always_frozen_for_evolution(harness_dir: Path):
     from hiveloom.evolve.evolver import MutationProposal, YamlChange, gate
 
