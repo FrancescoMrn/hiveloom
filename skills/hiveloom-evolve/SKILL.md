@@ -23,10 +23,19 @@ The evolver reads the Hive's clustered failures (ingesting the folder's
 in-folder traces on the fly), asks a strong model for a minimal mutation, and
 gates it **in code**.
 
+If a bounded Hive summary is not enough to explain a retry, opt in to
+`evolution.trace_excerpts.enabled` through `hiveloom set`. The selector uses
+indexed friction as an anchor, re-applies `logging.redact`, and enforces hard
+event, byte, and token-estimate budgets before evidence reaches the proposing
+model. Missing or retention-pruned journals fall back to indexed summaries.
+Queued proposals keep the selection receipt and digest, not the event
+payloads. Inspect that receipt with `proposals show --json`.
+
 ## Hard rules (enforced by the tool — don't fight them)
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, and `evolution.auto_propose` can **never** be changed by
+  `mcp_servers`, `evolution.auto_propose`, and `evolution.trace_excerpts` can
+  **never** be changed by
   evolution. Don't try to weaken them by other means either; if a guardrail is
   genuinely wrong, change it deliberately via `hiveloom add guardrail` /
   `hiveloom set` and say so.

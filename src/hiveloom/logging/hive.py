@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     rationale TEXT,
     proposal_json TEXT,
     gate_json TEXT,
+    evidence_json TEXT,
     apply_result_json TEXT,
     created_at TEXT,
     resolved_at TEXT
@@ -231,6 +232,7 @@ def _friction_filters(
     model: str | None,
     since: str | None,
     until: str | None,
+    version: str | None,
 ) -> tuple[list[str], list[Any]]:
     where = ["r.harness_key=?"]
     params: list[Any] = [harness_key]
@@ -252,6 +254,9 @@ def _friction_filters(
     if until is not None:
         where.append("f.timestamp<=?")
         params.append(until)
+    if version is not None:
+        where.append("r.harness_version_hash=?")
+        params.append(version)
     return where, params
 
 
@@ -331,6 +336,11 @@ class Hive:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_effective_model ON runs(effective_model)"
         )
+        proposal_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(proposals)")
+        }
+        if "evidence_json" not in proposal_columns:
+            self._conn.execute("ALTER TABLE proposals ADD COLUMN evidence_json TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -1029,8 +1039,9 @@ class Hive:
         entry["friction"] = [
             _friction_row(row)
             for row in self._conn.execute(
-                "SELECT seq, category, phase, attempt, component, fingerprint, recovered, "
-                "timestamp, summary FROM friction_events WHERE run_id=? ORDER BY seq, id",
+                "SELECT id AS friction_id, seq, category, phase, attempt, component, "
+                "fingerprint, recovered, timestamp, summary FROM friction_events "
+                "WHERE run_id=? ORDER BY seq, id",
                 (run_id,),
             ).fetchall()
         ]
@@ -1046,6 +1057,7 @@ class Hive:
         model: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        version: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """List friction records with stable filters over run provenance."""
@@ -1059,9 +1071,11 @@ class Hive:
             model=model,
             since=since,
             until=until,
+            version=version,
         )
         rows = self._conn.execute(
-            "SELECT f.run_id, f.seq, f.category, f.phase, f.attempt, f.component, "
+            "SELECT f.id AS friction_id, f.run_id, f.seq, f.category, f.phase, "
+            "f.attempt, f.component, "
             "f.fingerprint, f.recovered, f.timestamp, f.summary, r.status AS run_status, "
             "COALESCE(NULLIF(r.effective_model, ''), NULLIF(r.requested_model, ''), "
             "NULLIF(r.model_path, ''), '') AS model "
@@ -1081,6 +1095,7 @@ class Hive:
         model: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        version: str | None = None,
     ) -> dict[str, Any]:
         """Aggregate friction without reading raw journals."""
         where, params = _friction_filters(
@@ -1091,6 +1106,7 @@ class Hive:
             model=model,
             since=since,
             until=until,
+            version=version,
         )
         scope = " AND ".join(where)
         totals = self._conn.execute(
@@ -1629,13 +1645,15 @@ class Hive:
         here and that existing row is returned instead of raising — dedup by
         construction, safe even under a race with another inserter.
         """
+        row = {**row, "evidence_json": row.get("evidence_json")}
         try:
             self._conn.execute(
                 "INSERT INTO proposals (id, harness_name, spec_version_hash, dedup_key, "
-                "status, trigger, rationale, proposal_json, gate_json, apply_result_json, "
+                "status, trigger, rationale, proposal_json, gate_json, evidence_json, "
+                "apply_result_json, "
                 "created_at, resolved_at) VALUES (:id, :harness_name, :spec_version_hash, "
                 ":dedup_key, :status, :trigger, :rationale, :proposal_json, :gate_json, "
-                ":apply_result_json, :created_at, :resolved_at)",
+                ":evidence_json, :apply_result_json, :created_at, :resolved_at)",
                 row,
             )
             self._conn.commit()

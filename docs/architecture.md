@@ -188,13 +188,20 @@ aggregate JSON and paired comparisons are reproducible after trace retention
 prunes the journals. Pairing uses hashed case identity plus repetition; cost
 sources remain separate and unmatched cells stay visible.
 
+When explicitly enabled, evolution uses those rows as incident anchors and
+selects a bounded window from each validated journal. It re-applies structured
+redaction before truncation and budgeting; a missing or retention-pruned
+journal falls back to its indexed summary. Proposals store an evidence digest
+and selection receipt, never a second copy of the selected payloads.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
 minimal mutation, then **gates it in code**:
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, and `evolution.auto_propose` (`schema.ALWAYS_FROZEN`) — plus
+  `mcp_servers`, `evolution.auto_propose`, and `evolution.trace_excerpts`
+  (`schema.ALWAYS_FROZEN`) — plus
   any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;
 - regenerated code hooks always require explicit human approval.

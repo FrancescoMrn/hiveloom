@@ -25,6 +25,7 @@ from hiveloom.spec.schema import (
     CodeToolRef,
     CodeValidatorRef,
     HarnessSpec,
+    TraceExcerptConfig,
 )
 
 HARNESS_FILENAME = "harness.yaml"
@@ -60,6 +61,9 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     redaction = data.get("logging", {}).get("redact")
     if isinstance(redaction, dict) and not redaction.get("keys") and not redaction.get("paths"):
         data["logging"]["redact"] = redaction.get("patterns", [])
+    trace_excerpts = data.get("evolution", {}).get("trace_excerpts")
+    if trace_excerpts == TraceExcerptConfig().model_dump(mode="json"):
+        data["evolution"].pop("trace_excerpts", None)
     return data
 
 

@@ -118,7 +118,8 @@ relabelling a served model.
 
 When asked to improve a failing harness, **do not** hand-edit it — and never
 touch `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-`mcp_servers`, or `evolution.auto_propose` through evolution. Run:
+`mcp_servers`, `evolution.auto_propose`, or `evolution.trace_excerpts` through
+evolution. Run:
 ```bash
 hiveloom evolve ./h            # analyze Hive failures → propose a gated mutation
 ```

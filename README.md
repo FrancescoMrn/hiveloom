@@ -449,7 +449,9 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Safety invariants
 
 - Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
+  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`, or
+  `evolution.trace_excerpts`. Opt-in excerpts are re-redacted and bounded
+  before they reach the proposing model.
 - The cost guardrail defaults on at `$1.00`.
 - The shell tool is disabled unless explicitly configured and remains
   allowlist-only.

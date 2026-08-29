@@ -27,7 +27,8 @@ The running deployment does **not** evolve itself:
   the hot path, and never in production latency or cost.
 - Evolution is a **gated, versioned, auditable mutation**, not silent drift.
   The evolver can never change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`;
+  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`, or
+  `evolution.trace_excerpts`;
   regenerated code hooks require explicit y/n approval; every applied change
   bumps an `# evolved: N` counter and records old→new version hashes in the
   Hive.
@@ -102,6 +103,39 @@ There is no auto-apply: a human always calls `proposals apply` or
 Hive / A/B runner discussion below anticipates — proposals live in the same
 Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
 can populate the same queue without changing this review step.
+
+### Bounded incident evidence
+
+By default, evolution works from bounded Hive summaries and does not send
+journal excerpts to the proposing model. A harness can opt in when a retry or
+failure needs its immediate model and tool context to be understood:
+
+```yaml
+evolution:
+  trace_excerpts:
+    enabled: true
+    max_incidents: 5
+    before_events: 2
+    after_events: 2
+    max_event_bytes: 2048
+    max_bytes: 32768
+    max_tokens: 8192
+```
+
+The selector starts from indexed friction and failed runs, verifies the
+journal identity and hash chain, and takes a small event window around each
+incident. The current `logging.redact` policy is applied again before payloads
+are truncated, hashed, or counted. `max_tokens` is a deterministic upper-bound
+estimate of one token per four UTF-8 bytes, not a provider-specific tokenizer.
+The smaller of the byte and token budgets is the hard serialized limit.
+
+Missing, invalid, or retention-pruned journals degrade to their indexed
+summary instead of aborting evolution. The proposing model receives the
+packets inside the same untrusted-data boundary as the rest of the failure
+report. The queued proposal stores only selection rules, run and friction IDs,
+budgets, and a digest. It does not copy event payloads into the proposal queue.
+`evolution.trace_excerpts` is frozen from evolution because it controls what
+evidence may leave the local journal boundary.
 
 ## Auto-DRAFT (opt-in) — auto-APPLY still does not exist
 

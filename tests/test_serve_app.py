@@ -641,6 +641,8 @@ def test_remove_tool_refused_over_http(tmp_path: Path):
         ("hooks", []),
         ("evolution.auto_propose", {}),
         ("evolution.auto_propose.enabled", True),
+        ("evolution.trace_excerpts", {}),
+        ("evolution.trace_excerpts.enabled", True),
     ],
 )
 def test_set_refuses_every_always_frozen_root(tmp_path: Path, path: str, value):

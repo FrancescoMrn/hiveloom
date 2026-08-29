@@ -2449,7 +2449,13 @@ def evolve(
             name = runner.resolve_and_ingest(harness_dir, hive)
             # Scoped to one version — see analyze().
             version = _analysis_version(harness_dir, spec, base, from_parent=from_parent)
-            report = evolve_mod.analyze(hive, name, version=version)
+            report = evolve_mod.analyze(
+                hive,
+                name,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+            )
             if report.is_empty():
                 reason = _nothing_to_evolve_reason(
                     hive, name, version, from_parent=from_parent

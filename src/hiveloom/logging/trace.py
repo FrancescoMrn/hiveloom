@@ -205,6 +205,47 @@ class TraceEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class TraceRedactor:
+    """Apply the same structured policy to persistence and downstream evidence."""
+
+    def __init__(
+        self,
+        *,
+        patterns: list[str] | None = None,
+        keys: list[str] | None = None,
+        paths: list[str] | None = None,
+    ):
+        self._patterns = [re.compile(pattern, re.IGNORECASE) for pattern in (patterns or [])]
+        self._keys = {key.casefold() for key in (keys or [])}
+        self._paths = [_parse_redaction_path(path) for path in (paths or [])]
+
+    def redact(self, value: Any) -> Any:
+        """Return a redacted copy; never mutate caller-owned values."""
+        redacted = self._redact_recursive(value)
+        for path in self._paths:
+            _apply_redaction_path(redacted, path)
+        return redacted
+
+    def _redact_recursive(self, value: Any) -> Any:
+        if isinstance(value, str):
+            redacted = value
+            for pattern in self._patterns:
+                redacted = pattern.sub("[REDACTED]", redacted)
+            return redacted
+        if isinstance(value, dict):
+            return {
+                key: (
+                    "[REDACTED]"
+                    if str(key).casefold() in self._keys
+                    else self._redact_recursive(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._redact_recursive(item) for item in value]
+        return value
+
+
 class TraceWriter:
     """Writes trace events to ``<trace_dir>/<run_id>.jsonl`` (redacted).
     """
@@ -229,9 +270,11 @@ class TraceWriter:
         self._harness_id = harness_id
         self._version = version_hash
         self._seq = 0
-        self._patterns = [re.compile(p, re.IGNORECASE) for p in (redact_patterns or [])]
-        self._redact_keys = {key.casefold() for key in (redact_keys or [])}
-        self._redact_paths = [_parse_redaction_path(path) for path in (redact_paths or [])]
+        self._redactor = TraceRedactor(
+            patterns=redact_patterns,
+            keys=redact_keys,
+            paths=redact_paths,
+        )
         # Normalise the 0.x names here as well as in the spec: TraceWriter is
         # public, and an embedding caller may pass either.
         self._level = {"full": "journal", "tool_calls_only": "summary"}.get(level, level)
@@ -328,29 +371,7 @@ class TraceWriter:
         return event
 
     def _redact(self, value: Any) -> Any:
-        redacted = self._redact_recursive(value)
-        for path in self._redact_paths:
-            _apply_redaction_path(redacted, path)
-        return redacted
-
-    def _redact_recursive(self, value: Any) -> Any:
-        if isinstance(value, str):
-            redacted = value
-            for pattern in self._patterns:
-                redacted = pattern.sub("[REDACTED]", redacted)
-            return redacted
-        if isinstance(value, dict):
-            return {
-                key: (
-                    "[REDACTED]"
-                    if str(key).casefold() in self._redact_keys
-                    else self._redact_recursive(item)
-                )
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [self._redact_recursive(item) for item in value]
-        return value
+        return self._redactor.redact(value)
 
 
 _REDACTION_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?$")
