@@ -45,7 +45,7 @@ from hiveloom.errors import (
     SpecError,
 )
 from hiveloom.evolve import proposals as proposals_mod
-from hiveloom.evolve.evolver import _read_counter, _touches_frozen
+from hiveloom.evolve.evolver import read_counter, touches_frozen
 from hiveloom.generate.llm import StrongModel, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
@@ -60,7 +60,7 @@ from hiveloom.serve.runslots import (
 )
 from hiveloom.spec.loader import harness_path, load_raw, load_spec, validate_harness
 from hiveloom.spec.schema import ALWAYS_FROZEN
-from hiveloom.tools.builtin import _safe_path
+from hiveloom.tools.builtin import safe_path
 from hiveloom.tools.registry import ToolError
 
 _SSE_DONE = object()
@@ -143,11 +143,11 @@ def _error_response(exc: Exception) -> JSONResponse:
 def _refuse_if_frozen(path: str) -> None:
     """Raise :class:`AuthorizationError` if ``path`` touches a frozen root — the
     deny-list for ``/set`` and ``/add/{kind}`` (via ``_ADD_KIND_ROOTS``). Uses
-    :func:`_touches_frozen`, so writing a *parent* of a frozen leaf (``logging``
+    :func:`touches_frozen`, so writing a *parent* of a frozen leaf (``logging``
     over ``logging.redact``) is refused too. A 403, not a 400: this is "your
     scope does not permit that", not "your request was malformed".
     """
-    if _touches_frozen(path, _FROZEN_ROOTS):
+    if touches_frozen(path, _FROZEN_ROOTS):
         raise AuthorizationError(
             f"'{path}' cannot be changed over the control plane (frozen from remote mutation)"
         )
@@ -162,10 +162,10 @@ def _remove_target_is_frozen(raw: dict[str, Any], target: str) -> bool:
     name-shape question from the same table the removal itself walks, so this
     cannot fall out of step with what removal would actually touch.
     """
-    if _touches_frozen(target, _FROZEN_ROOTS):
+    if touches_frozen(target, _FROZEN_ROOTS):
         return True
     roots = construct.matching_roots(raw, target)
-    return any(_touches_frozen(root, _FROZEN_ROOTS) for root in roots)
+    return any(touches_frozen(root, _FROZEN_ROOTS) for root in roots)
 
 
 def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -353,7 +353,7 @@ def create_app(
                 "ok": True,
                 "name": spec.name,
                 "version_hash": spec_version_hash(spec, base),
-                "evolved_counter": _read_counter(harness_path(harness_dir)),
+                "evolved_counter": read_counter(harness_path(harness_dir)),
             }
 
         return await _handle(request, scope=None, work=work)
@@ -379,7 +379,7 @@ def create_app(
         if input_file is not None:
             # Contained to the harness dir AND not one of the paths that
             # must never leave it (.hiveloom/, .env*, the trace dir) —
-            # `_safe_path` itself enforces both, the same chokepoint the
+            # `safe_path` itself enforces both, the same chokepoint the
             # file_read/file_write tools and the evolver's code-change
             # containment already go through. `input` itself is ALWAYS
             # literal text (below): a caller-supplied string that happens to
@@ -391,7 +391,7 @@ def create_app(
             trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
             try:
                 resolved = await asyncio.to_thread(
-                    _safe_path, base, input_file, trace_dir=trace_dir
+                    safe_path, base, input_file, trace_dir=trace_dir
                 )
             except ToolError as exc:
                 return _error_response(SpecError(str(exc)))

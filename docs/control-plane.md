@@ -204,7 +204,7 @@ HTTP:
   about what counts as sensitive.
 - This is the SAME protection the harness's own `file_read`/`file_write`
   tools get, and the evolver's code-change containment: all four callers go
-  through `_safe_path`, which now enforces the identical sensitivity check —
+  through `safe_path`, which now enforces the identical sensitivity check —
   `.hiveloom/`, `.env*`, and the configured trace directory (default or
   reconfigured) — for every one of them, not just `input_file`. A harness
   with `file_read` configured cannot read its own auth store, `.env`, or a

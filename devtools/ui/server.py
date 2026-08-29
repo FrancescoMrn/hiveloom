@@ -83,7 +83,7 @@ from hiveloom.logging.trace import payload_hash, spec_version_hash
 from hiveloom.loop.control import RunControl
 from hiveloom.package import trace_dir_relative_to
 from hiveloom.spec.loader import atomic_write_text, harness_path, load_spec, validate_harness
-from hiveloom.tools.builtin import _safe_path
+from hiveloom.tools.builtin import safe_path
 from hiveloom.tools.registry import ToolError
 
 _STREAM_DONE = object()
@@ -95,7 +95,7 @@ _STREAM_DONE = object()
 _UPLOAD_SUBDIR = "uploads"
 
 # Workbench metadata about a harness's versions, kept beside its traces. In
-# `.hiveloom/` deliberately: `_safe_path` refuses that directory, so a version
+# `.hiveloom/` deliberately: `safe_path` refuses that directory, so a version
 # label is something a person writes and a running harness cannot read or
 # rewrite.
 _TAGS_FILE = Path(".hiveloom") / "version_tags.json"
@@ -758,8 +758,8 @@ def _upload_name(name: str) -> str:
 
     The name a person's file happens to have is untrusted input: it can carry
     separators, `..`, or nothing at all. Taking only the basename and reducing
-    it to a known alphabet means the path that reaches `_safe_path` is already
-    a single segment, and `_safe_path` still has the final say on containment.
+    it to a known alphabet means the path that reaches `safe_path` is already
+    a single segment, and `safe_path` still has the final say on containment.
     """
     stem = Path(name.strip()).name
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.")
@@ -979,7 +979,7 @@ class _CopilotWorkbench:
         spec = load_spec(harness_path(base))
         trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
         try:
-            target = _safe_path(base, path.strip(), trace_dir=trace_dir)
+            target = safe_path(base, path.strip(), trace_dir=trace_dir)
         except ToolError as exc:
             raise ValueError(str(exc)) from exc
         if not target.is_file():
@@ -2562,7 +2562,7 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         still resolves when someone reads the run back a week later, rather
         than a blob that only existed in a browser tab.
 
-        `_safe_path` is the same containment chokepoint the file tools and the
+        `safe_path` is the same containment chokepoint the file tools and the
         control plane's `input_file` go through: an upload cannot escape the
         harness directory, and cannot land in `.hiveloom/` or on a `.env`.
         """
@@ -2591,7 +2591,7 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                 )
             relative = f"{_UPLOAD_SUBDIR}/{_upload_name(name)}"
             try:
-                target = _safe_path(base, relative, trace_dir=trace_dir)
+                target = safe_path(base, relative, trace_dir=trace_dir)
             except ToolError as exc:
                 raise ValueError(str(exc)) from exc
             target.parent.mkdir(parents=True, exist_ok=True)

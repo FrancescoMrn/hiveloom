@@ -60,7 +60,7 @@ def load_playbooks(spec: HarnessSpec, base_dir: str | Path) -> list[LoadedPlaybo
     Raises :class:`SpecError` if a prompt file or hook is missing, so a broken
     playbook fails at assembly rather than halfway through a run.
     """
-    from hiveloom.spec.loader import _import_hook
+    from hiveloom.spec.loader import import_hook
 
     base = Path(base_dir)
     if base.is_file():
@@ -80,8 +80,8 @@ def load_playbooks(spec: HarnessSpec, base_dir: str | Path) -> list[LoadedPlaybo
             LoadedPlaybook(
                 ref=ref,
                 prompt_text=prompt_text,
-                on_enter=_import_hook(ref.on_enter, base) if ref.on_enter else None,
-                on_exit=_import_hook(ref.on_exit, base) if ref.on_exit else None,
+                on_enter=import_hook(ref.on_enter, base) if ref.on_enter else None,
+                on_exit=import_hook(ref.on_exit, base) if ref.on_exit else None,
             )
         )
     return loaded

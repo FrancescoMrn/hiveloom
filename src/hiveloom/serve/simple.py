@@ -310,7 +310,7 @@ class _Handler(BaseHTTPRequestHandler):
         )
         # Pre-allocate the id and register a control channel so the run can be
         # stopped or steered while it executes.
-        run_id = runner._new_run_id()
+        run_id = runner.new_run_id()
         control = RunControl()
         self.server.register_control(run_id, control)
         run_kwargs.update(run_id=run_id, control=control)

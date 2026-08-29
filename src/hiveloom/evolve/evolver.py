@@ -38,7 +38,7 @@ from hiveloom.spec.loader import (
     validate_harness,
 )
 from hiveloom.spec.schema import ALWAYS_FROZEN, PLAYBOOK_FROZEN_FIELDS, HarnessSpec
-from hiveloom.tools.builtin import _safe_path
+from hiveloom.tools.builtin import safe_path
 from hiveloom.tools.registry import ToolError
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "evolve_contract.md"
@@ -171,7 +171,7 @@ def _covered(path: str, patterns: set[str]) -> bool:
     that would follow creates an unrecognized key `_commit`'s pydantic
     validation then rejects — an unrelated backstop, not this check working.
     Used by `gate()` for the mutable-set check (the frozen check uses
-    :func:`_touches_frozen`, which also catches ancestors); the case-insensitive
+    :func:`touches_frozen`, which also catches ancestors); the case-insensitive
     mutable match loses nothing, since a case-variant path still can't reach the
     real field for the same reason above.
     """
@@ -179,7 +179,7 @@ def _covered(path: str, patterns: set[str]) -> bool:
     return any(path_cf == p.casefold() or path_cf.startswith(p.casefold() + ".") for p in patterns)
 
 
-def _touches_frozen(path: str, patterns: set[str]) -> bool:
+def touches_frozen(path: str, patterns: set[str]) -> bool:
     """True if writing ``path`` would create, overwrite, or land inside a frozen pattern.
 
     Broader than :func:`_covered` (equality or descendant only): it also matches
@@ -211,7 +211,7 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
     accepted: list[YamlChange] = []
     rejected: list[dict[str, str]] = []
     for change in proposal.yaml_changes:
-        if _touches_frozen(change.path, frozen):
+        if touches_frozen(change.path, frozen):
             rejected.append({"path": change.path, "reason": "frozen path"})
         elif _enables_dangerous_tool(change):
             rejected.append(
@@ -303,7 +303,7 @@ def _enables_dangerous_tool(change: YamlChange) -> bool:
 # --------------------------------------------------------------------------- #
 # Apply & version
 # --------------------------------------------------------------------------- #
-def _read_counter(yaml_path: Path) -> int:
+def read_counter(yaml_path: Path) -> int:
     if not yaml_path.exists():
         return 0
     match = _COUNTER_RE.search(yaml_path.read_text(encoding="utf-8"))
@@ -374,11 +374,11 @@ def resolve_code_change_path(
     base: Path, file: str, *, trace_dir: Path | None = None
 ) -> Path:
     """Resolve an evolved code target and reject paths outside its harness
-    (or one of the paths `_safe_path` never allows regardless — the trust
+    (or one of the paths `safe_path` never allows regardless — the trust
     store, credentials, and, when supplied, the configured trace directory).
     """
     try:
-        return _safe_path(base, file, trace_dir=trace_dir)
+        return safe_path(base, file, trace_dir=trace_dir)
     except ToolError as exc:
         raise ProposalError(f"code change path is outside the harness: {file}") from exc
 
@@ -463,7 +463,7 @@ def apply_proposal(
     # proposal entry cannot leave an earlier approved one half-applied.
     # trace_dir is passed through so a code change can't target a
     # reconfigured (non-default) trace directory either — the same
-    # protection _safe_path's other callers get when they have it available.
+    # protection safe_path's other callers get when they have it available.
     trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
     code_targets = [
         (change, resolve_code_change_path(base, change.file, trace_dir=trace_dir))
@@ -488,7 +488,7 @@ def apply_proposal(
                 pending_code.append(change.file)
 
         changed = bool(applied_yaml or applied_code)
-        counter = _read_counter(yaml_path)
+        counter = read_counter(yaml_path)
         new_hash = old_hash
         if changed:
             counter += 1

@@ -4,7 +4,7 @@ All builtins are sandboxed to the harness working directory (files) or an
 allowlist (shell). ``shell`` is disabled unless the spec provides an allowlist.
 ``file_read``/``file_write`` are further refused ``package.py``'s "never
 leaves the harness" paths (``.hiveloom/``, ``.env*``, the trace dir) via
-``_safe_path`` — a model can no more read its own harness's auth store or
+``safe_path`` — a model can no more read its own harness's auth store or
 credentials through a tool call than an HTTP caller can through `input_file`.
 """
 
@@ -50,7 +50,7 @@ _EXTRA_ARGS_SAFE_BINARIES = {
 }
 
 
-def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
+def safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
     """Resolve ``path``, ensure it stays within ``base`` (no traversal), and
     refuse anything ``package.py`` would never ship either (``.hiveloom/``,
     ``.env*`` except checked-in templates, VCS/cache noise, and — when the
@@ -65,7 +65,7 @@ def _safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
     containment, the HTTP control plane's ``input_file``) already goes
     through for containment — so nothing has to remember a second check.
     ``trace_dir`` is optional only because a caller without a loaded spec
-    (there is none today, but ``_safe_path`` doesn't require one) has
+    (there is none today, but ``safe_path`` doesn't require one) has
     nothing to pass; every current caller resolves and supplies it, so a
     reconfigured (non-default) trace directory is covered everywhere, not
     just the default location under ``.hiveloom/``.
@@ -97,7 +97,7 @@ class FileReadTool(Tool):
         }
 
     def run(self, path: str = "", **_: Any) -> str:
-        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
+        target = safe_path(self._base, path, trace_dir=self._trace_dir)
         if not target.exists():
             raise ToolError(f"file not found: {path}")
         return target.read_text(encoding="utf-8")
@@ -132,7 +132,7 @@ class FileWriteTool(Tool):
         }
 
     def run(self, path: str = "", content: str = "", **_: Any) -> ToolResult:
-        target = _safe_path(self._base, path, trace_dir=self._trace_dir)
+        target = safe_path(self._base, path, trace_dir=self._trace_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Serialize writes per resolved path: with loop.tool_execution set to
         # parallel, two calls in one batch may target the same file.

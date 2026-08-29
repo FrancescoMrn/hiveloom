@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
 from hiveloom.package import trace_dir_relative_to
-from hiveloom.spec.loader import _import_hook
+from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
 
@@ -404,7 +404,7 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
             )
             registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):
-            func = _import_hook(tool_ref.code, base)
+            func = import_hook(tool_ref.code, base)
             meta = getattr(func, "__hiveloom_tool__", {})
             registry.register(
                 FunctionTool(

@@ -1065,7 +1065,7 @@ def test_a_fork_carries_its_lineage_so_the_ui_need_not_read_the_folder_name(
 def test_version_tags_round_trip_on_disk(client: TestClient, harness_copy: Path) -> None:
     """A label is a fact about the harness, so it lives with the harness.
 
-    In ``.hiveloom/`` specifically: that is the one directory ``_safe_path``
+    In ``.hiveloom/`` specifically: that is the one directory ``safe_path``
     refuses, so a running harness can neither read the labels its operator uses
     nor rewrite them.
     """
