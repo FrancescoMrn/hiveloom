@@ -464,6 +464,52 @@ def test_cli_proposals_apply_then_reject_on_resolved_fails(tmp_path: Path, monke
     assert again.exit_code == ExitCode.SPEC_ERROR
 
 
+def test_cli_applies_declared_prompt_with_approve_prose(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_playbook(harness, name="targeting", description="Find candidates.")
+    spec = load_spec(harness)
+    payload = json.dumps(
+        {
+            "rationale": "tighten targeting",
+            "prose_changes": [
+                {
+                    "file": "playbooks/targeting.md",
+                    "source": "# Targeting\n\nUse only verified candidates.\n",
+                    "rationale": "exclude unseen ids",
+                }
+            ],
+        }
+    )
+    with Hive() as hive:
+        record = create_proposal(
+            hive,
+            spec,
+            harness,
+            _report(),
+            FakeStrongModel([payload]),
+            trigger="manual",
+        )
+
+    result = cli_runner.invoke(
+        cli.app,
+        [
+            "proposals",
+            "apply",
+            str(harness),
+            record.id,
+            "--approve-prose",
+            "playbooks/targeting.md",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    body = json.loads(result.stdout)
+    assert body["applied_prose"] == ["playbooks/targeting.md"]
+    assert body["applied_code"] == []
+    assert "verified candidates" in (harness / "playbooks" / "targeting.md").read_text()
+
+
 def test_cli_proposals_reject(tmp_path: Path, monkeypatch):
     harness, proposal_id = _queue_via_cli(tmp_path, monkeypatch)
     before = (harness / "harness.yaml").read_text()
@@ -500,6 +546,28 @@ def test_make_approve_code_allowlist_json_and_interactive_modes(tmp_path: Path, 
     # (matching `evolve`'s own closure) and honors the confirm answer.
     monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
     approve = _make_approve_code(harness, json_output=False)
+    assert approve(change) is True
+
+
+def test_make_approve_prose_allowlist_json_and_interactive_modes(
+    tmp_path: Path, monkeypatch
+):
+    from hiveloom.cli import _make_approve_prose
+    from hiveloom.evolve.evolver import ProseChange
+
+    harness = _harness(tmp_path)
+    change = ProseChange(file="playbooks/targeting.md", source="x", rationale="r")
+
+    approve = _make_approve_prose(
+        harness, json_output=False, allowlist={"playbooks/targeting.md"}
+    )
+    assert approve(change) is True
+
+    approve = _make_approve_prose(harness, json_output=True)
+    assert approve(change) is False
+
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+    approve = _make_approve_prose(harness, json_output=False)
     assert approve(change) is True
 
 

@@ -1767,6 +1767,7 @@ def evolve(
                 proposal,
                 hive=hive,
                 approve_code=_make_approve_code(base, json_output=json_output),
+                approve_prose=_make_approve_prose(base, json_output=json_output),
                 apply_yaml=apply_yaml,
             )
 
@@ -1852,7 +1853,8 @@ def _emit_proposal_created(record: Any, json_output: bool) -> None:
     _console.print(
         f"[green]queued[/green] proposal {record.id} — "
         f"{len(gate.accepted)} accepted, {len(gate.rejected)} rejected, "
-        f"{len(gate.code_changes)} code change(s) pending review"
+        f"{len(gate.code_changes)} code and "
+        f"{len(gate.prose_changes)} prose change(s) pending review"
     )
 
 
@@ -1864,11 +1866,13 @@ def _confirm_apply_yaml(yes: bool, json_output: bool) -> bool:
 
 
 def _print_apply_leftovers(result: Any) -> None:
-    """Print an ApplyResult's rejected paths and any code changes still awaiting approval."""
+    """Print rejected paths and file changes still awaiting approval."""
     for rej in result.rejected:
         _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
     for pending in result.pending_code:
         _console.print(f"  [dim]pending code approval[/dim] {pending}")
+    for pending in result.pending_prose:
+        _console.print(f"  [dim]pending prose approval[/dim] {pending}")
 
 
 def _make_approve_code(
@@ -1890,6 +1894,26 @@ def _make_approve_code(
         _console.print(f"[yellow]code change[/yellow] {resolved}: {change.rationale}")
         _console.print(change.source)
         return typer.confirm(f"Apply regenerated code to {resolved}?", default=False)
+
+    return approve
+
+
+def _make_approve_prose(
+    harness_dir: Path, *, json_output: bool, allowlist: set[str] | None = None
+) -> Any:
+    """Build a prompt-file approval callback separate from executable code."""
+    from hiveloom.evolve import resolve_code_change_path
+    from hiveloom.evolve.evolver import ProseChange
+
+    def approve(change: ProseChange) -> bool:
+        if change.file in (allowlist or ()):
+            return True
+        if json_output:
+            return False
+        resolved = resolve_code_change_path(harness_dir, change.file)
+        _console.print(f"[yellow]prose change[/yellow] {resolved}: {change.rationale}")
+        _console.print(change.source)
+        return typer.confirm(f"Apply prompt prose to {resolved}?", default=False)
 
     return approve
 
@@ -1967,12 +1991,17 @@ def proposals_show_cmd(
         _console.print(f"rationale: {record.rationale}")
         _console.print(
             f"gate: {len(gate.accepted)} accepted, {len(gate.rejected)} rejected, "
-            f"{len(gate.code_changes)} code change(s)"
+            f"{len(gate.code_changes)} code change(s), "
+            f"{len(gate.prose_changes)} prose change(s)"
         )
         for rej in gate.rejected:
             _console.print(f"  [red]rejected[/red] {rej['path']}: {rej['reason']}")
         for change in gate.code_changes:
             _console.print(f"  [yellow]code change[/yellow] {change.file}: {change.rationale}")
+        for change in gate.prose_changes:
+            _console.print(
+                f"  [yellow]prose change[/yellow] {change.file}: {change.rationale}"
+            )
         apply_result = record.apply_result
         if apply_result is not None:
             _console.print(f"resolved_at: {record.resolved_at}")
@@ -1983,11 +2012,18 @@ def proposals_show_cmd(
 def proposals_apply_cmd(
     harness_dir: str = typer.Argument(..., help="Harness directory to apply into."),
     proposal_id: str = typer.Argument(..., help="Proposal id to apply."),
-    yes: bool = typer.Option(False, "--yes", help="Auto-apply YAML changes (never code)."),
+    yes: bool = typer.Option(
+        False, "--yes", help="Auto-apply YAML changes (never code or prose)."
+    ),
     approve_code_arg: str | None = typer.Option(
         None,
         "--approve-code",
         help="Comma-separated file paths to approve for code changes.",
+    ),
+    approve_prose_arg: str | None = typer.Option(
+        None,
+        "--approve-prose",
+        help="Comma-separated declared playbook prompt files to approve.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -1998,8 +2034,9 @@ def proposals_apply_cmd(
     harness changed — regenerate). Review with ``proposals show`` first: YAML
     changes apply with ``--yes`` or interactive confirmation, same as
     ``evolve`` (asked only after the trust/existence/staleness checks above
-    pass); code changes need per-file ``--approve-code`` or interactive y/n,
-    fed from the proposal's stored gate result rather than a fresh propose.
+    pass); code and prose changes need their per-file approval flags or an
+    interactive y/n, fed from the stored gate result rather than a fresh
+    proposal.
     """
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
@@ -2010,8 +2047,16 @@ def proposals_apply_cmd(
         if approve_code_arg
         else None
     )
+    approved_prose = (
+        {path for item in approve_prose_arg.split(",") if (path := item.strip())}
+        if approve_prose_arg
+        else None
+    )
     approve = _make_approve_code(
         Path(harness_dir), json_output=json_output, allowlist=approved_files
+    )
+    approve_prose = _make_approve_prose(
+        Path(harness_dir), json_output=json_output, allowlist=approved_prose
     )
 
     with _guard(json_output):
@@ -2022,6 +2067,7 @@ def proposals_apply_cmd(
                 harness_dir,
                 proposal_id,
                 approve_code=approve,
+                approve_prose=approve_prose,
                 confirm_apply_yaml=lambda: _confirm_apply_yaml(yes, json_output),
             )
         if json_output:

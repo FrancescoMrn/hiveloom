@@ -878,6 +878,43 @@ def test_proposals_propose_list_show_apply_flow(tmp_path: Path):
     assert load_spec(harness).loop.max_turns == 25
 
 
+def test_proposals_apply_prompt_prose_separately_from_code(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_playbook(harness, name="targeting", description="Find candidates.")
+    _seed_failure(tmp_path, harness)
+    payload = json.dumps(
+        {
+            "rationale": "tighten targeting",
+            "prose_changes": [
+                {
+                    "file": "playbooks/targeting.md",
+                    "source": "# Targeting\n\nUse verified candidates only.\n",
+                }
+            ],
+        }
+    )
+    app = create_app(harness, strong_model=FakeStrongModel([payload]))
+    evolve_token = _authorize(harness, ["evolve"])[1]
+
+    with TestClient(app) as client:
+        proposed = client.post(
+            "/evolve/propose", json={}, headers=_bearer(evolve_token)
+        ).json()
+        result = client.post(
+            f"/proposals/{proposed['id']}/apply",
+            json={
+                "apply_yaml": False,
+                "approve_prose": ["playbooks/targeting.md"],
+            },
+            headers=_bearer(evolve_token),
+        )
+
+    assert result.status_code == 200
+    assert result.json()["applied_prose"] == ["playbooks/targeting.md"]
+    assert result.json()["applied_code"] == []
+    assert "verified candidates" in (harness / "playbooks" / "targeting.md").read_text()
+
+
 def test_proposals_reject(tmp_path: Path):
     harness = _harness(tmp_path)
     _seed_failure(tmp_path, harness)
