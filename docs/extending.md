@@ -109,7 +109,10 @@ def setup(hive):
         base_url="https://api.mylab.example/v1",
         open_catalog=False,              # only the ids below validate
         models=[{"id": "mylab-small", "input_cost_per_mtok": 0.1,
-                 "output_cost_per_mtok": 0.4}],
+                 "output_cost_per_mtok": 0.4,
+                 "supports_tool_calling": True,
+                 "supports_structured_output": False,
+                 "supports_reasoning_replay": True}],
     )
 ```
 
@@ -165,6 +168,12 @@ OpenAI-compatible provider and are dropped by Hiveloom at a model swap.
 Generate/evolve can use any provider too: `--model ollama/qwen3:32b`
 (`provider/model-id`). Note `model` stays in `ALWAYS_FROZEN` — the registry
 widens what a human or generator may choose, never what evolution can mutate.
+
+Adapters may override `ModelProvider.probe_capabilities(config)` for a
+provider-specific live check. Return only the generic
+`ProviderCapabilityObservation`; routing policy and vendor response bodies stay
+inside the extension. Core compares the reported effective model against the
+caller's exact or alias policy and never treats an alias as the requested ID.
 
 ## MCP servers
 

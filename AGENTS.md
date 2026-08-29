@@ -48,7 +48,7 @@ then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file).
 | Define a dataset or scorer / validate an eval | [`skills/hiveloom-eval`](skills/hiveloom-eval/SKILL.md) | `eval schema`, `catalog datasets\|scorers`, `eval validate`, `metrics` |
 | Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
 | Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `stats` |
-| Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
+| Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `models probe`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
 A harness with `evolution.auto_propose.enabled: true` may already have queued a

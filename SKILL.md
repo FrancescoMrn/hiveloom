@@ -95,6 +95,12 @@ the versioned document with `hiveloom eval validate eval.yaml --json`. Expected
 data stays out of model input unless the eval explicitly opts in; local eval
 extensions are trust-gated like harness code.
 
+Before a model batch, run `hiveloom models probe ./h --provider PROVIDER
+--model MODEL --json` for free declared capabilities. Add `--live --identity
+exact` only when up to two possibly billed calls are intended. The result keeps
+requested and effective identity separate; use explicit aliases rather than
+relabelling a served model.
+
 ## Improving a harness — use evolve, not the editor
 
 When asked to improve a failing harness, **do not** hand-edit it — and never

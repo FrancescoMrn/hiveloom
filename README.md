@@ -366,6 +366,8 @@ hiveloom metrics import ./my-harness metrics.ndjson --json
 hiveloom metrics list ./my-harness --source matching_eval_v1 --json
 hiveloom eval schema --json
 hiveloom eval validate eval.yaml --json
+hiveloom models probe ./my-harness --provider openrouter \
+  --model qwen3.5-9b --identity exact --live --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe

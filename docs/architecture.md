@@ -17,7 +17,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                   import + signature checks                        │
   │    annotate.py    JSON schema, annotated template, `explain`       │
   │  catalog.py       catalog entries: tools/guardrails/validators/    │
-  │                   policies/compaction/hooks (builtin + registered)  │
+  │                   policies/compaction/hooks/eval components         │
   │  ext.py           the open catalog: ExtensionAPI, pack/user/harness │
   │                   extension discovery, provider registry, model     │
   │                   pricing, blueprints — see docs/extending.md       │
@@ -29,6 +29,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                                                                     │
   │  runtime:                                                           │
   │    models/        ModelProvider ABC → Claude | OpenAI-compat | Fake │
+  │      capabilities declared/live probes, identity policy, cache      │
   │      router.py    which model is current, and which provider serves │
   │                   it — mid-run hot-swap at a turn boundary          │
   │    tools/         registry (active/deferred) + sandboxed builtins; │
