@@ -452,6 +452,7 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "trace_path": result.trace_path,
         "reason": result.reason,
         "artifacts": result.artifacts,
+        "provider_calls": getattr(result, "provider_calls", []),
     }
 
 

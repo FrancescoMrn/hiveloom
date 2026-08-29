@@ -55,6 +55,9 @@ class RunResult(BaseModel):
     # Populated even on a failed run — a turn that proposed something before
     # hitting max_turns still produced it.
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    # One bounded public receipt per provider call. Opaque provider metadata
+    # stays on ModelResponse and in the redacted journal, never in this result.
+    provider_calls: list[dict[str, Any]] = Field(default_factory=list)
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -145,6 +148,7 @@ class AgentLoop:
         )
         self._control = control
         self._state = RunState(tool_names=set(registry.names()))
+        self._provider_calls: list[dict[str, Any]] = []
         self._context.set_compaction_model_call(self._compaction_model_turn)
 
     # ------------------------------------------------------------------ #
@@ -475,11 +479,26 @@ class AgentLoop:
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
-        cost = self._router.provider.estimated_cost(
+        estimated_cost = self._router.provider.estimated_cost(
             response.usage, self._router.config.id, self._router.config.provider
         )
+        cost, cost_source = response.resolved_cost_usd(estimated_cost)
         self._state.cost_usd += cost
         self._state.pending_cost_usd = 0.0
+        provider_call = {
+            "turn": self._state.turns,
+            "phase": phase,
+            "provider": self._router.config.provider,
+            "requested_model": self._router.config.id,
+            "effective_model": response.model or None,
+            "provider_request_id": response.provider_request_id or None,
+            "usage": response.usage.model_dump(),
+            "cost_usd": cost,
+            "cost_source": cost_source,
+            "billed_cost": response.billed_cost,
+            "billed_currency": response.billed_currency or None,
+        }
+        self._provider_calls.append(provider_call)
         self._events.emit(
             "after_provider_response",
             {
@@ -488,6 +507,12 @@ class AgentLoop:
                 "stop_reason": response.stop_reason,
                 "usage": response.usage.model_dump(),
                 "cost_usd": cost,
+                "cost_source": cost_source,
+                "effective_model": response.model or None,
+                "provider_request_id": response.provider_request_id or None,
+                "billed_cost": response.billed_cost,
+                "billed_currency": response.billed_currency or None,
+                "provider_metadata": response.provider_metadata,
             },
         )
         self._trace.emit(
@@ -499,6 +524,13 @@ class AgentLoop:
             tool_calls=[c.name for c in response.tool_calls],
             usage=response.usage.model_dump(),
             cost_usd=cost,
+            cost_source=cost_source,
+            effective_model=response.model or None,
+            provider_request_id=response.provider_request_id or None,
+            billed_cost=response.billed_cost,
+            billed_currency=response.billed_currency or None,
+            billed_cost_usd=response.billed_cost_usd,
+            provider_metadata=response.provider_metadata,
         )
         self._events.emit(
             "after_model_response",
@@ -993,9 +1025,17 @@ class AgentLoop:
 
     @staticmethod
     def assistant_blocks(response: ModelResponse) -> list[dict[str, Any]]:
-        if response.content_blocks:
-            return response.content_blocks
-        return [{"type": "text", "text": response.text}]
+        blocks = (
+            list(response.content_blocks)
+            if response.content_blocks
+            else [{"type": "text", "text": response.text}]
+        )
+        if response.reasoning is not None:
+            # Provider-neutral storage, provider-owned decoding. The current
+            # adapter can replay its opaque JSON on the next tool turn; model
+            # swaps drop this non-portable block in models.router.
+            blocks.append({"type": "provider_reasoning", "data": response.reasoning})
+        return blocks
 
     def _finish(
         self,
@@ -1027,6 +1067,7 @@ class AgentLoop:
                 {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
                 for s in self._router.path
             ],
+            provider_calls=self._provider_calls,
         )
         self._events.emit(
             "run_finished",
@@ -1048,4 +1089,5 @@ class AgentLoop:
             verdicts=verdicts or [],
             reason=reason,
             artifacts=list(self._state.artifacts),
+            provider_calls=list(self._provider_calls),
         )
