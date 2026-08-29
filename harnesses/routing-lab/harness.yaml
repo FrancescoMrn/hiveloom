@@ -1,5 +1,6 @@
 version: 0.2.0
 name: routing-lab
+id: hl-f5d0213e1c93
 description: Read an incident, triage it on a cheap model, then route to a decision model and emit a verified
   JSON decision.
 extensions:

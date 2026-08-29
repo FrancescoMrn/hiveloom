@@ -176,7 +176,7 @@ inspect what a harness's declared servers actually expose with
 
 ## Safety invariants (enforced in code)
 
-1. The evolver can never modify `guardrails`, `model`, `logging.redact`,
+1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
    `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose` — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,

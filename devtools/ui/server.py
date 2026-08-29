@@ -664,6 +664,10 @@ def _catalog(
                 "path": resolved,
                 "folder": folder.name,
                 "name": spec.name,
+                # The Hive key: the spec's stable `id`, or the name for a
+                # pre-identity spec. Stats/compare must query by this, never
+                # by display name, or same-named harnesses share evidence.
+                "key": spec.identity,
                 "description": spec.description,
                 "ok": True,
                 "error": "",
@@ -1213,13 +1217,13 @@ class _CopilotWorkbench:
         entry = self._entry(harness_id)
         with Hive() as hive:
             _ingest_entry_traces(hive, entry)
-            return hive.summary(entry["name"])
+            return hive.summary(entry.get("key") or entry["name"])
 
     def compare(self, harness_id: str, left: str, right: str) -> dict[str, Any]:
         entry = self._entry(harness_id)
         with Hive() as hive:
             _ingest_entry_traces(hive, entry)
-            return hive.compare_versions(entry["name"], left, right)
+            return hive.compare_versions(entry.get("key") or entry["name"], left, right)
 
     def propose(self, harness_id: str, model_id: str | None) -> dict[str, Any]:
         entry = self._entry(harness_id)
@@ -1376,7 +1380,7 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
     def _stats(entry: dict[str, Any]) -> dict[str, Any]:
         with Hive() as hive:
             _ingest_entry_traces(hive, entry)
-            return hive.summary(entry["name"])
+            return hive.summary(entry.get("key") or entry["name"])
 
     creation_root = (
         Path(scan_dirs[0])
@@ -2388,7 +2392,7 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         def work() -> dict[str, Any]:
             with Hive() as hive:
                 _ingest_entry_traces(hive, entry)
-                return hive.compare_versions(entry["name"], left, right)
+                return hive.compare_versions(entry.get("key") or entry["name"], left, right)
 
         return JSONResponse(await asyncio.to_thread(work))
 

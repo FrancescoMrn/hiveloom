@@ -1,7 +1,8 @@
 """Trace event schema and the append-only TraceWriter.
 
 Every run produces a JSONL trace. Events share a common envelope (``run_id``,
-``harness_name``, ``harness_version_hash``, ``timestamp``, ``seq``, ``type``)
+``harness_name``, ``harness_id``, ``harness_version_hash``, ``timestamp``,
+``seq``, ``type``)
 plus a type-specific ``payload``. The spec's ``redact`` patterns are applied
 before anything is persisted.
 
@@ -190,6 +191,9 @@ class TraceEvent(BaseModel):
 
     run_id: str
     harness_name: str
+    # The spec's stable `id`, "" for a pre-1.0 harness that never adopted one.
+    # Envelope material like the name: the Hive keys evidence on it.
+    harness_id: str = ""
     harness_version_hash: str
     seq: int
     timestamp: str
@@ -213,12 +217,14 @@ class TraceWriter:
         redact_patterns: list[str] | None = None,
         level: str = "journal",
         on_event=None,
+        harness_id: str = "",
     ):
         self._dir = Path(trace_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / f"{run_id}.jsonl"
         self._run_id = run_id
         self._name = harness_name
+        self._harness_id = harness_id
         self._version = version_hash
         self._seq = 0
         self._patterns = [re.compile(p, re.IGNORECASE) for p in (redact_patterns or [])]
@@ -281,6 +287,7 @@ class TraceWriter:
             event = TraceEvent(
                 run_id=self._run_id,
                 harness_name=self._name,
+                harness_id=self._harness_id,
                 harness_version_hash=self._version,
                 seq=self._seq,
                 timestamp=datetime.now(UTC).isoformat(),

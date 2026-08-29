@@ -311,6 +311,7 @@ def run_harness(
             _resolve_trace_dir(base, spec.logging.trace_dir),
             run_id=run_id,
             harness_name=spec.name,
+            harness_id=spec.id,
             version_hash=version_hash,
             redact_patterns=spec.logging.redact,
             level=spec.logging.level,
@@ -404,8 +405,8 @@ def _maybe_auto_propose(
         with Hive(hive_path) as hive:
             # One version for both: the gate must count what the report carries.
             version = spec_version_hash(spec, base)
-            since = last_auto_proposal_at(hive, spec.name)
-            if hive.failure_count(spec.name, since=since, version=version) < auto.min_failures:
+            since = last_auto_proposal_at(hive, spec.identity)
+            if hive.failure_count(spec.identity, since=since, version=version) < auto.min_failures:
                 return
             if since is not None:
                 elapsed_hours = (
@@ -415,7 +416,7 @@ def _maybe_auto_propose(
                     return
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.name, version=version)
+            report = analyze(hive, spec.identity, version=version)
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a
@@ -455,11 +456,14 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
 
 
 def resolve_and_ingest(target: str | Path, hive) -> str:
-    """Resolve a harness name-or-dir to a harness name, ingesting its traces.
+    """Resolve a harness name-or-dir to its Hive key, ingesting its traces.
 
     If ``target`` is a harness directory (or ``harness.yaml`` path), its
-    in-folder traces are ingested into ``hive`` and the spec's name returned.
-    Otherwise ``target`` is treated as a harness name (nothing to ingest).
+    in-folder traces are ingested into ``hive`` and the spec's identity
+    returned — its stable ``id``, or its name for a pre-1.0 spec without one.
+    The Hive keys evidence on that identity, so two harnesses that merely
+    share a name never read each other's stats. Otherwise ``target`` is
+    treated as a bare key (nothing to ingest).
     """
     path = Path(target)
     yaml_path = path / "harness.yaml" if path.is_dir() else path
@@ -469,7 +473,7 @@ def resolve_and_ingest(target: str | Path, hive) -> str:
         trust.ensure_trusted(yaml_path.parent)
         spec = load_spec(yaml_path)
         hive.ingest_dir(_resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
-        return spec.name
+        return spec.identity
     return str(target)
 
 

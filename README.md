@@ -415,7 +415,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 
 ## Safety invariants
 
-- Evolution cannot change `guardrails`, `model`, `logging.redact`,
+- Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
   `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
 - The cost guardrail defaults on at `$1.00`.
 - The shell tool is disabled unless explicitly configured and remains

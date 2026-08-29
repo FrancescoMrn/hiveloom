@@ -82,9 +82,10 @@ _SSE_DONE = object()
 #     The evolver refuses dangerous *tool* changes case-by-case; over HTTP we
 #     freeze both roots wholesale — the gap-free fix for a non-production
 #     surface, at the cost of not adding tools/validators remotely.
-#   - `name` binds every Hive lookup (`/trace`, `/proposals`) to this harness;
-#     letting a caller rewrite it re-points those reads at another harness's
-#     traces and proposals.
+#   - `name` still binds every Hive lookup (`/trace`, `/proposals`) for a
+#     pre-identity harness (no `id` in its spec); letting a caller rewrite it
+#     would re-point those reads at another harness's traces and proposals.
+#     (`id` itself is in ALWAYS_FROZEN, so it is refused without listing here.)
 _HTTP_ONLY_FROZEN = {"tools", "verify.validators", "name"}
 _FROZEN_ROOTS = set(ALWAYS_FROZEN) | _HTTP_ONLY_FROZEN
 
@@ -322,12 +323,13 @@ def create_app(
             return _error_response(exc)
         return JSONResponse(payload, status_code=200)
 
-    def _harness_name() -> str:
-        """The served harness's current name, read fresh each call (never
-        cached) — used to bind Hive lookups (`/trace/{run_id}`, every
-        `/proposals/{id}...`) to this harness, since the Hive is global.
+    def _harness_key() -> str:
+        """The served harness's stable identity (its `id`, or its name for a
+        pre-identity spec), read fresh each call (never cached) — used to bind
+        Hive lookups (`/trace/{run_id}`, every `/proposals/{id}...`) to this
+        harness, since the Hive is global.
         """
-        return load_spec(harness_dir).name
+        return load_spec(harness_dir).identity
 
     def _run(run_input: str, *, on_event=None):
         """Build the provider (test seam or real) and call run_harness — the
@@ -457,7 +459,7 @@ def create_app(
         def work() -> dict[str, Any]:
             with Hive() as hive:
                 name = runner_mod.resolve_and_ingest(harness_dir, hive)
-                summary = hive.summary(name)
+                summary = hive.summary(name, display_name=load_spec(harness_dir).name)
                 recent = hive.recent_failures(name, 5)
             return {"ok": True, **summary, "recent_failures": recent}
 
@@ -470,10 +472,10 @@ def create_app(
             # The Hive is global (shared across every harness on the box);
             # bind the lookup to THIS served harness so a caller authorized
             # here can't read a different harness's run trace by id alone.
-            harness_name = _harness_name()
+            harness_key = _harness_key()
             with Hive() as hive:
                 run = hive.get_run(run_id)
-            if run is None or run.get("harness_name") != harness_name:
+            if run is None or run.get("harness_key") != harness_key:
                 raise NotFoundError(f"run '{run_id}' not found in the Hive")
             events: list[dict[str, Any]] = []
             trace_file = Path(run.get("trace_path", ""))
@@ -583,7 +585,7 @@ def create_app(
         proposal_id = request.path_params["proposal_id"]
 
         def work() -> dict[str, Any]:
-            harness_name = _harness_name()
+            harness_name = _harness_key()
             with Hive() as hive:
                 record = _require_proposal(hive, proposal_id, harness_name=harness_name)
             return {"ok": True, **proposals_mod.proposal_payload(record)}
@@ -601,7 +603,7 @@ def create_app(
             def approve_code(change: Any) -> bool:
                 return change.file in approved_files
 
-            harness_name = _harness_name()
+            harness_name = _harness_key()
             # Also under the spec lock: apply_proposal_by_id may write
             # harness.yaml, the same read-modify-write race /set etc. guard
             # against. Not held for the whole request — just this call.
@@ -625,7 +627,7 @@ def create_app(
 
         def work() -> dict[str, Any]:
             body = _parse_body(raw)
-            harness_name = _harness_name()
+            harness_name = _harness_key()
             with Hive() as hive:
                 _require_proposal(hive, proposal_id, harness_name=harness_name)
                 proposals_mod.reject_proposal(hive, proposal_id, body.get("reason", ""))

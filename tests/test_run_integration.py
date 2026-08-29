@@ -15,6 +15,7 @@ from hiveloom.logging.journal import state_at
 from hiveloom.logging.trace import payload_hash
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 from hiveloom.models.provider import ContextOverflowError
+from hiveloom.spec.loader import load_spec
 
 EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
 
@@ -164,7 +165,7 @@ def test_auto_propose_drafts_after_one_failing_run(tmp_path: Path):
 
     assert result.status == "guardrail_halt"
     with Hive() as hive:
-        proposals = hive.list_proposals(harness_name="auto-demo")
+        proposals = hive.list_proposals(harness_name=load_spec(harness).identity)
     assert len(proposals) == 1
     assert proposals[0]["status"] == "pending"
     assert proposals[0]["trigger"] == "auto"
@@ -179,7 +180,7 @@ def test_auto_propose_second_failure_dedups_and_skips_the_model(tmp_path: Path):
 
     runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
     with Hive() as hive:
-        first = hive.list_proposals(harness_name="auto-demo")
+        first = hive.list_proposals(harness_name=load_spec(harness).identity)
         assert len(first) == 1
         # Force the cooldown window open regardless of real elapsed wall-clock
         # time between the two run_harness() calls below, so the second run
@@ -192,7 +193,7 @@ def test_auto_propose_second_failure_dedups_and_skips_the_model(tmp_path: Path):
     runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
 
     with Hive() as hive:
-        after = hive.list_proposals(harness_name="auto-demo")
+        after = hive.list_proposals(harness_name=load_spec(harness).identity)
     assert len(after) == 1  # dedup held — no duplicate proposal
     assert len(model.prompts) == 1  # the strong model was never called a second time
 
@@ -207,7 +208,7 @@ def test_auto_propose_successful_run_creates_nothing(tmp_path: Path):
 
     assert result.status == "success"
     with Hive() as hive:
-        assert hive.list_proposals(harness_name="auto-demo") == []
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
     assert model.prompts == []
 
 
@@ -252,7 +253,7 @@ def test_auto_propose_raising_strong_model_does_not_fail_the_run(
         "auto-propose failed for harness auto-demo: RuntimeError: boom: no network in tests"
     ]
     with Hive() as hive:
-        assert hive.list_proposals(harness_name="auto-demo") == []
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
 
 
 def test_auto_propose_malformed_model_output_does_not_fail_the_run(tmp_path: Path):
@@ -265,7 +266,7 @@ def test_auto_propose_malformed_model_output_does_not_fail_the_run(tmp_path: Pat
 
     assert result.status == "guardrail_halt"
     with Hive() as hive:
-        assert hive.list_proposals(harness_name="auto-demo") == []
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
 
 
 def test_context_overflow_recovery_compacts_and_retries(tmp_path: Path):

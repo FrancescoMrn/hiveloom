@@ -421,7 +421,8 @@ def test_hive_reports_success_per_playbook(tmp_path: Path):
     )
 
     with Hive(hive_path) as hive:
-        stats = {row["playbook"]: row for row in hive.playbook_stats("pb-harness")}
+        key = load_spec(directory / "harness.yaml").identity
+        stats = {row["playbook"]: row for row in hive.playbook_stats(key)}
 
     assert stats["overview"]["runs"] == 2  # both runs started here
     assert stats["targeting"]["runs"] == 1
@@ -447,7 +448,8 @@ def test_refused_switches_are_counted(tmp_path: Path):
         hive_path=hive_path,
     )
     with Hive(hive_path) as hive:
-        stats = {row["playbook"]: row for row in hive.playbook_stats("pb-harness")}
+        key = load_spec(directory / "harness.yaml").identity
+        stats = {row["playbook"]: row for row in hive.playbook_stats(key)}
     assert stats["gated"]["refusals"] == 1
     assert stats["gated"]["runs"] == 0
 

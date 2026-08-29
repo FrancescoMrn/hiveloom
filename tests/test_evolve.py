@@ -478,7 +478,7 @@ def test_apply_records_evolution_in_hive(tmp_path: Path):
     )
     with Hive(tmp_path / "hive.db") as hive:
         result = apply_proposal(harness, proposal, hive=hive, apply_yaml=True)
-        evolutions = hive.evolutions("demo")
+        evolutions = hive.evolutions(load_spec(harness).identity)
     assert len(evolutions) == 1
     assert evolutions[0]["new_version_hash"] == result.new_version_hash
     assert evolutions[0]["rationale"] == "tune"
@@ -552,7 +552,8 @@ def _seed_failure(tmp_path: Path, harness: Path) -> None:
     """
     spec = load_spec(harness)
     trace = _write_trace(
-        tmp_path, "run_a", name=spec.name, version=spec_version_hash(spec, harness),
+        tmp_path, "run_a", name=spec.name, harness_id=spec.id,
+        version=spec_version_hash(spec, harness),
         status="verify_failed", verifications=[(False, "not valid JSON")],
     )
     with Hive() as hive:  # the autouse conftest fixture points this at a throwaway db

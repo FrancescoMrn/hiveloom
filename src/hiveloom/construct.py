@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -294,6 +295,10 @@ def init_harness(directory: str | Path, name: str, task: str) -> HarnessSpec:
 
         spec = HarnessSpec(
             name=name,
+            # The identity the Hive keys evidence on — assigned once, here,
+            # so renaming or copying the folder never splits (or merges) a
+            # harness's run history with a same-named neighbour's.
+            id=f"hl-{uuid.uuid4().hex[:12]}",
             description=task,
             system_prompt=(
                 f"You are an agent that performs the following task:\n{task}\n\n"

@@ -1510,13 +1510,22 @@ def stats(
     """
     from hiveloom import runner
     from hiveloom.logging.hive import Hive
+    from hiveloom.spec.loader import load_spec
 
     with _guard(json_output):
         with Hive() as hive:
-            name = runner.resolve_and_ingest(target, hive)
-            summary = hive.summary(name)
-            recent = hive.recent_failures(name, 5)
-            outcomes = hive.outcome_summary(name)
+            key = runner.resolve_and_ingest(target, hive)
+            # A directory target knows its display name; a bare-key target is
+            # left for summary() to resolve from the run history.
+            yaml_path = Path(target) / "harness.yaml" if Path(target).is_dir() else Path(target)
+            display = (
+                load_spec(yaml_path).name
+                if yaml_path.name == "harness.yaml" and yaml_path.exists()
+                else None
+            )
+            summary = hive.summary(key, display_name=display)
+            recent = hive.recent_failures(key, 5)
+            outcomes = hive.outcome_summary(key)
 
         if json_output:
             _emit_json(

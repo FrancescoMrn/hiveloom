@@ -497,7 +497,7 @@ def apply_proposal(
             new_hash = spec_version_hash(new_spec, base)
             if hive is not None:
                 hive.record_evolution(
-                    spec.name,
+                    spec.identity,
                     old_hash,
                     new_hash,
                     counter,

@@ -98,10 +98,10 @@ def _seed_version(hive, name, version, *, runs, successes, cost=0.01, feedback=N
         run_id = f"{version}-{index}"
         status = "success" if index < successes else "verify_failed"
         hive._conn.execute(
-            "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, "
+            "INSERT INTO runs (run_id, harness_name, harness_key, harness_version_hash, status, "
             "turns, cost_usd, duration_seconds, started_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (run_id, name, version, status, 2, cost, 1.0, f"2026-01-0{index % 9 + 1}"),
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (run_id, name, name, version, status, 2, cost, 1.0, f"2026-01-0{index % 9 + 1}"),
         )
         if status != "success" and feedback:
             hive._conn.execute(

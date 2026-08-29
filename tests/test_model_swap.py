@@ -367,7 +367,8 @@ def test_swapped_runs_are_held_out_of_the_fitness_bucket(tmp_path: Path):
         hive.ingest_trace_file(clean.trace_path)
         hive.ingest_trace_file(swapped.trace_path)
 
-        [bucket] = hive.version_stats("example-summarizer")
+        key = load_spec(harness).identity
+        [bucket] = hive.version_stats(key)
         # The failing swapped run must not drag the bucket's success rate down:
         # it did not execute the harness as declared.
         assert bucket["runs"] == 1
@@ -375,9 +376,9 @@ def test_swapped_runs_are_held_out_of_the_fitness_bucket(tmp_path: Path):
         assert bucket["swapped_runs"] == 1
 
         # ...but it is not hidden. It is reported on its own path.
-        raw = hive.version_stats("example-summarizer", include_swapped=True)
+        raw = hive.version_stats(key, include_swapped=True)
         assert raw[0]["runs"] == 2
-        paths = hive.model_path_stats("example-summarizer")
+        paths = hive.model_path_stats(key)
         assert any(">" in row["model_path"] for row in paths)
 
 
@@ -385,8 +386,8 @@ def test_pre_1_0_runs_are_not_treated_as_swapped(tmp_path: Path):
     """An empty model_path means 'not recorded', never 'changed models'."""
     with Hive(tmp_path / "hive.db") as hive:
         hive._conn.execute(
-            "INSERT INTO runs (run_id, harness_name, harness_version_hash, status, "
-            "turns, cost_usd, duration_seconds) VALUES ('r1','h','v','success',1,0.1,1.0)"
+            "INSERT INTO runs (run_id, harness_name, harness_key, harness_version_hash, status, "
+            "turns, cost_usd, duration_seconds) VALUES ('r1','h','h','v','success',1,0.1,1.0)"
         )
         hive._conn.commit()
         [bucket] = hive.version_stats("h")

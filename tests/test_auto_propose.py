@@ -51,12 +51,15 @@ def _write_failure(
     spec = load_spec(harness)
     version = spec_version_hash(spec, harness)
     events = [
-        {"run_id": run_id, "harness_name": spec.name, "harness_version_hash": version, "seq": 0,
+        {"run_id": run_id, "harness_name": spec.name, "harness_id": spec.id,
+         "harness_version_hash": version, "seq": 0,
          "timestamp": at, "type": "run_started", "payload": {}},
-        {"run_id": run_id, "harness_name": spec.name, "harness_version_hash": version, "seq": 1,
+        {"run_id": run_id, "harness_name": spec.name, "harness_id": spec.id,
+         "harness_version_hash": version, "seq": 1,
          "timestamp": at, "type": "verification_result",
          "payload": {"verifier": "v", "passed": False, "feedback": feedback}},
-        {"run_id": run_id, "harness_name": spec.name, "harness_version_hash": version, "seq": 2,
+        {"run_id": run_id, "harness_name": spec.name, "harness_id": spec.id,
+         "harness_version_hash": version, "seq": 2,
          "timestamp": at, "type": "run_finished",
          "payload": {"status": "verify_failed", "turns": 1, "cost_usd": 0.01,
                      "duration_seconds": 0.1, "reason": ""}},
@@ -99,7 +102,7 @@ def test_min_failures_not_met_skips(tmp_path: Path):
     _maybe_auto_propose(load_spec(harness), harness, _fail_result(), hive_path, strong_model=model)
 
     with Hive(hive_path) as hive:
-        assert hive.list_proposals(harness_name="demo") == []
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
     assert model.prompts == []
 
 
@@ -118,7 +121,7 @@ def test_earlier_versions_failures_do_not_open_the_gate(tmp_path: Path):
     _maybe_auto_propose(load_spec(harness), harness, _fail_result(), hive_path, strong_model=model)
 
     with Hive(hive_path) as hive:
-        assert hive.list_proposals(harness_name="demo") == []
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
     assert model.prompts == []  # no paid call
 
 
@@ -141,7 +144,7 @@ def test_cooldown_not_expired_skips(tmp_path: Path):
     _maybe_auto_propose(load_spec(harness), harness, _fail_result(), hive_path, strong_model=model)
 
     with Hive(hive_path) as hive:
-        proposals = hive.list_proposals(harness_name="demo")
+        proposals = hive.list_proposals(harness_name=load_spec(harness).identity)
     assert len(proposals) == 1  # still just the seeded one
     assert model.prompts == []  # cooldown blocked before any model call
 
@@ -163,7 +166,7 @@ def test_cooldown_expired_proposes(tmp_path: Path):
     _maybe_auto_propose(load_spec(harness), harness, _fail_result(), hive_path, strong_model=model)
 
     with Hive(hive_path) as hive:
-        proposals = hive.list_proposals(harness_name="demo")
+        proposals = hive.list_proposals(harness_name=load_spec(harness).identity)
     assert len(proposals) == 2  # the seeded one plus a fresh one
     assert len(model.prompts) == 1  # the model was called this time
 
@@ -182,7 +185,7 @@ def test_successful_run_result_short_circuits(tmp_path: Path):
     )
 
     with Hive(hive_path) as hive:
-        assert hive.list_proposals(harness_name="demo") == []
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
     assert model.prompts == []
 
 
@@ -208,7 +211,7 @@ def test_ungateable_auto_proposal_records_attempt_and_is_not_repaid(tmp_path: Pa
     # `rejected` row — not a can-never-apply pending row, and not nothing.
     _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
     with Hive(hive_path) as hive:
-        rows = hive.list_proposals(harness_name="demo")
+        rows = hive.list_proposals(harness_name=load_spec(harness).identity)
     assert len(rows) == 1
     assert rows[0]["status"] == "rejected"
     assert rows[0]["trigger"] == "auto"

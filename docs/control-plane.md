@@ -117,7 +117,7 @@ at an attacker-controlled endpoint (exfiltrating every prompt and tool
 result), setting `logging.redact` could strip redaction so secrets land in
 traces in cleartext, setting `guardrails` could remove the cost cap
 entirely. So `/set`, every `/add/{kind}`, and `/remove` refuse any of
-`ALWAYS_FROZEN`'s roots — `guardrails`, `model`, `logging.redact`,
+`ALWAYS_FROZEN`'s roots — `id`, `guardrails`, `model`, `logging.redact`,
 `extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` — with
 **403**, not 400: this is "your scope does not permit that," not "your request
 was malformed." The local CLI is completely unaffected; this check lives
