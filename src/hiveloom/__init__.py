@@ -14,7 +14,8 @@ SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :func:`validate_harness`, :func:`migrate_harness`, :class:`HarnessSpec`, :class:`Hive`,
 :class:`RunMetric`, :func:`record_run_metrics`, :class:`EvalSpec`,
 :func:`run_scorers`, :class:`EvalManifest`, :func:`run_eval`,
-:func:`resume_eval`, :class:`ModelProbeResult`, :func:`probe_model`,
+:func:`resume_eval`, :func:`build_eval_report`, :func:`compare_evals`,
+:class:`ModelProbeResult`, :func:`probe_model`,
 :class:`HarnessServer`. The
 other, language-agnostic embedding interfaces are
 ``hiveloom run --stream`` (trace events as JSONL on stdout, final
@@ -30,6 +31,7 @@ __version__ = "1.0.0"
 from hiveloom.spec.schema import HarnessSpec
 
 if TYPE_CHECKING:
+    from hiveloom.eval_reports import build_eval_report, compare_evals  # noqa: F401
     from hiveloom.eval_runner import EvalManifest, resume_eval, run_eval  # noqa: F401
     from hiveloom.evals import (  # noqa: F401
         DatasetLoader,
@@ -81,6 +83,8 @@ _SDK = {
     "EvalManifest": ("hiveloom.eval_runner", "EvalManifest"),
     "run_eval": ("hiveloom.eval_runner", "run_eval"),
     "resume_eval": ("hiveloom.eval_runner", "resume_eval"),
+    "build_eval_report": ("hiveloom.eval_reports", "build_eval_report"),
+    "compare_evals": ("hiveloom.eval_reports", "compare_evals"),
     "HarnessServer": ("hiveloom.serve", "HarnessServer"),
     # Code-tool authoring surface: return a ToolResult carrying Artifacts to
     # hand structured output to the embedding caller.

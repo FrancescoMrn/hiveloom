@@ -102,6 +102,12 @@ continue it with `eval status <eval_run_id> --json` and `eval resume
 <eval_run_id> --json`. Resume revalidates content and execution identities and
 never reruns completed cells.
 
+Regenerate aggregate receipts without raw traces through `hiveloom eval report
+<eval_run_id> --format json`. Compare only paired case/repetition cells with
+`eval compare BASELINE CANDIDATE --format json`; inspect the unmatched counts,
+sample counts, and missing counts before interpreting deltas. Billed and
+estimated costs remain separate.
+
 Before a model batch, run `hiveloom models probe ./h --provider PROVIDER
 --model MODEL --json` for free declared capabilities. Add `--live --identity
 exact` only when up to two possibly billed calls are intended. The result keeps

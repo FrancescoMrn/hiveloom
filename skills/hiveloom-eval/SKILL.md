@@ -31,6 +31,8 @@ Run the matrix only after validation:
 hiveloom eval run eval.yaml --model MODEL --repetitions 3 --json
 hiveloom eval status EVAL_RUN_ID --json
 hiveloom eval resume EVAL_RUN_ID --json
+hiveloom eval report EVAL_RUN_ID --format json
+hiveloom eval compare BASELINE_ID CANDIDATE_ID --format json
 ```
 
 `eval run` performs a live provider probe that can make up to two possibly
@@ -38,6 +40,12 @@ billed calls. Exact model identity is the eval default. Use an alias policy
 only with an explicit alias list. The atomic manifest stores digests and cell
 receipts, not raw case IDs or expected data. Resume refuses changed inputs and
 skips completed cells, so never replace the manifest or edit it by hand.
+
+Reports are regenerated from Hive indexes without raw traces. Comparisons pair
+case and repetition identities before calculating deltas and label unmatched
+cells. Always inspect `sample_count` and `missing_value_count`; do not compare
+billed and estimated cost as if they were the same receipt. Repetition-based
+stability is omitted when there are not enough observations.
 
 Dataset loaders and scorers are extension code. A foreign eval folder must be
 trusted before its local extension runs. Never copy private cases, expected

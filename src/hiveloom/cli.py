@@ -2047,6 +2047,50 @@ def eval_status_command(
             )
 
 
+def _eval_output_format(format_name: str, json_output: bool) -> str:
+    selected = "json" if json_output else format_name.lower()
+    if selected not in {"json", "markdown"}:
+        raise ValueError("eval report format must be 'json' or 'markdown'")
+    return selected
+
+
+@eval_app.command("report")
+def eval_report_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id to report."),
+    format_name: str = typer.Option("json", "--format", help="json or markdown."),
+    json_output: bool = typer.Option(False, "--json", help="Emit canonical JSON."),
+) -> None:
+    """Build a report from indexed eval state without reading raw traces."""
+    from hiveloom.eval_reports import build_eval_report, render_report_markdown
+
+    selected = _eval_output_format(format_name, json_output)
+    with _guard(selected == "json"):
+        report = build_eval_report(eval_run_id)
+        if selected == "json":
+            _emit_json({"ok": True, "report": report})
+        else:
+            _console.print(render_report_markdown(report), markup=False)
+
+
+@eval_app.command("compare")
+def eval_compare_command(
+    baseline_id: str = typer.Argument(..., help="Baseline eval run id."),
+    candidate_id: str = typer.Argument(..., help="Candidate eval run id."),
+    format_name: str = typer.Option("json", "--format", help="json or markdown."),
+    json_output: bool = typer.Option(False, "--json", help="Emit canonical JSON."),
+) -> None:
+    """Compare matching case/repetition cells and label unmatched cells."""
+    from hiveloom.eval_reports import compare_evals, render_comparison_markdown
+
+    selected = _eval_output_format(format_name, json_output)
+    with _guard(selected == "json"):
+        comparison = compare_evals(baseline_id, candidate_id)
+        if selected == "json":
+            _emit_json({"ok": True, "comparison": comparison})
+        else:
+            _console.print(render_comparison_markdown(comparison), markup=False)
+
+
 @metrics_app.command("schema")
 def metrics_schema(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),
