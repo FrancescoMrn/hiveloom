@@ -9,7 +9,9 @@ discovery is eager.
 
 from __future__ import annotations
 
+import errno
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +24,8 @@ from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.loop.control import RunControl
-from hiveloom.models.provider import ModelConfig, ModelProvider
+from hiveloom.models.provider import ModelConfig as ProviderModelConfig
+from hiveloom.models.provider import ModelProvider
 from hiveloom.models.router import ModelRouter
 from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.skills import load_skills
@@ -36,16 +39,28 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
 
 def _resolve_input(base: Path, value: str) -> str:
     """If ``value`` names an existing file, read it; otherwise treat it as text."""
     direct = Path(value)
-    if direct.is_file():
+    if _is_file(direct):
         return direct.read_text(encoding="utf-8")
     nested = base / value
-    if nested.is_file():
+    if _is_file(nested):
         return nested.read_text(encoding="utf-8")
     return value
+
+
+def _is_file(path: Path) -> bool:
+    """Like :meth:`Path.is_file`, but an overlong literal is not a path."""
+    try:
+        return path.is_file()
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return False
+        raise
 
 
 def split_conversation(
@@ -126,6 +141,16 @@ def new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:16]}"
 
 
+def validate_run_id(value: str) -> str:
+    """Validate a caller-allocated run id before it becomes a trace filename."""
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError(
+            "run_id must be 1-128 characters: letters, numbers, '.', '_' or '-'; "
+            "it must start with a letter or number"
+        )
+    return value
+
+
 # Kept for callers written against the private name.
 _new_run_id = new_run_id
 
@@ -135,6 +160,9 @@ def dry_run(
     input_value: str | None = None,
     *,
     conversation: list[dict[str, Any]] | None = None,
+    literal_input: bool = False,
+    model_override: str | None = None,
+    provider_override: str | None = None,
     approve_trust=None,
 ) -> dict[str, Any]:
     """Assemble the first model call without calling the model provider.
@@ -147,11 +175,12 @@ def dry_run(
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
+    spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
     resolve_hooks(spec, base)
     registry = build_registry(spec, base)
     try:
         history, run_input = _resolve_conversation(
-            base, input_value, conversation, literal_input=False
+            base, input_value, conversation, literal_input=literal_input
         )
 
         from hiveloom.models.provider import _estimate_messages_tokens
@@ -176,6 +205,10 @@ def dry_run(
         return {
             "name": spec.name,
             "model": spec.model.id,
+            "provider": spec.model.provider,
+            "runtime_config": _runtime_config(
+                spec, model_override=model_override, provider_override=provider_override
+            ),
             "system": system,
             "messages": messages,
             "tools": registry.anthropic_payload(),
@@ -200,6 +233,9 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
+    trace_dir: str | Path | None = None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
     resume_messages: list[dict[str, Any]] | None = None,
     lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
@@ -236,6 +272,10 @@ def run_harness(
     steering messages, both consumed at the loop's next turn boundary.
     ``run_id`` lets the caller pre-allocate the id (so it can be announced to
     a client before the run finishes); by default one is generated.
+    ``trace_dir`` selects a durable trace root for this run. ``model_override``
+    and ``provider_override`` build a validated in-memory model config: they
+    never write the harness, but they do participate in its runtime snapshot
+    and version hash so evidence from different executors is not combined.
     ``providers`` pre-registers model provider instances by name, for the
     cross-provider case: a playbook or an operator may move the run onto a
     provider the spec never named, and the router would otherwise construct one
@@ -260,6 +300,8 @@ def run_harness(
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
+    spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    run_id = validate_run_id(run_id) if run_id is not None else new_run_id()
     resolve_hooks(spec, base)
 
     if resume_messages is not None:
@@ -295,7 +337,7 @@ def run_harness(
 
         router = ModelRouter.create(
             base,
-            ModelConfig(
+            ProviderModelConfig(
                 id=spec.model.id,
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
@@ -306,9 +348,12 @@ def run_harness(
         )
 
         version_hash = spec_version_hash(spec, base)
-        run_id = run_id or new_run_id()
         trace = TraceWriter(
-            _resolve_trace_dir(base, spec.logging.trace_dir),
+            (
+                Path(trace_dir).expanduser().resolve()
+                if trace_dir is not None
+                else _resolve_trace_dir(base, spec.logging.trace_dir)
+            ),
             run_id=run_id,
             harness_name=spec.name,
             harness_id=spec.id,
@@ -344,6 +389,9 @@ def run_harness(
             router=router,
         )
         result = loop.run()
+        result.runtime_config = _runtime_config(
+            spec, model_override=model_override, provider_override=provider_override
+        )
     finally:
         registry.close()
         if router is not None:
@@ -453,6 +501,41 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "reason": result.reason,
         "artifacts": result.artifacts,
         "provider_calls": getattr(result, "provider_calls", []),
+        # Structural fakes and 1.0-era embedding adapters may still return the
+        # pre-override result shape. Keep that additive transition readable.
+        "runtime_config": getattr(result, "runtime_config", {}),
+    }
+
+
+def _apply_runtime_model_overrides(
+    spec: HarnessSpec,
+    model_override: str | None,
+    provider_override: str | None,
+) -> HarnessSpec:
+    """Return a validated in-memory spec with run-only model selection."""
+    if model_override is None and provider_override is None:
+        return spec
+
+    from hiveloom.spec.schema import ModelConfig as SpecModelConfig
+
+    model = SpecModelConfig(
+        id=model_override or spec.model.id,
+        provider=provider_override or spec.model.provider,
+        max_tokens=spec.model.max_tokens,
+        temperature=spec.model.temperature,
+    )
+    return spec.model_copy(update={"model": model})
+
+
+def _runtime_config(
+    spec: HarnessSpec,
+    *,
+    model_override: str | None,
+    provider_override: str | None,
+) -> dict[str, Any]:
+    return {
+        "requested": {"model": model_override, "provider": provider_override},
+        "resolved": {"model": spec.model.id, "provider": spec.model.provider},
     }
 
 

@@ -172,17 +172,21 @@ hiveloom add validator --builtin regex_match --pattern '"summary"' \
 hiveloom validate ./summarizer --json
 
 # Assemble the first call without contacting the model
-hiveloom run ./summarizer --input notes.txt --dry-run --json
+hiveloom run ./summarizer --input-file notes.txt --dry-run --json
 
 # Run for real (the default provider uses Anthropic)
 export ANTHROPIC_API_KEY=sk-...
-hiveloom run ./summarizer --input notes.txt --json
+hiveloom run ./summarizer --input-file notes.txt --json
 
 # …or any other lab. `hiveloom models` lists every provider and its key
 # variable; OpenAI, Gemini, Mistral, DeepSeek, xAI, Groq, OpenRouter,
 # Together, Fireworks, Ollama, and vLLM are builtin.
 hiveloom models
 hiveloom set model openai/gpt-4.1-mini --dir ./summarizer
+
+# A run-only override leaves harness.yaml unchanged, useful for eval matrices
+hiveloom run ./summarizer --input-file notes.txt \
+  --provider openai --model gpt-4.1-mini --run-id eval-case-01 --json
 
 # Inspect evidence and propose a gated improvement after failures
 hiveloom stats ./summarizer --json

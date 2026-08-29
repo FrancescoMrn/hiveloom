@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `normalize_openai_response`, `to_openai_messages`, and `to_openai_tool` are
   supported public codecs for OpenAI-compatible extensions. The old private
   names remain aliases for compatibility.
+- `hiveloom run` now separates literal and file input with `--input-text` and
+  `--input-file`, accepts run-only `--model` and `--provider` overrides, lets
+  batch callers allocate `--run-id`, and writes durable evidence under a
+  caller-selected `--trace-dir`. Runtime model selection is validated and
+  versioned without changing `harness.yaml`; JSON results expose requested and
+  resolved runtime config.
+
+### Fixed
+
+- Legacy `--input` no longer raises `ENAMETOOLONG` when a large literal is
+  checked as a possible filename. It remains available for one deprecation
+  cycle; scripts should move to the explicit flags.
 
 ## [1.0.0] - 2026-08-28
 

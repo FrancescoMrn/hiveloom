@@ -11,8 +11,25 @@ description: >-
 # Running a hiveloom harness
 
 ```bash
-hiveloom run ./h --input notes.txt --json     # --input takes a FILE path or literal TEXT
+hiveloom run ./h --input-file notes.txt --json
+hiveloom run ./h --input-text "literal task" --json
 ```
+
+Use the explicit flags in scripts and evals. Legacy `--input` still guesses
+whether its value is a file or literal text for one deprecation cycle.
+
+Run-only model selection and evidence paths do not rewrite the harness:
+
+```bash
+hiveloom run ./h --input-file case.txt \
+  --provider openrouter --model qwen3.5-9b \
+  --run-id case-17 --trace-dir ./eval-traces --json
+```
+
+The JSON result's `runtime_config` keeps explicit `requested` overrides apart
+from the validated `resolved` model and provider. A runtime model override is
+included in that run's harness snapshot and version hash, so Hive statistics
+do not mix it with the model stored in `harness.yaml`.
 
 Needs credentials for the configured provider when required (for example,
 `ANTHROPIC_API_KEY` for the default provider, loaded from the harness `.env`
@@ -33,7 +50,7 @@ inside; guardrails and validators gate it.
 
 ```bash
 hiveloom validate ./h                          # structure + code-hook checks
-hiveloom run ./h --input x.txt --dry-run       # no model call; MCP discovery still does I/O
+hiveloom run ./h --input-file x.txt --dry-run  # no model call; MCP discovery still does I/O
 ```
 
 A harness folder that arrived from elsewhere (unzipped artifact, clone) is
@@ -84,7 +101,7 @@ therefore cannot be forked. See [docs/journal.md](../../docs/journal.md).
 ## Embedding in another program
 
 ```bash
-hiveloom run ./h --input x --stream        # every trace event as a JSON line; result last
+hiveloom run ./h --input-text x --stream   # every trace event as a JSON line; result last
 ```
 
 Or the Python SDK:
