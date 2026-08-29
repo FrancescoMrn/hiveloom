@@ -80,7 +80,8 @@ Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
   (allowlist-only, disabled without one), `http_get`.
 - **Validators** (the reward signal — always add at least one):
   `output_schema --schema-file`, `regex_match --pattern`, `file_exists --path`,
-  `command_succeeds --command`.
+  `command_succeeds --command`, `grounded_references --output-path
+  --evidence-path TOOL=JSON_PATH` (repeat the evidence flag as needed).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`,
   `max_turns_hard_cap`, `tool_allowlist`, `no_network_write`,
   `regex_output_filter --pattern`. The cost guardrail defaults **on**
@@ -97,10 +98,17 @@ hiveloom add skill pdf-report --description "Build a PDF report." --dir ./h
 
 `--code` scaffolds a correctly-signed stub for you to fill in. A validator has
 the signature `validate(run_output, run_context) -> {"passed": bool,
-"feedback": str}`; a tool is a `@hiveloom.tools.tool`-decorated function whose
+"feedback": str}` and may add a third `verification_context` parameter for
+bounded, redacted current-run tool evidence. A tool is a
+`@hiveloom.tools.tool`-decorated function whose
 JSON schema is derived from its type hints. `add skill` scaffolds a
 progressive-disclosure `skills/<name>/SKILL.md` the executor reads on demand —
 pair it with the `file_read` tool.
+
+When the output selects IDs, add `grounded_references` as well as an output
+schema. Shape validation alone cannot prove that a selected ID came from an
+allowed tool call. Inspect `hiveloom catalog validators --json` before building
+the command.
 
 ## Step 3 — finish
 

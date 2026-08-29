@@ -86,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limits. Hidden tools are blocked before dispatch; step events reach traces,
   `RunResult.steps`, CLI/HTTP JSON, and Hive run records. Legacy string steps
   retain their instruction-only behavior.
+- Validators may request a typed `VerificationContext` with bounded, redacted
+  tool evidence, step receipts, and artifacts from the current run. The new
+  `grounded_references` builtin rejects selected scalar IDs absent from approved
+  successful tool results, even when the output otherwise passes its JSON
+  schema.
 
 ### Fixed
 

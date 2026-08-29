@@ -370,6 +370,10 @@ class TraceWriter:
                 pass
         return event
 
+    def redact(self, value: Any) -> Any:
+        """Return an in-memory value scrubbed by the trace's logging policy."""
+        return self._redact(value)
+
     def _redact(self, value: Any) -> Any:
         return self._redactor.redact(value)
 
