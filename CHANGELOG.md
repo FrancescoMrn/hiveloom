@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller-selected `--trace-dir`. Runtime model selection is validated and
   versioned without changing `harness.yaml`; JSON results expose requested and
   resolved runtime config.
+- Completed runs now return one typed execution envelope with runtime and
+  harness identity, requested/resolved/provider-reported models, timestamps,
+  aggregate usage, billed-versus-estimated cost, verification recovery state,
+  a reproducible fingerprint, and the durable trace path. The same envelope
+  closes the run journal.
 
 ### Fixed
 

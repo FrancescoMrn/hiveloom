@@ -111,6 +111,13 @@ from hiveloom import run_harness
 result = run_harness("./h", "notes.txt", on_event=lambda e: print(e.type))
 ```
 
+Read `result.execution` instead of scraping its trace for batch receipts. It
+contains the behavior hash, runtime version, requested/resolved/effective
+model identity, timestamps, total usage, cost source, verification attempts,
+execution fingerprint, and durable trace path. A clean first pass and a
+recovered success both have `status == "success"`; distinguish them with
+`result.execution.verification`.
+
 ## Next steps
 
 Repeated failures → `hiveloom-evolve` skill (never hand-edit the harness).

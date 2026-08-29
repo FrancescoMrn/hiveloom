@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hiveloom import trust
+from hiveloom import __version__, trust
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
 from hiveloom.guardrails.builtin import build_guardrails
@@ -176,6 +176,9 @@ def dry_run(
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
     spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    runtime_config = _runtime_config(
+        spec, model_override=model_override, provider_override=provider_override
+    )
     resolve_hooks(spec, base)
     registry = build_registry(spec, base)
     try:
@@ -206,9 +209,7 @@ def dry_run(
             "name": spec.name,
             "model": spec.model.id,
             "provider": spec.model.provider,
-            "runtime_config": _runtime_config(
-                spec, model_override=model_override, provider_override=provider_override
-            ),
+            "runtime_config": runtime_config,
             "system": system,
             "messages": messages,
             "tools": registry.anthropic_payload(),
@@ -301,6 +302,9 @@ def run_harness(
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
     spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    runtime_config = _runtime_config(
+        spec, model_override=model_override, provider_override=provider_override
+    )
     run_id = validate_run_id(run_id) if run_id is not None else new_run_id()
     resolve_hooks(spec, base)
 
@@ -387,11 +391,11 @@ def run_harness(
             resume=resume_messages is not None,
             lineage=lineage,
             router=router,
+            harness_version_hash=version_hash,
+            runtime_version=__version__,
+            runtime_config=runtime_config,
         )
         result = loop.run()
-        result.runtime_config = _runtime_config(
-            spec, model_override=model_override, provider_override=provider_override
-        )
     finally:
         registry.close()
         if router is not None:
@@ -504,6 +508,11 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         # Structural fakes and 1.0-era embedding adapters may still return the
         # pre-override result shape. Keep that additive transition readable.
         "runtime_config": getattr(result, "runtime_config", {}),
+        "execution": (
+            result.execution.model_dump(mode="json")
+            if getattr(result, "execution", None) is not None
+            else None
+        ),
     }
 
 
