@@ -16,7 +16,14 @@ The raw dataset and traces are intentionally absent. They contain CV evidence an
 
 Hiveloom 1.0.0 adds 31,320 lines over 0.5.0. The clean release checkout passes 913 tests. It ships the tamper-evident run journal, stable harness IDs, model paths, model swapping, run forking and resume, playbook-local models and tools, artifact persistence, version comparison, and public names for several cross-module helpers.
 
-The private eval's leakage audit passed on 10 sampled deals before the release smoke. One Regolo `qwen3.5-9b` case then ran against the clean 1.0.0 checkout: first-pass contract success, hallucination-free output, Recall@5 1.0, five tool calls, 12,209 input tokens, 614 output tokens, 38.17 seconds, and $0.001245 billed cost. This `n=1` run proves adapter compatibility only. It does not update the model comparison.
+The private eval's leakage audit passed on 10 sampled deals before the release smoke. One Regolo `qwen3.5-9b` case then proved adapter compatibility against the clean 1.0.0 checkout. The full post-release baseline followed with the same 10 cases and three repetitions per case.
+
+| Run set | Final contract success | First-pass validity | Recall@5 | nDCG@10 | Longlist recall | Mean cost | Mean latency | Stability |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.5.0-era Qwen 3.5 9B, 30 cases | 30/30 | 30/30 | 0.267 | 0.136 | 0.500 | $0.00114 | 27.7 s | 0.871 Jaccard |
+| 1.0.0 Qwen 3.5 9B, 30 cells | 30/30 | 28/30 | 0.200 | 0.122 | 0.500 | $0.00121 | 36.2 s | 0.181 Jaccard |
+
+The 1.0 run used commit `dbfdc3a3b93bcfbe4b811917e91033b4c635b826` and one harness behavior hash, `a5f8a4cb7a7c`. Two outputs recovered after a contract retry; all 30 final outputs were hallucination-free. The lower retrieval and stability figures are a comparison receipt, not a regression claim: the provider endpoint and model behavior may have changed between run sets.
 
 Those changes remove assumptions from five briefs, but none of the 18 outcomes is fully covered. The retained scopes are below.
 
@@ -121,7 +128,7 @@ The roadmap is done when the matching eval can run without its framework workaro
 
 - model and provider changes are runtime overrides, not temporary harness edits;
 - literal and file inputs have separate CLI flags;
-- run IDs, session IDs, traces, provenance, usage, and verification attempts are returned through public contracts;
+- run IDs, traces, provenance, usage, and verification attempts are returned through public contracts;
 - the effective provider model is checked before a batch is accepted;
 - first-pass, recovered, and final failures remain distinct in the Hive;
 - external numeric metrics can be attached to a run and queried;
@@ -132,14 +139,15 @@ The roadmap is done when the matching eval can run without its framework workaro
 
 ## Rebase audit after the release
 
-The release audit is complete for the code and public contracts. The 30-run matching baseline can continue against the detached release checkout while implementation uses separate branches.
+The release audit is complete for the code, public contracts, and the 30-cell matching baseline. Implementation uses separate branches from the release commit.
 
 1. Release checkout: 1.0.0 at `dbfdc3a3b93bcfbe4b811917e91033b4c635b826`.
 2. Offline baseline: 913 tests passed in 22.5 seconds.
 3. Private data gate: 10 sampled deals passed with no detected leakage after one upstream timeout and a clean retry.
 4. Live compatibility: one matching case passed on the first contract attempt against the detached release checkout.
-5. Contract comparison: schema, catalog, CLI JSON, `RunResult`, `ModelResponse`, journal events, and Hive storage were inspected against all 18 briefs.
-6. Roadmap issues: #30, #31, #32, and #33 remain open after the release.
+5. Live baseline: 30/30 final contract success, 28/30 first-pass validity, and 30/30 hallucination-free output on the fixed 10-case, three-repeat matrix.
+6. Contract comparison: schema, catalog, CLI JSON, `RunResult`, `ModelResponse`, journal events, and Hive storage were inspected against all 18 briefs.
+7. Roadmap issues: #30, #31, #32, and #33 remain open after the release.
 
 The old eval result remains the comparison point, not a pass threshold. Provider behavior and model endpoints may differ in the 1.0 rerun.
 
@@ -216,7 +224,7 @@ Proposed CLI:
 hiveloom run HARNESS --input-text "..." --json
 hiveloom run HARNESS --input-file case.txt --json
 hiveloom run HARNESS --model qwen3.5-9b --provider openrouter --json
-hiveloom run HARNESS --run-id CASE_ID --session-id EVAL_ID --trace-dir PATH --json
+hiveloom run HARNESS --run-id CASE_ID --trace-dir PATH --json
 ```
 
 `--input-text`, `--input-file`, and legacy `--input` are mutually exclusive. Model and provider overrides apply to the in-memory run configuration and never rewrite the harness. JSON output records requested and effective values.
@@ -228,7 +236,7 @@ Acceptance criteria:
 - a multi-kilobyte literal input succeeds without a temporary file;
 - a missing `--input-file` returns the documented validation exit code;
 - runtime overrides leave every harness file byte-identical;
-- custom run and session IDs reach the trace and Hive;
+- a custom run ID reaches the trace and Hive;
 - a caller-selected trace directory produces durable paths after the process exits;
 - CLI help and JSON error payloads explain conflicting input flags.
 
@@ -272,7 +280,7 @@ Problem and evidence: the adapter parsed trace files to recover token totals and
 Proposed `RunResult` additions:
 
 ```text
-run_id, session_id
+run_id
 requested_provider, requested_model
 effective_provider, effective_model
 schema_version, behavior_hash, execution_fingerprint
@@ -725,7 +733,7 @@ The audit should answer these with code and migration fixtures:
 4. Should numeric metrics share storage with deferred outcomes or remain separate records joined by run ID?
 5. Which provider metadata can be safely standardized without freezing one vendor's response shape?
 6. Should retention live in each harness, in `HIVELOOM_HOME`, or in both with a documented precedence rule?
-7. Can the eval runner reuse a released queue or session abstraction rather than add another manifest format?
+7. Can the eval runner reuse a released queue or run-group abstraction rather than add another manifest format?
 8. Which CLI names match the released command hierarchy?
 
 Record each answer in this file before opening the affected implementation PR.
@@ -743,4 +751,4 @@ Every future PR in this queue should include:
 - docs, schema, explain, catalog, guide, and changelog updates where applicable;
 - a note confirming that no private dataset row, CV content, provider key, or raw trace entered the repository.
 
-The document itself should change when the evidence changes. The aggregate receipts above are the baseline captured before the large release.
+The document itself should change when the evidence changes. The aggregate receipts above preserve both the pre-release comparison point and the audited 1.0 baseline.
