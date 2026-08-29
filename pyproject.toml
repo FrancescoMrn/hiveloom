@@ -6,9 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "hiveloom contributors" }]
-keywords = ["agents", "llm", "harness", "anthropic", "claude", "evolution"]
+keywords = ["agents", "llm", "harness", "evolution", "mcp"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -66,9 +66,11 @@ packages = ["src/hiveloom"]
 "SKILL.md" = "hiveloom/agent_docs/SKILL.md"
 "skills" = "hiveloom/agent_docs/skills"
 
-# The distribution carries what is needed to run the library, the example
-# harnesses, and the agent guidance — nothing else. Development material —
-# tests, docs, evals, CI config — stays in the repository.
+# The sdist carries the library, the example harnesses, and the agent
+# guidance — nothing else. The wheel deliberately ships only the library and
+# guidance: the example harnesses are repository/sdist material, not an
+# importable surface. Development material — tests, docs, evals, CI config —
+# stays in the repository.
 [tool.hatch.build.targets.sdist]
 only-include = [
     "src/hiveloom",
