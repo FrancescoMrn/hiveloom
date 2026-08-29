@@ -1144,6 +1144,46 @@ class HarnessSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _check_grounded_reference_validators(self) -> HarnessSpec:
+        from hiveloom.json_path import parse_json_path
+
+        refs = [*self.verify.validators]
+        for playbook in self.playbooks:
+            refs.extend(playbook.validators)
+        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        for ref in refs:
+            if not (
+                isinstance(ref, BuiltinValidatorRef)
+                and ref.builtin == "grounded_references"
+            ):
+                continue
+            params = ref.params()
+            parse_json_path(params["output_path"])
+            evidence_paths = params["evidence_paths"]
+            if not evidence_paths:
+                raise ValueError("grounded_references evidence_paths must not be empty")
+            for index, evidence in enumerate(evidence_paths):
+                if not isinstance(evidence, dict) or set(evidence) != {"tool", "path"}:
+                    raise ValueError(
+                        "grounded_references evidence_paths entries must contain only "
+                        f"tool and path (entry {index})"
+                    )
+                tool = evidence["tool"]
+                path = evidence["path"]
+                if not isinstance(tool, str) or not tool.strip():
+                    raise ValueError("grounded_references evidence tool must be a name")
+                if not isinstance(path, str):
+                    raise ValueError("grounded_references evidence path must be a string")
+                parse_json_path(path)
+                if not tool.startswith("mcp__") and tool not in available:
+                    raise ValueError(
+                        f"grounded_references lists unknown evidence tool '{tool}'"
+                    )
+            if params.get("normalize", "string") != "string":
+                raise ValueError("grounded_references normalize must be 'string'")
+        return self
+
+    @model_validator(mode="after")
     def _check_playbooks(self) -> HarnessSpec:
         seen: set[str] = set()
         entries: list[str] = []

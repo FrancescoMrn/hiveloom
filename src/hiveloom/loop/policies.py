@@ -71,6 +71,10 @@ class LoopPolicy:
         """Return bounded public policy receipts for RunResult and the Hive."""
         return []
 
+    def current_step(self) -> tuple[str, int] | None:
+        """Return the active structured step identity for tool evidence."""
+        return None
+
 
 class StepPolicyHalt(RuntimeError):
     """A structured step exhausted a declared deterministic limit."""
@@ -261,6 +265,9 @@ class SequentialStepsPolicy(LoopPolicy):
 
     def execution_records(self) -> list[StepExecutionRecord]:
         return [record.model_copy(deep=True) for record in self._records]
+
+    def current_step(self) -> tuple[str, int] | None:
+        return self._step.id, self._index
 
     def _render(self) -> str:
         lines = ["Sequential steps:"]

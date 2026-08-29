@@ -12,7 +12,8 @@ construction API that the CLI and generator both drive, and the embedding SDK:
 SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :class:`RunResult`, :func:`generate_harness`, :func:`load_spec`,
 :func:`validate_harness`, :func:`migrate_harness`, :class:`HarnessSpec`, :class:`Hive`,
-:class:`HarnessServer`. The other, language-agnostic embedding interfaces are
+:class:`HarnessServer`, :class:`VerificationContext`. The other,
+language-agnostic embedding interfaces are
 ``hiveloom run --stream`` (trace events as JSONL on stdout, final
 ``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
 """
@@ -38,6 +39,10 @@ if TYPE_CHECKING:
     from hiveloom.serve import HarnessServer  # noqa: F401
     from hiveloom.spec.loader import load_spec, validate_harness  # noqa: F401
     from hiveloom.spec.migrate import migrate_harness  # noqa: F401
+    from hiveloom.verify.base import (  # noqa: F401
+        ToolEvidenceRecord,
+        VerificationContext,
+    )
 
 _SDK = {
     "run_harness": ("hiveloom.runner", "run_harness"),
@@ -45,6 +50,8 @@ _SDK = {
     "RunResult": ("hiveloom.loop.agent_loop", "RunResult"),
     "RunExecutionEnvelope": ("hiveloom.execution", "RunExecutionEnvelope"),
     "StepExecutionRecord": ("hiveloom.execution", "StepExecutionRecord"),
+    "ToolEvidenceRecord": ("hiveloom.verify.base", "ToolEvidenceRecord"),
+    "VerificationContext": ("hiveloom.verify.base", "VerificationContext"),
     "VerificationSummary": ("hiveloom.execution", "VerificationSummary"),
     # named generate_harness: plain `generate` would shadow the subpackage
     "generate_harness": ("hiveloom.generate.generator", "generate"),

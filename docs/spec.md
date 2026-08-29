@@ -47,7 +47,8 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
   default `max_cost_usd`) rather than appending a redundant second entry.
   `regex_output_filter` composes as a list — one entry per pattern.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
-  `file_exists`, `command_succeeds` (exit 0 = pass).
+  `file_exists`, `command_succeeds` (exit 0 = pass), `grounded_references`
+  (selected output IDs must occur in approved evidence from this run).
 - **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
   ordered `loop.steps` list; object steps can enforce tools and call limits).
 - **Compaction:** `summarize`, `truncate_oldest`.
@@ -88,10 +89,28 @@ effective tools, requirements, and limits for every step. Build the value with
 `hiveloom set`; never edit `harness.yaml` by hand.
 
 Code hooks are the primary extension point. A validator hook has the signature
-`validate(run_output, run_context) -> {"passed": bool, "feedback": str}`; a tool
+`validate(run_output, run_context) -> {"passed": bool, "feedback": str}`. It may
+add an optional third `verification_context` parameter to inspect bounded,
+redacted tool calls, step receipts, and artifacts from the current run. A tool
 hook is any `@hiveloom.tools.tool`-decorated function (its JSON input schema is
 derived from type hints). `hiveloom add …/--code` scaffolds a correctly-signed
 stub.
+
+Use `grounded_references` when a JSON schema proves shape but not provenance:
+
+```bash
+hiveloom add validator --builtin grounded_references \
+  --output-path '$.selected[*].talent_id' \
+  --evidence-path 'search_candidates=$.candidates[*].talent_id' \
+  --dir ./h --json
+```
+
+`--evidence-path TOOL=JSON_PATH` may be repeated. The supported deterministic
+path subset is `$`, dotted keys, `[*]`, and non-negative list indexes. Evidence
+comes only from allowed calls executed in the current run; failed or differently
+named tools cannot satisfy the validator. Scalar values are normalized to
+strings, null and missing values are ignored, and failure feedback lists only
+missing normalized references rather than the surrounding private records.
 
 A tool that declares a `run_context` parameter is handed the run context
 (`input`, `harness_dir`, `run_id`, and the caller's own `context` dict from

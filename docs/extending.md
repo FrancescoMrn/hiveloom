@@ -57,6 +57,32 @@ Base classes to implement: `hiveloom.tools.registry.Tool`,
 `hiveloom.loop.policies.LoopPolicy`,
 `hiveloom.context.manager.CompactionMethod`.
 
+Validators may keep the legacy two-argument method or request structured
+run-local evidence with a third argument:
+
+```python
+from hiveloom import VerificationContext
+from hiveloom.verify import VerdictResult, Verifier
+
+class SelectedRecordsExist(Verifier):
+    name = "selected_records_exist"
+
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict,
+        verification_context: VerificationContext,
+    ) -> VerdictResult:
+        calls = verification_context.tool_calls
+        return VerdictResult(passed=any(call.name == "lookup" for call in calls))
+```
+
+`VerificationContext` contains bounded, redacted `tool_calls`, structured step
+receipts, declared artifacts, and the current `run_id`. Tool evidence includes
+only allowed calls that executed in this run. Read the typed context directly;
+do not parse a trace or retain its private payloads. The same context is also
+available at `run_context["verification_context"]` for code-hook compatibility.
+
 ## Where extensions load from
 
 | Source | Scope | Failure behavior |

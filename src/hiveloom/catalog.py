@@ -213,6 +213,34 @@ BUILTIN_VALIDATORS: dict[str, CatalogEntry] = _entries(
                       description="Command to execute; exit code 0 means pass."),
         ],
     ),
+    CatalogEntry(
+        name="grounded_references",
+        description=(
+            "Require every scalar selected from JSON output to occur in approved, "
+            "run-local tool evidence."
+        ),
+        tags=["grounding", "json", "evidence"],
+        params=[
+            ParamSpec(
+                name="output_path",
+                type="str",
+                required=True,
+                description="JSON path selecting references from the final output.",
+            ),
+            ParamSpec(
+                name="evidence_paths",
+                type="list",
+                required=True,
+                description="List of {tool, path} evidence selectors.",
+            ),
+            ParamSpec(
+                name="normalize",
+                type="str",
+                default="string",
+                description="Reference normalization mode; currently string.",
+            ),
+        ],
+    ),
 )
 
 

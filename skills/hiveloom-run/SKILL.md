@@ -129,6 +129,12 @@ model/tool counts, completed required calls, and bounded violations. This avoids
 parsing trace text to distinguish a missing required call from a global loop
 limit.
 
+Custom validators can request `VerificationContext` as a third argument. It
+contains bounded, redacted tool evidence, step receipts, and artifacts from the
+current run, so validators can check provenance without reading trace files.
+The builtin `grounded_references` fails when a scalar selected from the final
+JSON output is absent from its configured successful tool-result paths.
+
 ## Next steps
 
 Repeated failures → `hiveloom-evolve` skill (never hand-edit the harness).
