@@ -165,6 +165,19 @@ export function App() {
     await Promise.all([refreshHarnesses(), refreshRuns(), refreshConversations()])
   }, [refreshConversations, refreshHarnesses, refreshRuns])
 
+  const renameRun = useCallback(
+    async (runId: string, alias: string) => {
+      if (!selectedHarness) return
+      try {
+        await api.setRunAlias(selectedHarness, runId, alias)
+        await refreshRuns()
+      } catch {
+        // The list simply keeps its current name; nothing to roll back.
+      }
+    },
+    [refreshRuns, selectedHarness],
+  )
+
   useEffect(() => {
     setRuns(null)
     void refreshRuns()
@@ -326,6 +339,7 @@ export function App() {
         onDeleteConversation={(id) => void deleteConversation(id)}
         onSelectHarness={selectHarness}
         onSelectRun={(id) => selectRun(id)}
+        onRenameRun={(id, alias) => void renameRun(id, alias)}
       />
 
       <main className="main copilot-main">

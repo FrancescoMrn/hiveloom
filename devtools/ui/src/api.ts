@@ -169,6 +169,13 @@ export const api = {
       body: JSON.stringify({ version, label }),
     }).then((r) => r.tags),
 
+  /** An empty alias clears it, falling back to the run's auto-alias. */
+  setRunAlias: (id: string, runId: string, alias: string) =>
+    call<{ ok: true; run_id: string; alias: string | null }>(
+      `/api/harnesses/${id}/runs/${runId}/alias`,
+      { method: 'PUT', body: JSON.stringify({ alias }) },
+    ),
+
   /* ---------------------------------------------------- attachments */
 
   /**

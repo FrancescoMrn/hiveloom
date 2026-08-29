@@ -11,6 +11,7 @@ import type {
 } from '../types'
 import type { EventCategory, Span, Trajectory as TrajectoryProjection } from '../trajectory'
 import { categoryOf, formatMs, formatTokens, preview, projectTrajectory } from '../trajectory'
+import { runLabel } from '../runs'
 import { ForkDialog } from './ForkDialog'
 import { RunTotals, Timeline } from './Timeline'
 import { Label, Notice, Stat, StatRow, StatusPill, when } from './common'
@@ -136,6 +137,7 @@ export function Trajectory({
               Overview
             </button>
             <StatusPill status={run.status} />
+            <span className="ellipsis" style={{ fontWeight: 600 }}>{runLabel(run)}</span>
             <span className="mono run-id">{run.run_id}</span>
             <span className={`integrity ${integrityTone}`} title={open.integrity?.summary}>
               <i className={`ph ${integrityIcon}`} />
@@ -346,8 +348,11 @@ export function Trajectory({
           <tbody>
             {runs.map((run) => (
               <tr key={run.run_id} className="v-row" onClick={() => onSelectRun(run.run_id)}>
-                <td className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>
-                  {run.run_id}
+                <td
+                  style={{ fontSize: 12, color: 'var(--text)' }}
+                  title={[run.run_id, run.task].filter(Boolean).join(' · ')}
+                >
+                  {runLabel(run)}
                 </td>
                 <td><StatusPill status={run.status} /></td>
                 <td>{when(run.started_at)}</td>

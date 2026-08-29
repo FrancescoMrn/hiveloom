@@ -1,5 +1,6 @@
 import logo from '../../../../docs/assets/logo.png'
 import type { ConversationSummary, Harness, RunRow } from '../types'
+import { runLabel } from '../runs'
 import { statusColor, when } from './common'
 
 export function CopilotRail({
@@ -20,6 +21,7 @@ export function CopilotRail({
   onCloseMobile,
   onSelectHarness,
   onSelectRun,
+  onRenameRun,
 }: {
   harnesses: Harness[] | null
   conversations: ConversationSummary[] | null
@@ -38,6 +40,7 @@ export function CopilotRail({
   onCloseMobile: () => void
   onSelectHarness: (id: string) => void
   onSelectRun: (id: string) => void
+  onRenameRun: (id: string, alias: string) => void
 }) {
   return (
     <aside
@@ -150,13 +153,28 @@ export function CopilotRail({
                             className="copilot-run-row"
                             data-on={selectedRun === run.run_id ? '1' : '0'}
                             onClick={() => onSelectRun(run.run_id)}
-                            title={`${run.status} · ${run.run_id}`}
+                            title={[run.status, run.run_id, run.task].filter(Boolean).join(' · ')}
                           >
                             <span
                               className="dot"
                               style={{ background: statusColor(run.status) }}
                             />
-                            <span className="ellipsis">{run.task || run.run_id}</span>
+                            <span className="ellipsis">{runLabel(run)}</span>
+                            <span
+                              role="button"
+                              className="copilot-run-rename"
+                              title="Rename this run"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                const next = window.prompt(
+                                  'Name this run (empty restores the auto name)',
+                                  run.alias ?? '',
+                                )
+                                if (next !== null) onRenameRun(run.run_id, next.trim())
+                              }}
+                            >
+                              <i className="ph ph-pencil-simple" />
+                            </span>
                             <small>{when(run.started_at).split(',')[0]}</small>
                           </button>
                         ))

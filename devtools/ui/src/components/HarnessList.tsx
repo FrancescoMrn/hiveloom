@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { groupHarnesses, groupLabel } from '../harnesses'
+import { runLabel } from '../runs'
 import type { Harness, RunRow, VersionTags } from '../types'
 import { statusColor, when } from './common'
 
@@ -279,7 +280,7 @@ function VersionRail({
                     onClick={() => onSelectRun(run.run_id)}
                   >
                     <span className="dot" style={{ background: statusColor(run.status) }} />
-                    <span className="ellipsis">{run.task || run.run_id.replace(/^run_/, '')}</span>
+                    <span className="ellipsis">{runLabel(run)}</span>
                     <span className="rail-run-when">
                       {run.run_id === liveRunId ? 'live' : when(run.started_at).split(',')[0]}
                     </span>

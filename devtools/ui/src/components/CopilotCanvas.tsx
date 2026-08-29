@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, streamRun } from '../api'
+import { runLabel } from '../runs'
 import type { Artifact, RunResult, TraceEvent, Verdict } from '../types'
 import { Stat, StatRow, StatusPill, VerdictChip } from './common'
 
@@ -191,7 +192,7 @@ export function InterfacePreview({
       {run && (
         <div className="interface-run-meta">
           <StatusPill status={run.status} />
-          <span className="mono">{run.run_id}</span>
+          <span title={run.run_id}>{runLabel(run)}</span>
           <span>{run.turns} turns</span>
           <span>${run.cost_usd.toFixed(4)}</span>
           {(run.verdicts ?? []).map((verdict) => (
@@ -262,7 +263,9 @@ function TargetRun({ data }: { data: Record<string, unknown> }) {
     <div className="canvas-stack">
       <div className="canvas-title-row">
         <StatusPill status={String(data.status ?? 'unknown')} />
-        <span className="mono">{String(data.run_id ?? '')}</span>
+        <span title={String(data.run_id ?? '')}>
+          {runLabel({ run_id: String(data.run_id ?? ''), alias: data.alias as string | null })}
+        </span>
       </div>
       <StatRow>
         <Stat label="Turns" value={String(data.turns ?? 0)} />
@@ -300,7 +303,9 @@ function RunEvidence({ data }: { data: Record<string, unknown> }) {
     <div className="canvas-stack">
       <div className="canvas-title-row">
         <StatusPill status={String(run.status ?? 'unknown')} />
-        <span className="mono">{String(run.run_id ?? '')}</span>
+        <span title={String(run.run_id ?? '')}>
+          {runLabel({ run_id: String(run.run_id ?? ''), alias: run.alias as string | null })}
+        </span>
       </div>
       <p className="canvas-lede">{String(run.task ?? 'No task statement recorded.')}</p>
       <StatRow>
@@ -369,8 +374,10 @@ function RecentRuns({ data }: { data: Record<string, unknown> }) {
               <div key={String(run.run_id ?? index)}>
                 <StatusPill status={String(run.status ?? 'unknown')} />
                 <div>
-                  <strong>{String(run.task ?? 'No task statement')}</strong>
-                  <small className="mono">{String(run.run_id ?? '')}</small>
+                  <strong title={String(run.run_id ?? '')}>
+                    {runLabel({ run_id: String(run.run_id ?? ''), alias: run.alias as string | null })}
+                  </strong>
+                  <small className="ellipsis">{String(run.task ?? 'No task statement')}</small>
                 </div>
                 <small>{String(run.turns ?? 0)} turns · ${number(run.cost_usd).toFixed(4)}</small>
               </div>

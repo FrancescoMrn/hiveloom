@@ -1093,6 +1093,47 @@ def test_an_empty_label_clears_the_tag(client: TestClient) -> None:
     assert cleared.json()["tags"] == {}
 
 
+def test_run_alias_round_trips_on_disk_and_joins_the_run_list(
+    client: TestClient, harness_copy: Path
+) -> None:
+    """An alias is display metadata: it lives beside the harness (never in the
+    Hive, which a re-ingest rewrites) and rides along on every run row."""
+    from hiveloom.logging.trace import TraceWriter
+
+    writer = TraceWriter(
+        harness_copy / ".hiveloom" / "traces",
+        run_id="run_alias_target",
+        harness_name="example-summarizer",
+        version_hash="abc123def456",
+    )
+    writer.emit("run_started", input="name me")
+    writer.emit("run_finished", status="success", turns=1, cost_usd=0.0, duration_seconds=0.1)
+
+    runs = client.get("/api/harnesses/example-summarizer/runs").json()["runs"]
+    assert runs, "the seeded run must appear in the list"
+    run_id = runs[0]["run_id"]
+    assert runs[0]["alias"] is None
+
+    response = client.put(
+        f"/api/harnesses/example-summarizer/runs/{run_id}/alias",
+        json={"alias": "the hallucination repro"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "run_id": run_id, "alias": "the hallucination repro"}
+
+    stored = json.loads((harness_copy / ".hiveloom" / "run_aliases.json").read_text())
+    assert stored == {run_id: "the hallucination repro"}
+    listed = client.get("/api/harnesses/example-summarizer/runs").json()["runs"]
+    assert listed[0]["alias"] == "the hallucination repro"
+
+    cleared = client.put(
+        f"/api/harnesses/example-summarizer/runs/{run_id}/alias", json={"alias": ""}
+    )
+    assert cleared.json()["alias"] is None
+    listed = client.get("/api/harnesses/example-summarizer/runs").json()["runs"]
+    assert listed[0]["alias"] is None
+
+
 def test_tag_endpoint_refuses_a_missing_version(client: TestClient) -> None:
     response = client.put("/api/harnesses/example-summarizer/tags", json={"label": "x"})
     assert response.status_code == 400

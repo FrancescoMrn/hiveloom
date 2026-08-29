@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { bestRun, conversationFrom } from './runs.ts'
+import { autoAlias, bestRun, conversationFrom, runLabel } from './runs.ts'
 
 const run = (over: Record<string, unknown>) => ({
   run_id: 'run_x',
@@ -82,4 +82,24 @@ test('a conversation that opens with a reply drops it', () => {
   // thread with an assistant message, which is not a conversation.
   const rows = conversationFrom([turn('assistant', 'orphan'), turn('user', 'go')])
   assert.deepEqual(rows, [{ role: 'user', content: 'go' }])
+})
+
+test('runLabel prefers a person\'s alias, collapsed to one line', () => {
+  assert.equal(
+    runLabel({ run_id: 'run_abcdef1234567890', alias: '  the hallucination\n  repro ' }),
+    'the hallucination repro',
+  )
+})
+
+test('runLabel falls back to the deterministic auto-alias, never the raw id or task', () => {
+  const label = runLabel({ run_id: 'run_abcdef1234567890' })
+  assert.match(label, /^[a-z]+-[a-z]+-abcd$/)
+  assert.equal(label, autoAlias('run_abcdef1234567890'))
+  assert.equal(runLabel({ run_id: 'run_abcdef1234567890', alias: '   ' }), label)
+})
+
+test('autoAlias is a pure function of the id and embeds the short hash', () => {
+  assert.equal(autoAlias('run_abcdef1234567890'), autoAlias('run_abcdef1234567890'))
+  assert.notEqual(autoAlias('run_abcdef1234567890'), autoAlias('run_1234567890abcdef'))
+  assert.ok(autoAlias('run_e8a76671beca4641').endsWith('-e8a7'))
 })

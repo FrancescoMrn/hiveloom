@@ -99,6 +99,7 @@ _UPLOAD_SUBDIR = "uploads"
 # label is something a person writes and a running harness cannot read or
 # rewrite.
 _TAGS_FILE = Path(".hiveloom") / "version_tags.json"
+_ALIASES_FILE = Path(".hiveloom") / "run_aliases.json"
 
 # An attachment is context for one turn, not a data transfer: past a megabyte
 # or so it belongs in the workspace already, referenced by path.
@@ -757,6 +758,29 @@ def _write_tags(harness_dir: str, tags: dict[str, str]) -> None:
     path.write_text(json.dumps(tags, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _read_aliases(harness_dir: str) -> dict[str, str]:
+    """Human aliases for this harness's runs — same store shape as version tags.
+
+    A file beside the traces rather than a Hive column because an alias is
+    display metadata: re-ingesting a journal must never wipe it, and archiving
+    the harness should take its names along.
+    """
+    path = Path(harness_dir) / _ALIASES_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v.strip()}
+
+
+def _write_aliases(harness_dir: str, aliases: dict[str, str]) -> None:
+    path = Path(harness_dir) / _ALIASES_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(aliases, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _upload_name(name: str) -> str:
     """A filename from a browser, reduced to one path segment we chose.
 
@@ -1152,6 +1176,12 @@ class _CopilotWorkbench:
         if run is None:
             raise LookupError(f"run {target!r} is not in the Hive")
         trace_path = Path(run.get("trace_path") or "")
+        # The copilot's canvas names runs the way the rail does, so the row
+        # carries its alias (stored beside the traces it names).
+        if len(trace_path.parents) >= 3:
+            run["alias"] = _read_aliases(str(trace_path.parents[2])).get(run["run_id"])
+        else:
+            run["alias"] = None
         events = read_events(trace_path) if trace_path.is_file() else []
         evidence = []
         for event in events:
@@ -1206,6 +1236,9 @@ class _CopilotWorkbench:
                 )
                 if (run := hive.get_run(path.stem)) is not None
             ][: int(limit)]
+        aliases = _read_aliases(entry["path"])
+        for run in rows:
+            run["alias"] = aliases.get(run["run_id"])
         return {
             "harness_id": entry["id"],
             "harness_name": entry["name"],
@@ -2085,13 +2118,42 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                 # by run id.
                 _ingest_entry_traces(hive, entry)
                 rows = []
+                aliases = _read_aliases(entry["path"])
                 for path in sorted(_trace_files(entry["path"]), reverse=True):
                     run = hive.get_run(path.stem)
                     if run is not None:
+                        run["alias"] = aliases.get(run["run_id"])
                         rows.append(run)
                 return rows
 
         return JSONResponse({"runs": await asyncio.to_thread(work)})
+
+    @_guarded
+    async def put_run_alias(request: Request) -> Response:
+        """Name a run, or clear its alias with an empty string.
+
+        Free text, the same contract as version tags: what a run is called —
+        `baseline`, `the hallucination repro` — is the reader's judgement.
+        Stored beside the harness rather than in the Hive so a re-ingest never
+        wipes it.
+        """
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        run_id = request.path_params["run_id"]
+        body = json.loads(await request.body() or b"{}")
+        alias = str(body.get("alias") or "").strip()
+        if len(alias) > 64:
+            raise ValueError("an alias is at most 64 characters")
+
+        def work() -> dict[str, Any]:
+            aliases = _read_aliases(entry["path"])
+            if alias:
+                aliases[run_id] = alias
+            else:
+                aliases.pop(run_id, None)
+            _write_aliases(entry["path"], aliases)
+            return {"ok": True, "run_id": run_id, "alias": alias or None}
+
+        return JSONResponse(await asyncio.to_thread(work))
 
     @_guarded
     async def get_run(request: Request) -> Response:
@@ -2108,6 +2170,12 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                 raise LookupError(f"run {run_id!r} is not in the Hive")
             events: list[dict[str, Any]] = []
             trace_file = Path(run.get("trace_path", ""))
+            # <harness>/.hiveloom/traces/<run>.jsonl — the alias store lives
+            # two directories up, beside the traces it names.
+            if len(trace_file.parents) >= 3:
+                run["alias"] = _read_aliases(str(trace_file.parents[2])).get(run_id)
+            else:
+                run["alias"] = None
             if trace_file.exists():
                 events = read_events(trace_file)
                 chain = verify_chain(trace_file)
@@ -2685,6 +2753,9 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         Route("/api/harnesses/{harness_id}/run", run_endpoint, methods=["POST"]),
         Route("/api/harnesses/{harness_id}/interface", get_interface, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/runs", list_runs, methods=["GET"]),
+        Route(
+            "/api/harnesses/{harness_id}/runs/{run_id}/alias", put_run_alias, methods=["PUT"]
+        ),
         Route("/api/harnesses/{harness_id}/resume", resume_fork, methods=["POST"]),
         Route("/api/harnesses/{harness_id}/tags", list_version_tags, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/tags", put_version_tag, methods=["PUT"]),

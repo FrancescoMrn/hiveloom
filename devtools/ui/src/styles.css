@@ -3272,6 +3272,9 @@ a:hover { color: color-mix(in srgb, var(--acc) 76%, var(--text)); }
 .copilot-run-row:hover, .copilot-run-row[data-on="1"] { background: var(--hover-strong); color: var(--text); }
 .copilot-run-row .dot { width: 5px; height: 5px; border-radius: 50%; }
 .copilot-run-row small { color: var(--mut); font-size: 9.5px; }
+.copilot-run-rename { display: none; color: var(--mut); line-height: 1; }
+.copilot-run-row:hover .copilot-run-rename { display: inline-flex; }
+.copilot-run-rename:hover { color: var(--text); }
 
 .copilot-main { background: var(--bg); }
 .copilot-main > .copilot-header {

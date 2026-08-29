@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { ancestryOf, buildVersionGraph, childrenOf, type VersionNode } from '../lineage'
-import { bestRun } from '../runs'
+import { bestRun, runLabel } from '../runs'
 import type {
   Comparison,
   Harness,
@@ -365,7 +365,7 @@ function GraphRow({
           </span>
           {node.runs.slice(0, 2).map((run) => (
             <span key={run.run_id} className="graph-run ellipsis">
-              {run.task || run.run_id}
+              {runLabel(run)}
             </span>
           ))}
           <span style={{ marginLeft: 'auto', flex: 'none' }}>

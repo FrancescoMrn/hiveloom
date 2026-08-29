@@ -106,6 +106,8 @@ export interface RunRow {
   harness_name: string
   /** The input that opened the run. */
   task?: string
+  /** Human name for the run, when someone set one; auto-alias otherwise. */
+  alias?: string | null
   /** Set by the client when runs from several branch folders are merged. */
   folder?: string
   harness_version_hash: string

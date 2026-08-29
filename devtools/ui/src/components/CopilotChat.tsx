@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import logo from '../../../../docs/assets/logo.png'
 import { projectTrajectory } from '../trajectory'
 import { api } from '../api'
+import { runLabel } from '../runs'
 import type { Artifact, Attachment, CopilotInfo, Harness, RunRow } from '../types'
 import type { CopilotWorkspace } from '../useCopilot'
 import { MessageBody } from './Chat'
@@ -169,13 +170,13 @@ export function CopilotChat({
               </span>
             )}
             {run && (
-              <span className="copilot-context-chip mono">
-                <i className="ph ph-list-magnifying-glass" /> {run.run_id}
+              <span className="copilot-context-chip" title={run.run_id}>
+                <i className="ph ph-list-magnifying-glass" /> {runLabel(run)}
                 <button
                   className="copilot-context-remove"
                   onClick={onDetachRun}
                   title="Remove this run from chat context"
-                  aria-label={`Remove ${run.run_id} from chat context`}
+                  aria-label={`Remove ${runLabel(run)} from chat context`}
                 >
                   <i className="ph ph-x" />
                 </button>
@@ -311,7 +312,10 @@ function artifactSummary(artifact: Artifact): string {
   if (artifact.kind === 'target_run') return `${data.harness_name ?? 'Harness'} · ${data.status ?? 'finished'}`
   if (artifact.kind === 'harness_created') return String(data.name ?? 'New harness')
   if (artifact.kind === 'interface') return `${data.harness_name ?? 'Harness'} interface`
-  if (artifact.kind === 'run_evidence') return String(record(data.run).run_id ?? 'Run evidence')
+  if (artifact.kind === 'run_evidence') {
+    const run = record(data.run)
+    return run.run_id ? runLabel({ run_id: String(run.run_id), alias: run.alias as string | null }) : 'Run evidence'
+  }
   if (artifact.kind === 'recent_runs') return `${data.count ?? 0} runs · ${data.harness_name ?? 'Harness'}`
   if (artifact.kind === 'memories') return `${data.count ?? 0} durable memories`
   if (artifact.kind === 'memory_saved') return String(data.content ?? 'Saved for later conversations')

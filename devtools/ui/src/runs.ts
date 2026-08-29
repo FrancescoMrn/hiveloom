@@ -1,5 +1,49 @@
 import type { RunRow } from './types'
 
+// Small on purpose: 32×32 gives ~1000 combinations, and the short hash the
+// auto-alias carries is what actually disambiguates. The words only make the
+// hash pronounceable.
+const ALIAS_ADJECTIVES = [
+  'amber', 'bold', 'brisk', 'calm', 'clear', 'crisp', 'deft', 'dry',
+  'eager', 'fleet', 'fond', 'glad', 'grand', 'green', 'keen', 'kind',
+  'late', 'light', 'lone', 'loud', 'mild', 'neat', 'pale', 'plain',
+  'proud', 'quick', 'ripe', 'sharp', 'still', 'swift', 'warm', 'wise',
+]
+const ALIAS_NOUNS = [
+  'aspen', 'birch', 'brook', 'cedar', 'cliff', 'cloud', 'coast', 'cove',
+  'crane', 'dune', 'fern', 'field', 'fjord', 'glen', 'grove', 'heath',
+  'heron', 'lake', 'marsh', 'meadow', 'otter', 'pine', 'plume', 'reef',
+  'ridge', 'river', 'shoal', 'slope', 'spruce', 'stone', 'vale', 'wren',
+]
+
+/**
+ * The deterministic auto-generated alias for a run: two words picked from the
+ * run id plus its short hash, e.g. `brisk-otter-e8a7`. Pure function of the
+ * id, so every surface (and every reload) derives the same name with nothing
+ * stored anywhere.
+ */
+export function autoAlias(runId: string): string {
+  const hex = runId.replace(/^run_/, '')
+  const n = parseInt(hex.slice(0, 8), 16) || 0
+  const adjective = ALIAS_ADJECTIVES[n % ALIAS_ADJECTIVES.length]
+  const noun = ALIAS_NOUNS[Math.floor(n / ALIAS_ADJECTIVES.length) % ALIAS_NOUNS.length]
+  return `${adjective}-${noun}-${hex.slice(0, 4)}`
+}
+
+/**
+ * A human label for a run row, everywhere one is listed (the rail, the Runs
+ * tab, version drill-downs).
+ *
+ * A person's alias wins when they set one; otherwise the run gets its
+ * deterministic auto-alias. The task statement deliberately does NOT name the
+ * run — an input like `Hello` or a pasted document makes an unreadable list —
+ * it belongs in the tooltip and the detail view, next to the full id.
+ */
+export function runLabel(run: Pick<RunRow, 'run_id' | 'alias'>): string {
+  const alias = (run.alias ?? '').replace(/\s+/g, ' ').trim()
+  return alias || autoAlias(run.run_id)
+}
+
 /**
  * The run worth comparing for a version: successful first, then cheapest, then
  * fewest turns. A version with no successful run has no best run — comparing
