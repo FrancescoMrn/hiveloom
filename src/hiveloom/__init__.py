@@ -26,7 +26,11 @@ __version__ = "1.0.0"
 from hiveloom.spec.schema import HarnessSpec
 
 if TYPE_CHECKING:
-    from hiveloom.execution import RunExecutionEnvelope, VerificationSummary  # noqa: F401
+    from hiveloom.execution import (  # noqa: F401
+        RunExecutionEnvelope,
+        StepExecutionRecord,
+        VerificationSummary,
+    )
     from hiveloom.generate.generator import generate as generate_harness  # noqa: F401
     from hiveloom.logging.hive import Hive  # noqa: F401
     from hiveloom.loop.agent_loop import RunResult  # noqa: F401
@@ -40,6 +44,7 @@ _SDK = {
     "dry_run": ("hiveloom.runner", "dry_run"),
     "RunResult": ("hiveloom.loop.agent_loop", "RunResult"),
     "RunExecutionEnvelope": ("hiveloom.execution", "RunExecutionEnvelope"),
+    "StepExecutionRecord": ("hiveloom.execution", "StepExecutionRecord"),
     "VerificationSummary": ("hiveloom.execution", "VerificationSummary"),
     # named generate_harness: plain `generate` would shadow the subpackage
     "generate_harness": ("hiveloom.generate.generator", "generate"),

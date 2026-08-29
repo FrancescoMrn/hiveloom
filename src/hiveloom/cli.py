@@ -1050,6 +1050,15 @@ def run(
                 _console.print(f"[bold]dry run[/bold] — {info['name']} ({info['model']})")
                 _console.print(f"system:\n{info['system']}")
                 _console.print(f"tools: {[t['name'] for t in info['tools']]}")
+                if info.get("steps"):
+                    _console.print("steps:")
+                    for step in info["steps"]:
+                        _console.print(
+                            f"  {step['id']}: tools={step['tools']} "
+                            f"required={step['require_tool_calls']} "
+                            f"model_calls<={step['max_model_calls']} "
+                            f"tool_calls<={step['max_tool_calls']}"
+                        )
                 _console.print(f"first message: {info['messages'][0]['content']}")
             return
 

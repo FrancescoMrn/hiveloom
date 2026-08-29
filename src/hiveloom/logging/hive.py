@@ -126,11 +126,25 @@ CREATE TABLE IF NOT EXISTS run_outcomes (
     detail TEXT,
     recorded_at TEXT
 );
+CREATE TABLE IF NOT EXISTS run_steps (
+    run_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    instruction TEXT NOT NULL,
+    status TEXT NOT NULL,
+    model_calls INTEGER NOT NULL,
+    tool_calls INTEGER NOT NULL,
+    required_tool_calls_json TEXT NOT NULL,
+    completed_required_tool_calls_json TEXT NOT NULL,
+    violations_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, step_id)
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_name ON playbook_visits(playbook);
+CREATE INDEX IF NOT EXISTS idx_run_steps_run ON run_steps(run_id);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
 CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
@@ -286,6 +300,7 @@ class Hive:
         verifications: list[tuple] = []
         triggers: list[tuple] = []
         visits: list[tuple] = []
+        steps: list[tuple] = []
 
         for event in events:
             etype = event.get("type")
@@ -309,6 +324,23 @@ class Hive:
                 row["reason"] = payload.get("reason", "")
                 row["finished_at"] = event.get("timestamp")
                 row["model_path"] = payload.get("model_path", "") or ""
+                for step in payload.get("steps") or []:
+                    if not isinstance(step, dict):
+                        continue
+                    steps.append(
+                        (
+                            run_id,
+                            str(step.get("id") or ""),
+                            int(step.get("index") or 0),
+                            str(step.get("instruction") or "")[:2000],
+                            str(step.get("status") or "pending"),
+                            int(step.get("model_calls") or 0),
+                            int(step.get("tool_calls") or 0),
+                            json.dumps(step.get("required_tool_calls") or []),
+                            json.dumps(step.get("completed_required_tool_calls") or []),
+                            json.dumps(step.get("violations") or []),
+                        )
+                    )
             elif etype == "verification_result":
                 verifications.append(
                     (
@@ -347,6 +379,7 @@ class Hive:
         cur.execute("DELETE FROM verifications WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM guardrail_triggers WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
+        cur.execute("DELETE FROM run_steps WHERE run_id=?", (run_id,))
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
@@ -372,6 +405,13 @@ class Hive:
             "INSERT INTO playbook_visits (run_id, seq, playbook, entered_from, ok, reason) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             visits,
+        )
+        cur.executemany(
+            "INSERT INTO run_steps (run_id, step_id, step_index, instruction, status, "
+            "model_calls, tool_calls, required_tool_calls_json, "
+            "completed_required_tool_calls_json, violations_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            steps,
         )
 
     # ------------------------------------------------------------------ #
@@ -572,7 +612,7 @@ class Hive:
         return result
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        """Fetch a single run with its verifications and guardrail triggers."""
+        """Fetch one run with verification, guardrail, and sequential-step receipts."""
         run = self._conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
         if run is None:
             return None
@@ -593,6 +633,23 @@ class Hive:
                 (run_id,),
             ).fetchall()
         ]
+        entry["steps"] = []
+        for row in self._conn.execute(
+            "SELECT step_id AS id, step_index AS 'index', instruction, status, "
+            "model_calls, tool_calls, required_tool_calls_json, "
+            "completed_required_tool_calls_json, violations_json FROM run_steps "
+            "WHERE run_id=? ORDER BY step_index",
+            (run_id,),
+        ).fetchall():
+            step = dict(row)
+            step["required_tool_calls"] = json.loads(
+                step.pop("required_tool_calls_json")
+            )
+            step["completed_required_tool_calls"] = json.loads(
+                step.pop("completed_required_tool_calls_json")
+            )
+            step["violations"] = json.loads(step.pop("violations_json"))
+            entry["steps"].append(step)
         return entry
 
     def lineage(self, run_id: str) -> dict[str, Any]:
@@ -748,6 +805,9 @@ class Hive:
         )
         self._conn.execute(
             f"DELETE FROM run_outcomes WHERE run_id IN ({placeholders})", run_ids
+        )
+        self._conn.execute(
+            f"DELETE FROM run_steps WHERE run_id IN ({placeholders})", run_ids
         )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()

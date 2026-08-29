@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   performs a fully validated atomic rewrite with rollback. The spelling change
   is behavior-hash neutral, so existing Hive buckets and journals remain
   comparable.
+- `sequential_steps` now accepts structured phases with stable IDs, effective
+  tool subsets, required successful tool calls, and per-step model/tool call
+  limits. Hidden tools are blocked before dispatch; step events reach traces,
+  `RunResult.steps`, CLI/HTTP JSON, and Hive run records. Legacy string steps
+  retain their instruction-only behavior.
 
 ### Fixed
 

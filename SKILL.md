@@ -59,6 +59,10 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    middleware: block/patch tool calls, transform context) and
    `add skill <name> --description "..."` (progressive-disclosure SKILL.md the
    executor reads on demand — pair with the `file_read` tool).
+   For enforced phases, set structured `loop.steps` objects before selecting
+   `sequential_steps`; each object can declare `tools`, `require_tool_calls`,
+   `max_model_calls`, and `max_tool_calls`. Inspect the effective plan with
+   `run --dry-run --json`.
 3. **Finish**: `hiveloom validate ./h` then `hiveloom run ./h --input FILE --dry-run`
    (assembles the first model call without calling the model API; declared MCP
    servers are still contacted for eager tool discovery).
@@ -79,6 +83,10 @@ aggregate with `hiveloom stats ./h` (success rate / cost / turns **per version
 hash**). Running needs credentials for the configured provider when required
 (for example, `ANTHROPIC_API_KEY` for the default provider, loaded from the
 harness `.env`).
+
+Structured sequential runs return `steps` receipts in JSON and emit indexed
+step events. A hidden tool never reaches dispatch; missing required calls are
+retried within the step; exhausted step limits return exit 4.
 
 ## Improving a harness — use evolve, not the editor
 

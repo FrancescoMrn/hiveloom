@@ -46,6 +46,12 @@ inside; guardrails and validators gate it.
 | 3 | spec/validation error | `hiveloom validate ./h` and fix the construction |
 | 4 | runtime error | read the trace tail; usually a tool/hook exception or missing env var |
 
+A structured sequential step that exhausts `max_model_calls` or
+`max_tool_calls` returns `status: step_failed` with exit 4. Inspect the JSON
+result's `steps` receipts and the `step_started`, `step_violation`,
+`step_completed`, and `step_failed` trace events. The same receipts are
+available from the Hive run record.
+
 ## Before spending API budget
 
 ```bash
@@ -117,6 +123,11 @@ model identity, timestamps, total usage, cost source, verification attempts,
 execution fingerprint, and durable trace path. A clean first pass and a
 recovered success both have `status == "success"`; distinguish them with
 `result.execution.verification`.
+
+For `loop.policy: sequential_steps`, `result.steps` records each step's status,
+model/tool counts, completed required calls, and bounded violations. This avoids
+parsing trace text to distinguish a missing required call from a global loop
+limit.
 
 ## Next steps
 
