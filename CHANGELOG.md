@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop limits as bounded friction records. `hiveloom friction list` filters
   them by category, component, recovery state, model, and time; `hiveloom
   stats --include-friction` reports aggregate counts without reading traces.
+- Evolution can opt in to bounded incident packets selected from indexed
+  friction and failed runs. Structured redaction runs before deterministic
+  byte and token budgeting, missing or pruned journals fall back to indexed
+  summaries, and proposals retain an evidence receipt without copying event
+  payloads.
 
 ### Fixed
 

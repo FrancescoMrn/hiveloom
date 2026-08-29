@@ -888,6 +888,46 @@ class AutoProposeConfig(BaseModel):
     )
 
 
+class TraceExcerptConfig(BaseModel):
+    """Bounded, redacted incident evidence supplied to the proposing model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Include incident packets in evolution analysis. Opt-in by default.",
+    )
+    max_incidents: int = Field(
+        default=5, ge=1, le=20, description="Newest incidents considered per analysis."
+    )
+    before_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained before each incident."
+    )
+    after_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained after each incident."
+    )
+    max_event_bytes: int = Field(
+        default=2048,
+        ge=128,
+        le=16_384,
+        description="Maximum redacted payload bytes retained for one event.",
+    )
+    max_bytes: int = Field(
+        default=32_768,
+        ge=1024,
+        le=262_144,
+        description="Hard serialized-byte budget across all incident packets.",
+    )
+    max_tokens: int = Field(
+        default=8192,
+        ge=256,
+        le=65_536,
+        description=(
+            "Hard budget using the deterministic estimate ceil(serialized UTF-8 bytes / 4)."
+        ),
+    )
+
+
 class EvolutionConfig(BaseModel):
     """What the evolver may and may not change."""
 
@@ -906,6 +946,13 @@ class EvolutionConfig(BaseModel):
         default_factory=AutoProposeConfig,
         description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
+    trace_excerpts: TraceExcerptConfig = Field(
+        default_factory=TraceExcerptConfig,
+        description=(
+            "Opt-in redacted incident packets for evolution. Configuration is frozen from "
+            "evolution because it controls private evidence sent to the proposing model."
+        ),
+    )
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
@@ -918,6 +965,8 @@ class EvolutionConfig(BaseModel):
 # `evolution.auto_propose` is its own paid, post-run trigger — a harness must
 # never be able to enable that trigger via evolution itself (docs/spec.md
 # documents it as never mutable; this is what makes that claim true).
+# `evolution.trace_excerpts` controls which private journal evidence can reach
+# the proposing model, so evolution cannot widen its own evidence boundary.
 # `id` is identity, not behaviour: letting evolution (or a remote caller)
 # rewrite it would detach a harness from its own accumulated evidence.
 ALWAYS_FROZEN: tuple[str, ...] = (
@@ -929,6 +978,7 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "hooks",
     "mcp_servers",
     "evolution.auto_propose",
+    "evolution.trace_excerpts",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They

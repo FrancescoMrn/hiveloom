@@ -500,7 +500,13 @@ def _maybe_auto_propose(
                     return
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.identity, version=version)
+            report = analyze(
+                hive,
+                spec.identity,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+            )
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a

@@ -580,7 +580,13 @@ def create_app(
                 name = runner_mod.resolve_and_ingest(harness_dir, hive)
                 spec = load_spec(harness_dir)
                 # Scoped to the current version — see analyze().
-                report = evolve_mod.analyze(hive, name, version=spec_version_hash(spec, base))
+                report = evolve_mod.analyze(
+                    hive,
+                    name,
+                    version=spec_version_hash(spec, base),
+                    excerpt_config=spec.evolution.trace_excerpts,
+                    redaction=spec.logging.redact,
+                )
                 if report.is_empty():
                     return {"ok": True, "changed": False, "reason": "no failures to learn from"}
                 model = strong_model or build_strong_model(body.get("model"), base)

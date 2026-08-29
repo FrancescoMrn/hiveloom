@@ -48,6 +48,7 @@ class ProposalRecord(BaseModel):
     rationale: str
     proposal_json: str
     gate_json: str
+    evidence_json: str | None = None
     apply_result_json: str | None = None
     created_at: str
     resolved_at: str | None = None
@@ -67,6 +68,11 @@ class ProposalRecord(BaseModel):
         """The stored ``apply_result_json``, parsed, or ``None`` if unresolved."""
         return json.loads(self.apply_result_json) if self.apply_result_json else None
 
+    @property
+    def evidence(self) -> dict[str, Any] | None:
+        """Bounded evidence-selection receipt, never the copied event payloads."""
+        return json.loads(self.evidence_json) if self.evidence_json else None
+
 
 def _dedup_key(report: FailureReport) -> str:
     """Deterministic key over a failure report's cluster signatures.
@@ -75,7 +81,13 @@ def _dedup_key(report: FailureReport) -> str:
     dedups to the same pending proposal, regardless of cluster ordering.
     """
     signatures = sorted(f"{cluster.kind}:{cluster.signature}" for cluster in report.clusters)
-    return hashlib.sha256("\n".join(signatures).encode("utf-8")).hexdigest()[:12]
+    evidence = report.evidence_receipt() or {}
+    material = json.dumps(
+        {"signatures": signatures, "evidence_digest": evidence.get("digest", "")},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
 
 
 def create_proposal(
@@ -133,6 +145,11 @@ def create_proposal(
         "rationale": proposal.rationale,
         "proposal_json": proposal.model_dump_json(),
         "gate_json": gate_result.model_dump_json(),
+        "evidence_json": (
+            json.dumps(report.evidence_receipt(), sort_keys=True)
+            if report.evidence_receipt() is not None
+            else None
+        ),
         "apply_result_json": (
             None
             if queueable
@@ -257,10 +274,13 @@ def proposal_payload(record: ProposalRecord) -> dict[str, Any]:
     forms sent every gate result and code-change body twice, once opaque and
     once usable.
     """
-    payload = record.model_dump(exclude={"proposal_json", "gate_json", "apply_result_json"})
+    payload = record.model_dump(
+        exclude={"proposal_json", "gate_json", "evidence_json", "apply_result_json"}
+    )
     payload["proposal"] = record.proposal.model_dump()
     payload["gate"] = record.gate.model_dump()
     payload["apply_result"] = record.apply_result
+    payload["evidence"] = record.evidence
     return payload
 
 
