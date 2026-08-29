@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
+from hiveloom import __version__ as hiveloom_version
 from hiveloom import construct
 from hiveloom.errors import HiveloomError, SpecError
 from hiveloom.spec import loader
@@ -20,11 +22,23 @@ def test_init_creates_valid_skeleton(tmp_path: Path):
     assert spec.name == "my-h"
     assert (directory / "harness.yaml").exists()
     assert (directory / ".env.example").exists()
-    assert (directory / "requirements.txt").exists()
     assert (directory / "README.md").exists()
     assert (directory / ".gitignore").exists()
     # Freshly initialized harness is fully valid.
     validate_harness(directory)
+
+
+def test_init_pins_the_runtime_in_pyproject(tmp_path: Path):
+    """Dependencies are declared in PEP 621 metadata, pinned to this runtime."""
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="My Harness!", task='A "quoted" task.\nTwo lines.')
+    data = tomllib.loads((directory / "pyproject.toml").read_text(encoding="utf-8"))
+    # A harness name is free text; a distribution name is not.
+    assert data["project"]["name"] == "my-harness"
+    assert data["project"]["description"] == 'A "quoted" task. Two lines.'
+    assert data["project"]["dependencies"] == [f"hiveloom=={hiveloom_version}"]
+    # The folder is not a package: nothing is built, only the pins resolved.
+    assert data["tool"]["uv"]["package"] is False
 
 
 def test_init_refuses_to_clobber(harness_dir: Path):

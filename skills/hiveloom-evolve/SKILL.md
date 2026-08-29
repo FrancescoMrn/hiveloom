@@ -41,6 +41,27 @@ failed runs, run the harness on representative inputs first, or copy back
 traces from where it actually ran (see `hiveloom-ship`). Both `stats` and
 `evolve` ingest `./h/.hiveloom/traces/` idempotently by `run_id`.
 
+## Evolving a fork
+
+Analysis is scoped to the version on disk, so a fresh `hiveloom fork` — which
+exists *because* its parent failed, but has no runs of its own — reports
+`nothing to evolve`. Point it at the run it came from instead:
+
+```bash
+# The fork lands inside the harness it came from, at .hiveloom/forks/<name>.
+hiveloom fork <run_id> --at <seq> --name probe        # re-enter the failing run
+PROBE=./h/.hiveloom/forks/probe
+hiveloom evolve $PROBE --from-parent --propose --json
+hiveloom run $PROBE --resume                          # replay the prefix, changed harness
+```
+
+`--from-parent` reads the parent version out of the fork's `fork.yaml` and
+drafts against those failures, applying the result to the fork's own spec. The
+proposal is recorded with `trigger: fork`. Every gate above still applies — it
+changes which failures are analysed, nothing about what may be mutated. It
+errors if the directory is not a fork; once the fork has runs of its own,
+evolve it normally.
+
 ## Prove the mutation helped
 
 Every applied change bumps an `# evolved: N` counter in `harness.yaml` and

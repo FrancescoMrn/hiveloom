@@ -14,6 +14,7 @@ def _write_trace(
     run_id: str,
     *,
     name: str = "h",
+    harness_id: str = "",
     version: str = "v1",
     status: str = "success",
     verifications: list[tuple[bool, str]] | None = None,
@@ -27,6 +28,7 @@ def _write_trace(
         event = {
             "run_id": run_id,
             "harness_name": name,
+            "harness_id": harness_id,
             "harness_version_hash": version,
             "seq": seq,
             "timestamp": ts,
@@ -369,3 +371,40 @@ def test_hive_uses_wal_and_can_prune_completed_runs(tmp_path: Path):
         assert removed == 1
         assert hive.get_run("run_old") is None
         assert hive.get_run("run_recent") is not None
+
+
+# --------------------------------------------------------------------------- #
+# Harness identity: same name, different harness, separate evidence
+# --------------------------------------------------------------------------- #
+def test_same_named_harnesses_with_different_ids_never_share_evidence(tmp_path: Path):
+    """The 1.0 collision fix: the Hive keys runs on the spec's stable `id`
+    (the envelope's `harness_id`), so a second harness that merely shares the
+    display name can neither inflate nor poison the first one's stats,
+    failure signatures, or recent failures."""
+    a = _write_trace(tmp_path, "run_a", name="triage", harness_id="hl-aaa", status="success")
+    b = _write_trace(tmp_path, "run_b", name="triage", harness_id="hl-bbb",
+                     status="verify_failed", verifications=[(False, "bad JSON")])
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_trace_file(a)
+        hive.ingest_trace_file(b)
+
+        assert hive.summary("hl-aaa")["total_runs"] == 1
+        assert hive.summary("hl-aaa")["success_rate"] == 1.0
+        assert hive.summary("hl-bbb")["total_runs"] == 1
+        assert hive.summary("hl-bbb")["success_rate"] == 0.0
+        assert hive.failure_signatures("hl-aaa")["verdicts"] == []
+        assert hive.recent_failures("hl-aaa") == []
+        # The display name still reads through for headers.
+        assert hive.summary("hl-aaa")["harness_name"] == "triage"
+
+
+def test_pre_identity_traces_stay_keyed_by_name(tmp_path: Path):
+    """A trace with no `harness_id` (recorded before 1.0, or by a spec that
+    never adopted an id) keeps the old name keying, so existing histories
+    neither vanish nor migrate silently."""
+    legacy = _write_trace(tmp_path, "run_l", name="triage", status="success")
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_trace_file(legacy)
+        assert hive.summary("triage")["total_runs"] == 1
+        # And it does not leak into an id-keyed namesake.
+        assert hive.summary("hl-aaa")["total_runs"] == 0

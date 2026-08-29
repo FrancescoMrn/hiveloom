@@ -58,6 +58,29 @@ To debug a failure, read the trace's `verification_result`,
 proximate cause. `stats` bucketing by version hash is what proves a later
 mutation helped.
 
+The trace is a hash-chained journal, so two more things are available:
+
+```bash
+hiveloom trace run_abc123 --verify         # append-only chain intact? (exit 4 if broken)
+hiveloom trace run_abc123 --materialize 42 # the exact request sent at that seq
+```
+
+When reading the events is not enough, **fork the run** and reproduce the
+failure from the turn it happened on, against a changed harness:
+
+```bash
+hiveloom fork run_abc123 --list                  # the model calls you may re-enter
+hiveloom fork run_abc123 --at 42 --name probe    # -> ./h/.hiveloom/forks/probe
+# edit ./h/.hiveloom/forks/probe/harness.yaml, then:
+hiveloom run ./h/.hiveloom/forks/probe --resume  # replays the identical prefix
+hiveloom lineage run_abc123 --json
+```
+
+`--model` forks straight onto a different model, which is the clean A/B: one
+exact prefix, one variable, each arm in its own fitness bucket. Requires
+`logging.level: journal` (the default); `summary` records no context and
+therefore cannot be forked. See [docs/journal.md](../../docs/journal.md).
+
 ## Embedding in another program
 
 ```bash

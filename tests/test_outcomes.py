@@ -10,6 +10,7 @@ from hiveloom import runner
 from hiveloom.evolve.analyzer import analyze
 from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response
+from hiveloom.spec.loader import load_spec
 
 
 def _run(harness_dir: Path, hive_path: Path, text: str = "done") -> str:
@@ -48,7 +49,7 @@ def test_a_later_label_replaces_an_earlier_one(harness_dir: Path, tmp_path: Path
         hive.record_outcome(run_id, "failure")
         hive.record_outcome(run_id, "success", detail="corrected")
         assert hive.get_outcome(run_id)["outcome"] == "success"
-        assert hive.outcome_summary("test-harness")["labelled_runs"] == 1
+        assert hive.outcome_summary(load_spec(harness_dir).identity)["labelled_runs"] == 1
 
 
 def test_the_run_row_is_never_rewritten(harness_dir: Path, tmp_path: Path):
@@ -85,8 +86,8 @@ def test_outcome_rate_is_independent_of_validator_success(
         hive.record_outcome(ids[0], "success")
         hive.record_outcome(ids[1], "failure")
         hive.record_outcome(ids[2], "failure")
-        summary = hive.summary("test-harness")
-        outcomes = hive.outcome_summary("test-harness")
+        summary = hive.summary(load_spec(harness_dir).identity)
+        outcomes = hive.outcome_summary(load_spec(harness_dir).identity)
 
     assert summary["success_rate"] == 1.0  # every run satisfied the harness
     assert outcomes["labelled_runs"] == 3  # the fourth was never labelled
@@ -102,7 +103,7 @@ def test_failed_outcome_traces_are_available_for_analysis(
     with Hive(hive_path) as hive:
         hive.record_outcome(ids[0], "success")
         hive.record_outcome(ids[1], "failure", detail="targeted the wrong cohort")
-        failures = hive.failed_outcome_traces("test-harness")
+        failures = hive.failed_outcome_traces(load_spec(harness_dir).identity)
 
     assert len(failures) == 1
     assert failures[0]["run_id"] == ids[1]
@@ -118,7 +119,7 @@ def test_analyzer_surfaces_outcomes_to_the_evolving_model(
     with Hive(hive_path) as hive:
         hive.record_outcome(ids[0], "failure", detail="dismissed by the operator")
         hive.record_outcome(ids[1], "failure", detail="wrong segment")
-        report = analyze(hive, "test-harness")
+        report = analyze(hive, load_spec(harness_dir).identity)
 
     assert report.outcomes["failures"] == 2
     assert len(report.outcome_failures) == 2

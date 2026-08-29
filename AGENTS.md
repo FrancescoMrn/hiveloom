@@ -44,7 +44,8 @@ then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file).
 | You are asked to… | Load | Core commands |
 |---|---|---|
 | Create a harness for a task | [`skills/hiveloom-build`](skills/hiveloom-build/SKILL.md) | `schema --annotated`, `catalog`, `init`, `add`, `set`, `validate`, `run --dry-run`, `generate` |
-| Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run]`, `trace`, `stats` |
+| Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run\|--resume]`, `trace [--materialize\|--verify]`, `stats` |
+| Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
 | Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `stats` |
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
@@ -64,7 +65,17 @@ applying still needs an explicit `proposals apply`.
   SDK embedding.
 - [docs/deploying-and-evolving.md](docs/deploying-and-evolving.md) — portable
   artifacts and the production feedback loop.
-- [harnesses/](harnesses/) — working example harnesses to imitate.
+- [docs/journal.md](docs/journal.md) — the run journal, `trace --verify`,
+  forking a run, `--resume`, lineage, and mid-run model swaps.
+- [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
+  harness workspace, live run control, fork and compare.
+- [harnesses/](harnesses/) — five worked examples to imitate: `quickstart`
+  (no tools), `example-summarizer` (tools + verification),
+  `article-extractor` (a custom tool + anti-hallucination validator),
+  `routing-lab` (playbooks, forking, evolution — offline, no API key), and
+  `ticket-triage` (an MCP server as the harness's only data source).
+  Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
+  editing its `harness.yaml` by hand.
 
 ## Working on hiveloom itself
 

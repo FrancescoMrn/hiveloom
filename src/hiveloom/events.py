@@ -124,7 +124,7 @@ def build_event_bus(
     spec: HarnessSpec, base_dir: str | Path, trace: TraceWriter | None = None
 ) -> EventBus:
     """Assemble the bus: ambient extension handlers first, then spec hooks."""
-    from hiveloom.spec.loader import _import_hook
+    from hiveloom.spec.loader import import_hook
 
     base = Path(base_dir)
     if base.is_file():
@@ -138,6 +138,6 @@ def build_event_bus(
             handler = ext.build("hooks", ref.builtin, ref.params(), ext.BuildContext(base=base))
             bus.subscribe(ref.event, ref.builtin, handler)
         elif isinstance(ref, CodeHookRef):
-            func = _import_hook(ref.code, base)
+            func = import_hook(ref.code, base)
             bus.subscribe(ref.event, ref.code, func)
     return bus

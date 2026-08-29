@@ -1,15 +1,17 @@
 [project]
 name = "hiveloom"
-version = "0.5.0"
+version = "1.0.0"
 description = "Generate, run, and evolve agent harnesses on the fly so small models reliably perform company tasks."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "hiveloom contributors" }]
-keywords = ["agents", "llm", "harness", "anthropic", "claude", "evolution"]
+keywords = ["agents", "llm", "harness", "evolution", "mcp"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -34,6 +36,15 @@ dependencies = [
     "cryptography>=42.0",
 ]
 
+# Rendered as the sidebar links on the PyPI project page. Without these the
+# published package points nowhere, since the long description is the README.
+[project.urls]
+Homepage = "https://github.com/FrancescoMrn/hiveloom"
+Repository = "https://github.com/FrancescoMrn/hiveloom"
+Documentation = "https://github.com/FrancescoMrn/hiveloom/blob/main/README.md"
+Changelog = "https://github.com/FrancescoMrn/hiveloom/blob/main/CHANGELOG.md"
+Issues = "https://github.com/FrancescoMrn/hiveloom/issues"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=7.0", "ruff>=0.16.0"]
 
@@ -55,9 +66,11 @@ packages = ["src/hiveloom"]
 "SKILL.md" = "hiveloom/agent_docs/SKILL.md"
 "skills" = "hiveloom/agent_docs/skills"
 
-# The distribution carries what is needed to run the library, the example
-# harnesses, and the agent guidance — nothing else. Development material —
-# tests, docs, evals, CI config — stays in the repository.
+# The sdist carries the library, the example harnesses, and the agent
+# guidance — nothing else. The wheel deliberately ships only the library and
+# guidance: the example harnesses are repository/sdist material, not an
+# importable surface. Development material — tests, docs, evals, CI config —
+# stays in the repository.
 [tool.hatch.build.targets.sdist]
 only-include = [
     "src/hiveloom",

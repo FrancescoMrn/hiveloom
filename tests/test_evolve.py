@@ -478,7 +478,7 @@ def test_apply_records_evolution_in_hive(tmp_path: Path):
     )
     with Hive(tmp_path / "hive.db") as hive:
         result = apply_proposal(harness, proposal, hive=hive, apply_yaml=True)
-        evolutions = hive.evolutions("demo")
+        evolutions = hive.evolutions(load_spec(harness).identity)
     assert len(evolutions) == 1
     assert evolutions[0]["new_version_hash"] == result.new_version_hash
     assert evolutions[0]["rationale"] == "tune"
@@ -552,7 +552,8 @@ def _seed_failure(tmp_path: Path, harness: Path) -> None:
     """
     spec = load_spec(harness)
     trace = _write_trace(
-        tmp_path, "run_a", name=spec.name, version=spec_version_hash(spec, harness),
+        tmp_path, "run_a", name=spec.name, harness_id=spec.id,
+        version=spec_version_hash(spec, harness),
         status="verify_failed", verifications=[(False, "not valid JSON")],
     )
     with Hive() as hive:  # the autouse conftest fixture points this at a throwaway db
@@ -599,6 +600,46 @@ def test_cli_evolve_propose_queues_without_applying(tmp_path: Path, monkeypatch)
     assert not (harness / "harness.yaml").read_text().startswith("# evolved")
 
 
+def test_cli_evolve_resolves_a_harness_declared_provider(tmp_path: Path):
+    harness = _harness(tmp_path)
+    extension = harness / "evolve_provider.py"
+    extension.write_text(
+        """
+from hiveloom.models.fake import FakeModelProvider, text_response
+
+def hiveloom_extension(hive):
+    hive.register_provider(
+        "local_evolver",
+        lambda _ctx: FakeModelProvider([text_response(
+            '{"rationale":"clarify","yaml_changes":'
+            '[{"path":"loop.max_turns","value":25}]}'
+        )]),
+        models=[{"id": "proposal-model", "provider": "local_evolver"}],
+        api="local",
+    )
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    construct.set_value(harness, "extensions", ["evolve_provider.py"])
+    _seed_failure(tmp_path, harness)
+
+    result = cli_runner.invoke(
+        cli.app,
+        [
+            "evolve",
+            str(harness),
+            "--model",
+            "local_evolver/proposal-model",
+            "--propose",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    assert json.loads(result.stdout)["status"] == "pending"
+
+
 def test_cli_evolve_propose_ignores_yes(tmp_path: Path, monkeypatch):
     harness = _harness(tmp_path)
     _seed_failure(tmp_path, harness)
@@ -626,3 +667,87 @@ def test_cli_evolve_without_propose_is_unchanged(tmp_path: Path, monkeypatch):
     assert payload["ok"] is True
     assert payload["changed"] is True
     assert (harness / "harness.yaml").read_text().startswith("# evolved: 1")
+
+
+# --------------------------------------------------------------------------- #
+# Evolving a fork: --from-parent
+# --------------------------------------------------------------------------- #
+def _forked_from_a_failure(tmp_path: Path) -> Path:
+    """A real fork of a real failing run, edited so it has a version of its own.
+
+    Built through ``create_fork`` rather than by hand: ``--from-parent`` reads
+    a key out of the lineage record, so a stand-in ``fork.yaml`` would keep
+    passing if that key were ever renamed.
+    """
+    import shutil
+
+    from hiveloom import fork as fork_mod
+    from hiveloom import runner
+    from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
+
+    example = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+    parent = tmp_path / "summarizer"
+    shutil.copytree(example, parent)
+    (parent / "notes.txt").write_text("The quick brown fox jumps over the lazy dog. " * 30)
+
+    provider = FakeModelProvider(
+        [
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c1"),
+            text_response("not json"),
+            text_response("still not json"),
+        ]
+    )
+    result = runner.run_harness(parent, "notes.txt", provider=provider)
+    assert result.status == "verify_failed"
+
+    fork_dir = tmp_path / "probe"
+    fork_mod.create_fork(result.trace_path, fork_dir)
+    # The edit is the point of forking, and it is also what gives the fork a
+    # version hash of its own — which is what hides the parent's failures.
+    construct.set_field(fork_dir, "loop.max_turns", "9")
+    return fork_dir
+
+
+def test_a_fresh_fork_has_nothing_to_evolve_without_from_parent(tmp_path: Path, monkeypatch):
+    """The gap --from-parent closes: a fork is created *because* its parent
+    failed, but it has no runs at its own version, so the default scoping
+    reports nothing at exactly the moment there is most to say."""
+    fork_dir = _forked_from_a_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(cli.app, ["evolve", str(fork_dir), "--propose", "--json"])
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["changed"] is False
+    assert "on earlier versions" in payload["reason"]
+
+
+def test_from_parent_evolves_a_fork_against_the_failure_it_came_from(tmp_path: Path, monkeypatch):
+    fork_dir = _forked_from_a_failure(tmp_path)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(
+        cli.app, ["evolve", str(fork_dir), "--from-parent", "--propose", "--json"]
+    )
+
+    assert result.exit_code == ExitCode.OK, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "pending"
+    # Recorded as fork-triggered, so the queue says where the evidence came from.
+    assert payload["trigger"] == "fork"
+    # Queued, never applied — the gate is unchanged by the new flag.
+    assert not (fork_dir / "harness.yaml").read_text().startswith("# evolved")
+
+
+def test_from_parent_needs_a_fork_directory(tmp_path: Path, monkeypatch):
+    harness = _harness(tmp_path)
+    _seed_failure(tmp_path, harness)
+    _fake_model(monkeypatch, _PROPOSAL_PAYLOAD)
+
+    result = cli_runner.invoke(
+        cli.app, ["evolve", str(harness), "--from-parent", "--propose", "--json"]
+    )
+
+    assert result.exit_code == ExitCode.SPEC_ERROR
+    assert "fork" in json.loads(result.stdout)["error"]

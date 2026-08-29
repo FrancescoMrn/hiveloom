@@ -45,7 +45,7 @@ from hiveloom.errors import (
     SpecError,
 )
 from hiveloom.evolve import proposals as proposals_mod
-from hiveloom.evolve.evolver import _read_counter, _touches_frozen
+from hiveloom.evolve.evolver import read_counter, touches_frozen
 from hiveloom.generate.llm import StrongModel, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
@@ -60,7 +60,7 @@ from hiveloom.serve.runslots import (
 )
 from hiveloom.spec.loader import harness_path, load_raw, load_spec, validate_harness
 from hiveloom.spec.schema import ALWAYS_FROZEN
-from hiveloom.tools.builtin import _safe_path
+from hiveloom.tools.builtin import safe_path
 from hiveloom.tools.registry import ToolError
 
 _SSE_DONE = object()
@@ -82,9 +82,10 @@ _SSE_DONE = object()
 #     The evolver refuses dangerous *tool* changes case-by-case; over HTTP we
 #     freeze both roots wholesale — the gap-free fix for a non-production
 #     surface, at the cost of not adding tools/validators remotely.
-#   - `name` binds every Hive lookup (`/trace`, `/proposals`) to this harness;
-#     letting a caller rewrite it re-points those reads at another harness's
-#     traces and proposals.
+#   - `name` still binds every Hive lookup (`/trace`, `/proposals`) for a
+#     pre-identity harness (no `id` in its spec); letting a caller rewrite it
+#     would re-point those reads at another harness's traces and proposals.
+#     (`id` itself is in ALWAYS_FROZEN, so it is refused without listing here.)
 _HTTP_ONLY_FROZEN = {"tools", "verify.validators", "name"}
 _FROZEN_ROOTS = set(ALWAYS_FROZEN) | _HTTP_ONLY_FROZEN
 
@@ -143,11 +144,11 @@ def _error_response(exc: Exception) -> JSONResponse:
 def _refuse_if_frozen(path: str) -> None:
     """Raise :class:`AuthorizationError` if ``path`` touches a frozen root — the
     deny-list for ``/set`` and ``/add/{kind}`` (via ``_ADD_KIND_ROOTS``). Uses
-    :func:`_touches_frozen`, so writing a *parent* of a frozen leaf (``logging``
+    :func:`touches_frozen`, so writing a *parent* of a frozen leaf (``logging``
     over ``logging.redact``) is refused too. A 403, not a 400: this is "your
     scope does not permit that", not "your request was malformed".
     """
-    if _touches_frozen(path, _FROZEN_ROOTS):
+    if touches_frozen(path, _FROZEN_ROOTS):
         raise AuthorizationError(
             f"'{path}' cannot be changed over the control plane (frozen from remote mutation)"
         )
@@ -162,10 +163,10 @@ def _remove_target_is_frozen(raw: dict[str, Any], target: str) -> bool:
     name-shape question from the same table the removal itself walks, so this
     cannot fall out of step with what removal would actually touch.
     """
-    if _touches_frozen(target, _FROZEN_ROOTS):
+    if touches_frozen(target, _FROZEN_ROOTS):
         return True
     roots = construct.matching_roots(raw, target)
-    return any(_touches_frozen(root, _FROZEN_ROOTS) for root in roots)
+    return any(touches_frozen(root, _FROZEN_ROOTS) for root in roots)
 
 
 def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -322,14 +323,15 @@ def create_app(
             return _error_response(exc)
         return JSONResponse(payload, status_code=200)
 
-    def _harness_name() -> str:
-        """The served harness's current name, read fresh each call (never
-        cached) — used to bind Hive lookups (`/trace/{run_id}`, every
-        `/proposals/{id}...`) to this harness, since the Hive is global.
+    def _harness_key() -> str:
+        """The served harness's stable identity (its `id`, or its name for a
+        pre-identity spec), read fresh each call (never cached) — used to bind
+        Hive lookups (`/trace/{run_id}`, every `/proposals/{id}...`) to this
+        harness, since the Hive is global.
         """
-        return load_spec(harness_dir).name
+        return load_spec(harness_dir).identity
 
-    def _run(run_input: str, *, on_event=None):
+    def _run(run_input: str, *, on_event=None, run_id: str | None = None):
         """Build the provider (test seam or real) and call run_harness — the
         one call site shared by /run's sync and streaming branches.
         """
@@ -341,6 +343,7 @@ def create_app(
             strong_model=strong_model,
             literal_input=True,
             on_event=on_event,
+            run_id=run_id,
         )
 
     # ----------------------------------------------------------------- #
@@ -353,7 +356,7 @@ def create_app(
                 "ok": True,
                 "name": spec.name,
                 "version_hash": spec_version_hash(spec, base),
-                "evolved_counter": _read_counter(harness_path(harness_dir)),
+                "evolved_counter": read_counter(harness_path(harness_dir)),
             }
 
         return await _handle(request, scope=None, work=work)
@@ -379,7 +382,7 @@ def create_app(
         if input_file is not None:
             # Contained to the harness dir AND not one of the paths that
             # must never leave it (.hiveloom/, .env*, the trace dir) —
-            # `_safe_path` itself enforces both, the same chokepoint the
+            # `safe_path` itself enforces both, the same chokepoint the
             # file_read/file_write tools and the evolver's code-change
             # containment already go through. `input` itself is ALWAYS
             # literal text (below): a caller-supplied string that happens to
@@ -391,7 +394,7 @@ def create_app(
             trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
             try:
                 resolved = await asyncio.to_thread(
-                    _safe_path, base, input_file, trace_dir=trace_dir
+                    safe_path, base, input_file, trace_dir=trace_dir
                 )
             except ToolError as exc:
                 return _error_response(SpecError(str(exc)))
@@ -418,24 +421,43 @@ def create_app(
             return JSONResponse(payload, status_code=200)
 
         # Streaming: the on_event callback fires from the worker thread;
-        # bridge it to an async generator with a thread-safe queue, ending in
-        # the final run_result frame (or an error frame) then a sentinel —
-        # matching `hiveloom run --stream`'s ordering.
+        # bridge it to an async generator with a thread-safe queue. The frame
+        # vocabulary is the one `hiveloom serve` streams and `hiveloom run
+        # --stream` prints: a `run_accepted` frame naming the run id first (so
+        # the client can address `/trace/{run_id}` while the run is going),
+        # then every trace event, then a final `run_result` frame — also on
+        # failure, where it carries `"status": "error"`. Only the transport
+        # differs: SSE here, NDJSON on `serve`.
         events: queue.Queue = queue.Queue()
 
         def on_event(event: Any) -> None:
             events.put(event.model_dump_json())
 
+        run_id = runner_mod.new_run_id()
+
         def stream_work() -> None:
             try:
-                result = _run(run_input, on_event=on_event)
+                result = _run(run_input, on_event=on_event, run_id=run_id)
                 payload = runner_mod.run_result_payload(result)
                 events.put(json.dumps({"type": "run_result", **payload}))
             except Exception as exc:  # noqa: BLE001 - already streaming; report inline
-                events.put(json.dumps({"type": "error", "error": str(exc)}))
+                events.put(
+                    json.dumps(
+                        {
+                            "type": "run_result",
+                            "ok": False,
+                            "status": "error",
+                            "run_id": run_id,
+                            "reason": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                )
             finally:
                 events.put(_SSE_DONE)
 
+        # Queued before the worker starts so it is always the first frame;
+        # on a full queue the error response wins and the queue is discarded.
+        events.put(json.dumps({"type": "run_accepted", "run_id": run_id}))
         try:
             runslots.submit(stream_work)
         except RunQueueFullError as exc:
@@ -457,7 +479,7 @@ def create_app(
         def work() -> dict[str, Any]:
             with Hive() as hive:
                 name = runner_mod.resolve_and_ingest(harness_dir, hive)
-                summary = hive.summary(name)
+                summary = hive.summary(name, display_name=load_spec(harness_dir).name)
                 recent = hive.recent_failures(name, 5)
             return {"ok": True, **summary, "recent_failures": recent}
 
@@ -470,10 +492,10 @@ def create_app(
             # The Hive is global (shared across every harness on the box);
             # bind the lookup to THIS served harness so a caller authorized
             # here can't read a different harness's run trace by id alone.
-            harness_name = _harness_name()
+            harness_key = _harness_key()
             with Hive() as hive:
                 run = hive.get_run(run_id)
-            if run is None or run.get("harness_name") != harness_name:
+            if run is None or run.get("harness_key") != harness_key:
                 raise NotFoundError(f"run '{run_id}' not found in the Hive")
             events: list[dict[str, Any]] = []
             trace_file = Path(run.get("trace_path", ""))
@@ -583,7 +605,7 @@ def create_app(
         proposal_id = request.path_params["proposal_id"]
 
         def work() -> dict[str, Any]:
-            harness_name = _harness_name()
+            harness_name = _harness_key()
             with Hive() as hive:
                 record = _require_proposal(hive, proposal_id, harness_name=harness_name)
             return {"ok": True, **proposals_mod.proposal_payload(record)}
@@ -601,7 +623,7 @@ def create_app(
             def approve_code(change: Any) -> bool:
                 return change.file in approved_files
 
-            harness_name = _harness_name()
+            harness_name = _harness_key()
             # Also under the spec lock: apply_proposal_by_id may write
             # harness.yaml, the same read-modify-write race /set etc. guard
             # against. Not held for the whole request — just this call.
@@ -625,7 +647,7 @@ def create_app(
 
         def work() -> dict[str, Any]:
             body = _parse_body(raw)
-            harness_name = _harness_name()
+            harness_name = _harness_key()
             with Hive() as hive:
                 _require_proposal(hive, proposal_id, harness_name=harness_name)
                 proposals_mod.reject_proposal(hive, proposal_id, body.get("reason", ""))

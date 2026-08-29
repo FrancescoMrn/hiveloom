@@ -24,6 +24,12 @@ uv run hiveloom validate harnesses/example-summarizer
 uv run hiveloom run harnesses/example-summarizer --input notes.txt --dry-run
 ```
 
+The demo harnesses in `harnesses/` are ordinary committed folders, each
+originally built through the same `init`/`add`/`set` CLI path a user gets. To
+change one, go through the CLI (`hiveloom set`, `add`, `remove` — validated,
+rolled back on error) rather than editing its `harness.yaml` by hand; code
+assets (tools, validators, the MCP server) are normal files edited in place.
+
 The unit and integration suite uses fake providers and must not need credentials
 or network access. Before release, also run the live QA that matches the
 provider or transport you changed:
@@ -47,6 +53,39 @@ Live QA is intentionally separate from CI because it needs credentials, network
 access, mutable web pages, or local model servers. Record the command, model,
 date, and outcome in the change handoff; never commit its credentials or logs.
 
+## The workbench UI
+
+```sh
+devtools/ui/dev.sh      # http://127.0.0.1:5173
+```
+
+A graphical workbench for the build → run → diagnose → fix loop: harnesses with
+their measured fitness, a chat pane that shows each run's trace and validator
+verdicts, a spec editor backed by the catalog, and run history with full traces.
+See [devtools/ui/README.md](devtools/ui/README.md).
+
+The workbench is published to npm as `hiveloom-workbench`, built from
+`devtools/ui/`. It is never part of the `hiveloom` wheel: the framework is what
+runs a harness in production, and a deployment has no use for a compiled web
+interface. Users reach it with `npx hiveloom-workbench`, or `hiveloom ui`, which
+is a wrapper around the same command.
+
+One package carries the compiled UI, the Python API (`server.py` and the copilot
+harness), and the Node launcher that starts the API and serves the UI in front
+of it. They ship together so a UI/API version mismatch is impossible.
+
+Building needs the Node toolchain (22+), which lives entirely under
+`devtools/ui/`.
+
+```sh
+scripts/build_workbench.sh            # compiles the frontend, then builds sdist + wheel
+scripts/build_workbench.sh --check    # also installs the wheel and checks it serves
+```
+
+CI runs that same script on every pull request (the `workbench` job), so a
+TypeScript error or a wheel that ships no bundle fails the PR rather than the
+release.
+
 ## Pull requests
 
 - Keep a change focused and add or update tests for behavior changes.
@@ -62,6 +101,8 @@ The project uses semantic versioning. Update the project version in
 version. Record notable changes in [CHANGELOG.md](CHANGELOG.md) under an
 `[Unreleased]` heading as part of the same pull request. Build release
 artifacts with `uv build` and validate a harness package before publishing.
+
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Security-sensitive issues should follow [SECURITY.md](SECURITY.md), not be
 reported in a public issue.
