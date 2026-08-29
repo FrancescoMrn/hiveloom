@@ -110,6 +110,14 @@ schema. Shape validation alone cannot prove that a selected ID came from an
 allowed tool call. Inspect `hiveloom catalog validators --json` before building
 the command.
 
+When several upstream calls form one domain operation with an invariant
+between them, prefer one deterministic composite tool. Search followed by an
+eligibility check is a good example: unverified hits should not cross the tool
+boundary. Keep tools separate when calls are independently useful, need
+different permissions, should run in parallel, or must remain separately
+visible for audit or human review. Use structured steps for ordering and tool
+availability; do not hide phase filtering in a provider adapter.
+
 ## Step 3 — finish
 
 ```bash

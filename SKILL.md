@@ -65,6 +65,11 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    `sequential_steps`; each object can declare `tools`, `require_tool_calls`,
    `max_model_calls`, and `max_tool_calls`. Inspect the effective plan with
    `run --dry-run --json`.
+   Combine multiple upstream calls into one deterministic tool only when they
+   form one domain operation with an invariant between them, such as search
+   followed by eligibility checks before results are exposed. Keep calls
+   separate when they need different permissions, can run independently, or
+   must remain separately auditable.
 3. **Finish**: `hiveloom validate ./h` then `hiveloom run ./h --input FILE --dry-run`
    (assembles the first model call without calling the model API; declared MCP
    servers are still contacted for eager tool discovery).

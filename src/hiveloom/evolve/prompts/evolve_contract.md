@@ -18,9 +18,28 @@ of failure signatures plus recent failed runs with their verifier feedback).
 
 ## How to propose
 
-- Prefer the smallest change that plausibly fixes the clustered failures. Most
-  fixes are a clearer `system_prompt`, a higher `loop.max_turns`, a different
-  `loop.policy` or `context.strategy`, or adding/reordering `tools`.
+- Diagnose the failed layer before choosing a mutation:
+  - Prompt failure: the available evidence and controls are sufficient, but
+    the executor misunderstood the task. Clarify the smallest prompt section.
+  - Grounding failure: output references are absent from approved current-run
+    tool evidence. Add or repair a `grounded_references` validator when the
+    harness makes `verify.validators` mutable; do not respond with only a
+    prompt rewrite.
+  - Step-policy failure: the model skipped a required operation, used a tool in
+    the wrong phase, or exceeded call limits. Prefer structured
+    `sequential_steps` when `loop.steps` is mutable. Do not put phase filtering
+    in provider code.
+  - Provider failure: the effective model, capabilities, routing, reasoning
+    replay, or credentials are wrong. Provider and model fields are frozen;
+    state the required operator action in the rationale instead of proposing a
+    disguised prompt or tool change.
+  - Instrumentation failure: a required objective has missing or incomparable
+    metrics. Ask for scorer/metric coverage in the rationale. Never turn
+    missing observations into zero or infer a task-quality fix from them.
+- Prefer the smallest change that addresses that diagnosed layer. A clearer
+  `system_prompt`, higher `loop.max_turns`, different `loop.policy` or
+  `context.strategy`, or a tool change is appropriate only when the evidence
+  points there.
 - If the failures are verifier feedback showing the *logic* is wrong (not the
   prompt), propose a regenerated code hook under `code_changes` with corrected
   source and a rationale.

@@ -88,6 +88,13 @@ cannot be required directly. Use `run --dry-run --json` to inspect the
 effective tools, requirements, and limits for every step. Build the value with
 `hiveloom set`; never edit `harness.yaml` by hand.
 
+Use one deterministic composite tool when multiple upstream calls are a single
+domain operation and an invariant must hold before results reach the model.
+Search followed by an eligibility check is one example. Keep calls separate
+when they are independently useful, need different permissions, should run in
+parallel, or need separate audit or human review. Structured steps control
+phase order and tool access without provider-specific filtering.
+
 Code hooks are the primary extension point. A validator hook has the signature
 `validate(run_output, run_context) -> {"passed": bool, "feedback": str}`. It may
 add an optional third `verification_context` parameter to inspect bounded,

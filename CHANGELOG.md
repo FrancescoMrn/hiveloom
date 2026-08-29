@@ -91,6 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `grounded_references` builtin rejects selected scalar IDs absent from approved
   successful tool results, even when the output otherwise passes its JSON
   schema.
+- Generation now teaches structured tool phases, grounded-reference checks,
+  metric instrumentation, and when a deterministic composite tool is the right
+  boundary. It reads validator parameters from the live catalog instead of a
+  fixed parameter list. Evolution guidance diagnoses prompt, grounding,
+  step-policy, provider, and instrumentation failures before choosing a
+  mutation.
+- The offline `ranked-retrieval` harness demonstrates a search-and-verify tool,
+  enforced retrieval and answer phases, grounded synthetic IDs, and a local
+  eval with Recall@3, nDCG@3, and hallucination-rate objectives.
 
 ### Fixed
 

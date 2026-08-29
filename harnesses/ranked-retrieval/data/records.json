@@ -1,0 +1,50 @@
+[
+  {
+    "record_id": "record-postgres-indexes",
+    "title": "PostgreSQL index design for faster queries",
+    "summary": "Choose selective indexes and verify plans with EXPLAIN ANALYZE.",
+    "tags": ["postgresql", "database", "indexing", "performance"],
+    "status": "published",
+    "quality_verified": true
+  },
+  {
+    "record_id": "record-query-plans",
+    "title": "Reading database query plans",
+    "summary": "Find slow scans, bad cardinality estimates, and expensive joins.",
+    "tags": ["postgresql", "database", "query", "performance"],
+    "status": "published",
+    "quality_verified": true
+  },
+  {
+    "record_id": "record-cache-basics",
+    "title": "Application cache basics",
+    "summary": "Use bounded caches to reduce repeated database work.",
+    "tags": ["cache", "database", "performance"],
+    "status": "published",
+    "quality_verified": true
+  },
+  {
+    "record_id": "record-incident-checklist",
+    "title": "Incident response checklist",
+    "summary": "Triage impact, preserve evidence, communicate, and recover service.",
+    "tags": ["incident", "operations", "reliability"],
+    "status": "published",
+    "quality_verified": true
+  },
+  {
+    "record_id": "record-api-contracts",
+    "title": "Testing API contracts",
+    "summary": "Check request and response schemas with deterministic fixtures.",
+    "tags": ["api", "testing", "contracts"],
+    "status": "published",
+    "quality_verified": true
+  },
+  {
+    "record_id": "record-draft-indexes",
+    "title": "PostgreSQL index shortcuts",
+    "summary": "An unreviewed draft about database indexing.",
+    "tags": ["postgresql", "database", "indexing"],
+    "status": "draft",
+    "quality_verified": false
+  }
+]

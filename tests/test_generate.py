@@ -43,6 +43,19 @@ def test_meta_prompt_contains_current_json_schema():
     assert "file_read" in prompt and "max_cost_usd" in prompt
 
 
+def test_meta_prompt_teaches_enforced_workflow_and_grounding_patterns():
+    prompt = build_meta_prompt()
+    flat = " ".join(prompt.split())
+
+    assert "`sequential_steps`" in flat
+    assert "fixed phases with different tool access" in flat
+    assert "Do not rely on a provider adapter to filter tools by phase" in flat
+    assert "deterministic composite code tool" in flat
+    assert "Keep calls separate when they are independently useful" in flat
+    assert "An output schema proves shape, not provenance" in flat
+    assert "Missing instrumentation is not a zero" in flat
+
+
 def test_generate_builds_valid_harness(tmp_path: Path):
     model = FakeStrongModel([json.dumps(_plan())])
     spec = generate("Count lines.", tmp_path / "h", model)
@@ -150,6 +163,92 @@ def test_generate_output_schema_scaffolds_schema_file(tmp_path: Path):
     )
     generate("x", tmp_path / "h", FakeStrongModel([json.dumps(plan)]))
     assert (tmp_path / "h" / "schemas" / "o.json").exists()
+
+
+def test_generate_builds_structured_grounded_retrieval_harness(tmp_path: Path):
+    plan = _plan(
+        name="ranked-retrieval",
+        task="Rank synthetic records and return grounded IDs.",
+        steps=[
+            {"op": "set", "path": "system_prompt", "value": "Return grounded JSON."},
+            {
+                "op": "add_tool",
+                "code": "tools/search.py:search_and_verify_records",
+                "description": "Search and verify records as one deterministic operation.",
+            },
+            {
+                "op": "set",
+                "path": "loop.steps",
+                "value": [
+                    {
+                        "id": "retrieve",
+                        "instruction": "Search and verify records.",
+                        "tools": ["search_and_verify_records"],
+                        "require_tool_calls": ["search_and_verify_records"],
+                        "max_model_calls": 1,
+                        "max_tool_calls": 1,
+                    },
+                    {
+                        "id": "answer",
+                        "instruction": "Return ranked IDs.",
+                        "tools": [],
+                        "max_model_calls": 2,
+                    },
+                ],
+            },
+            {"op": "set", "path": "loop.policy", "value": "sequential_steps"},
+            {
+                "op": "add_validator",
+                "builtin": "output_schema",
+                "schema_file": "./schemas/output.json",
+            },
+            {
+                "op": "add_validator",
+                "builtin": "grounded_references",
+                "output_path": "$.selected[*].record_id",
+                "evidence_paths": [
+                    {
+                        "tool": "search_and_verify_records",
+                        "path": "$.candidates[*].record_id",
+                    }
+                ],
+                "normalize": "string",
+            },
+            {
+                "op": "set",
+                "path": "evolution.objectives",
+                "value": [{"metric": "recall_at_3", "direction": "maximize", "unit": "ratio"}],
+            },
+        ],
+    )
+
+    spec = generate("Rank records.", tmp_path / "h", FakeStrongModel([json.dumps(plan)]))
+
+    assert spec.loop.policy == "sequential_steps"
+    assert spec.loop.steps[0].require_tool_calls == ["search_and_verify_records"]
+    assert spec.loop.steps[1].tools == []
+    assert [validator.builtin for validator in spec.verify.validators] == [
+        "output_schema",
+        "grounded_references",
+    ]
+    assert spec.evolution.objectives[0].metric == "recall_at_3"
+
+
+def test_generate_rejects_invented_catalog_entry(tmp_path: Path):
+    plan = _plan(
+        steps=[
+            {"op": "set", "path": "system_prompt", "value": "Return JSON."},
+            {"op": "add_validator", "builtin": "matching_magic"},
+        ]
+    )
+
+    with pytest.raises(HiveloomError, match="unknown validator builtin 'matching_magic'"):
+        generate(
+            "Rank records.",
+            tmp_path / "h",
+            FakeStrongModel([json.dumps(plan)]),
+            max_repairs=0,
+        )
 
 
 def test_parse_plan_tolerates_code_fences():

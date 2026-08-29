@@ -74,11 +74,13 @@ applying still needs an explicit `proposals apply`.
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — five worked examples to imitate: `quickstart`
+- [harnesses/](harnesses/) — six worked examples to imitate: `quickstart`
   (no tools), `example-summarizer` (tools + verification),
   `article-extractor` (a custom tool + anti-hallucination validator),
   `routing-lab` (playbooks, forking, evolution — offline, no API key), and
-  `ticket-triage` (an MCP server as the harness's only data source).
+  `ticket-triage` (an MCP server as the harness's only data source), and
+  `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
+  synthetic data).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 
