@@ -262,7 +262,17 @@ def test_concurrency_limit_and_manifest_order_are_deterministic(tmp_path: Path):
         eval_run_id="eval_concurrency_fixture",
     )
 
-    assert manifest.status == "completed"
+    assert manifest.status == "completed", [
+        {
+            "cell": cell.cell_id,
+            "status": cell.status,
+            "phase": cell.error_phase,
+            "error_type": cell.error_type,
+            "error": cell.error,
+        }
+        for cell in manifest.cells
+        if cell.status != "completed"
+    ]
     assert maximum_active == 2
     order = [(cell.case_key, cell.repetition) for cell in manifest.cells]
     assert order == sorted(order)
