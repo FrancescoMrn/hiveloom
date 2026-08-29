@@ -43,6 +43,7 @@ class FailureReport(BaseModel):
     friction: dict[str, Any] = Field(default_factory=dict)
     recent_friction: list[dict[str, Any]] = Field(default_factory=list)
     incident_evidence: IncidentEvidence | None = None
+    trigger_evidence: dict[str, Any] = Field(default_factory=dict)
 
     def is_empty(self) -> bool:
         return (
@@ -54,7 +55,14 @@ class FailureReport(BaseModel):
 
     def evidence_receipt(self) -> dict[str, Any] | None:
         """Selection provenance suitable for proposal storage."""
-        return self.incident_evidence.receipt() if self.incident_evidence is not None else None
+        receipt = (
+            self.incident_evidence.receipt()
+            if self.incident_evidence is not None
+            else {}
+        )
+        if self.trigger_evidence:
+            receipt["auto_trigger"] = self.trigger_evidence
+        return receipt or None
 
 
 def analyze(

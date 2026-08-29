@@ -294,6 +294,50 @@ def test_auto_propose_successful_run_creates_nothing(tmp_path: Path):
     assert model.prompts == []
 
 
+def test_auto_propose_recovered_success_can_trigger_from_friction(tmp_path: Path):
+    harness = _make_harness(tmp_path)
+    construct.set_value(harness, "evolution.auto_propose.enabled", True)
+    construct.set_value(
+        harness,
+        "evolution.auto_propose.triggers",
+        [
+            {
+                "kind": "repeated_friction",
+                "category": "output_validation",
+                "minimum_runs": 2,
+                "window": 5,
+                "recovered": True,
+            }
+        ],
+    )
+    model = FakeStrongModel([_AUTO_PROPOSAL_PAYLOAD])
+
+    first = runner.run_harness(
+        harness,
+        "notes.txt",
+        provider=FakeModelProvider(
+            [text_response("not json"), text_response(_VALID_SUMMARY)]
+        ),
+        strong_model=model,
+    )
+    second = runner.run_harness(
+        harness,
+        "notes.txt",
+        provider=FakeModelProvider(
+            [text_response("still not json"), text_response(_VALID_SUMMARY)]
+        ),
+        strong_model=model,
+    )
+
+    assert first.status == second.status == "success"
+    with Hive() as hive:
+        [proposal] = hive.list_proposals(harness_name=load_spec(harness).identity)
+    trigger = json.loads(proposal["evidence_json"])["auto_trigger"]
+    assert trigger["kind"] == "repeated_friction"
+    assert trigger["matched"]["runs"] == 2
+    assert len(model.prompts) == 1
+
+
 def test_auto_propose_default_disabled_makes_no_hive_proposals_query(
     tmp_path: Path, monkeypatch
 ):

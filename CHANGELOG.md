@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte and token budgeting, missing or pruned journals fall back to indexed
   summaries, and proposals retain an evidence receipt without copying event
   payloads.
+- Auto-proposal policies can now declare ordered `final_failure` and
+  `repeated_friction` triggers over bounded recent-run windows. Recovered
+  friction can draft after a successful run, while time and optional run-count
+  cooldowns, fingerprint deduplication, and explicit human apply remain in
+  force. Empty trigger lists preserve the legacy `min_failures` behavior.
 
 ### Fixed
 

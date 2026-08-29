@@ -60,19 +60,19 @@ Step by step:
 2. **Collect** the traces on an evolution box. Both `hiveloom stats <dir>` and
    `hiveloom evolve <dir>` ingest a harness directory's in-folder traces on the
    fly (idempotent by `run_id`), so a harness that ran in production for a week
-   can be copied back and analyzed against *real* failures.
-3. **Evolve**: `hiveloom evolve ./harness` reads the Hive's clustered failures,
+   can be copied back and analyzed against *real* failures and friction.
+3. **Evolve**: `hiveloom evolve ./harness` reads the Hive's clustered evidence,
    asks a strong model for a minimal mutation, gates it (see above), and applies
    it — bumping `# evolved: N` and recording the new version hash.
 
-   The analysis is scoped to the **current** version hash: only failures of the
-   harness as it is right now. So the loop is genuinely a loop — after applying a
+   The analysis is scoped to the **current** version hash: only evidence from
+   the harness as it is right now. So the loop is genuinely a loop — after applying a
    mutation (or editing the folder by hand) you must run the harness again before
    there is anything to evolve from, and `evolve` says so:
-   `nothing to evolve — no failures recorded for the current harness version
-   (94 on earlier versions) — re-run the harness to collect fresh ones`.
-   Pooling versions instead would keep proposing fixes for failures the previous
-   mutation already repaired.
+   `nothing to evolve — no evolution evidence recorded for the current harness
+   version (94 signals on earlier versions) — re-run the harness to collect
+   fresh ones`. Pooling versions instead would keep proposing fixes for
+   evidence the previous mutation already made obsolete.
 4. **Redeploy** the updated folder.
 5. **Judge**: `hiveloom stats ./harness` reports success rate, cost, and turns
    **per version hash**. Because runs on the new harness land under a new hash,
@@ -139,36 +139,56 @@ evidence may leave the local journal boundary.
 
 ## Auto-DRAFT (opt-in) — auto-APPLY still does not exist
 
-A harness can opt in to drafting proposals automatically, right after a
-failing run, via `evolution.auto_propose` in `harness.yaml`:
+A harness can opt in to drafting proposals automatically after a final failure
+or repeated indexed friction via `evolution.auto_propose` in `harness.yaml`:
 
 ```yaml
 evolution:
   auto_propose:
-    enabled: true        # off by default
-    min_failures: 5       # non-success runs of THIS version, since the last auto-proposal
+    enabled: true          # off by default
+    triggers:
+      - kind: final_failure
+        minimum_runs: 2
+        window: 20
+      - kind: repeated_friction
+        category: output_validation
+        minimum_runs: 5
+        window: 20
+        recovered: true
     cooldown_hours: 24.0  # minimum gap between auto-drafted proposals
-    model: null            # strong-model override; else the CLI/env default
+    cooldown_runs: 20      # optional completed-run gap for this version
+    model: null             # strong-model override; else the CLI/env default
 ```
 
 This is a synchronous check at the tail of every completed `hiveloom run` —
 no daemon, no scheduler, no background thread. It costs nothing for the
-(default, disabled) common case: a single boolean check, no Hive query. When
-enabled and a run fails, it counts recent failures **of the current version**
-(same scope as `evolve`, so the threshold and the analysis always agree on which
-failures count), checks the cooldown, and — if both pass — analyzes the Hive and
-drafts a gated proposal with
-`trigger="auto"`, deduped exactly like `--propose` (a second failing run
-against the same failure state never pays for a second strong-model call).
+(default, disabled) common case: a single boolean check, no Hive query. Trigger
+order is policy order. A final-failure trigger requires the just-finished run
+to have failed. A repeated-friction trigger requires that run to contribute the
+same category and fingerprint seen across `minimum_runs` distinct runs inside
+the bounded window. This means a recovered output validation retry can draft
+after final success, while an unrelated clean success cannot reactivate old
+evidence.
+
+All trigger evidence is scoped to the current harness version. A queued row
+uses `trigger="auto"` and its evidence receipt records the trigger kind,
+configuration, fingerprint, matched run IDs, and exact recent-run window.
+Pending rows deduplicate by version, failure signatures, incident digest, and
+trigger receipt before a second strong-model call.
 **It only ever drafts.** Applying still requires `hiveloom proposals apply`.
 A failure here (no API key, no network, a malformed model response) never
 fails the run itself — same discipline as trace ingestion.
 
 `cooldown_hours` cannot be removed: values below one minute are rejected, so
-there's always a real floor on how often a harness can auto-draft. Each
-qualifying failing run costs a strong-model call unless the dedup pre-check
-catches it, so this is partly a spend guard; `min_failures` is the
-complementary throttle if you want a different shape of restraint.
+there's always a real floor on how often a harness can auto-draft.
+`cooldown_runs` optionally requires a completed-run gap as well; both survive
+process restarts because proposals and runs live in the Hive. Each qualifying
+run costs a strong-model call unless the dedup pre-check catches it.
+
+For compatibility, omitting `triggers` keeps the original behavior:
+`min_failures` counts non-success runs of the current version since the last
+auto-proposal. Existing harnesses therefore keep their current threshold and
+do not begin drafting from successful runs after an upgrade.
 
 If you'd rather not pay this tail latency inside every run, leave
 `auto_propose` off and instead schedule `hiveloom evolve <dir> --propose`

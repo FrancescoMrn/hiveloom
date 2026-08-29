@@ -82,8 +82,18 @@ def _dedup_key(report: FailureReport) -> str:
     """
     signatures = sorted(f"{cluster.kind}:{cluster.signature}" for cluster in report.clusters)
     evidence = report.evidence_receipt() or {}
+    auto_trigger = evidence.get("auto_trigger", {})
+    if auto_trigger.get("legacy"):
+        # Preserve the pre-trigger-list contract: another run in the same
+        # failure cluster deduplicates even though the informational legacy
+        # receipt's count advanced.
+        auto_trigger = {}
     material = json.dumps(
-        {"signatures": signatures, "evidence_digest": evidence.get("digest", "")},
+        {
+            "signatures": signatures,
+            "evidence_digest": evidence.get("digest", ""),
+            "auto_trigger": auto_trigger,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -111,7 +121,7 @@ def create_proposal(
     terminal ``rejected`` row when gating leaves nothing to queue, instead of
     raising. Without it the auto-trigger would insert no row, so
     ``last_auto_proposal_at`` never advanced and the cooldown never engaged —
-    every subsequent failing run re-paid a strong-model call. A rejected row is
+    every subsequent qualifying run re-paid a strong-model call. A rejected row is
     terminal (not a can-never-apply pending row), and its ``created_at`` is what
     the cooldown/failure-window keys off. Manual and HTTP callers keep the
     raise, so their UX is unchanged.
@@ -175,9 +185,9 @@ def list_proposals(
 def last_auto_proposal_at(hive: Hive, harness_name: str) -> str | None:
     """``created_at`` of the most recent auto-triggered proposal for this harness.
 
-    ``None`` if there isn't one yet. Used by the runner's post-run trigger both
-    to window the failure count (only failures since the last auto-proposal
-    matter) and to enforce the cooldown between auto-drafted proposals.
+    ``None`` if there isn't one yet. Used by the runner's post-run trigger to
+    window legacy failure counts and enforce time and run cooldowns between
+    auto-drafted proposals.
     """
     return hive.last_auto_proposal_at(harness_name)
 

@@ -148,6 +148,11 @@ from final success and can be queried by category, component, model, time, and
 recovery state. The index stores bounded summaries and fingerprints, not raw
 tool or model payloads.
 
+An opt-in auto-proposal policy can match a final-failure count or one friction
+fingerprint repeated across distinct runs in a bounded current-version window.
+The just-finished run must contribute the matched signal. Trigger receipts and
+cooldowns are Hive-backed, so restarts do not reset either decision.
+
 When explicitly enabled, evolution uses those rows as incident anchors and
 selects a bounded window from each validated journal. It re-applies structured
 redaction before truncation and budgeting; a missing or retention-pruned

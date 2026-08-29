@@ -36,7 +36,8 @@ assumed.
 - **One validated construction path:** CLI edits and model-generated plans use
   the same transactional API; invalid changes roll back.
 - **Closed-loop evidence:** every run produces a version-hashed trace, so
-  `stats` can show whether a harness change improved success, cost, or turns.
+  `stats` can show whether a harness change improved success, cost, or turns,
+  while recovered friction stays visible for gated evolution proposals.
 - **Safety outside the model:** cost limits, tool allowlists, redaction,
   verification, and frozen evolution fields are enforced in code.
 - **Open and portable:** builtins, extension packs, custom providers, and MCP

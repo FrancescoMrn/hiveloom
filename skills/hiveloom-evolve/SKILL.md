@@ -45,10 +45,18 @@ payloads. Inspect that receipt with `proposals show --json`.
 
 ## Prerequisites
 
-Evolve needs failure signal. If `hiveloom stats ./h` shows no (or too few)
-failed runs, run the harness on representative inputs first, or copy back
-traces from where it actually ran (see `hiveloom-ship`). Both `stats` and
-`evolve` ingest `./h/.hiveloom/traces/` idempotently by `run_id`.
+Evolve needs a grounded signal: final failures, failed deferred outcomes, or
+indexed friction such as repeated retries. If `hiveloom stats ./h` and
+`hiveloom stats ./h --include-friction` show none, run the harness on
+representative inputs first, or copy back traces from where it actually ran
+(see `hiveloom-ship`). Both `stats` and `evolve` ingest
+`./h/.hiveloom/traces/` idempotently by `run_id`.
+
+For automatic drafts from recovered incidents, configure an ordered
+`evolution.auto_propose.triggers` list with `kind: repeated_friction`, a Hive
+category, `minimum_runs`, and a bounded `window`. The current run must carry
+the matched fingerprint. The proposal remains a draft and its JSON evidence
+receipt names the exact run window.
 
 ## Evolving a fork
 

@@ -260,8 +260,9 @@ def run_harness(
 
     Unless ``ingest`` is false, the completed run's trace is ingested into the
     Hive so ``hiveloom trace``/``stats`` see it immediately, and (if the spec
-    opts in via ``evolution.auto_propose``) a failing run may auto-draft a
-    gated evolution proposal — see :func:`_maybe_auto_propose`. ``on_event``
+    opts in via ``evolution.auto_propose``) a final failure or repeated
+    friction pattern may auto-draft a gated evolution proposal — see
+    :func:`_maybe_auto_propose`. ``on_event``
     receives every :class:`TraceEvent` as it is emitted (the in-process
     equivalent of ``hiveloom run --stream``). ``approve_trust`` is asked once
     when the harness folder is not yet trusted on this machine. ``strong_model``
@@ -478,11 +479,16 @@ def _maybe_auto_propose(
         auto = spec.evolution.auto_propose
         if not auto.enabled:
             return
-        if result.status == "success":
+        explicit_triggers = bool(auto.triggers)
+        friction_can_trigger = any(
+            trigger.kind == "repeated_friction" for trigger in auto.triggers
+        )
+        if result.status == "success" and not friction_can_trigger:
             return
 
         from hiveloom.evolve.analyzer import analyze
         from hiveloom.evolve.proposals import create_proposal, last_auto_proposal_at
+        from hiveloom.evolve.triggers import match_auto_trigger
         from hiveloom.generate.llm import build_strong_model
         from hiveloom.logging.hive import Hive
 
@@ -490,14 +496,46 @@ def _maybe_auto_propose(
             # One version for both: the gate must count what the report carries.
             version = spec_version_hash(spec, base)
             since = last_auto_proposal_at(hive, spec.identity)
-            if hive.failure_count(spec.identity, since=since, version=version) < auto.min_failures:
-                return
             if since is not None:
                 elapsed_hours = (
                     datetime.now(UTC) - datetime.fromisoformat(since)
                 ).total_seconds() / 3600
                 if elapsed_hours < auto.cooldown_hours:
                     return
+                if (
+                    auto.cooldown_runs is not None
+                    and hive.run_count(spec.identity, since=since, version=version)
+                    < auto.cooldown_runs
+                ):
+                    return
+
+            if explicit_triggers:
+                trigger_evidence = match_auto_trigger(
+                    hive,
+                    harness_key=spec.identity,
+                    version=version,
+                    current_run_id=result.run_id,
+                    current_status=result.status,
+                    triggers=auto.triggers,
+                )
+                if trigger_evidence is None:
+                    return
+            else:
+                failure_count = hive.failure_count(
+                    spec.identity,
+                    since=since,
+                    version=version,
+                )
+                if failure_count < auto.min_failures:
+                    return
+                trigger_evidence = {
+                    "kind": "final_failure",
+                    "legacy": True,
+                    "configured": {"minimum_runs": auto.min_failures},
+                    "window_started_at": since,
+                    "window_ended_at": datetime.now(UTC).isoformat(),
+                    "matched": {"runs": failure_count},
+                }
 
             model = strong_model or build_strong_model(auto.model, base)
             report = analyze(
@@ -507,6 +545,7 @@ def _maybe_auto_propose(
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
             )
+            report = report.model_copy(update={"trigger_evidence": trigger_evidence})
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a

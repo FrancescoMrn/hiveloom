@@ -2057,32 +2057,41 @@ def _analysis_version(
 def _nothing_to_evolve_reason(
     hive: Any, name: str, version: str, *, from_parent: bool = False
 ) -> str:
-    """Why the report is empty — the cases need different next steps.
+    """Why the report has no failure, outcome, or friction signal.
 
     Analysis is scoped to one spec version, so a harness edited since its last
-    failing run has failures on record that deliberately do not count.
-    Reporting that as "no recorded failures" would send the user looking for a
+    incident may have older evidence that deliberately does not count.
+    Reporting that as no evidence at all would send the user looking for a
     logging bug instead of re-running the harness.
 
     Under ``--from-parent`` the scoped version is the parent's, so "re-run it"
     is the wrong advice: the runs that would matter already happened, and an
     empty report means the fork is pointed somewhere with nothing on record.
     """
-    stale = hive.failure_count(name)
+    stale_failures = hive.failure_count(name)
+    stale_friction = hive.friction_summary(name)["events"]
+    stale = stale_failures or stale_friction
     if from_parent:
         if stale:
             return (
-                f"no failures recorded for the parent version {version} "
-                f"({stale} on other versions of '{name}') — the parent run may "
+                f"no evolution evidence recorded for the parent version {version} "
+                f"({stale} signals on other versions of '{name}') — the parent run may "
                 "have succeeded, or its journal was never ingested"
             )
-        return f"no failures recorded for '{name}' at any version"
+        return f"no evolution evidence recorded for '{name}' at any version"
     if stale:
+        if stale_failures:
+            return (
+                f"no failures recorded for the current harness version "
+                f"({stale_failures} on earlier versions) — re-run the harness "
+                "to collect fresh ones"
+            )
         return (
-            f"no failures recorded for the current harness version "
-            f"({stale} on earlier versions) — re-run the harness to collect fresh ones"
+            f"no evolution evidence recorded for the current harness version "
+            f"({stale_friction} friction events on earlier versions) — re-run the harness to "
+            "collect fresh ones"
         )
-    return "no recorded failures"
+    return "no recorded failure, deferred-outcome, or friction evidence"
 
 
 def _emit_proposal_created(record: Any, json_output: bool) -> None:

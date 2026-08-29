@@ -1219,6 +1219,104 @@ class Hive:
         row = self._conn.execute(query, params).fetchone()
         return row["n"] or 0
 
+    def run_count(
+        self, harness_key: str, *, since: str | None = None, version: str | None = None
+    ) -> int:
+        """Count completed runs for cooldowns scoped to one harness version."""
+        query = "SELECT COUNT(*) AS n FROM runs WHERE harness_key=?"
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND harness_version_hash=?"
+            params.append(version)
+        if since is not None:
+            query += " AND finished_at>=?"
+            params.append(since)
+        row = self._conn.execute(query, params).fetchone()
+        return row["n"] or 0
+
+    def recent_run_window(
+        self, harness_key: str, *, version: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """Newest completed runs forming an auto-trigger evidence window."""
+        rows = self._conn.execute(
+            "SELECT run_id, status, started_at, finished_at FROM runs "
+            "WHERE harness_key=? AND harness_version_hash=? "
+            "ORDER BY finished_at DESC, run_id DESC LIMIT ?",
+            (harness_key, version, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def repeated_friction_pattern(
+        self,
+        *,
+        run_ids: list[str],
+        current_run_id: str,
+        category: str,
+        minimum_runs: int,
+        recovered: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Best matching fingerprint contributed by the just-finished run.
+
+        Requiring the current run to carry the fingerprint prevents an
+        unrelated clean run from re-triggering old evidence that merely
+        remains inside the configured recent-run window.
+        """
+        if current_run_id not in run_ids or not run_ids:
+            return None
+        recovered_clause = "" if recovered is None else " AND recovered=?"
+        current_params: list[Any] = [current_run_id, category]
+        if recovered is not None:
+            current_params.append(1 if recovered else 0)
+        current = self._conn.execute(
+            "SELECT DISTINCT fingerprint FROM friction_events "
+            f"WHERE run_id=? AND category=?{recovered_clause}",
+            current_params,
+        ).fetchall()
+        fingerprints = [row["fingerprint"] for row in current]
+        if not fingerprints:
+            return None
+
+        run_slots = ",".join("?" for _ in run_ids)
+        fingerprint_slots = ",".join("?" for _ in fingerprints)
+        params: list[Any] = [*run_ids, category, *fingerprints]
+        if recovered is not None:
+            params.append(1 if recovered else 0)
+        rows = self._conn.execute(
+            "SELECT fingerprint, MIN(component) AS component, MIN(summary) AS summary, "
+            "COUNT(*) AS events, COUNT(DISTINCT run_id) AS runs, "
+            "MAX(timestamp) AS latest_at FROM friction_events "
+            f"WHERE run_id IN ({run_slots}) AND category=? "
+            f"AND fingerprint IN ({fingerprint_slots}){recovered_clause} "
+            "GROUP BY fingerprint HAVING COUNT(DISTINCT run_id)>=? "
+            "ORDER BY runs DESC, events DESC, latest_at DESC, fingerprint LIMIT 1",
+            (*params, minimum_runs),
+        ).fetchone()
+        if rows is None:
+            return None
+
+        matched = self._conn.execute(
+            "SELECT DISTINCT run_id FROM friction_events "
+            f"WHERE run_id IN ({run_slots}) AND category=? AND fingerprint=?"
+            f"{recovered_clause}",
+            (
+                *run_ids,
+                category,
+                rows["fingerprint"],
+                *([] if recovered is None else [1 if recovered else 0]),
+            ),
+        ).fetchall()
+        matched_ids = {row["run_id"] for row in matched}
+        return {
+            "category": category,
+            "fingerprint": rows["fingerprint"],
+            "component": rows["component"],
+            "summary": rows["summary"],
+            "events": rows["events"],
+            "runs": rows["runs"],
+            "recovered": recovered,
+            "run_ids": [run_id for run_id in run_ids if run_id in matched_ids],
+        }
+
     # ------------------------------------------------------------------ #
     # Proposals queue
     # ------------------------------------------------------------------ #

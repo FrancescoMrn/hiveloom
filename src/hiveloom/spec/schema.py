@@ -857,29 +857,92 @@ def _default_frozen() -> list[str]:
 MIN_COOLDOWN_HOURS = 1 / 60
 
 
+class FinalFailureTrigger(BaseModel):
+    """Draft after final failures repeat inside a bounded recent-run window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["final_failure"]
+    minimum_runs: int = Field(default=1, ge=1)
+    window: int = Field(default=20, ge=1, le=1000)
+
+    @model_validator(mode="after")
+    def _minimum_fits_window(self) -> FinalFailureTrigger:
+        if self.minimum_runs > self.window:
+            raise ValueError("minimum_runs cannot exceed window")
+        return self
+
+
+class RepeatedFrictionTrigger(BaseModel):
+    """Draft when one indexed friction fingerprint repeats across runs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["repeated_friction"]
+    category: str = Field(min_length=1, max_length=64)
+    minimum_runs: int = Field(default=5, ge=1)
+    window: int = Field(default=20, ge=1, le=1000)
+    recovered: bool | None = Field(
+        default=None,
+        description="Optionally require recovered or unrecovered friction records.",
+    )
+
+    @field_validator("category")
+    @classmethod
+    def _category_is_bounded_name(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
+            raise ValueError("category must match [a-z][a-z0-9_]*")
+        return value
+
+    @model_validator(mode="after")
+    def _minimum_fits_window(self) -> RepeatedFrictionTrigger:
+        if self.minimum_runs > self.window:
+            raise ValueError("minimum_runs cannot exceed window")
+        return self
+
+
+AutoProposeTrigger = Annotated[
+    FinalFailureTrigger | RepeatedFrictionTrigger,
+    Field(discriminator="kind"),
+]
+
+
 class AutoProposeConfig(BaseModel):
-    """Opt-in: draft (never apply) an evolution proposal after a failing run."""
+    """Opt-in: draft (never apply) a proposal from failures or friction."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(
         default=False,
-        description="Draft a gated proposal after a failing run. Never auto-applies.",
+        description="Draft gated proposals from configured evidence. Never auto-applies.",
     )
     min_failures: int = Field(
         default=5, ge=1,
         description=(
-            "Non-success runs of the current harness version (since the last "
-            "auto-proposal) required before drafting."
+            "Legacy failure-only threshold used when triggers is empty. Non-success runs "
+            "of the current harness version since the last auto-proposal are counted."
+        ),
+    )
+    triggers: list[AutoProposeTrigger] = Field(
+        default_factory=list,
+        description=(
+            "Ordered proposal triggers. Empty preserves the legacy min_failures behavior."
         ),
     )
     cooldown_hours: float = Field(
         default=24.0, ge=MIN_COOLDOWN_HOURS,
         description=(
             "Minimum gap between auto-drafted proposals for this harness. Cannot be "
-            "removed: values below one minute are rejected. Each qualifying failing run "
+            "removed: values below one minute are rejected. Each qualifying run "
             "costs a strong-model call unless the dedup pre-check catches it, so this is "
-            "partly a spend guard; use `min_failures` for a different shape of restraint."
+            "partly a spend guard; use trigger thresholds for another restraint."
+        ),
+    )
+    cooldown_runs: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional minimum completed runs of this harness version between auto-drafts."
         ),
     )
     model: str | None = Field(

@@ -21,6 +21,9 @@ of failure signatures plus recent failed runs with their verifier feedback).
   prompt), propose a regenerated code hook under `code_changes` with corrected
   source and a rationale.
 - Every change carries a short `rationale` tied to a failure cluster.
+- When `trigger_evidence` is present, cite its category, component, or
+  fingerprint rather than treating friction as a general reason to rewrite
+  the harness.
 
 ## Output format
 
