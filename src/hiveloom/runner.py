@@ -362,7 +362,9 @@ def run_harness(
             harness_name=spec.name,
             harness_id=spec.id,
             version_hash=version_hash,
-            redact_patterns=spec.logging.redact,
+            redact_patterns=spec.logging.redact.patterns,
+            redact_keys=spec.logging.redact.keys,
+            redact_paths=spec.logging.redact.paths,
             level=spec.logging.level,
             on_event=on_event,
         )
@@ -402,21 +404,51 @@ def run_harness(
             router.close()
 
     if ingest:
-        _ingest_trace(trace.path, hive_path)
-        # Auto-propose needs this run ingested before it can count the failure.
-        _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+        indexed = _ingest_trace(trace.path, hive_path)
+        if indexed:
+            # Auto-propose needs this run ingested before it can count the failure.
+            _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+            _apply_trace_retention(spec, trace.path, hive_path)
     return result
 
 
-def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> None:
+def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> bool:
     """Best-effort ingest of a finished run's trace into the Hive."""
     from hiveloom.logging.hive import Hive
 
     try:
         with Hive(hive_path) as hive:
             hive.ingest_trace_file(trace_path)
+        return True
     except Exception:  # noqa: BLE001 - ingestion must never fail a completed run
-        pass
+        return False
+
+
+def _apply_trace_retention(
+    spec: HarnessSpec, trace_path: Path, hive_path: str | Path | None
+) -> None:
+    """Apply an explicit policy without invalidating the just-finished result."""
+    if spec.logging.retention is None:
+        return
+    try:
+        from hiveloom.logging.hive import Hive
+        from hiveloom.logging.retention import prune_trace_root
+
+        with Hive(hive_path) as hive:
+            hive.ingest_dir(trace_path.parent)
+            prune_trace_root(
+                trace_path.parent,
+                spec.logging.retention,
+                hive=hive,
+                preserve=[trace_path],
+            )
+    except Exception as exc:  # noqa: BLE001 - maintenance cannot erase a completed result
+        log.warning(
+            "trace retention failed for harness %s: %s: %s",
+            spec.name,
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _maybe_auto_propose(
@@ -468,7 +500,14 @@ def _maybe_auto_propose(
                     return
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.identity, version=version)
+            report = analyze(
+                hive,
+                spec.identity,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+                objectives=spec.evolution.objectives,
+            )
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a

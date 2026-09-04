@@ -23,10 +23,28 @@ The evolver reads the Hive's clustered failures (ingesting the folder's
 in-folder traces on the fly), asks a strong model for a minimal mutation, and
 gates it **in code**.
 
+If a bounded Hive summary is not enough to explain a retry, opt in to
+`evolution.trace_excerpts.enabled` through `hiveloom set`. The selector uses
+indexed friction as an anchor, re-applies `logging.redact`, and enforces hard
+event, byte, and token-estimate budgets before evidence reaches the proposing
+model. Missing or retention-pruned journals fall back to indexed summaries.
+Queued proposals keep the selection receipt and digest, not the event
+payloads. Inspect that receipt with `proposals show --json`.
+
+When the harness declares `evolution.objectives`, the report also contains
+bounded metric aggregates grouped by unit/source/scope and behavior/model
+cohort. Read sample and missing counts together. Paired comparisons exist only
+for matching eval case and repetition keys. Treat a floor or ceiling violation
+as hard; never trade it for lower cost. A metric-aware proposal must name the
+configured objective it expects to improve and cite the baseline aggregate and
+evidence runs. Metric metadata and raw traces do not enter this evidence path.
+
 ## Hard rules (enforced by the tool — don't fight them)
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, and `evolution.auto_propose` can **never** be changed by
+  `mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, and
+  `evolution.objectives` can
+  **never** be changed by
   evolution. Don't try to weaken them by other means either; if a guardrail is
   genuinely wrong, change it deliberately via `hiveloom add guardrail` /
   `hiveloom set` and say so.
@@ -36,8 +54,9 @@ gates it **in code**.
 
 ## Prerequisites
 
-Evolve needs failure signal. If `hiveloom stats ./h` shows no (or too few)
-failed runs, run the harness on representative inputs first, or copy back
+Evolve needs failure or metric signal. If `hiveloom stats ./h` shows no useful
+runs and the configured objectives have no recorded observations, run the
+harness on representative inputs first. Then attach metrics or copy back
 traces from where it actually ran (see `hiveloom-ship`). Both `stats` and
 `evolve` ingest `./h/.hiveloom/traces/` idempotently by `run_id`.
 

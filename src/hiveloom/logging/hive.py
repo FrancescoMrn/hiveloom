@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     reason TEXT,
     trace_path TEXT,
+    trace_pruned_at TEXT,
     parent_run_id TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     rationale TEXT,
     proposal_json TEXT,
     gate_json TEXT,
+    evidence_json TEXT,
     apply_result_json TEXT,
     created_at TEXT,
     resolved_at TEXT
@@ -230,6 +232,7 @@ def _friction_filters(
     model: str | None,
     since: str | None,
     until: str | None,
+    version: str | None,
 ) -> tuple[list[str], list[Any]]:
     where = ["r.harness_key=?"]
     params: list[Any] = [harness_key]
@@ -251,6 +254,9 @@ def _friction_filters(
     if until is not None:
         where.append("f.timestamp<=?")
         params.append(until)
+    if version is not None:
+        where.append("r.harness_version_hash=?")
+        params.append(version)
     return where, params
 
 
@@ -308,6 +314,7 @@ class Hive:
             ("effective_provider", "TEXT"),
             ("effective_model", "TEXT"),
             ("execution_fingerprint", "TEXT"),
+            ("trace_pruned_at", "TEXT"),
         ):
             if column not in existing:
                 self._alter_runs(
@@ -331,6 +338,11 @@ class Hive:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_effective_model ON runs(effective_model)"
         )
+        proposal_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(proposals)")
+        }
+        if "evidence_json" not in proposal_columns:
+            self._conn.execute("ALTER TABLE proposals ADD COLUMN evidence_json TEXT")
 
     def _alter_runs(self, clause: str, *, benign_error: str) -> None:
         """Apply one migration step, tolerating a concurrent connection winning it.
@@ -525,6 +537,7 @@ class Hive:
             "finished_at": None,
             "reason": "",
             "trace_path": trace_path,
+            "trace_pruned_at": None,
             "parent_run_id": None,
             "forked_at_seq": None,
             "model_path": "",
@@ -614,13 +627,14 @@ class Hive:
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
             "parent_run_id, forked_at_seq, model_path, task, requested_provider, "
-            "requested_model, effective_provider, effective_model, execution_fingerprint) "
+            "requested_model, effective_provider, effective_model, execution_fingerprint, "
+            "trace_pruned_at) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
             ":parent_run_id, :forked_at_seq, :model_path, :task, :requested_provider, "
             ":requested_model, :effective_provider, :effective_model, "
-            ":execution_fingerprint)",
+            ":execution_fingerprint, :trace_pruned_at)",
             row,
         )
         cur.executemany(
@@ -1041,8 +1055,9 @@ class Hive:
         entry["friction"] = [
             _friction_row(row)
             for row in self._conn.execute(
-                "SELECT seq, category, phase, attempt, component, fingerprint, recovered, "
-                "timestamp, summary FROM friction_events WHERE run_id=? ORDER BY seq, id",
+                "SELECT id AS friction_id, seq, category, phase, attempt, component, "
+                "fingerprint, recovered, timestamp, summary FROM friction_events "
+                "WHERE run_id=? ORDER BY seq, id",
                 (run_id,),
             ).fetchall()
         ]
@@ -1058,6 +1073,7 @@ class Hive:
         model: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        version: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """List friction records with stable filters over run provenance."""
@@ -1071,9 +1087,11 @@ class Hive:
             model=model,
             since=since,
             until=until,
+            version=version,
         )
         rows = self._conn.execute(
-            "SELECT f.run_id, f.seq, f.category, f.phase, f.attempt, f.component, "
+            "SELECT f.id AS friction_id, f.run_id, f.seq, f.category, f.phase, "
+            "f.attempt, f.component, "
             "f.fingerprint, f.recovered, f.timestamp, f.summary, r.status AS run_status, "
             "COALESCE(NULLIF(r.effective_model, ''), NULLIF(r.requested_model, ''), "
             "NULLIF(r.model_path, ''), '') AS model "
@@ -1093,6 +1111,7 @@ class Hive:
         model: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        version: str | None = None,
     ) -> dict[str, Any]:
         """Aggregate friction without reading raw journals."""
         where, params = _friction_filters(
@@ -1103,6 +1122,7 @@ class Hive:
             model=model,
             since=since,
             until=until,
+            version=version,
         )
         scope = " AND ".join(where)
         totals = self._conn.execute(
@@ -1140,6 +1160,39 @@ class Hive:
             "unrecovered": total_events - recovered_events,
             "categories": [aggregate(row) for row in categories],
         }
+
+    def mark_traces_pruned(
+        self, traces: list[tuple[str, str]], *, pruned_at: str
+    ) -> int:
+        """Clear only Hive paths that still point at the files being pruned.
+
+        The same run may have been re-ingested from durable storage after a
+        retention plan was built. Comparing resolved paths prevents an old
+        copy's deletion from clearing that newer reference.
+        """
+        updated = 0
+        try:
+            for run_id, expected_path in traces:
+                row = self._conn.execute(
+                    "SELECT trace_path FROM runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if row is None or not row["trace_path"]:
+                    continue
+                if Path(row["trace_path"]).expanduser().resolve() != Path(
+                    expected_path
+                ).expanduser().resolve():
+                    continue
+                cursor = self._conn.execute(
+                    "UPDATE runs SET trace_path=NULL, trace_pruned_at=? "
+                    "WHERE run_id=? AND trace_path=?",
+                    (pruned_at, run_id, row["trace_path"]),
+                )
+                updated += cursor.rowcount
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return updated
 
     def lineage(self, run_id: str) -> dict[str, Any]:
         """The fork tree around a run: its ancestors, itself, and its forks.
@@ -1352,6 +1405,75 @@ class Hive:
     # ------------------------------------------------------------------ #
     # Numeric run metrics
     # ------------------------------------------------------------------ #
+    def metric_history(
+        self,
+        harness_key: str,
+        *,
+        name: str,
+        source: str | None = None,
+        scope: str | None = None,
+        unit: str | None = None,
+        version: str | None = None,
+        limit: int = 2000,
+    ) -> dict[str, Any]:
+        """Return bounded numeric observations with execution and eval provenance.
+
+        Metric metadata is deliberately excluded: evolution needs values and
+        reproducibility receipts, not evaluator-owned private payloads.
+        """
+        if limit < 1:
+            raise ValueError("metric history limit must be at least 1")
+        where = ["r.harness_key=?", "m.name=?"]
+        params: list[Any] = [harness_key, name]
+        for column, value in (
+            ("m.source", source),
+            ("m.scope", scope),
+            ("m.unit", unit),
+            ("r.harness_version_hash", version),
+        ):
+            if value is not None:
+                where.append(f"{column}=?")
+                params.append(value)
+        rows = self._conn.execute(
+            "SELECT m.id, m.run_id, m.name, m.value, m.direction, m.unit, "
+            "m.source, m.scope, m.recorded_at, r.harness_version_hash AS behavior_hash, "
+            "r.requested_provider, r.requested_model, r.effective_provider, "
+            "r.effective_model, r.execution_fingerprint, r.finished_at, "
+            "c.eval_run_id, c.case_key, c.repetition "
+            "FROM run_metrics m JOIN runs r ON r.run_id=m.run_id "
+            "LEFT JOIN eval_cells c ON c.run_id=m.run_id "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY r.finished_at DESC, m.id DESC LIMIT ?",
+            (*params, limit + 1),
+        ).fetchall()
+        return {
+            "records": [dict(row) for row in rows[:limit]],
+            "truncated": len(rows) > limit,
+            "limit": limit,
+        }
+
+    def execution_cohort_populations(
+        self, harness_key: str, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Count runs without mixing behavior or requested/effective model identity."""
+        where = ["harness_key=?"]
+        params: list[Any] = [harness_key]
+        if version is not None:
+            where.append("harness_version_hash=?")
+            params.append(version)
+        rows = self._conn.execute(
+            "SELECT harness_version_hash AS behavior_hash, requested_provider, "
+            "requested_model, effective_provider, effective_model, COUNT(*) AS run_count "
+            "FROM runs "
+            f"WHERE {' AND '.join(where)} "
+            "GROUP BY harness_version_hash, requested_provider, requested_model, "
+            "effective_provider, effective_model "
+            "ORDER BY behavior_hash, requested_provider, requested_model, "
+            "effective_provider, effective_model",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _same_metric(left: dict[str, Any], right: dict[str, Any]) -> bool:
         fields = (
@@ -1608,13 +1730,15 @@ class Hive:
         here and that existing row is returned instead of raising — dedup by
         construction, safe even under a race with another inserter.
         """
+        row = {**row, "evidence_json": row.get("evidence_json")}
         try:
             self._conn.execute(
                 "INSERT INTO proposals (id, harness_name, spec_version_hash, dedup_key, "
-                "status, trigger, rationale, proposal_json, gate_json, apply_result_json, "
+                "status, trigger, rationale, proposal_json, gate_json, evidence_json, "
+                "apply_result_json, "
                 "created_at, resolved_at) VALUES (:id, :harness_name, :spec_version_hash, "
                 ":dedup_key, :status, :trigger, :rationale, :proposal_json, :gate_json, "
-                ":apply_result_json, :created_at, :resolved_at)",
+                ":evidence_json, :apply_result_json, :created_at, :resolved_at)",
                 row,
             )
             self._conn.commit()

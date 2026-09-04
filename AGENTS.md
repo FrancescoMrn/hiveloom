@@ -22,8 +22,10 @@ the library; humans should start at [README.md](README.md).
    tools are the named exception: servers expose them dynamically at run time,
    so inspect them with `hiveloom mcp list-tools`.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
-   `extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` are
-   frozen from evolution; the cost guardrail defaults on; `shell` is
+   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
+   `evolution.trace_excerpts`, and `evolution.objectives` are frozen from
+   evolution; the cost guardrail
+   defaults on; `shell` is
    allowlist-only; foreign harness folders are trust-gated before their code
    loads. Don't route around any of this on a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,

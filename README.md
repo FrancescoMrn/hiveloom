@@ -375,6 +375,7 @@ hiveloom eval report <eval-run-id> --format json
 hiveloom eval compare <baseline-id> <candidate-id> --format markdown
 hiveloom models probe ./my-harness --provider openrouter \
   --model qwen3.5-9b --identity exact --live --json
+hiveloom traces prune ./my-harness --dry-run --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe
@@ -448,7 +449,10 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Safety invariants
 
 - Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
+  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
+  `evolution.trace_excerpts`, or `evolution.objectives`. Opt-in excerpts are
+  re-redacted and bounded
+  before they reach the proposing model.
 - The cost guardrail defaults on at `$1.00`.
 - The shell tool is disabled unless explicitly configured and remains
   allowlist-only.

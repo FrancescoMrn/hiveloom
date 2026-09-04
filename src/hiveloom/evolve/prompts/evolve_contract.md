@@ -11,6 +11,10 @@ of failure signatures plus recent failed runs with their verifier feedback).
   the harness lists as frozen. Proposals touching them are rejected outright.
 - Regenerating a code hook's source is allowed but always requires explicit
   human approval before it is applied.
+- Metric objectives are evaluator-owned and frozen. Never propose changing the
+  objectives. Treat each unit/source/scope and execution cohort separately.
+- A hard metric floor or ceiling cannot be traded for improvement in another
+  metric. Do not treat missing metrics as zero.
 
 ## How to propose
 
@@ -21,6 +25,11 @@ of failure signatures plus recent failed runs with their verifier feedback).
   prompt), propose a regenerated code hook under `code_changes` with corrected
   source and a rationale.
 - Every change carries a short `rationale` tied to a failure cluster.
+- When metric objectives are configured, add `objective_expectations` naming at
+  least one configured metric and the expected `increase` or `decrease`. Cite
+  its sample count, baseline aggregate, and evidence run IDs in the rationale.
+- Paired history supports a comparison, not a causal claim. State uncertainty
+  when the evidence is unpaired, missing, truncated, or small.
 
 ## Output format
 
@@ -35,8 +44,12 @@ Return **only** a JSON object (no prose, no fences):
   ],
   "code_changes": [
     {"file": "validators/check.py", "source": "def validate(...):\n    ...\n", "rationale": "..."}
+  ],
+  "objective_expectations": [
+    {"metric": "quality", "expected_change": "increase", "rationale": "n=20, baseline mean 0.61, runs run_a...run_t"}
   ]
 }
 ```
 
 Omit `code_changes` (or use `[]`) when a YAML-only change suffices.
+Omit `objective_expectations` only when the harness declares no objectives.

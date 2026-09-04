@@ -12,6 +12,7 @@ carry company-specific logic.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -21,6 +22,7 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -685,6 +687,95 @@ class PlaybookRef(BaseModel):
         return value
 
 
+_REDACTION_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?)*$"
+)
+
+
+class RedactionConfig(BaseModel):
+    """Structured values removed before a trace event leaves the process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[str] = Field(
+        default_factory=list,
+        description="Dictionary keys whose values are replaced recursively (case-insensitive).",
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Payload paths whose values are replaced. Dot segments and [*] list wildcards "
+            "are supported, for example tool.result.candidates[*].cv_text."
+        ),
+    )
+    patterns: list[str] = Field(
+        default_factory=list,
+        description="Regexes replaced inside every string value.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_pattern_list(cls, value: Any) -> Any:
+        # The 0.x/1.0 contract was a bare list of regexes. Keep loading it and
+        # preserve that compact shape when no structured rules are present.
+        if isinstance(value, list):
+            return {"patterns": value}
+        return value
+
+    @field_validator("keys")
+    @classmethod
+    def _check_keys(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("redaction keys cannot be empty")
+        if len({value.casefold() for value in cleaned}) != len(cleaned):
+            raise ValueError("redaction keys must be unique (case-insensitive)")
+        return cleaned
+
+    @field_validator("paths")
+    @classmethod
+    def _check_paths(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not _REDACTION_PATH_RE.fullmatch(value):
+                raise ValueError(
+                    f"invalid redaction path {value!r}; use dot-separated keys and [*]"
+                )
+        if len(set(values)) != len(values):
+            raise ValueError("redaction paths must be unique")
+        return values
+
+    @field_validator("patterns")
+    @classmethod
+    def _check_patterns(cls, values: list[str]) -> list[str]:
+        for value in values:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"invalid redaction regex {value!r}: {exc}") from exc
+        return values
+
+
+class RetentionConfig(BaseModel):
+    """Explicit limits for raw journal files under one managed trace root."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: int | None = Field(default=None, gt=0, description="Delete traces older than N days.")
+    max_runs: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw run traces."
+    )
+    max_bytes: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw trace bytes."
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one_limit(self) -> RetentionConfig:
+        if self.days is None and self.max_runs is None and self.max_bytes is None:
+            raise ValueError("retention must set days, max_runs, or max_bytes")
+        return self
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -713,9 +804,18 @@ class LoggingConfig(BaseModel):
         failing validation on a rename.
         """
         return {"full": "journal", "tool_calls_only": "summary"}.get(value, value)
-    redact: list[str] = Field(
-        default_factory=list,
-        description="Regexes scrubbed from persisted traces (frozen from evolution).",
+    redact: RedactionConfig = Field(
+        default_factory=RedactionConfig,
+        description=(
+            "Keys, payload paths, and regexes scrubbed before trace persistence or stream "
+            "delivery. A legacy list is read as patterns. Frozen from evolution."
+        ),
+    )
+    retention: RetentionConfig | None = Field(
+        default=None,
+        description=(
+            "Optional raw-trace age, count, and byte limits. No files are removed when absent."
+        ),
     )
     snapshot_files: bool = Field(
         default=False,
@@ -726,6 +826,14 @@ class LoggingConfig(BaseModel):
             "size. The manifest of hashes is always recorded either way."
         ),
     )
+
+    @model_validator(mode="after")
+    def _retention_needs_dedicated_root(self) -> LoggingConfig:
+        if self.retention is not None and self.trace_dir.strip() in {"", ".", "./"}:
+            raise ValueError(
+                "logging.retention requires a dedicated trace_dir, not the harness root"
+            )
+        return self
 
 
 def _default_mutable() -> list[str]:
@@ -782,6 +890,108 @@ class AutoProposeConfig(BaseModel):
     )
 
 
+class TraceExcerptConfig(BaseModel):
+    """Bounded, redacted incident evidence supplied to the proposing model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Include incident packets in evolution analysis. Opt-in by default.",
+    )
+    max_incidents: int = Field(
+        default=5, ge=1, le=20, description="Newest incidents considered per analysis."
+    )
+    before_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained before each incident."
+    )
+    after_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained after each incident."
+    )
+    max_event_bytes: int = Field(
+        default=2048,
+        ge=128,
+        le=16_384,
+        description="Maximum redacted payload bytes retained for one event.",
+    )
+    max_bytes: int = Field(
+        default=32_768,
+        ge=1024,
+        le=262_144,
+        description="Hard serialized-byte budget across all incident packets.",
+    )
+    max_tokens: int = Field(
+        default=8192,
+        ge=256,
+        le=65_536,
+        description=(
+            "Hard budget using the deterministic estimate ceil(serialized UTF-8 bytes / 4)."
+        ),
+    )
+
+
+_METRIC_OBJECTIVE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
+
+
+class MetricObjective(BaseModel):
+    """One independently reported numeric goal for evolution analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str = Field(description="User-defined RunMetric name to optimize.")
+    direction: Literal["maximize", "minimize"] = Field(
+        description="Whether larger or smaller values are preferred."
+    )
+    source: str | None = Field(
+        default=None, description="Optional metric-source filter."
+    )
+    scope: Literal["case", "run", "eval"] | None = Field(
+        default=None, description="Optional metric-scope filter."
+    )
+    unit: str | None = Field(
+        default=None, description="Optional unit filter; different units are never mixed."
+    )
+    floor: float | None = Field(
+        default=None, description="Hard lower bound that every observed value must meet."
+    )
+    ceiling: float | None = Field(
+        default=None, description="Hard upper bound that every observed value must meet."
+    )
+
+    @field_validator("metric")
+    @classmethod
+    def _valid_metric_name(cls, value: str) -> str:
+        if not _METRIC_OBJECTIVE_RE.fullmatch(value):
+            raise ValueError("objective metric must match [A-Za-z][A-Za-z0-9_.-]{0,127}")
+        return value
+
+    @field_validator("source", "unit")
+    @classmethod
+    def _bounded_optional_label(
+        cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("objective source and unit cannot be blank")
+        limit = 64 if info.field_name == "unit" else 128
+        if len(normalized) > limit:
+            raise ValueError(
+                f"objective {info.field_name} cannot exceed {limit} characters"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _valid_bounds(self) -> MetricObjective:
+        for label, value in (("floor", self.floor), ("ceiling", self.ceiling)):
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"objective {label} must be finite")
+        if self.floor is not None and self.ceiling is not None and self.floor > self.ceiling:
+            raise ValueError("objective floor cannot exceed ceiling")
+        return self
+
+
 class EvolutionConfig(BaseModel):
     """What the evolver may and may not change."""
 
@@ -800,6 +1010,31 @@ class EvolutionConfig(BaseModel):
         default_factory=AutoProposeConfig,
         description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
+    trace_excerpts: TraceExcerptConfig = Field(
+        default_factory=TraceExcerptConfig,
+        description=(
+            "Opt-in redacted incident packets for evolution. Configuration is frozen from "
+            "evolution because it controls private evidence sent to the proposing model."
+        ),
+    )
+    objectives: list[MetricObjective] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "Numeric RunMetric objectives supplied as grouped aggregate and paired history "
+            "to evolution. Objective policy is frozen from evolution."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unique_objective_metrics(self) -> EvolutionConfig:
+        names = [objective.metric for objective in self.objectives]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                "evolution objective metric names must be unique: " + ", ".join(duplicates)
+            )
+        return self
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
@@ -812,6 +1047,10 @@ class EvolutionConfig(BaseModel):
 # `evolution.auto_propose` is its own paid, post-run trigger — a harness must
 # never be able to enable that trigger via evolution itself (docs/spec.md
 # documents it as never mutable; this is what makes that claim true).
+# `evolution.trace_excerpts` controls which private journal evidence can reach
+# the proposing model, so evolution cannot widen its own evidence boundary.
+# `evolution.objectives` is evaluator-owned policy. Letting the proposer rewrite
+# its own scorecard would make an apparent improvement meaningless.
 # `id` is identity, not behaviour: letting evolution (or a remote caller)
 # rewrite it would detach a harness from its own accumulated evidence.
 ALWAYS_FROZEN: tuple[str, ...] = (
@@ -823,6 +1062,8 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "hooks",
     "mcp_servers",
     "evolution.auto_propose",
+    "evolution.trace_excerpts",
+    "evolution.objectives",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They

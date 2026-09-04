@@ -63,6 +63,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   final outcomes, latency, source-separated cost, custom metric aggregates,
   and repetition stability; comparisons pair case and repetition identities
   and keep unmatched cells visible.
+- Trace redaction can target dictionary keys, structured payload paths, and
+  regex patterns before persistence or streaming. Optional age, run-count,
+  and byte retention limits prune validated journal files under a marked trace
+  root while keeping Hive run evidence and clearing stale raw-trace paths.
+- `hiveloom traces prune` previews or applies the configured retention policy
+  with stable JSON receipts. Applying from the CLI requires `--yes`; harnesses
+  without an explicit policy never delete traces automatically.
+- Evolution can opt in to bounded incident packets selected from indexed
+  friction and failed runs. Structured redaction runs before deterministic
+  byte and token budgeting, missing or pruned journals fall back to indexed
+  summaries, and proposals retain an evidence receipt without copying event
+  payloads.
+- `evolution.objectives` supplies bounded numeric metric history to proposals.
+  Series stay separated by unit, source, scope, behavior, and model; matching
+  eval cases receive paired comparisons; sample and missing counts, execution
+  fingerprints, and evidence run IDs remain visible. Hard floors and ceilings
+  cannot be traded against another objective, and metric metadata never enters
+  the proposing request.
 
 ### Fixed
 

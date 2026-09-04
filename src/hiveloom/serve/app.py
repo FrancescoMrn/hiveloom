@@ -498,8 +498,9 @@ def create_app(
             if run is None or run.get("harness_key") != harness_key:
                 raise NotFoundError(f"run '{run_id}' not found in the Hive")
             events: list[dict[str, Any]] = []
-            trace_file = Path(run.get("trace_path", ""))
-            if trace_file.exists():
+            trace_path = run.get("trace_path")
+            trace_file = Path(trace_path) if trace_path else None
+            if trace_file is not None and trace_file.is_file():
                 events = [
                     json.loads(line)
                     for line in trace_file.read_text(encoding="utf-8").splitlines()
@@ -579,9 +580,20 @@ def create_app(
                 name = runner_mod.resolve_and_ingest(harness_dir, hive)
                 spec = load_spec(harness_dir)
                 # Scoped to the current version — see analyze().
-                report = evolve_mod.analyze(hive, name, version=spec_version_hash(spec, base))
+                report = evolve_mod.analyze(
+                    hive,
+                    name,
+                    version=spec_version_hash(spec, base),
+                    excerpt_config=spec.evolution.trace_excerpts,
+                    redaction=spec.logging.redact,
+                    objectives=spec.evolution.objectives,
+                )
                 if report.is_empty():
-                    return {"ok": True, "changed": False, "reason": "no failures to learn from"}
+                    return {
+                        "ok": True,
+                        "changed": False,
+                        "reason": "no failures or metric observations to learn from",
+                    }
                 model = strong_model or build_strong_model(body.get("model"), base)
                 record = proposals_mod.create_proposal(
                     hive, spec, harness_dir, report, model, trigger="http"
