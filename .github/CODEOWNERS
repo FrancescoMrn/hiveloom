@@ -1,0 +1,9 @@
+# Every path in this repository is owned by the maintainer. Combined with
+# "Require review from Code Owners" on the protected branches, this makes an
+# owner approval a precondition for merging — including for pull requests
+# opened from collaborator forks.
+#
+# There is deliberately no narrower rule: a partial CODEOWNERS file leaves the
+# unmatched paths with no required reviewer, which is the failure mode this
+# file exists to close.
+* @FrancescoMrn
