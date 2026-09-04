@@ -29,6 +29,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import inspect
+import json
 import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -243,6 +245,30 @@ class ExtensionAPI:
         section. ``factory(params, ctx)`` must return a ``handler(event) -> result``."""
         self._register("hooks", name, factory, description, tags, params)
 
+    def register_dataset(
+        self,
+        name: str,
+        factory: Factory,
+        *,
+        description: str,
+        tags: Sequence[str] = (),
+        params: Sequence[Any] = (),
+    ) -> None:
+        """Register an eval dataset loader factory."""
+        self._register("datasets", name, factory, description, tags, params)
+
+    def register_scorer(
+        self,
+        name: str,
+        factory: Factory,
+        *,
+        description: str,
+        tags: Sequence[str] = (),
+        params: Sequence[Any] = (),
+    ) -> None:
+        """Register an eval scorer factory."""
+        self._register("scorers", name, factory, description, tags, params)
+
     def on(self, event: str) -> Callable[[Callable], Callable]:
         """Decorator: subscribe an ambient handler to a lifecycle event.
 
@@ -374,6 +400,38 @@ def build(kind: str, name: str, params: dict[str, Any], ctx: BuildContext) -> An
             "is the extension pack that provides it installed? (see `hiveloom extensions`)"
         )
     return factory(params, ctx)
+
+
+def component_digest(kind: str, name: str) -> str:
+    """Stable implementation receipt for a registered catalog component."""
+    ensure_environment_loaded()
+    entry = catalog.CATALOGS.get(kind, {}).get(name)
+    factory = _registry.factories.get(kind, {}).get(name)
+    if entry is None or factory is None:
+        raise CatalogError(
+            f"no {kind[:-1] if kind.endswith('s') else kind} named '{name}' is registered"
+        )
+    try:
+        source_file = inspect.getsourcefile(factory)
+    except TypeError:
+        source_file = None
+    implementation = b""
+    if source_file is not None:
+        path = Path(source_file)
+        if path.is_file():
+            implementation = path.read_bytes()
+    if not implementation:
+        try:
+            implementation = inspect.getsource(factory).encode("utf-8")
+        except (OSError, TypeError):
+            implementation = (
+                f"{getattr(factory, '__module__', '')}:"
+                f"{getattr(factory, '__qualname__', type(factory).__qualname__)}"
+            ).encode()
+    metadata = json.dumps(
+        entry.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(metadata + b"\0" + implementation).hexdigest()
 
 
 def provider_names() -> list[str]:

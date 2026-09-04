@@ -40,7 +40,10 @@ def build_builtin_catalog() -> str:
 
     ext.ensure_environment_loaded()
     lines: list[str] = []
-    for kind, entries in CATALOGS.items():
+    # Eval loaders and scorers have their own document; they are visible via
+    # `hiveloom catalog` but are not harness construction entries.
+    for kind in ("tools", "guardrails", "validators", "policies", "compaction", "hooks"):
+        entries = CATALOGS[kind]
         lines.append(f"### {kind}")
         for entry in entries.values():
             params = ", ".join(

@@ -203,6 +203,11 @@ reports both sample and missing-value counts. Binary `run_outcomes` remain the
 contract for deferred success or failure and are not reinterpreted as numeric
 metrics.
 
+The separate versioned eval document selects a registered dataset loader and
+scorers without changing the harness schema. Inspect it with `hiveloom eval
+schema --json` and validate its components with `hiveloom eval validate`; see
+[evaluating.md](evaluating.md).
+
 ## Safety invariants (enforced in code)
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,

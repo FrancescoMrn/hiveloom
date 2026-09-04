@@ -7,7 +7,14 @@ from hiveloom import catalog
 
 def test_catalogs_have_expected_kinds():
     assert set(catalog.CATALOGS) == {
-        "tools", "guardrails", "validators", "policies", "compaction", "hooks",
+        "tools",
+        "guardrails",
+        "validators",
+        "policies",
+        "compaction",
+        "hooks",
+        "datasets",
+        "scorers",
     }
 
 
