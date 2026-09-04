@@ -14,6 +14,7 @@ Default database: ``~/.hiveloom/hive.db`` (override with ``$HIVELOOM_DB``).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -53,6 +54,7 @@ def normalize_feedback(feedback: str) -> str:
 # How much of a run's task statement the index keeps: enough to title and
 # search a run, not enough to become a shadow copy of the journal.
 _TASK_CHARS = 2000
+_FRICTION_SUMMARY_CHARS = 500
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -126,16 +128,88 @@ CREATE TABLE IF NOT EXISTS run_outcomes (
     detail TEXT,
     recorded_at TEXT
 );
+CREATE TABLE IF NOT EXISTS friction_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    phase TEXT,
+    attempt INTEGER,
+    component TEXT,
+    fingerprint TEXT NOT NULL,
+    recovered INTEGER NOT NULL,
+    timestamp TEXT,
+    summary TEXT NOT NULL,
+    UNIQUE(run_id, seq, category, component)
+);
+CREATE TABLE IF NOT EXISTS run_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value REAL NOT NULL,
+    direction TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    source TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_name ON playbook_visits(playbook);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_run ON run_metrics(run_id);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_name ON run_metrics(name);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_source ON run_metrics(source);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
 CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
+CREATE INDEX IF NOT EXISTS idx_friction_run ON friction_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_friction_category ON friction_events(category);
+CREATE INDEX IF NOT EXISTS idx_friction_fingerprint ON friction_events(fingerprint);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
     ON proposals(harness_name, spec_version_hash, dedup_key) WHERE status='pending';
 """
+
+
+def _friction_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["recovered"] = bool(result["recovered"])
+    return result
+
+
+def _friction_filters(
+    harness_key: str,
+    *,
+    category: str | None,
+    component: str | None,
+    recovered: bool | None,
+    model: str | None,
+    since: str | None,
+    until: str | None,
+) -> tuple[list[str], list[Any]]:
+    where = ["r.harness_key=?"]
+    params: list[Any] = [harness_key]
+    if category is not None:
+        where.append("f.category=?")
+        params.append(category)
+    if component is not None:
+        where.append("f.component=?")
+        params.append(component)
+    if recovered is not None:
+        where.append("f.recovered=?")
+        params.append(1 if recovered else 0)
+    if model is not None:
+        where.append("(r.effective_model=? OR r.requested_model=? OR r.model_path=?)")
+        params.extend((model, model, model))
+    if since is not None:
+        where.append("f.timestamp>=?")
+        params.append(since)
+    if until is not None:
+        where.append("f.timestamp<=?")
+        params.append(until)
+    return where, params
 
 
 def default_db_path() -> Path:
@@ -187,6 +261,11 @@ class Hive:
             ("task", "TEXT"),
             ("harness_id", "TEXT"),
             ("harness_key", "TEXT"),
+            ("requested_provider", "TEXT"),
+            ("requested_model", "TEXT"),
+            ("effective_provider", "TEXT"),
+            ("effective_model", "TEXT"),
+            ("execution_fingerprint", "TEXT"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
@@ -204,6 +283,9 @@ class Hive:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_key ON runs(harness_key)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_effective_model ON runs(effective_model)"
         )
 
     def close(self) -> None:
@@ -282,6 +364,11 @@ class Hive:
             "forked_at_seq": None,
             "model_path": "",
             "task": None,
+            "requested_provider": "",
+            "requested_model": "",
+            "effective_provider": "",
+            "effective_model": "",
+            "execution_fingerprint": "",
         }
         verifications: list[tuple] = []
         triggers: list[tuple] = []
@@ -309,6 +396,15 @@ class Hive:
                 row["reason"] = payload.get("reason", "")
                 row["finished_at"] = event.get("timestamp")
                 row["model_path"] = payload.get("model_path", "") or ""
+                execution = payload.get("execution")
+                if isinstance(execution, dict):
+                    row["requested_provider"] = execution.get("requested_provider", "") or ""
+                    row["requested_model"] = execution.get("requested_model", "") or ""
+                    row["effective_provider"] = execution.get("effective_provider", "") or ""
+                    row["effective_model"] = execution.get("effective_model", "") or ""
+                    row["execution_fingerprint"] = (
+                        execution.get("execution_fingerprint", "") or ""
+                    )
             elif etype == "verification_result":
                 verifications.append(
                     (
@@ -347,15 +443,19 @@ class Hive:
         cur.execute("DELETE FROM verifications WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM guardrail_triggers WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
+        cur.execute("DELETE FROM friction_events WHERE run_id=?", (run_id,))
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "parent_run_id, forked_at_seq, model_path, task) "
+            "parent_run_id, forked_at_seq, model_path, task, requested_provider, "
+            "requested_model, effective_provider, effective_model, execution_fingerprint) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":parent_run_id, :forked_at_seq, :model_path, :task)",
+            ":parent_run_id, :forked_at_seq, :model_path, :task, :requested_provider, "
+            ":requested_model, :effective_provider, :effective_model, "
+            ":execution_fingerprint)",
             row,
         )
         cur.executemany(
@@ -373,6 +473,186 @@ class Hive:
             "VALUES (?, ?, ?, ?, ?, ?)",
             visits,
         )
+        cur.executemany(
+            "INSERT INTO friction_events (run_id, seq, category, phase, attempt, "
+            "component, fingerprint, recovered, timestamp, summary) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self._derive_friction(run_id, events, row),
+        )
+
+    @staticmethod
+    def _derive_friction(
+        run_id: str, events: list[dict[str, Any]], run: dict[str, Any]
+    ) -> list[tuple[Any, ...]]:
+        """Build bounded, redacted incident rows from one run journal.
+
+        Trace payloads have already passed through the logging redactor. The
+        Hive keeps only short diagnostics or generic descriptions, never tool
+        inputs, tool output bodies, model text, or operator messages.
+        """
+        records: list[tuple[Any, ...]] = []
+        final_success = run["status"] == "success"
+        current_phase = ""
+        current_turn = 0
+        verification_attempt = 0
+        previous_type = ""
+        unmatched_model_call: dict[str, Any] | None = None
+
+        def add(
+            event: dict[str, Any],
+            category: str,
+            *,
+            component: str = "",
+            summary: str = "",
+            phase: str | None = None,
+            attempt: int | None = None,
+            recovered: bool | None = None,
+        ) -> None:
+            safe_summary = normalize_feedback(str(summary or category))[:_FRICTION_SUMMARY_CHARS]
+            event_phase = current_phase if phase is None else phase
+            material = json.dumps(
+                {
+                    "category": category,
+                    "phase": event_phase,
+                    "component": component,
+                    "summary": safe_summary,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            fingerprint = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+            records.append(
+                (
+                    run_id,
+                    int(event.get("seq", 0)),
+                    category,
+                    event_phase or None,
+                    current_turn if attempt is None else attempt,
+                    component or None,
+                    fingerprint,
+                    1 if (final_success if recovered is None else recovered) else 0,
+                    event.get("timestamp"),
+                    safe_summary,
+                )
+            )
+
+        ordered = sorted(events, key=lambda event: int(event.get("seq", 0)))
+        for event in ordered:
+            etype = event.get("type", "")
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+
+            if etype == "model_call":
+                current_phase = str(payload.get("phase") or "act")
+                current_turn = int(payload.get("turn") or current_turn or 0) + 1
+                unmatched_model_call = event
+            elif etype == "model_response":
+                current_phase = str(payload.get("phase") or current_phase)
+                current_turn = int(payload.get("turn") or current_turn or 0)
+                unmatched_model_call = None
+            elif etype == "verification_result":
+                if previous_type != "verification_result":
+                    verification_attempt += 1
+                if not payload.get("passed"):
+                    verifier = str(payload.get("verifier") or "verification")
+                    lowered = verifier.lower()
+                    category = (
+                        "output_validation"
+                        if "schema" in lowered or "output" in lowered or "json" in lowered
+                        else "verifier_failure"
+                    )
+                    add(
+                        event,
+                        category,
+                        component=verifier,
+                        summary=str(payload.get("feedback") or f"{verifier} failed"),
+                        phase="verification",
+                        attempt=verification_attempt,
+                    )
+            elif etype == "tool_retry":
+                add(
+                    event,
+                    "retry",
+                    component=str(payload.get("name") or "tool"),
+                    summary="tool call retried after a retryable error",
+                )
+            elif etype == "tool_result" and payload.get("is_error"):
+                add(
+                    event,
+                    "tool_error",
+                    component=str(payload.get("name") or "tool"),
+                    summary="tool returned an error",
+                )
+            elif etype == "tool_truncated":
+                add(
+                    event,
+                    "tool_error",
+                    component=str(payload.get("name") or "tool"),
+                    summary="tool call was not executed because its arguments were truncated",
+                )
+            elif etype == "context_overflow_recovery":
+                add(
+                    event,
+                    "retry",
+                    component="context_window",
+                    summary=str(payload.get("error") or "provider context overflow recovered"),
+                    phase=str(payload.get("phase") or current_phase),
+                )
+            elif etype == "context_compaction":
+                add(
+                    event,
+                    "context_compaction",
+                    component=str(payload.get("method") or "context"),
+                    summary="context was compacted",
+                    phase="compaction",
+                )
+            elif etype == "user_steer":
+                add(
+                    event,
+                    "user_steer",
+                    component="operator",
+                    summary="operator steering was applied",
+                )
+            elif etype == "guardrail_triggered":
+                kind = str(payload.get("kind") or "")
+                if kind in {"halt", "block"}:
+                    add(
+                        event,
+                        "guardrail_halt" if kind == "halt" else "guardrail_block",
+                        component=str(payload.get("guardrail") or "guardrail"),
+                        summary=str(payload.get("reason") or f"guardrail {kind}"),
+                        recovered=False if kind == "halt" else None,
+                    )
+            elif etype == "model_swap_failed":
+                add(
+                    event,
+                    "provider_error",
+                    component=str(payload.get("requested_model") or "model_router"),
+                    summary=str(payload.get("error") or "model swap failed"),
+                )
+
+            previous_type = etype
+
+        finished = ordered[-1] if ordered else {"seq": 0, "timestamp": None}
+        if run["status"] == "max_turns":
+            add(
+                finished,
+                "loop_limit",
+                component="max_turns",
+                summary=str(run.get("reason") or "loop reached its model-call limit"),
+                recovered=False,
+            )
+        if run["status"] == "error" and unmatched_model_call is not None:
+            add(
+                finished,
+                "provider_error",
+                component=str(run.get("effective_model") or run.get("requested_model") or "model"),
+                summary=str(run.get("reason") or "provider request failed"),
+                phase=str(unmatched_model_call.get("payload", {}).get("phase") or current_phase),
+                recovered=False,
+            )
+        return records
 
     # ------------------------------------------------------------------ #
     # Queries
@@ -572,7 +852,7 @@ class Hive:
         return result
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        """Fetch a single run with its verifications and guardrail triggers."""
+        """Fetch a single run with its verification, guardrail, and friction records."""
         run = self._conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
         if run is None:
             return None
@@ -593,7 +873,108 @@ class Hive:
                 (run_id,),
             ).fetchall()
         ]
+        entry["friction"] = [
+            _friction_row(row)
+            for row in self._conn.execute(
+                "SELECT seq, category, phase, attempt, component, fingerprint, recovered, "
+                "timestamp, summary FROM friction_events WHERE run_id=? ORDER BY seq, id",
+                (run_id,),
+            ).fetchall()
+        ]
         return entry
+
+    def list_friction(
+        self,
+        harness_key: str,
+        *,
+        category: str | None = None,
+        component: str | None = None,
+        recovered: bool | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List friction records with stable filters over run provenance."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        where, params = _friction_filters(
+            harness_key,
+            category=category,
+            component=component,
+            recovered=recovered,
+            model=model,
+            since=since,
+            until=until,
+        )
+        rows = self._conn.execute(
+            "SELECT f.run_id, f.seq, f.category, f.phase, f.attempt, f.component, "
+            "f.fingerprint, f.recovered, f.timestamp, f.summary, r.status AS run_status, "
+            "COALESCE(NULLIF(r.effective_model, ''), NULLIF(r.requested_model, ''), "
+            "NULLIF(r.model_path, ''), '') AS model "
+            "FROM friction_events f JOIN runs r ON r.run_id=f.run_id "
+            f"WHERE {' AND '.join(where)} ORDER BY f.timestamp DESC, f.seq DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [_friction_row(row) for row in rows]
+
+    def friction_summary(
+        self,
+        harness_key: str,
+        *,
+        category: str | None = None,
+        component: str | None = None,
+        recovered: bool | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate friction without reading raw journals."""
+        where, params = _friction_filters(
+            harness_key,
+            category=category,
+            component=component,
+            recovered=recovered,
+            model=model,
+            since=since,
+            until=until,
+        )
+        scope = " AND ".join(where)
+        totals = self._conn.execute(
+            "SELECT COUNT(*) AS events, COUNT(DISTINCT f.run_id) AS runs, "
+            "SUM(CASE WHEN f.recovered=1 THEN 1 ELSE 0 END) AS recovered "
+            "FROM friction_events f JOIN runs r ON r.run_id=f.run_id "
+            f"WHERE {scope}",
+            params,
+        ).fetchone()
+        categories = self._conn.execute(
+            "SELECT f.category, COUNT(*) AS events, COUNT(DISTINCT f.run_id) AS runs, "
+            "SUM(CASE WHEN f.recovered=1 THEN 1 ELSE 0 END) AS recovered "
+            "FROM friction_events f JOIN runs r ON r.run_id=f.run_id "
+            f"WHERE {scope} GROUP BY f.category ORDER BY events DESC, f.category",
+            params,
+        ).fetchall()
+
+        def aggregate(row: sqlite3.Row) -> dict[str, Any]:
+            events = row["events"] or 0
+            recovered_events = row["recovered"] or 0
+            return {
+                "category": row["category"],
+                "events": events,
+                "runs": row["runs"] or 0,
+                "recovered": recovered_events,
+                "unrecovered": events - recovered_events,
+            }
+
+        total_events = totals["events"] or 0
+        recovered_events = totals["recovered"] or 0
+        return {
+            "events": total_events,
+            "runs": totals["runs"] or 0,
+            "recovered": recovered_events,
+            "unrecovered": total_events - recovered_events,
+            "categories": [aggregate(row) for row in categories],
+        }
 
     def lineage(self, run_id: str) -> dict[str, Any]:
         """The fork tree around a run: its ancestors, itself, and its forks.
@@ -749,6 +1130,12 @@ class Hive:
         self._conn.execute(
             f"DELETE FROM run_outcomes WHERE run_id IN ({placeholders})", run_ids
         )
+        self._conn.execute(
+            f"DELETE FROM friction_events WHERE run_id IN ({placeholders})", run_ids
+        )
+        self._conn.execute(
+            f"DELETE FROM run_metrics WHERE run_id IN ({placeholders})", run_ids
+        )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()
         return len(run_ids)
@@ -796,6 +1183,253 @@ class Hive:
             params.append(since)
         row = self._conn.execute(query, params).fetchone()
         return row["n"] or 0
+
+    # ------------------------------------------------------------------ #
+    # Numeric run metrics
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _same_metric(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        fields = (
+            "run_id",
+            "name",
+            "value",
+            "direction",
+            "unit",
+            "source",
+            "scope",
+            "metadata_json",
+        )
+        return all(left[field] == right[field] for field in fields)
+
+    def record_metrics(
+        self, harness_key: str, rows: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Transactionally insert validated metric rows.
+
+        Exact idempotency collisions are skipped. Reusing a key for different
+        content fails the entire batch before any row is inserted.
+        """
+        unique: dict[str, dict[str, Any]] = {}
+        duplicates = 0
+        for row in rows:
+            key = row["idempotency_key"]
+            prior = unique.get(key)
+            if prior is None:
+                unique[key] = row
+            elif self._same_metric(prior, row):
+                duplicates += 1
+            else:
+                raise ValueError(
+                    f"idempotency key {key!r} is reused for different metric content"
+                )
+
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for row in unique.values():
+                run = self._conn.execute(
+                    "SELECT harness_key FROM runs WHERE run_id=?", (row["run_id"],)
+                ).fetchone()
+                if run is None:
+                    raise ValueError(f"metric run_id {row['run_id']!r} is not indexed")
+                if run["harness_key"] != harness_key:
+                    raise ValueError(
+                        f"metric run_id {row['run_id']!r} belongs to a different harness"
+                    )
+                existing = self._conn.execute(
+                    "SELECT * FROM run_metrics WHERE idempotency_key=?",
+                    (row["idempotency_key"],),
+                ).fetchone()
+                if existing is None:
+                    continue
+                if not self._same_metric(dict(existing), row):
+                    raise ValueError(
+                        f"idempotency key {row['idempotency_key']!r} already records "
+                        "different metric content"
+                    )
+                duplicates += 1
+
+            inserted = 0
+            for row in unique.values():
+                cursor = self._conn.execute(
+                    "INSERT OR IGNORE INTO run_metrics "
+                    "(idempotency_key, run_id, name, value, direction, unit, source, "
+                    "scope, metadata_json, recorded_at) VALUES "
+                    "(:idempotency_key, :run_id, :name, :value, :direction, :unit, "
+                    ":source, :scope, :metadata_json, :recorded_at)",
+                    row,
+                )
+                inserted += cursor.rowcount
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return {"received": len(rows), "inserted": inserted, "duplicates": duplicates}
+
+    @staticmethod
+    def _metric_filters(
+        harness_key: str,
+        *,
+        run_id: str | None,
+        name: str | None,
+        source: str | None,
+        scope: str | None,
+        model: str | None,
+        since: str | None,
+        until: str | None,
+    ) -> tuple[list[str], list[Any]]:
+        where = ["r.harness_key=?"]
+        params: list[Any] = [harness_key]
+        for column, value in (
+            ("m.run_id", run_id),
+            ("m.name", name),
+            ("m.source", source),
+            ("m.scope", scope),
+        ):
+            if value is not None:
+                where.append(f"{column}=?")
+                params.append(value)
+        if model is not None:
+            where.append(
+                "COALESCE(NULLIF(r.effective_model, ''), "
+                "NULLIF(r.requested_model, ''), NULLIF(r.model_path, ''), '')=?"
+            )
+            params.append(model)
+        if since is not None:
+            where.append("r.finished_at>=?")
+            params.append(since)
+        if until is not None:
+            where.append("r.finished_at<=?")
+            params.append(until)
+        return where, params
+
+    def list_metrics(
+        self,
+        harness_key: str,
+        *,
+        run_id: str | None = None,
+        name: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = 1000,
+    ) -> list[dict[str, Any]]:
+        """List immutable metrics with their run provenance."""
+        if limit is not None and limit < 1:
+            raise ValueError("metric limit must be at least 1")
+        where, params = self._metric_filters(
+            harness_key,
+            run_id=run_id,
+            name=name,
+            source=source,
+            scope=scope,
+            model=model,
+            since=since,
+            until=until,
+        )
+        query = (
+            "SELECT m.id, m.idempotency_key, m.run_id, m.name, m.value, m.direction, "
+            "m.unit, m.source, m.scope, m.metadata_json, m.recorded_at, "
+            "r.finished_at AS run_finished_at, r.harness_version_hash AS behavior_hash, "
+            "COALESCE(NULLIF(r.effective_model, ''), NULLIF(r.requested_model, ''), "
+            "NULLIF(r.model_path, ''), '') AS model "
+            "FROM run_metrics m JOIN runs r ON r.run_id=m.run_id "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY r.finished_at DESC, m.id DESC"
+        )
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json"))
+            result.append(item)
+        return result
+
+    def metric_aggregates(
+        self,
+        harness_key: str,
+        *,
+        run_id: str | None = None,
+        name: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        model: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Aggregate without mixing names, sources, scopes, units, or directions."""
+        metrics = self.list_metrics(
+            harness_key,
+            run_id=run_id,
+            name=name,
+            source=source,
+            scope=scope,
+            model=model,
+            since=since,
+            until=until,
+            limit=None,
+        )
+        run_where = ["harness_key=?"]
+        run_params: list[Any] = [harness_key]
+        if run_id is not None:
+            run_where.append("run_id=?")
+            run_params.append(run_id)
+        if model is not None:
+            run_where.append(
+                "COALESCE(NULLIF(effective_model, ''), NULLIF(requested_model, ''), "
+                "NULLIF(model_path, ''), '')=?"
+            )
+            run_params.append(model)
+        if since is not None:
+            run_where.append("finished_at>=?")
+            run_params.append(since)
+        if until is not None:
+            run_where.append("finished_at<=?")
+            run_params.append(until)
+        eligible = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM runs WHERE {' AND '.join(run_where)}",
+            run_params,
+        ).fetchone()["n"]
+
+        groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+        for metric in metrics:
+            key = (
+                metric["name"],
+                metric["source"],
+                metric["scope"],
+                metric["unit"],
+                metric["direction"],
+            )
+            groups.setdefault(key, []).append(metric)
+
+        output: list[dict[str, Any]] = []
+        for key, records in sorted(groups.items()):
+            metric_name, metric_source, metric_scope, metric_unit, direction = key
+            values = [record["value"] for record in records]
+            observed_runs = len({record["run_id"] for record in records})
+            population = len(records) if metric_scope == "eval" else eligible
+            missing = 0 if metric_scope == "eval" else max(0, eligible - observed_runs)
+            output.append(
+                {
+                    "name": metric_name,
+                    "source": metric_source,
+                    "scope": metric_scope,
+                    "unit": metric_unit,
+                    "direction": direction,
+                    "sample_count": len(values),
+                    "observed_run_count": observed_runs,
+                    "population_count": population,
+                    "missing_value_count": missing,
+                    "mean": sum(values) / len(values),
+                    "min": min(values),
+                    "max": max(values),
+                }
+            )
+        return output
 
     # ------------------------------------------------------------------ #
     # Proposals queue

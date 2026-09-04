@@ -302,6 +302,7 @@ with Hive() as hive:
     hive.search_runs("invoice reconciliation")      # runs by what was asked
     hive.compare_versions("my-harness", "9f2c1a", "c05e8d")
     hive.lineage("run_abc123")
+    hive.list_friction("my-harness", recovered=True)
 ```
 
 `runs` carries `task` (the opening statement, capped at 2000 chars — a title and
@@ -311,6 +312,56 @@ search target, not a shadow copy of the journal) and `model_path`.
 left), plus which failure signatures stopped appearing and which started. It
 reports `underpowered` when either side has fewer than five runs, because a
 confident delta over a sample of two is worse than no delta.
+
+### Friction is not final failure
+
+A run can finish successfully after a schema retry, tool error, context
+recovery, guardrail block, or operator steer. The Hive derives bounded
+`friction_events` rows from the already-redacted journal so those incidents do
+not disappear behind the final status:
+
+```bash
+hiveloom friction list ./h --category output_validation --recovered true --json
+hiveloom friction list ./h --model qwen3.5-9b --since 2026-08-01T00:00:00Z --json
+hiveloom stats ./h --include-friction --json
+```
+
+Each record names its run, journal sequence, category, phase, attempt,
+component, stable error fingerprint, recovery state, timestamp, and a summary
+capped at 500 characters. Tool bodies, model text, task input, and operator
+messages are not copied into the friction table. Re-ingesting a run replaces
+its derived rows, so counts remain idempotent. Unknown future category strings
+remain readable by older Hive clients.
+
+### Numeric evaluator signals
+
+Deferred outcomes answer an eventual yes/no question. Ranked quality,
+latency, cost-quality tradeoffs, and other numeric observations use a separate
+`RunMetric` record joined to the run:
+
+```bash
+hiveloom metrics schema --json
+hiveloom metrics record ./h --run-id run_abc123 \
+  --name recall_at_5 --value 0.4 --direction maximize \
+  --unit ratio --source matching_eval_v1 --scope case --json
+hiveloom metrics import ./h metrics.ndjson --json
+hiveloom metrics list ./h --name recall_at_5 --model qwen3.5-9b --json
+```
+
+Metric writes are immutable. Without an explicit `idempotency_key`, Hiveloom
+allows one logical observation per run, name, source, and scope. Replaying the
+same observation is a no-op; reusing its key with different content rejects
+the whole batch. Supply distinct explicit keys only when a scorer deliberately
+emits repeated observations for the same logical slot.
+
+NDJSON imports parse and validate every row before one database transaction.
+Names are user-defined, values must be finite, metadata must be JSON-safe and
+bounded, and the referenced run must belong to the target harness. Queries can
+filter by run, source, name, scope, effective model, and run finish time.
+Aggregates never combine scopes, units, directions, or sources and always
+report `sample_count` and `missing_value_count`. Case and run scopes count
+missing indexed runs in the filtered population; eval scope reports its
+observed records because Hiveloom has no external eval-population manifest yet.
 
 ## See also
 

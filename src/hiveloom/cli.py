@@ -72,6 +72,8 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+friction_app = typer.Typer(help="Query recovered retries and other indexed run friction.")
+app.add_typer(friction_app, name="friction")
 keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
@@ -84,6 +86,8 @@ registry_app = typer.Typer(
     help="The local harness registry: what `hiveloom mcp serve --registered` offers to agents."
 )
 app.add_typer(registry_app, name="registry")
+metrics_app = typer.Typer(help="Record, import, and query numeric run metrics.")
+app.add_typer(metrics_app, name="metrics")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -104,6 +108,17 @@ def _fail(message: str, json_output: bool, code: int) -> None:
     else:
         _err_console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code)
+
+
+def _optional_bool(value: str | None, option: str) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise SpecError(f"{option} must be true or false")
 
 
 def _guard(json_output: bool):
@@ -1584,9 +1599,75 @@ def lineage(
             _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
 
 
+@friction_app.command("list")
+def friction_list(
+    target: str = typer.Argument(..., help="Harness name, id, or harness directory."),
+    category: str | None = typer.Option(None, "--category", help="Filter by category."),
+    component: str | None = typer.Option(None, "--component", help="Filter by component."),
+    recovered: str | None = typer.Option(
+        None, "--recovered", help="Filter by recovery state: true or false."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Filter by requested, effective, or legacy model path."
+    ),
+    since: str | None = typer.Option(None, "--since", help="ISO timestamp lower bound."),
+    until: str | None = typer.Option(None, "--until", help="ISO timestamp upper bound."),
+    limit: int = typer.Option(100, "--limit", help="Maximum records to return."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List indexed run friction without opening raw journals."""
+    from hiveloom import runner
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if limit < 1 or limit > 1000:
+            raise SpecError("--limit must be between 1 and 1000")
+        recovered_value = _optional_bool(recovered, "--recovered")
+        with Hive() as hive:
+            key = runner.resolve_and_ingest(target, hive)
+            records = hive.list_friction(
+                key,
+                category=category,
+                component=component,
+                recovered=recovered_value,
+                model=model,
+                since=since,
+                until=until,
+                limit=limit,
+            )
+        if json_output:
+            _emit_json(
+                {"ok": True, "harness_key": key, "count": len(records), "friction": records}
+            )
+            return
+        if not records:
+            _console.print("[dim]no indexed friction matched[/dim]")
+            return
+        table = Table(title=f"run friction for {key}")
+        table.add_column("time", style="dim")
+        table.add_column("run")
+        table.add_column("category", style="yellow")
+        table.add_column("component")
+        table.add_column("recovered", justify="center")
+        table.add_column("summary")
+        for record in records:
+            table.add_row(
+                record.get("timestamp") or "",
+                record["run_id"],
+                record["category"],
+                record.get("component") or "",
+                "yes" if record["recovered"] else "no",
+                record["summary"],
+            )
+        _console.print(table)
+
+
 @app.command()
 def stats(
     target: str = typer.Argument(..., help="Harness name or harness directory."),
+    include_friction: bool = typer.Option(
+        False, "--include-friction", help="Include indexed retries and recovered failures."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show Hive stats for a harness: success rate, cost, and turns per version.
@@ -1612,11 +1693,13 @@ def stats(
             summary = hive.summary(key, display_name=display)
             recent = hive.recent_failures(key, 5)
             outcomes = hive.outcome_summary(key)
+            friction = hive.friction_summary(key) if include_friction else None
 
         if json_output:
-            _emit_json(
-                {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
-            )
+            payload = {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
+            if friction is not None:
+                payload["friction"] = friction
+            _emit_json(payload)
             return
 
         _console.print(
@@ -1687,6 +1770,27 @@ def stats(
                 f"{outcomes['outcome_success_rate']:.0%} held up "
                 f"({outcomes['failures']} rejected by the world)"
             )
+        if friction is not None:
+            _console.print(
+                f"[bold]friction[/bold]: {friction['events']} event(s) across "
+                f"{friction['runs']} run(s), {friction['recovered']} recovered"
+            )
+            if friction["categories"]:
+                table = Table(title="friction by category")
+                table.add_column("category", style="yellow")
+                table.add_column("events", justify="right")
+                table.add_column("runs", justify="right")
+                table.add_column("recovered", justify="right", style="green")
+                table.add_column("unrecovered", justify="right")
+                for row in friction["categories"]:
+                    table.add_row(
+                        row["category"],
+                        str(row["events"]),
+                        str(row["runs"]),
+                        str(row["recovered"]),
+                        str(row["unrecovered"]),
+                    )
+                _console.print(table)
         sigs = summary["failure_signatures"]
         if sigs["verdicts"]:
             _console.print("[yellow]top failure verdicts:[/yellow]")
@@ -1696,6 +1800,169 @@ def stats(
             _console.print("[yellow]top guardrail triggers:[/yellow]")
             for g in sigs["guardrails"]:
                 _console.print(f"  {g['count']}× {g['guardrail']} ({g['kind']})")
+
+
+def _metric_target(target: str, hive: Any) -> str:
+    """Resolve a harness directory or already-indexed harness key."""
+    from hiveloom import runner
+
+    return runner.resolve_and_ingest(target, hive)
+
+
+@metrics_app.command("schema")
+def metrics_schema(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),
+) -> None:
+    """Emit the machine-readable RunMetric ingestion contract."""
+    from hiveloom.metrics import RunMetric
+
+    schema = RunMetric.model_json_schema()
+    if json_output:
+        _emit_json({"ok": True, "schema": schema})
+    else:
+        _console.print_json(data=schema)
+
+
+@metrics_app.command("record")
+def metrics_record(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    run_id: str = typer.Option(..., "--run-id", help="Indexed run receiving the metric."),
+    name: str = typer.Option(..., "--name", help="User-defined metric name."),
+    value: float = typer.Option(..., "--value", help="Finite numeric value."),
+    direction: str = typer.Option(..., "--direction", help="maximize or minimize."),
+    unit: str = typer.Option(..., "--unit", help="Metric unit, for example ratio or usd."),
+    source: str = typer.Option(..., "--source", help="Scorer/evaluator identity."),
+    scope: str = typer.Option("run", "--scope", help="case, run, or eval."),
+    metadata: str = typer.Option("{}", "--metadata", help="JSON object with bounded metadata."),
+    idempotency_key: str | None = typer.Option(
+        None, "--idempotency-key", help="Optional caller-owned deduplication key."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Attach one validated numeric metric to an indexed run."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.metrics import RunMetric, record_run_metrics
+
+    with _guard(json_output):
+        parsed_metadata = json.loads(metadata)
+        if not isinstance(parsed_metadata, dict):
+            raise ValueError("--metadata must be a JSON object")
+        metric = RunMetric(
+            run_id=run_id,
+            name=name,
+            value=value,
+            direction=direction,
+            unit=unit,
+            source=source,
+            scope=scope,
+            metadata=parsed_metadata,
+            idempotency_key=idempotency_key,
+        )
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            receipt = record_run_metrics(hive, harness_key, [metric])
+        payload = {
+            "ok": True,
+            "harness_key": harness_key,
+            **receipt,
+            "idempotency_key": metric.resolved_idempotency_key(),
+        }
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]recorded[/green] {metric.name}={metric.value:g} {metric.unit} "
+                f"for {metric.run_id} ({receipt['duplicates']} duplicate)"
+            )
+
+
+@metrics_app.command("import")
+def metrics_import(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    path: str = typer.Argument(..., help="NDJSON file containing RunMetric objects."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Transactionally import metrics after validating every NDJSON row."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.metrics import load_metrics_ndjson, record_run_metrics
+
+    with _guard(json_output):
+        metrics = load_metrics_ndjson(path)
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            receipt = record_run_metrics(hive, harness_key, metrics)
+        payload = {"ok": True, "harness_key": harness_key, **receipt}
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]imported[/green] {receipt['inserted']} metric(s), "
+                f"{receipt['duplicates']} duplicate(s)"
+            )
+
+
+@metrics_app.command("list")
+def metrics_list(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    name: str | None = typer.Option(None, "--name"),
+    source: str | None = typer.Option(None, "--source"),
+    scope: str | None = typer.Option(None, "--scope"),
+    model: str | None = typer.Option(None, "--model"),
+    since: str | None = typer.Option(None, "--since", help="Run finish time, ISO 8601."),
+    until: str | None = typer.Option(None, "--until", help="Run finish time, ISO 8601."),
+    limit: int = typer.Option(1000, "--limit", min=1, max=100_000),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List metrics and scope-safe aggregates with explicit missing counts."""
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if scope is not None and scope not in {"case", "run", "eval"}:
+            raise ValueError("--scope must be case, run, or eval")
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            filters = {
+                "run_id": run_id,
+                "name": name,
+                "source": source,
+                "scope": scope,
+                "model": model,
+                "since": since,
+                "until": until,
+            }
+            metrics = hive.list_metrics(harness_key, limit=limit, **filters)
+            aggregates = hive.metric_aggregates(harness_key, **filters)
+        payload = {
+            "ok": True,
+            "harness_key": harness_key,
+            "metrics": metrics,
+            "aggregates": aggregates,
+        }
+        if json_output:
+            _emit_json(payload)
+            return
+        table = Table(title=f"metrics: {harness_key}")
+        for column in ("run", "name", "value", "unit", "scope", "source", "model"):
+            table.add_column(column)
+        for metric in metrics:
+            table.add_row(
+                metric["run_id"],
+                metric["name"],
+                f"{metric['value']:g}",
+                metric["unit"],
+                metric["scope"],
+                metric["source"],
+                metric["model"] or "-",
+            )
+        _console.print(table)
+        for aggregate in aggregates:
+            _console.print(
+                f"[cyan]{aggregate['name']}[/cyan] ({aggregate['scope']}, "
+                f"{aggregate['source']}): mean={aggregate['mean']:g}, "
+                f"n={aggregate['sample_count']}, "
+                f"missing={aggregate['missing_value_count']}"
+            )
 
 
 @app.command()

@@ -189,6 +189,20 @@ rejected. Run `hiveloom migrate HARNESS --json`; never edit either field by
 hand. Migration validates hooks before and after its atomic write, restores the
 original bytes on failure, and does not change the behavior hash.
 
+## External run metrics
+
+Numeric evaluator results are not part of `harness.yaml`. They are immutable
+Hive records attached to an indexed `run_id`, with a user-defined name, finite
+value, maximize/minimize direction, unit, source, and case/run/eval scope.
+Inspect the machine contract with `hiveloom metrics schema --json`; record or
+transactionally import observations with `hiveloom metrics record|import`, and
+query them with `hiveloom metrics list`.
+
+Metric aggregation keeps name, source, scope, unit, and direction separate and
+reports both sample and missing-value counts. Binary `run_outcomes` remain the
+contract for deferred success or failure and are not reinterpreted as numeric
+metrics.
+
 ## Safety invariants (enforced in code)
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,

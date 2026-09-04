@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   performs a fully validated atomic rewrite with rollback. The spelling change
   is behavior-hash neutral, so existing Hive buckets and journals remain
   comparable.
+- The Hive now indexes recovered validation failures, tool errors and retries,
+  context recovery, operator steering, guardrail stops, provider failures, and
+  loop limits as bounded friction records. `hiveloom friction list` filters
+  them by category, component, recovery state, model, and time; `hiveloom
+  stats --include-friction` reports aggregate counts without reading traces.
+- Numeric evaluator signals can now be attached to indexed runs through the
+  public `RunMetric` SDK or `hiveloom metrics record|import`. Writes are
+  immutable and idempotent, NDJSON imports validate before one transaction,
+  and `hiveloom metrics list` filters by run provenance while reporting
+  scope-safe aggregates with sample and missing-value counts.
 
 ### Fixed
 
