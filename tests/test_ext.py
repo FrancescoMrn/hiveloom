@@ -378,7 +378,7 @@ def test_bad_models_yaml_is_collected_not_fatal(monkeypatch, tmp_path: Path):
 # OpenAI-compatible provider
 # --------------------------------------------------------------------------- #
 def test_openai_compat_message_conversion():
-    from hiveloom.models.openai_compat import _to_openai_messages, _to_openai_tool
+    from hiveloom.models.openai_compat import to_openai_messages, to_openai_tool
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -396,12 +396,14 @@ def test_openai_compat_message_conversion():
             ],
         },
     ]
-    out = _to_openai_messages("sys", messages)
+    out = to_openai_messages("sys", messages)
     assert out[0] == {"role": "system", "content": "sys"}
     assert out[2]["tool_calls"][0]["function"]["name"] == "echo"
     assert out[3] == {"role": "tool", "tool_call_id": "c1", "content": "x"}
 
-    tool = _to_openai_tool({"name": "echo", "description": "d", "input_schema": {"type": "object"}})
+    tool = to_openai_tool(
+        {"name": "echo", "description": "d", "input_schema": {"type": "object"}}
+    )
     assert tool["function"]["parameters"] == {"type": "object"}
 
 

@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Provider responses can report the served model, provider request ID, billed
+  amount and currency, a USD conversion, opaque reasoning replay data, and
+  bounded JSON metadata. Each call exposes whether Hiveloom used a billed or
+  estimated USD cost, and the public run result keeps a receipt for every
+  provider call.
+- `normalize_openai_response`, `to_openai_messages`, and `to_openai_tool` are
+  supported public codecs for OpenAI-compatible extensions. The old private
+  names remain aliases for compatibility.
+
 ## [1.0.0] - 2026-08-28
 
 The observability release. A run now leaves behind a progressive,
