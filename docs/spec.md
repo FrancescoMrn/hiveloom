@@ -28,7 +28,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned` |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
-| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (ordered objectives for `sequential_steps`), `max_turns`, `on_tool_error`, `require_verification` |
+| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
 | `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all three nested policies are frozen |
@@ -47,17 +47,77 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
   default `max_cost_usd`) rather than appending a redundant second entry.
   `regex_output_filter` composes as a list — one entry per pattern.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
-  `file_exists`, `command_succeeds` (exit 0 = pass).
+  `file_exists`, `command_succeeds` (exit 0 = pass), `grounded_references`
+  (selected output IDs must occur in approved evidence from this run).
 - **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
-  ordered `loop.steps` list, refusing completion until each is done in order).
+  ordered `loop.steps` list; object steps can enforce tools and call limits).
 - **Compaction:** `summarize`, `truncate_oldest`.
 - **Hooks:** `strip_json_fence` (an opt-in final-output normalizer).
 
+Structured sequential steps make deterministic phases inspectable and
+enforceable:
+
+```yaml
+loop:
+  policy: sequential_steps
+  steps:
+    - id: read
+      instruction: Read the deal.
+      tools: [read_deal]
+      require_tool_calls: [read_deal]
+      max_model_calls: 2
+      max_tool_calls: 1
+    - id: search
+      instruction: Find and verify candidates.
+      tools: [search_and_verify_candidates]
+      require_tool_calls: [search_and_verify_candidates]
+    - id: answer
+      instruction: Produce the final answer.
+      tools: []
+```
+
+Omitting `tools` preserves the current active set; `tools: []` creates a
+tool-free phase. Required calls must succeed before the step advances. A
+non-final step advances as soon as all required calls succeed; otherwise a
+no-tool response is the completion signal. Hidden tool calls are blocked
+before dispatch. Limit exhaustion ends with `status: step_failed` and exit 4.
+
+Legacy string steps retain their instruction-only behavior. A structured tool
+constraint cannot currently be combined with playbooks, and a deferred tool
+cannot be required directly. Use `run --dry-run --json` to inspect the
+effective tools, requirements, and limits for every step. Build the value with
+`hiveloom set`; never edit `harness.yaml` by hand.
+
+Use one deterministic composite tool when multiple upstream calls are a single
+domain operation and an invariant must hold before results reach the model.
+Search followed by an eligibility check is one example. Keep calls separate
+when they are independently useful, need different permissions, should run in
+parallel, or need separate audit or human review. Structured steps control
+phase order and tool access without provider-specific filtering.
+
 Code hooks are the primary extension point. A validator hook has the signature
-`validate(run_output, run_context) -> {"passed": bool, "feedback": str}`; a tool
+`validate(run_output, run_context) -> {"passed": bool, "feedback": str}`. It may
+add an optional third `verification_context` parameter to inspect bounded,
+redacted tool calls, step receipts, and artifacts from the current run. A tool
 hook is any `@hiveloom.tools.tool`-decorated function (its JSON input schema is
 derived from type hints). `hiveloom add …/--code` scaffolds a correctly-signed
 stub.
+
+Use `grounded_references` when a JSON schema proves shape but not provenance:
+
+```bash
+hiveloom add validator --builtin grounded_references \
+  --output-path '$.selected[*].talent_id' \
+  --evidence-path 'search_candidates=$.candidates[*].talent_id' \
+  --dir ./h --json
+```
+
+`--evidence-path TOOL=JSON_PATH` may be repeated. The supported deterministic
+path subset is `$`, dotted keys, `[*]`, and non-negative list indexes. Evidence
+comes only from allowed calls executed in the current run; failed or differently
+named tools cannot satisfy the validator. Scalar values are normalized to
+strings, null and missing values are ignored, and failure feedback lists only
+missing normalized references rather than the surrounding private records.
 
 A tool that declares a `run_context` parameter is handed the run context
 (`input`, `harness_dir`, `run_id`, and the caller's own `context` dict from

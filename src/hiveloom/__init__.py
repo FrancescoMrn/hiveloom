@@ -16,7 +16,7 @@ SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :func:`run_scorers`, :class:`EvalManifest`, :func:`run_eval`,
 :func:`resume_eval`, :func:`build_eval_report`, :func:`compare_evals`,
 :class:`ModelProbeResult`, :func:`probe_model`,
-:class:`HarnessServer`. The
+:class:`HarnessServer`, :class:`VerificationContext`. The
 other, language-agnostic embedding interfaces are
 ``hiveloom run --stream`` (trace events as JSONL on stdout, final
 ``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
@@ -44,7 +44,11 @@ if TYPE_CHECKING:
         load_eval_spec,
         run_scorers,
     )
-    from hiveloom.execution import RunExecutionEnvelope, VerificationSummary  # noqa: F401
+    from hiveloom.execution import (  # noqa: F401
+        RunExecutionEnvelope,
+        StepExecutionRecord,
+        VerificationSummary,
+    )
     from hiveloom.generate.generator import generate as generate_harness  # noqa: F401
     from hiveloom.logging.hive import Hive  # noqa: F401
     from hiveloom.loop.agent_loop import RunResult  # noqa: F401
@@ -54,12 +58,19 @@ if TYPE_CHECKING:
     from hiveloom.serve import HarnessServer  # noqa: F401
     from hiveloom.spec.loader import load_spec, validate_harness  # noqa: F401
     from hiveloom.spec.migrate import migrate_harness  # noqa: F401
+    from hiveloom.verify.base import (  # noqa: F401
+        ToolEvidenceRecord,
+        VerificationContext,
+    )
 
 _SDK = {
     "run_harness": ("hiveloom.runner", "run_harness"),
     "dry_run": ("hiveloom.runner", "dry_run"),
     "RunResult": ("hiveloom.loop.agent_loop", "RunResult"),
     "RunExecutionEnvelope": ("hiveloom.execution", "RunExecutionEnvelope"),
+    "StepExecutionRecord": ("hiveloom.execution", "StepExecutionRecord"),
+    "ToolEvidenceRecord": ("hiveloom.verify.base", "ToolEvidenceRecord"),
+    "VerificationContext": ("hiveloom.verify.base", "VerificationContext"),
     "VerificationSummary": ("hiveloom.execution", "VerificationSummary"),
     "ModelProbeResult": ("hiveloom.models.capabilities", "ModelProbeResult"),
     "probe_model": ("hiveloom.models.capabilities", "probe_model"),

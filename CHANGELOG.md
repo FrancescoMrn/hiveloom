@@ -81,12 +81,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fingerprints, and evidence run IDs remain visible. Hard floors and ceilings
   cannot be traded against another objective, and metric metadata never enters
   the proposing request.
+- `sequential_steps` now accepts structured phases with stable IDs, effective
+  tool subsets, required successful tool calls, and per-step model/tool call
+  limits. Hidden tools are blocked before dispatch; step events reach traces,
+  `RunResult.steps`, CLI/HTTP JSON, and Hive run records. Legacy string steps
+  retain their instruction-only behavior.
+- Validators may request a typed `VerificationContext` with bounded, redacted
+  tool evidence, step receipts, and artifacts from the current run. The new
+  `grounded_references` builtin rejects selected scalar IDs absent from approved
+  successful tool results, even when the output otherwise passes its JSON
+  schema.
+- Generation now teaches structured tool phases, grounded-reference checks,
+  metric instrumentation, and when a deterministic composite tool is the right
+  boundary. It reads validator parameters from the live catalog instead of a
+  fixed parameter list. Evolution guidance diagnoses prompt, grounding,
+  step-policy, provider, and instrumentation failures before choosing a
+  mutation.
+- The offline `ranked-retrieval` harness demonstrates a search-and-verify tool,
+  enforced retrieval and answer phases, grounded synthetic IDs, and a local
+  eval with Recall@3, nDCG@3, and hallucination-rate objectives.
 
 ### Fixed
 
 - Legacy `--input` no longer raises `ENAMETOOLONG` when a large literal is
   checked as a possible filename. It remains available for one deprecation
   cycle; scripts should move to the explicit flags.
+- Managed trace roots publish their marker atomically, so concurrent eval cells
+  cannot observe a valid marker between file creation and its content write.
 
 ## [1.0.0] - 2026-08-28
 

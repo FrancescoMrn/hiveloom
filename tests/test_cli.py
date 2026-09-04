@@ -97,6 +97,68 @@ def test_catalog_policies_lists_sequential_steps():
     assert "sequential_steps" in names
 
 
+def test_catalog_validators_lists_grounded_references():
+    result = runner.invoke(app, ["catalog", "validators", "--json"])
+
+    assert result.exit_code == ExitCode.OK
+    entries = {entry["name"]: entry for entry in _json(result)["entries"]}
+    assert entries["grounded_references"]["params"][0]["name"] == "output_path"
+
+
+def test_add_grounded_reference_validator_from_cli(tmp_path: Path):
+    directory = str(tmp_path / "grounded")
+    runner.invoke(app, ["init", directory, "--name", "grounded", "--task", "T"])
+    runner.invoke(app, ["add", "tool", "--builtin", "file_read", "--dir", directory])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "validator",
+            "--builtin",
+            "grounded_references",
+            "--output-path",
+            "$.selected[*].id",
+            "--evidence-path",
+            "file_read=$.candidates[*].id",
+            "--dir",
+            directory,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.OK
+    ref = load_spec(directory).verify.validators[-1]
+    assert ref.params()["evidence_paths"] == [
+        {"tool": "file_read", "path": "$.candidates[*].id"}
+    ]
+
+
+def test_add_grounded_reference_validator_rejects_bad_cli_selector(tmp_path: Path):
+    directory = str(tmp_path / "grounded-error")
+    runner.invoke(app, ["init", directory, "--name", "grounded", "--task", "T"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "validator",
+            "--builtin",
+            "grounded_references",
+            "--output-path",
+            "$.selected[*].id",
+            "--evidence-path",
+            "missing-separator",
+            "--dir",
+            directory,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.SPEC_ERROR
+    assert "TOOL=JSON_PATH" in _json(result)["error"]
+
+
 def test_explain_loop_steps():
     r = runner.invoke(app, ["explain", "loop.steps", "--json"])
     assert r.exit_code == ExitCode.OK

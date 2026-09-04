@@ -45,16 +45,28 @@ def ensure_trace_root(trace_root: str | Path) -> Path:
     marker = root / TRACE_ROOT_MARKER
     if marker.is_symlink():
         raise SpecError(f"trace root marker cannot be a symlink: {marker}")
-    try:
-        with marker.open("x", encoding="utf-8") as handle:
-            handle.write(_MARKER_CONTENT)
-    except FileExistsError:
+    if not marker.exists():
+        # Publish a fully written inode. Opening the final name with ``x`` makes
+        # an empty file visible before write(), so a concurrent TraceWriter can
+        # read a partial marker and reject a valid managed root.
+        temporary = root / f"{TRACE_ROOT_MARKER}.{uuid.uuid4().hex}.tmp"
         try:
-            content = marker.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise SpecError(f"cannot read trace root marker at {marker}: {exc}") from exc
-        if content != _MARKER_CONTENT:
-            raise SpecError(f"invalid trace root marker at {marker}") from None
+            with temporary.open("x", encoding="utf-8") as handle:
+                handle.write(_MARKER_CONTENT)
+            try:
+                os.link(temporary, marker)
+            except FileExistsError:
+                pass  # another writer atomically published the same marker
+        finally:
+            temporary.unlink(missing_ok=True)
+    if marker.is_symlink():
+        raise SpecError(f"trace root marker cannot be a symlink: {marker}")
+    try:
+        content = marker.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SpecError(f"cannot read trace root marker at {marker}: {exc}") from exc
+    if content != _MARKER_CONTENT:
+        raise SpecError(f"invalid trace root marker at {marker}") from None
     return root
 
 

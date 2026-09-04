@@ -61,13 +61,27 @@ hiveloom set loop.steps '["extract fields", "validate schema", "write report"]' 
 hiveloom set loop.policy sequential_steps --dir ./h
 ```
 
+Use object steps when the workflow needs enforcement, not only guidance:
+
+```bash
+hiveloom set loop.steps '[{"id":"read","instruction":"Read input.","tools":["file_read"],"require_tool_calls":["file_read"],"max_model_calls":2,"max_tool_calls":1},{"id":"answer","instruction":"Return the answer.","tools":[],"max_model_calls":1}]' --dir ./h
+hiveloom set loop.policy sequential_steps --dir ./h
+hiveloom run ./h --input-file sample.txt --dry-run --json
+```
+
+`tools: []` is deliberately tool-free; omitted `tools` preserves the active
+set. A required call must succeed. Hidden calls are blocked before dispatch,
+and a per-step limit ends the run with exit 4. Read the dry-run `steps` array
+before spending model budget. Legacy strings keep their existing behavior.
+
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
   (allowlist-only, disabled without one), `http_get`.
 - **Validators** (the reward signal — always add at least one):
   `output_schema --schema-file`, `regex_match --pattern`, `file_exists --path`,
-  `command_succeeds --command`.
+  `command_succeeds --command`, `grounded_references --output-path
+  --evidence-path TOOL=JSON_PATH` (repeat the evidence flag as needed).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`,
   `max_turns_hard_cap`, `tool_allowlist`, `no_network_write`,
   `regex_output_filter --pattern`. The cost guardrail defaults **on**
@@ -84,10 +98,25 @@ hiveloom add skill pdf-report --description "Build a PDF report." --dir ./h
 
 `--code` scaffolds a correctly-signed stub for you to fill in. A validator has
 the signature `validate(run_output, run_context) -> {"passed": bool,
-"feedback": str}`; a tool is a `@hiveloom.tools.tool`-decorated function whose
+"feedback": str}` and may add a third `verification_context` parameter for
+bounded, redacted current-run tool evidence. A tool is a
+`@hiveloom.tools.tool`-decorated function whose
 JSON schema is derived from its type hints. `add skill` scaffolds a
 progressive-disclosure `skills/<name>/SKILL.md` the executor reads on demand —
 pair it with the `file_read` tool.
+
+When the output selects IDs, add `grounded_references` as well as an output
+schema. Shape validation alone cannot prove that a selected ID came from an
+allowed tool call. Inspect `hiveloom catalog validators --json` before building
+the command.
+
+When several upstream calls form one domain operation with an invariant
+between them, prefer one deterministic composite tool. Search followed by an
+eligibility check is a good example: unverified hits should not cross the tool
+boundary. Keep tools separate when calls are independently useful, need
+different permissions, should run in parallel, or must remain separately
+visible for audit or human review. Use structured steps for ordering and tool
+availability; do not hide phase filtering in a provider adapter.
 
 ## Step 3 — finish
 

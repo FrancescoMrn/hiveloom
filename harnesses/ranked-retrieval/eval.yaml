@@ -1,0 +1,11 @@
+schema_version: 1
+harness: .
+extensions:
+  - eval_extension.py
+dataset:
+  loader: synthetic_retrieval_cases
+  include_expected_in_input: false
+scorers:
+  - ranked_retrieval_metrics
+repetitions: 2
+model_identity: exact

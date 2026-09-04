@@ -94,6 +94,21 @@ hiveloom run ./h --input notes.txt
   └─ auto-ingest the journal into the Hive
 ```
 
+With `sequential_steps`, object steps sit above the same loop rather than
+creating another execution path. The policy filters the registry before each
+phase, blocks hidden calls again at dispatch, tracks required successful calls,
+and applies per-step model/tool limits. `step_started`, `step_violation`,
+`step_completed`, and `step_failed` events enter the journal; final bounded
+receipts are returned on `RunResult.steps` and indexed as Hive `run_steps`.
+
+Verification receives a separate, run-local evidence view. The loop records
+only allowed calls after dispatch and builds a bounded `VerificationContext`
+from redacted tool inputs/results, step receipts, and declared artifacts.
+Each verifier gets its own deep copy, so extension code cannot change the
+evidence seen by another verifier. The context is not rebuilt from a trace and
+never includes a prior run. `grounded_references` uses this view to compare
+selected scalar output references with configured tool-result paths.
+
 A run's identity is the `run_id`, and it is the *only* execution identity across
 the CLI, the API, the Hive, the journal, and the workbench. Branching a run
 always produces a derived run rather than a grouping above it.

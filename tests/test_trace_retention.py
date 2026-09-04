@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from hiveloom.logging.hive import Hive
 from hiveloom.logging.retention import (
     TRACE_ROOT_MARKER,
     apply_trace_retention,
+    ensure_trace_root,
     plan_trace_retention,
     prune_trace_root,
 )
@@ -52,6 +54,20 @@ def _journal(
         timestamp = modified_at.timestamp()
         os.utime(writer.path, (timestamp, timestamp))
     return writer.path
+
+
+def test_trace_root_marker_is_published_atomically_for_concurrent_writers(
+    tmp_path: Path,
+):
+    root = tmp_path / "traces"
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        resolved = list(pool.map(lambda _index: ensure_trace_root(root), range(64)))
+
+    assert resolved == [root.resolve()] * 64
+    assert (root / TRACE_ROOT_MARKER).read_text(encoding="utf-8") == (
+        "hiveloom-trace-root-v1\n"
+    )
+    assert list(root.glob(f"{TRACE_ROOT_MARKER}.*.tmp")) == []
 
 
 def test_structured_redaction_precedes_persistence_streaming_and_hive(tmp_path: Path):

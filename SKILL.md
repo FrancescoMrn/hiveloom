@@ -51,6 +51,8 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    hiveloom set loop.max_turns 15 --dir ./h
    hiveloom add tool --builtin file_read --dir ./h
    hiveloom add validator --builtin output_schema --schema-file ./schemas/output.json --dir ./h
+   # For selected IDs, also require evidence from an allowed current-run tool:
+   hiveloom add validator --builtin grounded_references --output-path '$.selected[*].id' --evidence-path 'file_read=$.items[*].id' --dir ./h --json
    hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
    ```
    For task-specific logic use a code hook — `add tool --code tools/x.py:fn
@@ -59,6 +61,15 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    middleware: block/patch tool calls, transform context) and
    `add skill <name> --description "..."` (progressive-disclosure SKILL.md the
    executor reads on demand — pair with the `file_read` tool).
+   For enforced phases, set structured `loop.steps` objects before selecting
+   `sequential_steps`; each object can declare `tools`, `require_tool_calls`,
+   `max_model_calls`, and `max_tool_calls`. Inspect the effective plan with
+   `run --dry-run --json`.
+   Combine multiple upstream calls into one deterministic tool only when they
+   form one domain operation with an invariant between them, such as search
+   followed by eligibility checks before results are exposed. Keep calls
+   separate when they need different permissions, can run independently, or
+   must remain separately auditable.
 3. **Finish**: `hiveloom validate ./h` then `hiveloom run ./h --input FILE --dry-run`
    (assembles the first model call without calling the model API; declared MCP
    servers are still contacted for eager tool discovery).
@@ -116,6 +127,10 @@ Before a model batch, run `hiveloom models probe ./h --provider PROVIDER
 exact` only when up to two possibly billed calls are intended. The result keeps
 requested and effective identity separate; use explicit aliases rather than
 relabelling a served model.
+
+Structured sequential runs return `steps` receipts in JSON and emit indexed
+step events. A hidden tool never reaches dispatch; missing required calls are
+retried within the step; exhausted step limits return exit 4.
 
 ## Improving a harness — use evolve, not the editor
 

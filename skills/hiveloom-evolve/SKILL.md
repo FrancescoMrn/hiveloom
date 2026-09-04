@@ -23,6 +23,21 @@ The evolver reads the Hive's clustered failures (ingesting the folder's
 in-folder traces on the fly), asks a strong model for a minimal mutation, and
 gates it **in code**.
 
+Diagnose the failed layer before proposing a change:
+
+- Prompt: the evidence and controls are sufficient, but the executor
+  misunderstood the task. Clarify the smallest prompt section.
+- Grounding: selected references are absent from approved current-run tool
+  evidence. Add or repair `grounded_references` when validators are mutable;
+  do not only rewrite the prompt.
+- Step policy: a required operation was skipped or a tool ran in the wrong
+  phase. Use structured `sequential_steps` when `loop.steps` is mutable.
+- Provider: effective identity, capabilities, routing, reasoning replay, or
+  credentials are wrong. Model/provider fields are frozen, so report the
+  operator action instead of disguising it as a prompt change.
+- Instrumentation: objective metrics are missing or incomparable. Fix scorer
+  coverage; missing observations are not zero.
+
 If a bounded Hive summary is not enough to explain a retry, opt in to
 `evolution.trace_excerpts.enabled` through `hiveloom set`. The selector uses
 indexed friction as an anchor, re-applies `logging.redact`, and enforces hard

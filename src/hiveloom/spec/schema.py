@@ -491,6 +491,72 @@ class ContextConfig(BaseModel):
     )
 
 
+class SequentialStep(BaseModel):
+    """One enforceable phase in the builtin sequential-steps policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        description="Stable step identifier used in traces and Hive records.",
+    )
+    instruction: str = Field(
+        min_length=1,
+        max_length=5_000,
+        description="Objective pinned into context while this step is active.",
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        max_length=1_000,
+        description=(
+            "Tools exposed during this step. Omit to preserve the current active set; "
+            "use an empty list for a tool-free phase."
+        ),
+    )
+    require_tool_calls: list[str] = Field(
+        default_factory=list,
+        max_length=1_000,
+        description="Tool names that must succeed before the step can complete.",
+    )
+    max_model_calls: int | None = Field(
+        default=None, ge=1, le=1_000, description="Optional model-call cap for this step."
+    )
+    max_tool_calls: int | None = Field(
+        default=None, ge=1, le=10_000, description="Optional tool-call cap for this step."
+    )
+
+    @field_validator("instruction")
+    @classmethod
+    def _instruction_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("step instruction must not be blank")
+        return value
+
+    @field_validator("tools", "require_tool_calls")
+    @classmethod
+    def _unique_tool_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        if any(not name.strip() for name in value):
+            raise ValueError("step tool names must not be blank")
+        if len(value) != len(set(value)):
+            raise ValueError("step tool names must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def _required_tools_are_exposed(self) -> SequentialStep:
+        if self.tools is not None:
+            hidden = sorted(set(self.require_tool_calls) - set(self.tools))
+            if hidden:
+                raise ValueError(
+                    "required tool calls must also appear in step.tools: "
+                    + ", ".join(hidden)
+                )
+        return self
+
+
 class LoopConfig(BaseModel):
     """The agent loop policy and stop conditions."""
 
@@ -515,11 +581,13 @@ class LoopConfig(BaseModel):
             raise ValueError(f"unknown loop policy '{value}' (valid: {valid})")
         return value
 
-    steps: list[str] = Field(
+    steps: list[str | SequentialStep] = Field(
         default_factory=list,
-        description="Ordered objectives for the sequential_steps policy; each is injected "
-        "as the current objective in turn and the loop refuses completion "
-        "until every step is consumed. Ignored by other policies.",
+        description=(
+            "Ordered objectives for sequential_steps. Legacy strings keep their current "
+            "instruction-only behavior. Objects can constrain tools, required successful "
+            "calls, and per-step model/tool call limits. Ignored by other policies."
+        ),
     )
 
     @model_validator(mode="after")
@@ -532,6 +600,9 @@ class LoopConfig(BaseModel):
         # first command. Non-empty steps with any other policy are allowed.
         if self.policy == "sequential_steps" and not self.steps:
             raise ValueError("loop.policy 'sequential_steps' requires a non-empty loop.steps")
+        ids = [step.id for step in self.steps if isinstance(step, SequentialStep)]
+        if len(ids) != len(set(ids)):
+            raise ValueError("structured sequential step ids must be unique")
         return self
 
     max_turns: int = Field(
@@ -1263,6 +1334,95 @@ class HarnessSpec(BaseModel):
             else:
                 names.add(tool.code.split(":", 1)[1])
         return names
+
+    @model_validator(mode="after")
+    def _check_structured_steps(self) -> HarnessSpec:
+        deferred: set[str] = set()
+        for ref in self.tools:
+            if not ref.deferred:
+                continue
+            deferred.add(
+                ref.builtin
+                if isinstance(ref, BuiltinToolRef)
+                else ref.code.split(":", 1)[1]
+            )
+        deferred_mcp_prefixes = {
+            f"mcp__{server.name}__" for server in self.mcp_servers if server.deferred
+        }
+        available = self.tool_names()
+        if deferred or deferred_mcp_prefixes:
+            available.add("search_tools")
+        if self.playbooks:
+            available.add("switch_playbook")
+        for step in self.loop.steps:
+            if not isinstance(step, SequentialStep):
+                continue
+            declared = set(step.tools or []) | set(step.require_tool_calls)
+            known = {name for name in declared if not name.startswith("mcp__")}
+            unknown = sorted(known - available)
+            if unknown:
+                raise ValueError(
+                    f"sequential step '{step.id}' lists unknown tool(s): "
+                    f"{', '.join(unknown)}. Declared tools: "
+                    f"{', '.join(sorted(available)) or '(none)'}"
+                )
+            deferred_required = sorted(
+                name
+                for name in step.require_tool_calls
+                if name in deferred
+                or any(name.startswith(prefix) for prefix in deferred_mcp_prefixes)
+            )
+            if deferred_required:
+                raise ValueError(
+                    f"sequential step '{step.id}' requires deferred tool(s): "
+                    f"{', '.join(deferred_required)}"
+                )
+            if self.playbooks and (step.tools is not None or step.require_tool_calls):
+                raise ValueError(
+                    "structured step tool constraints cannot be combined with playbooks; "
+                    f"step '{step.id}' must omit tools and require_tool_calls"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _check_grounded_reference_validators(self) -> HarnessSpec:
+        from hiveloom.json_path import parse_json_path
+
+        refs = [*self.verify.validators]
+        for playbook in self.playbooks:
+            refs.extend(playbook.validators)
+        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        for ref in refs:
+            if not (
+                isinstance(ref, BuiltinValidatorRef)
+                and ref.builtin == "grounded_references"
+            ):
+                continue
+            params = ref.params()
+            parse_json_path(params["output_path"])
+            evidence_paths = params["evidence_paths"]
+            if not evidence_paths:
+                raise ValueError("grounded_references evidence_paths must not be empty")
+            for index, evidence in enumerate(evidence_paths):
+                if not isinstance(evidence, dict) or set(evidence) != {"tool", "path"}:
+                    raise ValueError(
+                        "grounded_references evidence_paths entries must contain only "
+                        f"tool and path (entry {index})"
+                    )
+                tool = evidence["tool"]
+                path = evidence["path"]
+                if not isinstance(tool, str) or not tool.strip():
+                    raise ValueError("grounded_references evidence tool must be a name")
+                if not isinstance(path, str):
+                    raise ValueError("grounded_references evidence path must be a string")
+                parse_json_path(path)
+                if not tool.startswith("mcp__") and tool not in available:
+                    raise ValueError(
+                        f"grounded_references lists unknown evidence tool '{tool}'"
+                    )
+            if params.get("normalize", "string") != "string":
+                raise ValueError("grounded_references normalize must be 'string'")
+        return self
 
     @model_validator(mode="after")
     def _check_playbooks(self) -> HarnessSpec:

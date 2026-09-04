@@ -21,6 +21,20 @@ class VerificationSummary(BaseModel):
     final_status: Literal["passed", "failed", "not_run"] = "not_run"
 
 
+class StepExecutionRecord(BaseModel):
+    """Public receipt for one declared sequential step."""
+
+    id: str
+    index: int
+    instruction: str = Field(max_length=5_000)
+    status: Literal["pending", "running", "completed", "failed"] = "pending"
+    model_calls: int = 0
+    tool_calls: int = 0
+    required_tool_calls: list[str] = Field(default_factory=list)
+    completed_required_tool_calls: list[str] = Field(default_factory=list)
+    violations: list[str] = Field(default_factory=list, max_length=50)
+
+
 class RunExecutionEnvelope(BaseModel):
     """What was requested, what executed, and what the run consumed."""
 

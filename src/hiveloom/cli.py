@@ -621,11 +621,35 @@ def add_validator_cmd(
     pattern: str | None = typer.Option(None, "--pattern", help="For regex_match."),
     path: str | None = typer.Option(None, "--path", help="For file_exists."),
     command: str | None = typer.Option(None, "--command", help="For command_succeeds."),
+    output_path: str | None = typer.Option(
+        None, "--output-path", help="JSON output selector for grounded_references."
+    ),
+    evidence_path: list[str] | None = typer.Option(
+        None,
+        "--evidence-path",
+        help="Repeat TOOL=JSON_PATH selectors for grounded_references.",
+    ),
+    normalize: str | None = typer.Option(
+        None, "--normalize", help="Reference normalization for grounded_references."
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Add a verifier. ``--code`` scaffolds a stub file if it does not exist."""
     with _guard(json_output):
+        evidence_paths = None
+        if evidence_path:
+            evidence_paths = []
+            for selector in evidence_path:
+                if "=" not in selector:
+                    raise SpecError(
+                        "--evidence-path must use TOOL=JSON_PATH, for example "
+                        "search=$.candidates[*].id"
+                    )
+                tool, json_path = selector.split("=", 1)
+                if not tool.strip() or not json_path.strip():
+                    raise SpecError("--evidence-path tool and JSON path must not be empty")
+                evidence_paths.append({"tool": tool, "path": json_path})
         construct.add_validator(
             directory,
             builtin=builtin,
@@ -635,6 +659,9 @@ def add_validator_cmd(
             pattern=pattern,
             path=path,
             command=command,
+            output_path=output_path,
+            evidence_paths=evidence_paths,
+            normalize=normalize,
         )
         _added(json_output, "validator", builtin or code)
 
@@ -1160,6 +1187,15 @@ def run(
                 _console.print(f"[bold]dry run[/bold] — {info['name']} ({info['model']})")
                 _console.print(f"system:\n{info['system']}")
                 _console.print(f"tools: {[t['name'] for t in info['tools']]}")
+                if info.get("steps"):
+                    _console.print("steps:")
+                    for step in info["steps"]:
+                        _console.print(
+                            f"  {step['id']}: tools={step['tools']} "
+                            f"required={step['require_tool_calls']} "
+                            f"model_calls<={step['max_model_calls']} "
+                            f"tool_calls<={step['max_tool_calls']}"
+                        )
                 _console.print(f"first message: {info['messages'][0]['content']}")
             return
 

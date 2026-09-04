@@ -171,3 +171,9 @@ bounded diagnostics, and non-sensitive identifiers in their outputs, never CV
 text, application rows, or full model/tool payloads.
 
 Normal `hiveloom run` behavior is unchanged.
+
+The checked-in [`ranked-retrieval`](../harnesses/ranked-retrieval/) example is
+an offline reference for the complete local contract: synthetic cases,
+structured retrieval and answer phases, grounded IDs, Recall@3, nDCG@3, and a
+hard hallucination objective. `hiveloom eval validate eval.yaml --approve
+--json` validates it without model credentials or network access.

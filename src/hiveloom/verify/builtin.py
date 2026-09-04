@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, field_validator
+
 from hiveloom import ext
+from hiveloom.json_path import extract_json_path, parse_json_path
 from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import (
     BuiltinValidatorRef,
     CodeValidatorRef,
     HarnessSpec,
 )
-from hiveloom.verify.base import VerdictResult, Verifier
+from hiveloom.verify.base import VerdictResult, VerificationContext, Verifier
 
 
 class OutputSchemaVerifier(Verifier):
@@ -24,7 +28,13 @@ class OutputSchemaVerifier(Verifier):
     def __init__(self, schema_file: str, base: Path):
         self._schema_path = base / schema_file
 
-    def validate(self, run_output: str, run_context: dict[str, Any]) -> VerdictResult:
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        del run_context, verification_context
         import jsonschema
 
         if not self._schema_path.exists():
@@ -59,7 +69,13 @@ class RegexMatchVerifier(Verifier):
     def __init__(self, pattern: str):
         self._pattern = re.compile(pattern)
 
-    def validate(self, run_output: str, run_context: dict[str, Any]) -> VerdictResult:
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        del run_context, verification_context
         if self._pattern.search(run_output):
             return VerdictResult(passed=True, verifier=self.name)
         return VerdictResult(
@@ -76,7 +92,13 @@ class FileExistsVerifier(Verifier):
         self._path = base / path
         self._rel = path
 
-    def validate(self, run_output: str, run_context: dict[str, Any]) -> VerdictResult:
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        del run_output, run_context, verification_context
         if self._path.exists():
             return VerdictResult(passed=True, verifier=self.name)
         return VerdictResult(
@@ -91,7 +113,13 @@ class CommandSucceedsVerifier(Verifier):
         self._command = command
         self._base = base
 
-    def validate(self, run_output: str, run_context: dict[str, Any]) -> VerdictResult:
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        del run_output, run_context, verification_context
         proc = subprocess.run(
             self._command,
             shell=True,  # noqa: S602 - command is spec-authored, not model output
@@ -114,9 +142,23 @@ class CodeVerifier(Verifier):
     def __init__(self, func, name: str):
         self._func = func
         self.name = name
+        parameters = list(inspect.signature(func).parameters.values())
+        self._accepts_verification_context = len(parameters) >= 3 or any(
+            parameter.kind in {parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD}
+            for parameter in parameters
+        )
 
-    def validate(self, run_output: str, run_context: dict[str, Any]) -> VerdictResult:
-        result = self._func(run_output, run_context)
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        result = (
+            self._func(run_output, run_context, verification_context)
+            if self._accepts_verification_context
+            else self._func(run_output, run_context)
+        )
         if isinstance(result, VerdictResult):
             result.verifier = result.verifier or self.name
             return result
@@ -127,6 +169,101 @@ class CodeVerifier(Verifier):
                 verifier=self.name,
             )
         return VerdictResult(passed=bool(result), verifier=self.name)
+
+
+class EvidencePath(BaseModel):
+    """A tool result and JSON path allowed to support output references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str
+    path: str
+
+    @field_validator("tool")
+    @classmethod
+    def _tool_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("evidence tool must not be blank")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _valid_path(cls, value: str) -> str:
+        parse_json_path(value)
+        return value
+
+
+def _normalize_reference(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    return None
+
+
+class GroundedReferencesVerifier(Verifier):
+    """Require every selected scalar reference to occur in allowed tool evidence."""
+
+    name = "grounded_references"
+
+    def __init__(
+        self,
+        output_path: str,
+        evidence_paths: list[dict[str, Any]],
+        normalize: str = "string",
+    ):
+        if normalize != "string":
+            raise ValueError("grounded_references normalize must be 'string'")
+        parse_json_path(output_path)
+        self._output_path = output_path
+        self._evidence_paths = [EvidencePath.model_validate(item) for item in evidence_paths]
+
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        del run_context
+        try:
+            output = json.loads(run_output)
+        except json.JSONDecodeError as exc:
+            return VerdictResult(
+                passed=False,
+                feedback=f"output is not valid JSON: {exc}",
+                verifier=self.name,
+            )
+        selected = {
+            normalized
+            for value in extract_json_path(output, self._output_path)
+            if (normalized := _normalize_reference(value)) is not None
+        }
+        evidence: set[str] = set()
+        if verification_context is not None:
+            for path in self._evidence_paths:
+                for record in verification_context.tool_calls:
+                    if record.name != path.tool or record.is_error:
+                        continue
+                    evidence.update(
+                        normalized
+                        for value in extract_json_path(record.result, path.path)
+                        if (normalized := _normalize_reference(value)) is not None
+                    )
+        missing = sorted(selected - evidence)
+        if not missing:
+            return VerdictResult(passed=True, verifier=self.name)
+        displayed = missing[:50]
+        suffix = f" (+{len(missing) - len(displayed)} more)" if len(missing) > 50 else ""
+        feedback = "selected references absent from approved tool evidence: " + ", ".join(
+            json.dumps(value) for value in displayed
+        )
+        return VerdictResult(
+            passed=False,
+            feedback=(feedback + suffix)[:2000],
+            verifier=self.name,
+        )
 
 
 def build_verifiers(spec: HarnessSpec, base_dir: str | Path) -> list[Verifier]:
@@ -175,6 +312,13 @@ def _register_factories() -> None:
         "validators",
         "command_succeeds",
         lambda p, ctx: CommandSucceedsVerifier(p["command"], ctx.base),
+    )
+    ext.register_builtin_factory(
+        "validators",
+        "grounded_references",
+        lambda p, _ctx: GroundedReferencesVerifier(
+            p["output_path"], p["evidence_paths"], p.get("normalize", "string")
+        ),
     )
 
 

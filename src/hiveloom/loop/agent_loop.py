@@ -13,6 +13,7 @@ tool calls, patch results, transform context). Guardrails always run first.
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,13 +25,14 @@ from hiveloom.context.manager import ContextManager
 from hiveloom.events import EventBus
 from hiveloom.execution import (
     RunExecutionEnvelope,
+    StepExecutionRecord,
     VerificationSummary,
     execution_fingerprint,
 )
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
-from hiveloom.loop.policies import LoopPolicy, build_policy
+from hiveloom.loop.policies import LoopPolicy, StepPolicyHalt, build_policy
 from hiveloom.models.provider import (
     ContextOverflowError,
     ModelConfig,
@@ -42,13 +44,55 @@ from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry, ToolResult
-from hiveloom.verify.base import VerdictResult, Verifier
+from hiveloom.verify.base import (
+    ToolEvidenceRecord,
+    VerdictResult,
+    VerificationContext,
+    Verifier,
+    invoke_verifier,
+)
+
+_EVIDENCE_RECORD_LIMIT = 2_000
+_EVIDENCE_STRING_LIMIT = 4_000
+_EVIDENCE_LIST_LIMIT = 2_000
+_EVIDENCE_DICT_LIMIT = 500
+_EVIDENCE_DEPTH_LIMIT = 20
+
+
+def _bound_evidence(value: Any, depth: int = 0) -> tuple[Any, bool]:
+    """Bound verifier evidence while preserving JSON structure and scalar IDs."""
+    if depth >= _EVIDENCE_DEPTH_LIMIT:
+        return "[TRUNCATED: depth limit]", True
+    if isinstance(value, str):
+        if len(value) <= _EVIDENCE_STRING_LIMIT:
+            return value, False
+        return value[:_EVIDENCE_STRING_LIMIT] + "[TRUNCATED]", True
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        truncated = len(value) > _EVIDENCE_DICT_LIMIT
+        for key, item in list(value.items())[:_EVIDENCE_DICT_LIMIT]:
+            bounded_item, child_truncated = _bound_evidence(item, depth + 1)
+            bounded[str(key)] = bounded_item
+            truncated = truncated or child_truncated
+        return bounded, truncated
+    if isinstance(value, (list, tuple)):
+        bounded_items = []
+        truncated = len(value) > _EVIDENCE_LIST_LIMIT
+        for item in list(value)[:_EVIDENCE_LIST_LIMIT]:
+            bounded_item, child_truncated = _bound_evidence(item, depth + 1)
+            bounded_items.append(bounded_item)
+            truncated = truncated or child_truncated
+        return bounded_items, truncated
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+    return str(value)[:_EVIDENCE_STRING_LIMIT], True
 
 
 class RunResult(BaseModel):
     """The outcome of a harness run."""
 
-    status: str  # success | verify_failed | guardrail_halt | max_turns | stopped | error
+    # success | verify_failed | guardrail_halt | step_failed | max_turns | stopped | error
+    status: str
     output: str = ""
     turns: int = 0
     cost_usd: float = 0.0
@@ -68,6 +112,7 @@ class RunResult(BaseModel):
     # overrides; ``resolved`` is the validated config that the router used.
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     execution: RunExecutionEnvelope | None = None
+    steps: list[StepExecutionRecord] = Field(default_factory=list)
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -125,6 +170,7 @@ class AgentLoop:
         self._base = Path(base_dir)
         self._provider = provider
         self._registry = registry
+        self._initial_active_tools = set(registry.active_names())
         self._guardrails = guardrails
         self._verifiers = verifiers
         self._context = context
@@ -171,6 +217,8 @@ class AgentLoop:
         self._provider_calls: list[dict[str, Any]] = []
         self._usage = Usage()
         self._verification_attempts = 0
+        self._tool_evidence: list[ToolEvidenceRecord] = []
+        self._tool_evidence_truncated = False
         self._context.set_compaction_model_call(self._compaction_model_turn)
 
     # ------------------------------------------------------------------ #
@@ -183,6 +231,18 @@ class AgentLoop:
     @property
     def state(self) -> RunState:
         return self._state
+
+    def set_step_tools(self, names: list[str] | None) -> None:
+        """Apply one structured step's tool subset without activating deferred tools."""
+        if names is None:
+            return
+        self._registry.set_active(
+            [name for name in names if name in self._initial_active_tools]
+        )
+
+    def emit_step_event(self, event: str, **payload: Any) -> None:
+        """Emit a policy-owned step event through the run's trace."""
+        self._trace.emit(event, **payload)
 
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
@@ -236,6 +296,8 @@ class AgentLoop:
             self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
+        except StepPolicyHalt as exc:
+            return self._finish("step_failed", reason=str(exc))
         except GuardrailHalt as exc:
             return self._finish("guardrail_halt", reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
@@ -264,7 +326,11 @@ class AgentLoop:
                 for request in self._control.drain_playbook_switches():
                     self._switch_playbook_from_operator(**request)
             try:
+                self._policy.before_model_turn(self)
                 response = self.model_turn()
+                self._policy.after_model_turn(self, response)
+            except StepPolicyHalt as exc:
+                return self._finish("step_failed", reason=str(exc))
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
@@ -275,12 +341,23 @@ class AgentLoop:
             if response.tool_calls:
                 try:
                     halt, terminate_output = self._dispatch_tools(response)
+                except StepPolicyHalt as exc:
+                    return self._finish("step_failed", reason=str(exc))
                 except ToolAbort as exc:
                     return self._finish("error", reason=str(exc))
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
                 if terminate_output is None:
+                    nudge = self._policy.after_tool_turn(self, response)
+                    if nudge is not None:
+                        self._context.add_user(nudge)
+                        self._state.policy_nudges += 1
+                    continue
+                nudge = self._policy.wants_continue_after_tools(self, response)
+                if nudge is not None:
+                    self._context.add_user(nudge)
+                    self._state.policy_nudges += 1
                     continue
                 # Every tool result in the batch asked to terminate: treat the
                 # last result as the final output, skipping a model turn.
@@ -627,6 +704,10 @@ class AgentLoop:
             halt = self._finalize_call(call, result)
             if halt is not None:
                 return halt, None
+            self._policy.after_tool_call(
+                self, call.name, succeeded=not result.is_error
+            )
+            self._record_tool_evidence(call, result)
             dispatched.append(result)
             results.append(
                 {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
@@ -673,6 +754,10 @@ class AgentLoop:
             halt = self._finalize_call(call, result)
             if halt is not None:
                 return halt, None
+            self._policy.after_tool_call(
+                self, call.name, succeeded=not result.is_error
+            )
+            self._record_tool_evidence(call, result)
             dispatched.append(result)
             results.append(
                 {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
@@ -682,6 +767,9 @@ class AgentLoop:
 
     def _preflight_call(self, call: Any) -> tuple[str, str] | None:
         """Guardrails then hooks for one call. ``("halt", r)``/``("block", r)``/None."""
+        policy_block = self._policy.before_tool_call(self, call.name)
+        if policy_block is not None:
+            return "block", policy_block
         for guardrail in self._guardrails:
             decision = guardrail.before_tool_call(self._state, call)
             if decision.kind in ("halt", "block"):
@@ -799,6 +887,35 @@ class AgentLoop:
             artifacts=collected,
         )
         return None
+
+    def _record_tool_evidence(self, call: Any, result: Any) -> None:
+        """Retain one redacted, bounded, allowed call for run-local verification."""
+        if len(self._tool_evidence) >= _EVIDENCE_RECORD_LIMIT:
+            self._tool_evidence_truncated = True
+            return
+        try:
+            raw_result = json.loads(result.content)
+        except (json.JSONDecodeError, TypeError):
+            raw_result = result.content
+        safe_input, input_truncated = _bound_evidence(self._trace.redact(call.input))
+        safe_result, result_truncated = _bound_evidence(
+            self._trace.redact(raw_result)
+        )
+        step = self._policy.current_step()
+        record = ToolEvidenceRecord(
+            id=call.id,
+            name=call.name,
+            input=safe_input,
+            result=safe_result,
+            is_error=result.is_error,
+            step_id=step[0] if step else None,
+            step_index=step[1] if step else None,
+            truncated=input_truncated or result_truncated,
+        )
+        self._tool_evidence.append(record)
+        self._tool_evidence_truncated = (
+            self._tool_evidence_truncated or record.truncated
+        )
 
     def _on_output(self, output: str) -> str | None:
         """Run on_output guardrails. Returns None (ok), a block reason, or 'HALT:<reason>'."""
@@ -1020,12 +1137,25 @@ class AgentLoop:
 
     def _verify(self, output: str) -> list[VerdictResult]:
         self._verification_attempts += 1
-        run_context = self._run_context(
-            output=output, playbook=self._playbooks.current_name if self._playbooks else None
-        )
+        verification_context = self._verification_context()
         verdicts: list[VerdictResult] = []
         for verifier in self._active_verifiers():
-            verdict = verifier.validate(output, run_context)
+            # Each verifier receives its own deep copy through both APIs. The
+            # Pydantic envelope is frozen, but nested extension-owned values
+            # may still be mutable; one verifier must not taint another's
+            # evidence in the same attempt.
+            verifier_context = verification_context.model_copy(deep=True)
+            run_context = self._run_context(
+                output=output,
+                playbook=self._playbooks.current_name if self._playbooks else None,
+                verification_context=verifier_context,
+            )
+            verdict = invoke_verifier(
+                verifier,
+                output,
+                run_context,
+                verifier_context,
+            )
             verdict.verifier = verdict.verifier or verifier.name
             self._trace.emit(
                 "verification_result",
@@ -1038,6 +1168,21 @@ class AgentLoop:
             "verification", {"verdicts": [v.model_dump() for v in verdicts]}
         )
         return verdicts
+
+    def _verification_context(self) -> VerificationContext:
+        step_values = self._trace.redact(
+            [record.model_dump(mode="json") for record in self._policy.execution_records()]
+        )
+        artifact_values, artifact_truncated = _bound_evidence(
+            self._trace.redact(self._state.artifacts)
+        )
+        return VerificationContext(
+            run_id=self._run_id,
+            tool_calls=tuple(record.model_copy(deep=True) for record in self._tool_evidence),
+            steps=tuple(StepExecutionRecord.model_validate(value) for value in step_values),
+            artifacts=tuple(artifact_values),
+            evidence_truncated=self._tool_evidence_truncated or artifact_truncated,
+        )
 
     def _guardrail_halt(self, hook) -> str | None:
         for guardrail in self._guardrails:
@@ -1076,6 +1221,7 @@ class AgentLoop:
     ) -> RunResult:
         duration_seconds = self._state.elapsed_seconds()
         verification = self._verification_summary(status)
+        step_records = self._policy.execution_records()
         models_used = [
             {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
             for s in self._router.path
@@ -1162,6 +1308,7 @@ class AgentLoop:
             model_path=self._router.path_key(),
             models_used=models_used,
             provider_calls=self._provider_calls,
+            steps=[record.model_dump(mode="json") for record in step_records],
         )
         self._events.emit(
             "run_finished",
@@ -1186,6 +1333,7 @@ class AgentLoop:
             provider_calls=list(self._provider_calls),
             runtime_config=self._runtime_config,
             execution=execution,
+            steps=step_records,
         )
 
     def _verification_summary(self, status: str) -> VerificationSummary:

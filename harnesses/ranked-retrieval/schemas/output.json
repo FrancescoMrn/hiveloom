@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["selected"],
+  "properties": {
+    "selected": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record_id", "reason"],
+        "properties": {
+          "record_id": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 240}
+        }
+      }
+    }
+  }
+}

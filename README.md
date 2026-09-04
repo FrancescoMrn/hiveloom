@@ -174,6 +174,10 @@ hiveloom validate ./summarizer --json
 # Assemble the first call without contacting the model
 hiveloom run ./summarizer --input-file notes.txt --dry-run --json
 
+# Enforced phases can narrow tools and require successful calls
+hiveloom set loop.steps '[{"id":"read","instruction":"Read notes.","tools":["file_read"],"require_tool_calls":["file_read"]},{"id":"answer","instruction":"Write the summary.","tools":[]}]' --dir ./summarizer
+hiveloom set loop.policy sequential_steps --dir ./summarizer
+
 # Run for real (the default provider uses Anthropic)
 export ANTHROPIC_API_KEY=sk-...
 hiveloom run ./summarizer --input-file notes.txt --json
@@ -253,7 +257,7 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Five worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
+Six worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
 each the smallest thing that shows one layer of the runtime:
 
 | harness | what it shows |
@@ -263,6 +267,7 @@ each the smallest thing that shows one layer of the runtime:
 | [`article-extractor`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/article-extractor) | a custom `@tool`, an output hook, a validator that re-fetches to catch invention |
 | [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run — offline, so forking and evolution need no API key |
 | [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*` |
+| [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | structured tool phases, a deterministic search-and-verify tool, grounded IDs, and local ranked metrics over synthetic data |
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone
