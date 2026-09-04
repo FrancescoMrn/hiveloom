@@ -88,7 +88,16 @@ Set `logging.snapshot_files: true` to inline the file *bodies* too, bounded at
 the cost of size; the default records hashes only.
 
 `run_finished` closes the record with the run's `output`, `verdicts`,
-`artifacts`, `model_path`, and `models_used`.
+`artifacts`, `model_path`, `models_used`, and the same `execution` envelope
+returned by the SDK and CLI. That envelope keeps the requested, resolved, and
+provider-reported model identities separate; sums provider-call usage; labels
+cost as billed, estimated, or mixed; and records whether verification passed
+on the first output, recovered, failed, or never ran.
+
+`behavior_hash` is the current name of the version hash inside this public
+envelope. `schema_version` reflects the existing harness `version` field. The
+identity migration keeps those meanings explicit without changing the 1.0
+journal envelope retroactively.
 
 ## Levels
 

@@ -901,7 +901,27 @@ def mcp_list_tools_cmd(
 def run(
     harness_dir: str = typer.Argument(".", help="Harness directory to run."),
     input_value: str = typer.Option(
-        None, "--input", help="Input FILE path or literal TEXT (omit with --resume)."
+        None,
+        "--input",
+        help="Legacy FILE-or-TEXT input heuristic (deprecated; use an explicit input flag).",
+    ),
+    input_text: str = typer.Option(
+        None, "--input-text", help="Literal input text; never interpreted as a path."
+    ),
+    input_file: str = typer.Option(
+        None, "--input-file", help="Read input from this file; missing files are errors."
+    ),
+    model: str = typer.Option(
+        None, "--model", help="Override model id for this run without editing the harness."
+    ),
+    provider: str = typer.Option(
+        None, "--provider", help="Override provider for this run without editing the harness."
+    ),
+    run_id: str = typer.Option(
+        None, "--run-id", help="Use this caller-allocated run id."
+    ),
+    trace_dir: str = typer.Option(
+        None, "--trace-dir", help="Write this run's trace under a durable directory."
     ),
     resume: bool = typer.Option(
         False,
@@ -945,9 +965,12 @@ def run(
     from hiveloom import trust as trust_mod
 
     with _guard(json_output):
-        if resume == (input_value is not None):
+        input_count = sum(
+            value is not None for value in (input_value, input_text, input_file)
+        )
+        if (resume and input_count) or (not resume and input_count != 1):
             _fail(
-                "pass exactly one of --input or --resume",
+                "pass exactly one of --input-text, --input-file, legacy --input, or --resume",
                 json_output,
                 ExitCode.SPEC_ERROR,
             )
@@ -960,12 +983,33 @@ def run(
                 _console.print(f"[green]pulled[/green] @ {pulled['version_hash']}")
         if approve:
             trust_mod.record_trust(harness_dir)
-        if dry_run and input_value is None:
-            _fail("--dry-run needs --input", json_output, ExitCode.SPEC_ERROR)
+        if dry_run and resume:
+            _fail(
+                "--dry-run needs an input and cannot be used with --resume",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
             return
+        literal_input = input_text is not None or input_file is not None
+        resolved_input = input_text if input_text is not None else input_value
+        if input_file is not None:
+            from hiveloom.spec.loader import harness_path
+
+            base = harness_path(harness_dir).parent
+            direct = Path(input_file)
+            candidates = [direct] if direct.is_absolute() else [direct, base / direct]
+            selected = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if selected is None:
+                raise SpecError(f"input file not found: {input_file}")
+            resolved_input = selected.read_text(encoding="utf-8")
         if dry_run:
             info = runner.dry_run(
-                harness_dir, input_value, approve_trust=_trust_prompt(json_output)
+                harness_dir,
+                resolved_input,
+                literal_input=literal_input,
+                model_override=model,
+                provider_override=provider,
+                approve_trust=_trust_prompt(json_output),
             )
             if json_output:
                 _emit_json({"ok": True, "dry_run": True, **info})
@@ -1002,13 +1046,22 @@ def run(
                     "parent_line_hash": record.get("parent_line_hash", ""),
                 },
                 on_event=on_event,
+                run_id=run_id,
+                trace_dir=trace_dir,
+                model_override=model,
+                provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
             )
         else:
             result = runner.run_harness(
                 harness_dir,
-                input_value,
+                resolved_input,
+                literal_input=literal_input,
                 on_event=on_event,
+                run_id=run_id,
+                trace_dir=trace_dir,
+                model_override=model,
+                provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
             )
         payload = runner.run_result_payload(result)

@@ -8,6 +8,8 @@ import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from hiveloom import construct, runner
 from hiveloom.generate.llm import FakeStrongModel, StrongModel
 from hiveloom.logging.hive import Hive
@@ -118,6 +120,86 @@ def test_dry_run_uses_no_provider(tmp_path: Path):
     assert info["name"] == "example-summarizer"
     assert "file_read" in [t["name"] for t in info["tools"]]
     assert info["estimated_input_tokens"] > 0
+
+
+def test_runtime_model_override_is_in_memory(tmp_path: Path):
+    harness = _make_harness(tmp_path)
+    yaml_path = harness / "harness.yaml"
+    original = yaml_path.read_bytes()
+    configured = runner.dry_run(harness, "notes.txt")
+    overridden = runner.dry_run(
+        harness,
+        "notes.txt",
+        model_override="qwen3.5-9b",
+        provider_override="openrouter",
+    )
+
+    assert yaml_path.read_bytes() == original
+    assert configured["model"] != overridden["model"]
+    assert overridden["runtime_config"] == {
+        "requested": {"model": "qwen3.5-9b", "provider": "openrouter"},
+        "resolved": {"model": "qwen3.5-9b", "provider": "openrouter"},
+    }
+
+    configured_result = runner.run_harness(
+        harness,
+        "literal task",
+        provider=FakeModelProvider([text_response(_VALID_SUMMARY)]),
+        literal_input=True,
+        ingest=False,
+    )
+    overridden_result = runner.run_harness(
+        harness,
+        "literal task",
+        provider=FakeModelProvider([text_response(_VALID_SUMMARY)]),
+        literal_input=True,
+        model_override="qwen3.5-9b",
+        provider_override="openrouter",
+        ingest=False,
+    )
+    configured_start = json.loads(Path(configured_result.trace_path).read_text().splitlines()[0])
+    overridden_start = json.loads(Path(overridden_result.trace_path).read_text().splitlines()[0])
+
+    assert yaml_path.read_bytes() == original
+    assert configured_start["harness_version_hash"] != overridden_start["harness_version_hash"]
+    assert overridden_start["payload"]["model"] == "qwen3.5-9b"
+    assert overridden_start["payload"]["provider"] == "openrouter"
+
+
+def test_custom_run_id_and_trace_dir_are_durable(tmp_path: Path):
+    harness = _make_harness(tmp_path)
+    trace_dir = tmp_path / "retained-traces"
+    provider = FakeModelProvider([text_response(_VALID_SUMMARY)])
+
+    result = runner.run_harness(
+        harness,
+        "literal task",
+        provider=provider,
+        literal_input=True,
+        run_id="eval.case-17",
+        trace_dir=trace_dir,
+    )
+
+    assert result.run_id == "eval.case-17"
+    assert Path(result.trace_path) == trace_dir / "eval.case-17.jsonl"
+    assert Path(result.trace_path).is_file()
+
+
+def test_invalid_custom_run_id_cannot_escape_trace_dir(tmp_path: Path):
+    harness = _make_harness(tmp_path)
+    provider = FakeModelProvider([text_response(_VALID_SUMMARY)])
+
+    with pytest.raises(ValueError, match="run_id must be"):
+        runner.run_harness(
+            harness,
+            "literal task",
+            provider=provider,
+            literal_input=True,
+            run_id="../escape",
+            trace_dir=tmp_path / "traces",
+        )
+
+    assert not (tmp_path / "escape.jsonl").exists()
 
 
 # --------------------------------------------------------------------------- #

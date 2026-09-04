@@ -14,6 +14,7 @@ tool calls, patch results, transform context). Guardrails always run first.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,11 @@ from pydantic import BaseModel, Field
 
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import EventBus
+from hiveloom.execution import (
+    RunExecutionEnvelope,
+    VerificationSummary,
+    execution_fingerprint,
+)
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
@@ -58,6 +64,10 @@ class RunResult(BaseModel):
     # One bounded public receipt per provider call. Opaque provider metadata
     # stays on ModelResponse and in the redacted journal, never in this result.
     provider_calls: list[dict[str, Any]] = Field(default_factory=list)
+    # Run-only model/provider choices. ``requested`` retains explicit CLI/SDK
+    # overrides; ``resolved`` is the validated config that the router used.
+    runtime_config: dict[str, Any] = Field(default_factory=dict)
+    execution: RunExecutionEnvelope | None = None
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -107,6 +117,9 @@ class AgentLoop:
         router: ModelRouter | None = None,
         resume: bool = False,
         lineage: dict[str, Any] | None = None,
+        harness_version_hash: str = "",
+        runtime_version: str = "",
+        runtime_config: dict[str, Any] | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -123,6 +136,13 @@ class AgentLoop:
         # the parent run was, so there is no new task statement to append.
         self._resume = resume
         self._lineage = lineage
+        self._harness_version_hash = harness_version_hash
+        self._runtime_version = runtime_version
+        self._runtime_config = runtime_config or {
+            "requested": {"model": None, "provider": None},
+            "resolved": {"model": spec.model.id, "provider": spec.model.provider},
+        }
+        self._started_at = ""
         # Kept by reference, not copied: a tool may accumulate run-scoped state
         # in it across calls, and the caller reads it back after the run.
         self._context_values = context_values if context_values is not None else {}
@@ -149,6 +169,8 @@ class AgentLoop:
         self._control = control
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
+        self._usage = Usage()
+        self._verification_attempts = 0
         self._context.set_compaction_model_call(self._compaction_model_turn)
 
     # ------------------------------------------------------------------ #
@@ -165,11 +187,15 @@ class AgentLoop:
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
         loop = self._spec.loop
-        self._trace.emit(
+        started = self._trace.emit(
             "run_started",
             input=self._run_input,
             policy=loop.policy,
             model=self._router.config.id,
+            provider=self._router.config.provider,
+            schema_version=self._spec.version,
+            hiveloom_version=self._runtime_version,
+            runtime_config=self._runtime_config,
             history_turns=len(self._history),
             resumed=self._resume,
             # Where this run came from, when it is a fork: the parent run and
@@ -186,6 +212,7 @@ class AgentLoop:
                 include_files=self._spec.logging.snapshot_files,
             ),
         )
+        self._started_at = started.timestamp
         self._events.emit(
             "run_started",
             {
@@ -479,6 +506,7 @@ class AgentLoop:
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
+        self._usage = self._usage + response.usage
         estimated_cost = self._router.provider.estimated_cost(
             response.usage, self._router.config.id, self._router.config.provider
         )
@@ -991,6 +1019,7 @@ class AgentLoop:
         return [*self._verifiers, *build_verifiers_from_refs(refs, self._base)]
 
     def _verify(self, output: str) -> list[VerdictResult]:
+        self._verification_attempts += 1
         run_context = self._run_context(
             output=output, playbook=self._playbooks.current_name if self._playbooks else None
         )
@@ -1045,13 +1074,81 @@ class AgentLoop:
         reason: str = "",
         verdicts: list[VerdictResult] | None = None,
     ) -> RunResult:
+        duration_seconds = self._state.elapsed_seconds()
+        verification = self._verification_summary(status)
+        models_used = [
+            {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
+            for s in self._router.path
+        ]
+        effective_models = list(
+            dict.fromkeys(
+                call["effective_model"]
+                for call in self._provider_calls
+                if call.get("effective_model")
+            )
+        )
+        cost_sources = {call["cost_source"] for call in self._provider_calls}
+        if not cost_sources:
+            cost_source = "none"
+        elif len(cost_sources) == 1:
+            cost_source = next(iter(cost_sources))
+        else:
+            cost_source = "mixed"
+        requested = self._runtime_config.get("requested") or {}
+        resolved = self._runtime_config.get("resolved") or {}
+        requested_provider = requested.get("provider") or resolved.get("provider") or ""
+        requested_model = requested.get("model") or resolved.get("model") or ""
+        execution = RunExecutionEnvelope(
+            run_id=self._run_id,
+            status=status,
+            harness_id=self._spec.id,
+            harness_name=self._spec.name,
+            schema_version=self._spec.version,
+            behavior_hash=self._harness_version_hash,
+            execution_fingerprint=execution_fingerprint(
+                behavior_hash=self._harness_version_hash,
+                hiveloom_version=self._runtime_version,
+                schema_version=self._spec.version,
+                runtime_config=self._runtime_config,
+                input_value=self._run_input,
+                models_used=models_used,
+                effective_models=effective_models,
+                lineage=self._lineage,
+            ),
+            hiveloom_version=self._runtime_version,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            resolved_provider=str(resolved.get("provider") or ""),
+            resolved_model=str(resolved.get("model") or ""),
+            effective_provider=(
+                self._provider_calls[-1]["provider"] if self._provider_calls else None
+            ),
+            effective_model=next(
+                (
+                    call["effective_model"]
+                    for call in reversed(self._provider_calls)
+                    if call.get("effective_model")
+                ),
+                None,
+            ),
+            models_used=models_used,
+            started_at=self._started_at,
+            finished_at=datetime.now(UTC).isoformat(),
+            duration_ms=round(duration_seconds * 1000),
+            usage=self._usage,
+            cost_usd=self._state.cost_usd,
+            cost_source=cost_source,
+            verification=verification,
+            trace_path=str(self._trace.path),
+        )
         self._trace.emit(
             "run_finished",
             status=status,
             reason=reason,
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
-            duration_seconds=self._state.elapsed_seconds(),
+            duration_seconds=duration_seconds,
+            execution=execution.model_dump(mode="json"),
             # The answer and the judgements on it. A journal that reports a
             # run's status but not what it produced is not a complete record
             # of the run it describes.
@@ -1063,10 +1160,7 @@ class AgentLoop:
             # Hive must be able to say so rather than blend it into a bucket
             # with runs that did not.
             model_path=self._router.path_key(),
-            models_used=[
-                {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
-                for s in self._router.path
-            ],
+            models_used=models_used,
             provider_calls=self._provider_calls,
         )
         self._events.emit(
@@ -1083,11 +1177,24 @@ class AgentLoop:
             output=output,
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
-            duration_seconds=self._state.elapsed_seconds(),
+            duration_seconds=duration_seconds,
             run_id=self._run_id,
             trace_path=str(self._trace.path),
             verdicts=verdicts or [],
             reason=reason,
             artifacts=list(self._state.artifacts),
             provider_calls=list(self._provider_calls),
+            runtime_config=self._runtime_config,
+            execution=execution,
+        )
+
+    def _verification_summary(self, status: str) -> VerificationSummary:
+        if not self._spec.loop.require_verification or self._verification_attempts == 0:
+            return VerificationSummary()
+        return VerificationSummary(
+            attempts=self._verification_attempts,
+            first_pass_valid=status == "success" and self._state.verify_retries == 0,
+            recovery_attempted=self._state.verify_retries > 0,
+            recovered=status == "success" and self._state.verify_retries > 0,
+            final_status="passed" if status == "success" else "failed",
         )

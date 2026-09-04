@@ -215,6 +215,116 @@ def test_run_dry_run_needs_no_api_key():
     assert _json(r)["dry_run"] is True
 
 
+def test_run_input_text_accepts_overlong_literal(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="literal", task="Echo input.")
+    value = "x" * 10_000
+
+    r = runner.invoke(
+        app, ["run", str(directory), "--input-text", value, "--dry-run", "--json"]
+    )
+
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["messages"][-1]["content"] == value
+
+
+def test_legacy_run_input_treats_overlong_value_as_literal(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="legacy-literal", task="Echo input.")
+    value = "x" * 10_000
+
+    r = runner.invoke(
+        app, ["run", str(directory), "--input", value, "--dry-run", "--json"]
+    )
+
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["messages"][-1]["content"] == value
+
+
+def test_run_input_file_missing_is_spec_error(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="missing-input", task="Echo input.")
+
+    r = runner.invoke(
+        app, ["run", str(directory), "--input-file", "missing.txt", "--dry-run", "--json"]
+    )
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert _json(r) == {"ok": False, "error": "input file not found: missing.txt"}
+
+
+def test_run_input_flags_are_mutually_exclusive(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="conflict", task="Echo input.")
+
+    r = runner.invoke(
+        app,
+        [
+            "run",
+            str(directory),
+            "--input-text",
+            "literal",
+            "--input-file",
+            "case.txt",
+            "--json",
+        ],
+    )
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "pass exactly one" in _json(r)["error"]
+
+
+def test_run_runtime_flags_reach_runner(tmp_path: Path, monkeypatch):
+    from hiveloom import runner as runner_mod
+    from hiveloom.loop.agent_loop import RunResult
+
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="runtime-flags", task="Echo input.")
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake_run_harness(*args, **kwargs):
+        calls.append((args, kwargs))
+        return RunResult(
+            status="success",
+            run_id="case-17",
+            trace_path=str(tmp_path / "durable" / "case-17.jsonl"),
+            runtime_config={
+                "requested": {"model": "qwen3.5-9b", "provider": "openrouter"},
+                "resolved": {"model": "qwen3.5-9b", "provider": "openrouter"},
+            },
+        )
+
+    monkeypatch.setattr(runner_mod, "run_harness", fake_run_harness)
+    r = runner.invoke(
+        app,
+        [
+            "run",
+            str(directory),
+            "--input-text",
+            "rank this case",
+            "--model",
+            "qwen3.5-9b",
+            "--provider",
+            "openrouter",
+            "--run-id",
+            "case-17",
+            "--trace-dir",
+            str(tmp_path / "durable"),
+            "--json",
+        ],
+    )
+
+    assert r.exit_code == ExitCode.OK
+    args, kwargs = calls[0]
+    assert args == (str(directory), "rank this case")
+    assert kwargs["literal_input"] is True
+    assert kwargs["model_override"] == "qwen3.5-9b"
+    assert kwargs["provider_override"] == "openrouter"
+    assert kwargs["run_id"] == "case-17"
+    assert kwargs["trace_dir"] == str(tmp_path / "durable")
+    assert _json(r)["runtime_config"]["resolved"]["model"] == "qwen3.5-9b"
+
+
 def test_control_plane_json_startup_contract(tmp_path: Path, monkeypatch):
     from hiveloom import construct
 

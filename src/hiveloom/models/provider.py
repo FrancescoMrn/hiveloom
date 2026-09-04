@@ -55,6 +55,15 @@ class Usage(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
 
+    def __add__(self, other: Usage) -> Usage:
+        """Add provider-call usage without losing cache accounting."""
+        return Usage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+        )
+
 
 class ContextOverflowError(RuntimeError):
     """The provider rejected a request because the prompt exceeded the model's
