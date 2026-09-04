@@ -685,11 +685,11 @@ def _iter_entry_points():
 # rather than inherit these.
 _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5": (1.00, 5.00),
-    # Sonnet 5 has promotional introductory pricing of (2.00, 10.00) through
-    # 2026-08-31. The standard rate is deliberately used here: a harness folder
-    # outlives the promotion, and over-estimating cost only makes the cost
-    # guardrail halt sooner, which is the safe direction to be wrong in.
-    "claude-sonnet-5": (3.00, 15.00),
+    # Sonnet 5 launched at introductory (2.00, 10.00) pricing; Anthropic later
+    # made that the standard rate and cancelled the scheduled 2026-09-01
+    # increase to (3.00, 15.00) — see the note on
+    # https://platform.claude.com/docs/en/about-claude/pricing.
+    "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-5": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),

@@ -374,6 +374,12 @@ def test_estimated_cost_uses_registry_pricing(monkeypatch, tmp_path: Path):
     assert cost == pytest.approx(0.3)
 
 
+def test_builtin_claude_sonnet_5_pricing(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    assert ext.model_pricing("claude-sonnet-5", provider="claude") == (2.0, 10.0)
+
+
 def test_bad_models_yaml_is_collected_not_fatal(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
     ext.reset()
