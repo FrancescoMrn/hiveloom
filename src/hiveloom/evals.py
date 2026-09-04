@@ -111,6 +111,8 @@ class EvalSpec(BaseModel):
     scorers: list[ScorerSpec] = Field(min_length=1)
     repetitions: int = Field(default=1, ge=1, le=10_000)
     extensions: list[str] = Field(default_factory=list)
+    model_identity: Literal["warn", "exact", "alias"] = "exact"
+    model_aliases: list[str] = Field(default_factory=list)
 
     @field_validator("scorers", mode="before")
     @classmethod
@@ -118,6 +120,20 @@ class EvalSpec(BaseModel):
         if not isinstance(value, list):
             return value
         return [{"name": item} if isinstance(item, str) else item for item in value]
+
+    @field_validator("model_aliases")
+    @classmethod
+    def _model_aliases(cls, value: list[str]) -> list[str]:
+        aliases = [alias.strip() for alias in value]
+        if any(not alias for alias in aliases):
+            raise ValueError("model aliases cannot be blank")
+        return list(dict.fromkeys(aliases))
+
+    @model_validator(mode="after")
+    def _alias_policy_has_aliases(self) -> EvalSpec:
+        if self.model_identity == "alias" and not self.model_aliases:
+            raise ValueError("model_identity 'alias' requires at least one model alias")
+        return self
 
 
 class ScorerDiagnostic(BaseModel):
@@ -335,8 +351,10 @@ def eval_identity(spec: EvalSpec, cases: list[EvalCase]) -> EvalIdentity:
     )
 
 
-def validate_eval_spec(path: str | Path, *, approve_trust=None) -> ValidatedEval:
-    """Resolve the harness and components, returning only aggregate receipts."""
+def resolve_eval_spec(
+    path: str | Path, *, approve_trust=None
+) -> tuple[ValidatedEval, list[EvalCase]]:
+    """Resolve an eval once and return its validated contract and private cases."""
     eval_path = Path(path).resolve()
     spec = load_eval_spec(eval_path, approve_trust=approve_trust)
     harness_path = (eval_path.parent / spec.harness).resolve()
@@ -351,13 +369,20 @@ def validate_eval_spec(path: str | Path, *, approve_trust=None) -> ValidatedEval
             raise SpecError(
                 f"scorer '{scorer.name}' could not be built: {type(exc).__name__}: {exc}"
             ) from exc
-    return ValidatedEval(
+    validated = ValidatedEval(
         spec=spec,
         path=eval_path,
         harness_path=harness_path,
         case_count=len(cases),
         identity=eval_identity(spec, cases),
     )
+    return validated, cases
+
+
+def validate_eval_spec(path: str | Path, *, approve_trust=None) -> ValidatedEval:
+    """Resolve the harness and components, returning only aggregate receipts."""
+    validated, _cases = resolve_eval_spec(path, approve_trust=approve_trust)
+    return validated
 
 
 def _normalize_scorer_output(value: Any) -> ScorerOutput:

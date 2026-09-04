@@ -17,7 +17,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                   import + signature checks                        │
   │    annotate.py    JSON schema, annotated template, `explain`       │
   │  catalog.py       catalog entries: tools/guardrails/validators/    │
-  │                   policies/compaction/hooks (builtin + registered)  │
+  │                   policies/compaction/hooks/eval components         │
   │  ext.py           the open catalog: ExtensionAPI, pack/user/harness │
   │                   extension discovery, provider registry, model     │
   │                   pricing, blueprints — see docs/extending.md       │
@@ -29,6 +29,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                                                                     │
   │  runtime:                                                           │
   │    models/        ModelProvider ABC → Claude | OpenAI-compat | Fake │
+  │      capabilities declared/live probes, identity policy, cache      │
   │      router.py    which model is current, and which provider serves │
   │                   it — mid-run hot-swap at a turn boundary          │
   │    tools/         registry (active/deferred) + sandboxed builtins; │
@@ -173,6 +174,13 @@ held-out `EvalCase` values; the normal harness path produces a public
 context, and artifacts. Scorer failures have their own receipts and cannot
 rewrite the run status. Content digests cover the eval document, loaded
 dataset, and scorer implementations before a batch starts.
+
+The native eval runner expands that resolved contract into deterministic case
+and repetition cells. It checkpoints an atomic manifest below
+`HIVELOOM_HOME/evals`, keeps traces in the same durable managed tree, and
+revalidates eval, harness, adapter, effective-model, and case identities before
+resume. Infrastructure attempts have distinct run IDs; completed harness
+outcomes and scorer receipts are never retried or conflated.
 
 ## Evolution and the safety boundary
 

@@ -13,7 +13,9 @@ SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :class:`RunResult`, :func:`generate_harness`, :func:`load_spec`,
 :func:`validate_harness`, :func:`migrate_harness`, :class:`HarnessSpec`, :class:`Hive`,
 :class:`RunMetric`, :func:`record_run_metrics`, :class:`EvalSpec`,
-:func:`run_scorers`, :class:`HarnessServer`. The
+:func:`run_scorers`, :class:`EvalManifest`, :func:`run_eval`,
+:func:`resume_eval`, :class:`ModelProbeResult`, :func:`probe_model`,
+:class:`HarnessServer`. The
 other, language-agnostic embedding interfaces are
 ``hiveloom run --stream`` (trace events as JSONL on stdout, final
 ``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
@@ -28,6 +30,7 @@ __version__ = "1.0.0"
 from hiveloom.spec.schema import HarnessSpec
 
 if TYPE_CHECKING:
+    from hiveloom.eval_runner import EvalManifest, resume_eval, run_eval  # noqa: F401
     from hiveloom.evals import (  # noqa: F401
         DatasetLoader,
         EvalCase,
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
     from hiveloom.logging.hive import Hive  # noqa: F401
     from hiveloom.loop.agent_loop import RunResult  # noqa: F401
     from hiveloom.metrics import RunMetric, record_run_metrics  # noqa: F401
+    from hiveloom.models.capabilities import ModelProbeResult, probe_model  # noqa: F401
     from hiveloom.runner import dry_run, run_harness  # noqa: F401
     from hiveloom.serve import HarnessServer  # noqa: F401
     from hiveloom.spec.loader import load_spec, validate_harness  # noqa: F401
@@ -55,6 +59,8 @@ _SDK = {
     "RunResult": ("hiveloom.loop.agent_loop", "RunResult"),
     "RunExecutionEnvelope": ("hiveloom.execution", "RunExecutionEnvelope"),
     "VerificationSummary": ("hiveloom.execution", "VerificationSummary"),
+    "ModelProbeResult": ("hiveloom.models.capabilities", "ModelProbeResult"),
+    "probe_model": ("hiveloom.models.capabilities", "probe_model"),
     # named generate_harness: plain `generate` would shadow the subpackage
     "generate_harness": ("hiveloom.generate.generator", "generate"),
     "load_spec": ("hiveloom.spec.loader", "load_spec"),
@@ -72,6 +78,9 @@ _SDK = {
     "ScoringResult": ("hiveloom.evals", "ScoringResult"),
     "load_eval_spec": ("hiveloom.evals", "load_eval_spec"),
     "run_scorers": ("hiveloom.evals", "run_scorers"),
+    "EvalManifest": ("hiveloom.eval_runner", "EvalManifest"),
+    "run_eval": ("hiveloom.eval_runner", "run_eval"),
+    "resume_eval": ("hiveloom.eval_runner", "resume_eval"),
     "HarnessServer": ("hiveloom.serve", "HarnessServer"),
     # Code-tool authoring surface: return a ToolResult carrying Artifacts to
     # hand structured output to the embedding caller.

@@ -195,6 +195,8 @@ hiveloom metrics record ./summarizer --run-id eval-case-01 \
   --name recall_at_5 --value 0.4 --direction maximize \
   --unit ratio --source matching_eval_v1 --json
 hiveloom metrics list ./summarizer --name recall_at_5 --json
+hiveloom eval run eval.yaml --provider openai --model gpt-4.1-mini \
+  --repetitions 3 --concurrency 2 --json
 hiveloom evolve ./summarizer --propose --json
 ```
 
@@ -366,6 +368,11 @@ hiveloom metrics import ./my-harness metrics.ndjson --json
 hiveloom metrics list ./my-harness --source matching_eval_v1 --json
 hiveloom eval schema --json
 hiveloom eval validate eval.yaml --json
+hiveloom eval run eval.yaml --model qwen3.5-9b --repetitions 3 --json
+hiveloom eval status <eval-run-id> --json
+hiveloom eval resume <eval-run-id> --json
+hiveloom models probe ./my-harness --provider openrouter \
+  --model qwen3.5-9b --identity exact --live --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe

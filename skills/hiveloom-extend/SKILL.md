@@ -78,6 +78,12 @@ The major labs are **builtin** — no configuration, just the key. Run
 pricing: `claude`, `openai`, `gemini`, `mistral`, `deepseek`, `xai`, `groq`,
 `openrouter`, `together`, `fireworks`, `ollama`, `vllm`.
 
+Before a model matrix, inspect declarations with `hiveloom models probe ./h
+--provider PROVIDER --model MODEL --json`. Add `--live --identity exact` only
+when you intend to make up to two possibly billed calls. Use repeated
+`--alias` values with `--identity alias` for documented provider aliases;
+never hide the effective model.
+
 Switch a harness to another lab with the **`provider/model-id` selector**:
 
 ```bash
@@ -109,6 +115,11 @@ providers:
 ```
 
 Programmatically: `hive.register_provider(name, factory, models=[...])`.
+Model entries may declare `supports_tool_calling`,
+`supports_structured_output`, and `supports_reasoning_replay`. A custom adapter
+may override `probe_capabilities()` when the generic tool/reasoning probe is
+not enough.
+
 Unknown hosted models fall back to Haiku-class pricing so cost guardrails stay
 conservative; unknown local ones are free. Reasoning-style models (DeepSeek-R1
 family etc.) are supported. Full reference: `docs/models.md`.

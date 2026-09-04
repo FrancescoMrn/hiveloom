@@ -283,6 +283,9 @@ providers:
       - id: tiny-model
         input_cost_per_mtok: 0.1
         output_cost_per_mtok: 0.2
+        supports_tool_calling: true
+        supports_structured_output: false
+        supports_reasoning_replay: true
 """
 
 
@@ -293,6 +296,11 @@ def test_models_yaml_registers_provider_and_pricing(monkeypatch, tmp_path: Path)
 
     assert "localllm" in ext.provider_names()
     assert ext.model_pricing("tiny-model") == (0.1, 0.2)
+    capabilities = ext.model_info("tiny-model")
+    assert capabilities is not None
+    assert capabilities.supports_tool_calling is True
+    assert capabilities.supports_structured_output is False
+    assert capabilities.supports_reasoning_replay is True
     # The spec now accepts the provider by name.
     config = ModelConfig(provider="localllm", id="tiny-model")
     assert config.provider == "localllm"

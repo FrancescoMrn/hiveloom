@@ -48,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expected data out of model input by default, validates metrics before Hive
   ingestion, reports scorer failures separately from run failures, and hashes
   the spec, dataset, and scorer implementations into one eval identity.
+- `hiveloom models probe HARNESS` reports declared model capabilities without
+  provider I/O; `--live` explicitly runs a bounded, possibly billed tool and
+  reasoning-replay probe. Results retain requested/effective model identity,
+  distinguish declared from observed facts, enforce exact or alias policies,
+  and cache against provider, model, and adapter implementation.
+- `hiveloom eval run|status|resume` executes a deterministic case and
+  repetition matrix through the normal harness path. A live model probe gates
+  the batch, atomic manifests retain per-cell run, trace, scorer, and metric
+  state, and resume rejects changed content or execution identity while
+  skipping every completed cell.
 
 ### Fixed
 

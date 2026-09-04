@@ -244,7 +244,29 @@ def explain(
 
 @app.command()
 def models(
-    provider: str = typer.Argument("", help="Show only this provider's models."),
+    name_or_action: str = typer.Argument(
+        "", help="Provider to list, or 'probe' for a model capability probe."
+    ),
+    target: str = typer.Argument("", help="Harness path when the action is 'probe'."),
+    model: str | None = typer.Option(None, "--model", help="Run-only model to probe."),
+    probe_provider: str | None = typer.Option(
+        None, "--provider", help="Run-only provider to probe."
+    ),
+    identity: str = typer.Option(
+        "warn", "--identity", help="Identity policy: warn, exact, or alias."
+    ),
+    alias: list[str] = typer.Option([], "--alias", help="Accepted effective-model alias."),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Contact the provider for up to two possibly billed model calls.",
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Ignore a valid cached probe."),
+    require_compatible: bool = typer.Option(
+        False,
+        "--require-compatible",
+        help="Return a validation error when identity is not accepted.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """List model providers and their known models, pricing, and key status.
@@ -253,9 +275,74 @@ def models(
     in ``model.provider``, and which environment variable holds its key. An
     ``open`` provider also accepts model ids not listed here (new releases,
     aggregator routes, whatever a local server is serving); a closed one does
-    not, so a typo fails validation. Free: this never touches the API.
+    not, so a typo fails validation. Listing and declared probes are free.
+    `models probe ... --live` explicitly opts into up to two possibly billed
+    provider calls.
     """
     from hiveloom import ext
+
+    if name_or_action == "probe":
+        from hiveloom import trust as trust_mod
+        from hiveloom.models.capabilities import (
+            probe_model,
+            probe_plan,
+            require_compatible_probe,
+        )
+        from hiveloom.spec.loader import load_spec
+        from hiveloom.spec.schema import ModelConfig
+
+        with _guard(json_output):
+            if not target:
+                raise SpecError("models probe requires a harness path")
+            if identity not in {"warn", "exact", "alias"}:
+                raise SpecError("--identity must be warn, exact, or alias")
+            harness_path = Path(target)
+            yaml_path = harness_path / "harness.yaml" if harness_path.is_dir() else harness_path
+            trust_mod.ensure_trusted(yaml_path.parent, _trust_prompt(json_output))
+            spec = load_spec(yaml_path)
+            resolved = ModelConfig(
+                provider=probe_provider or spec.model.provider,
+                id=model or spec.model.id,
+                max_tokens=min(spec.model.max_tokens, 128),
+                temperature=spec.model.temperature,
+            )
+            provider_instance = (
+                ext.build_provider(resolved.provider, yaml_path.parent) if live else None
+            )
+            result = probe_model(
+                resolved.provider,
+                resolved.id,
+                provider=provider_instance,
+                live=live,
+                policy=identity,
+                aliases=alias,
+                refresh=refresh,
+            )
+            if require_compatible:
+                require_compatible_probe(result)
+            payload = {
+                "ok": True,
+                "plan": probe_plan(live=live).model_dump(mode="json"),
+                "probe": result.model_dump(mode="json"),
+            }
+            if json_output:
+                _emit_json(payload)
+            else:
+                mode = "cached" if result.cached else "live" if result.live else "declared"
+                _console.print(
+                    f"[green]probe[/green] {resolved.provider}/{resolved.id} ({mode})\n"
+                    f"identity: {result.identity.status} "
+                    f"({'accepted' if result.identity.accepted else 'rejected'})\n"
+                    f"{payload['plan']['note']}"
+                )
+        return
+
+    if target:
+        raise SpecError("a second argument is only valid for `hiveloom models probe`")
+    if any((model, probe_provider, alias, live, refresh, require_compatible)) or identity != "warn":
+        raise SpecError("probe options require `hiveloom models probe HARNESS`")
+
+    provider = name_or_action
 
     entries = ext.providers()
     if provider:
@@ -1858,6 +1945,105 @@ def eval_validate(
             _console.print(
                 f"[green]valid[/green] {validated.case_count} case(s), "
                 f"eval {validated.identity.eval_id[:12]}"
+            )
+
+
+def _eval_manifest_payload(manifest: Any) -> dict[str, Any]:
+    from hiveloom.eval_runner import manifest_path as eval_manifest_path
+
+    return {
+        "ok": manifest.status == "completed",
+        "eval_run_id": manifest.eval_run_id,
+        "status": manifest.status,
+        "summary": manifest.summary(),
+        "manifest_path": str(eval_manifest_path(manifest.eval_run_id)),
+        "manifest": manifest.model_dump(mode="json"),
+    }
+
+
+def _emit_eval_manifest(manifest: Any, json_output: bool) -> None:
+    payload = _eval_manifest_payload(manifest)
+    if json_output:
+        _emit_json(payload)
+    else:
+        summary = payload["summary"]
+        _console.print(
+            f"[green]{manifest.eval_run_id}[/green] {manifest.status}: "
+            f"{summary['completed']}/{summary['total']} completed"
+        )
+        _console.print(f"manifest: {payload['manifest_path']}")
+    if manifest.status != "completed":
+        raise typer.Exit(ExitCode.RUNTIME_ERROR)
+
+
+@eval_app.command("run")
+def eval_run_command(
+    path: str = typer.Argument(..., help="Path to an eval YAML document."),
+    model: str | None = typer.Option(None, "--model", help="Run-only model override."),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Run-only provider override."
+    ),
+    repetitions: int | None = typer.Option(
+        None, "--repetitions", min=1, max=10_000
+    ),
+    concurrency: int = typer.Option(1, "--concurrency", min=1, max=128),
+    infrastructure_retries: int = typer.Option(
+        0, "--infrastructure-retries", min=0, max=20
+    ),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Run a model/case/repetition matrix with an atomic resumable manifest."""
+    from hiveloom.eval_runner import run_eval
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        manifest = run_eval(
+            path,
+            model_override=model,
+            provider_override=provider,
+            repetitions=repetitions,
+            concurrency=concurrency,
+            infrastructure_retries=infrastructure_retries,
+            approve_trust=approval,
+        )
+        _emit_eval_manifest(manifest, json_output)
+
+
+@eval_app.command("resume")
+def eval_resume_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Resume only unfinished cells after revalidating every content digest."""
+    from hiveloom.eval_runner import resume_eval
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        manifest = resume_eval(eval_run_id, approve_trust=approval)
+        _emit_eval_manifest(manifest, json_output)
+
+
+@eval_app.command("status")
+def eval_status_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Read an eval checkpoint without loading evaluator or harness code."""
+    from hiveloom.eval_runner import load_eval_manifest
+
+    with _guard(json_output):
+        manifest = load_eval_manifest(eval_run_id)
+        payload = _eval_manifest_payload(manifest)
+        payload["ok"] = True
+        if json_output:
+            _emit_json(payload)
+        else:
+            summary = payload["summary"]
+            _console.print(
+                f"[green]{manifest.eval_run_id}[/green] {manifest.status}: "
+                f"{summary['completed']}/{summary['total']} completed"
             )
 
 

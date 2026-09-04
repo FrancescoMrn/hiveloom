@@ -100,6 +100,40 @@ The override is validated and included in the run's version hash, but
 The trade-off is that a typo on an open provider is only caught when the call
 fails. That is the right side to err on: the alternative blocks real work.
 
+## Capability and identity probes
+
+Inspect registered declarations without contacting the endpoint:
+
+```bash
+hiveloom models probe ./h --provider openrouter --model qwen3.5-9b --json
+```
+
+Add `--live` to send one small tool request and, only when the response carries
+replayable reasoning, one follow-up request:
+
+```bash
+hiveloom models probe ./h --provider openrouter --model qwen3.5-9b \
+  --identity exact --live --require-compatible --json
+```
+
+`--live` may perform two billed provider calls. The JSON `plan` repeats that
+side-effect boundary, and the result reports call count, usage, cost source,
+and request IDs. Live results are cached for 24 hours; `--refresh` bypasses the
+cache. A provider, requested-model, or adapter-implementation change creates a
+new cache key.
+
+Identity policies are explicit:
+
+- `warn` accepts a mismatch but keeps a machine-readable warning;
+- `exact` accepts only the requested model and rejects an absent identity;
+- `alias` accepts the requested model or a repeated `--alias` value.
+
+Capabilities for tool calling, structured output, and reasoning replay each
+say whether the value was `declared`, `observed`, or remains `unknown`. The
+generic live probe can observe tool use and replay reasoning. Provider
+extensions may override `probe_capabilities()` when their API exposes a more
+precise structured-output check.
+
 ## Pricing and budget guardrails
 
 Pricing drives cost estimation, the `max_cost_usd` guardrail, and the
@@ -186,6 +220,9 @@ providers:
       - id: qwen3-8b
         input_cost_per_mtok: 0
         output_cost_per_mtok: 0
+        supports_tool_calling: true
+        supports_structured_output: false
+        supports_reasoning_replay: false
 ```
 
 A newly declared provider is **fixed** by default: you listed the models you
@@ -215,9 +252,10 @@ widens what a human or a generator may *choose*, never what evolution may
 
 ## Compatibility notes
 
-- **Tool calling** is required for most harnesses. All builtin providers
-  support it, but coverage differs per model — a small local model may ignore
-  tools entirely. Check with `hiveloom run --dry-run` before a real run.
+- **Tool calling** is required for most harnesses. Provider support differs per
+  model; a small local model may ignore tools entirely. Use a declared or live
+  `hiveloom models probe` before a batch. `run --dry-run` validates the harness
+  but does not test model behavior.
 - **Gemini** is reached through Google's OpenAI-compatible surface, which
   supports a narrower slice of the API than the native one. Basic tool calling
   works; exotic parameters may not.

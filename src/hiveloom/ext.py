@@ -71,6 +71,9 @@ class ModelInfo(BaseModel):
     input_cost_per_mtok: float = 0.0
     output_cost_per_mtok: float = 0.0
     context_window: int | None = None
+    supports_tool_calling: bool | None = None
+    supports_structured_output: bool | None = None
+    supports_reasoning_replay: bool | None = None
 
 
 class ProviderInfo(BaseModel):
@@ -867,6 +870,9 @@ class _YamlModelEntry(BaseModel):
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
     context_window: int | None = None
+    supports_tool_calling: bool | None = None
+    supports_structured_output: bool | None = None
+    supports_reasoning_replay: bool | None = None
 
 
 class _YamlProviderEntry(BaseModel):
@@ -973,6 +979,9 @@ def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) ->
             else fallback_output
         ),
         context_window=entry.context_window,
+        supports_tool_calling=entry.supports_tool_calling,
+        supports_structured_output=entry.supports_structured_output,
+        supports_reasoning_replay=entry.supports_reasoning_replay,
     )
 
 
