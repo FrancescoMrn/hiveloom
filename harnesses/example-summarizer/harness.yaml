@@ -1,4 +1,4 @@
-version: 0.2.0
+schema_version: 0.2.0
 name: example-summarizer
 id: hl-10ce3d23a187
 description: Summarize a text file into a structured JSON summary.

@@ -121,7 +121,7 @@ def test_list_and_detail(client: TestClient) -> None:
     first_spec_line = next(
         line for line in detail["yaml"].splitlines() if line.strip() and not line.startswith("#")
     )
-    assert first_spec_line.startswith("version:")
+    assert first_spec_line.startswith("schema_version:")
     assert detail["spec"]["name"] == "example-summarizer"
 
 

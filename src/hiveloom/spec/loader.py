@@ -59,8 +59,25 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
 
 def dump_spec(spec: HarnessSpec) -> str:
     """Serialize a spec to YAML. ``load_spec(dump_spec(s))`` is stable."""
+    return _dump_mapping(spec_to_dict(spec))
+
+
+def dump_spec_for_behavior_hash(spec: HarnessSpec) -> str:
+    """Canonical behavior input, stable across the format-field rename.
+
+    ``schema_version`` names document identity more clearly, but renaming that
+    key does not change harness behavior. Keep the pre-migration spelling only
+    inside the behavior hash input so existing version buckets remain valid.
+    """
+    data = spec_to_dict(spec)
+    schema_version = data.pop("schema_version")
+    return _dump_mapping({"version": schema_version, **data})
+
+
+def _dump_mapping(data: dict[str, Any]) -> str:
+    """Stable YAML serialization shared by public and behavior-hash dumps."""
     return yaml.dump(
-        spec_to_dict(spec),
+        data,
         Dumper=_SpecDumper,
         sort_keys=False,
         default_flow_style=False,

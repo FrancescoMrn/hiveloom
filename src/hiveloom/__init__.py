@@ -11,7 +11,7 @@ construction API that the CLI and generator both drive, and the embedding SDK:
 
 SDK surface (semver-stable): :func:`run_harness`, :func:`dry_run`,
 :class:`RunResult`, :func:`generate_harness`, :func:`load_spec`,
-:func:`validate_harness`, :class:`HarnessSpec`, :class:`Hive`,
+:func:`validate_harness`, :func:`migrate_harness`, :class:`HarnessSpec`, :class:`Hive`,
 :class:`HarnessServer`. The other, language-agnostic embedding interfaces are
 ``hiveloom run --stream`` (trace events as JSONL on stdout, final
 ``run_result`` line last) and ``hiveloom serve`` (the same stream over HTTP).
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from hiveloom.runner import dry_run, run_harness  # noqa: F401
     from hiveloom.serve import HarnessServer  # noqa: F401
     from hiveloom.spec.loader import load_spec, validate_harness  # noqa: F401
+    from hiveloom.spec.migrate import migrate_harness  # noqa: F401
 
 _SDK = {
     "run_harness": ("hiveloom.runner", "run_harness"),
@@ -44,6 +45,7 @@ _SDK = {
     "generate_harness": ("hiveloom.generate.generator", "generate"),
     "load_spec": ("hiveloom.spec.loader", "load_spec"),
     "validate_harness": ("hiveloom.spec.loader", "validate_harness"),
+    "migrate_harness": ("hiveloom.spec.migrate", "migrate_harness"),
     "Hive": ("hiveloom.logging.hive", "Hive"),
     "HarnessServer": ("hiveloom.serve", "HarnessServer"),
     # Code-tool authoring surface: return a ToolResult carrying Artifacts to

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate usage, billed-versus-estimated cost, verification recovery state,
   a reproducible fingerprint, and the durable trace path. The same envelope
   closes the run journal.
+- Harness documents now call their format field `schema_version`; legacy
+  `version` documents continue to load. `hiveloom migrate HARNESS --json`
+  performs a fully validated atomic rewrite with rollback. The spelling change
+  is behavior-hash neutral, so existing Hive buckets and journals remain
+  comparable.
 
 ### Fixed
 
