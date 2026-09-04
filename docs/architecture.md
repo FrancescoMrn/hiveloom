@@ -182,6 +182,12 @@ revalidates eval, harness, adapter, effective-model, and case identities before
 resume. Infrastructure attempts have distinct run IDs; completed harness
 outcomes and scorer receipts are never retried or conflated.
 
+Every manifest checkpoint also replaces its eval-cell snapshot in the Hive in
+one transaction. Reporting joins those cells to immutable `run_metrics`, so
+aggregate JSON and paired comparisons are reproducible after trace retention
+prunes the journals. Pairing uses hashed case identity plus repetition; cost
+sources remain separate and unmatched cells stay visible.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a

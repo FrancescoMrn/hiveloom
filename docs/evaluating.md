@@ -134,6 +134,28 @@ completed model result. Each retry has a distinct run ID. Harness verification
 failures, guardrail halts, and provider responses recorded as run outcomes are
 completed cells and are not reclassified as infrastructure errors.
 
+## Report and compare
+
+Eval manifests are indexed into the Hive as they change. Reports therefore use
+indexed cell receipts and metrics and do not reopen raw traces:
+
+```bash
+hiveloom eval report EVAL_RUN_ID --format json
+hiveloom eval compare BASELINE_ID CANDIDATE_ID --format markdown
+```
+
+JSON is the canonical format. Markdown renders the same calculations. Every
+aggregate includes its sample and missing-value counts. Costs are grouped by
+`billed`, `estimated`, or `mixed`; a comparison never treats billed and
+estimated values as a paired cost delta.
+
+Comparisons pair the hashed case identity and repetition before calculating
+deltas. Baseline-only and candidate-only cells remain listed instead of being
+silently dropped. With multiple repetitions, each numeric metric can also
+report mean within-case population standard deviation. Stability is omitted
+when no case has at least two observations. Domain-specific stability metrics,
+such as Jaccard agreement, remain ordinary scorer outputs.
+
 ## Identity and privacy
 
 Every validated eval has four receipts:

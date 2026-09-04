@@ -371,6 +371,8 @@ hiveloom eval validate eval.yaml --json
 hiveloom eval run eval.yaml --model qwen3.5-9b --repetitions 3 --json
 hiveloom eval status <eval-run-id> --json
 hiveloom eval resume <eval-run-id> --json
+hiveloom eval report <eval-run-id> --format json
+hiveloom eval compare <baseline-id> <candidate-id> --format markdown
 hiveloom models probe ./my-harness --provider openrouter \
   --model qwen3.5-9b --identity exact --live --json
 

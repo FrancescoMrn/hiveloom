@@ -155,6 +155,45 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     metadata_json TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS eval_runs (
+    eval_run_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    eval_id TEXT NOT NULL,
+    harness_key TEXT NOT NULL,
+    harness_behavior_hash TEXT NOT NULL,
+    requested_provider TEXT NOT NULL,
+    requested_model TEXT NOT NULL,
+    repetitions INTEGER NOT NULL,
+    manifest_path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS eval_cells (
+    eval_run_id TEXT NOT NULL,
+    cell_id TEXT NOT NULL,
+    case_key TEXT NOT NULL,
+    repetition INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    run_status TEXT NOT NULL,
+    scorer_status TEXT NOT NULL,
+    requested_provider TEXT NOT NULL,
+    requested_model TEXT NOT NULL,
+    effective_provider TEXT,
+    effective_model TEXT,
+    execution_fingerprint TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    cost_usd REAL NOT NULL,
+    cost_source TEXT NOT NULL,
+    verification_attempts INTEGER NOT NULL,
+    first_pass_valid INTEGER,
+    recovery_attempted INTEGER NOT NULL,
+    recovered INTEGER NOT NULL,
+    verification_final_status TEXT NOT NULL,
+    trace_disabled INTEGER NOT NULL,
+    finished_at TEXT,
+    PRIMARY KEY (eval_run_id, cell_id)
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
@@ -163,6 +202,9 @@ CREATE INDEX IF NOT EXISTS idx_playbook_visits_name ON playbook_visits(playbook)
 CREATE INDEX IF NOT EXISTS idx_run_metrics_run ON run_metrics(run_id);
 CREATE INDEX IF NOT EXISTS idx_run_metrics_name ON run_metrics(name);
 CREATE INDEX IF NOT EXISTS idx_run_metrics_source ON run_metrics(source);
+CREATE INDEX IF NOT EXISTS idx_eval_cells_run ON eval_cells(eval_run_id);
+CREATE INDEX IF NOT EXISTS idx_eval_cells_result ON eval_cells(run_id);
+CREATE INDEX IF NOT EXISTS idx_eval_cells_pair ON eval_cells(eval_run_id, case_key, repetition);
 CREATE INDEX IF NOT EXISTS idx_evolutions_name ON evolutions(harness_name);
 CREATE INDEX IF NOT EXISTS idx_proposals_name ON proposals(harness_name);
 CREATE INDEX IF NOT EXISTS idx_friction_run ON friction_events(run_id);
@@ -316,6 +358,113 @@ class Hive:
     # ------------------------------------------------------------------ #
     # Ingestion (idempotent by run_id)
     # ------------------------------------------------------------------ #
+
+    def upsert_eval_manifest(self, manifest: dict[str, Any], path: str) -> None:
+        """Index one complete manifest snapshot transactionally for reporting."""
+        try:
+            self._upsert_eval_manifest(manifest, path)
+        except Exception:
+            self._conn.rollback()
+            raise
+        self._conn.commit()
+
+    def _upsert_eval_manifest(self, manifest: dict[str, Any], path: str) -> None:
+        identity = manifest.get("eval_identity") or {}
+        self._conn.execute(
+            "INSERT INTO eval_runs (eval_run_id, status, eval_id, harness_key, "
+            "harness_behavior_hash, requested_provider, requested_model, repetitions, "
+            "manifest_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(eval_run_id) DO UPDATE SET status=excluded.status, "
+            "eval_id=excluded.eval_id, harness_key=excluded.harness_key, "
+            "harness_behavior_hash=excluded.harness_behavior_hash, "
+            "requested_provider=excluded.requested_provider, "
+            "requested_model=excluded.requested_model, repetitions=excluded.repetitions, "
+            "manifest_path=excluded.manifest_path, updated_at=excluded.updated_at",
+            (
+                manifest["eval_run_id"],
+                manifest["status"],
+                identity.get("eval_id", ""),
+                manifest.get("harness_id", ""),
+                manifest.get("harness_behavior_hash", ""),
+                manifest.get("requested_provider", ""),
+                manifest.get("requested_model", ""),
+                int(manifest.get("repetitions", 1)),
+                path,
+                manifest.get("created_at", ""),
+                manifest.get("updated_at", ""),
+            ),
+        )
+        self._conn.execute(
+            "DELETE FROM eval_cells WHERE eval_run_id=?", (manifest["eval_run_id"],)
+        )
+        rows = []
+        for cell in manifest.get("cells") or []:
+            verification = cell.get("verification") or {}
+            first_pass = verification.get("first_pass_valid")
+            rows.append(
+                (
+                    manifest["eval_run_id"],
+                    cell["cell_id"],
+                    cell["case_key"],
+                    int(cell["repetition"]),
+                    cell.get("status", "pending"),
+                    cell.get("run_id", ""),
+                    cell.get("run_status", ""),
+                    cell.get("scorer_status", "not_run"),
+                    cell.get("requested_provider", ""),
+                    cell.get("requested_model", ""),
+                    cell.get("effective_provider"),
+                    cell.get("effective_model"),
+                    cell.get("execution_fingerprint", ""),
+                    int(cell.get("duration_ms", 0)),
+                    float(cell.get("cost_usd", 0.0)),
+                    cell.get("cost_source", "none"),
+                    int(verification.get("attempts", 0)),
+                    None if first_pass is None else (1 if first_pass else 0),
+                    1 if verification.get("recovery_attempted") else 0,
+                    1 if verification.get("recovered") else 0,
+                    verification.get("final_status", "not_run"),
+                    1 if cell.get("trace_disabled") else 0,
+                    cell.get("finished_at"),
+                )
+            )
+        self._conn.executemany(
+            "INSERT INTO eval_cells (eval_run_id, cell_id, case_key, repetition, status, "
+            "run_id, run_status, scorer_status, requested_provider, requested_model, "
+            "effective_provider, effective_model, execution_fingerprint, duration_ms, "
+            "cost_usd, cost_source, verification_attempts, first_pass_valid, "
+            "recovery_attempted, recovered, verification_final_status, trace_disabled, "
+            "finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?)",
+            rows,
+        )
+    def get_eval_snapshot(self, eval_run_id: str) -> dict[str, Any] | None:
+        """Return indexed eval metadata, cells, and metrics without reading traces."""
+        run = self._conn.execute(
+            "SELECT * FROM eval_runs WHERE eval_run_id=?", (eval_run_id,)
+        ).fetchone()
+        if run is None:
+            return None
+        cells = [
+            dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM eval_cells WHERE eval_run_id=? "
+                "ORDER BY case_key, repetition, cell_id",
+                (eval_run_id,),
+            ).fetchall()
+        ]
+        metrics = []
+        for row in self._conn.execute(
+            "SELECT m.id, m.run_id, m.name, m.value, m.direction, m.unit, m.source, "
+            "m.scope, m.metadata_json, c.case_key, c.repetition "
+            "FROM run_metrics m JOIN eval_cells c ON c.run_id=m.run_id "
+            "WHERE c.eval_run_id=? ORDER BY c.case_key, c.repetition, m.id",
+            (eval_run_id,),
+        ).fetchall():
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json"))
+            metrics.append(item)
+        return {"eval": dict(run), "cells": cells, "metrics": metrics}
     def ingest_trace_file(self, path: str | Path) -> list[str]:
         """Ingest one JSONL trace file. Returns the run_ids ingested."""
         file_path = Path(path)

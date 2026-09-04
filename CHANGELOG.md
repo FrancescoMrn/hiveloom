@@ -58,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the batch, atomic manifests retain per-cell run, trace, scorer, and metric
   state, and resume rejects changed content or execution identity while
   skipping every completed cell.
+- `hiveloom eval report|compare` regenerates canonical JSON from Hive-indexed
+  cells and metrics without raw traces. Reports expose clean, recovered, and
+  final outcomes, latency, source-separated cost, custom metric aggregates,
+  and repetition stability; comparisons pair case and repetition identities
+  and keep unmatched cells visible.
 
 ### Fixed
 
