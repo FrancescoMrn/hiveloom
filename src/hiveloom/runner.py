@@ -27,6 +27,7 @@ from hiveloom.loop.control import RunControl
 from hiveloom.models.provider import ModelConfig as ProviderModelConfig
 from hiveloom.models.provider import ModelProvider
 from hiveloom.models.router import ModelRouter
+from hiveloom.package import resolve_trace_dir
 from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
@@ -121,13 +122,6 @@ def _resolve_conversation(
         # text, never a filename to resolve.
         return split_conversation(messages)
     return [], input_value if literal_input else _resolve_input(base, input_value)
-
-
-def _resolve_trace_dir(base: Path, trace_dir: str) -> Path:
-    path = Path(trace_dir)
-    if path.is_absolute():
-        return path
-    return (base / trace_dir).resolve()
 
 
 def new_run_id() -> str:
@@ -393,7 +387,7 @@ def run_harness(
             (
                 Path(trace_dir).expanduser().resolve()
                 if trace_dir is not None
-                else _resolve_trace_dir(base, spec.logging.trace_dir)
+                else resolve_trace_dir(base, spec.logging.trace_dir)
             ),
             run_id=run_id,
             harness_name=spec.name,
@@ -645,7 +639,7 @@ def resolve_and_ingest(target: str | Path, hive) -> str:
         # happen before parsing a foreign harness rather than only before run.
         trust.ensure_trusted(yaml_path.parent)
         spec = load_spec(yaml_path)
-        hive.ingest_dir(_resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
+        hive.ingest_dir(resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
         return spec.identity
     return str(target)
 
