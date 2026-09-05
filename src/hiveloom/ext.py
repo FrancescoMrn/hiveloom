@@ -61,6 +61,20 @@ class BuildContext:
     # Skill names the spec declares, for `load_skill` — same arrangement as
     # `trace_dir`: populated by `build_registry`, defaulted everywhere else.
     skills: list[str] = field(default_factory=list)
+    # The spec's `confinement` policy, for factories that spawn a process
+    # (`shell`, `command_succeeds`). None means "the schema default", so a
+    # factory built outside a spec is confined rather than unconfined.
+    confinement: Any = None
+    # The absolute trace directory, which those same factories mask from the
+    # processes they spawn. Distinct from `trace_dir` above, which is the
+    # harness-relative path the file tools refuse and is None when the trace
+    # directory lives outside the harness — masking still applies there.
+    trace_root: Path | None = None
+    # Every absolute path holding runtime-private state, from
+    # `hiveloom.private.runtime_private_paths`. File-tool factories refuse this
+    # set and process-spawning factories mask it rather than each keeping their
+    # own idea of private state.
+    private_paths: list[Path] = field(default_factory=list)
 
 
 class ModelInfo(BaseModel):

@@ -2,8 +2,8 @@
 
 All builtins are sandboxed to the harness working directory (files) or an
 allowlist (shell). ``shell`` is disabled unless the spec provides an allowlist.
-``file_read``/``file_write`` are further refused ``package.py``'s "never
-leaves the harness" paths (``.hiveloom/``, ``.env*``, the trace dir) via
+``file_read``/``file_write`` are further refused the runtime-private path set
+(``.hiveloom/``, ``.env*``, the trace dir, the Hive and user-level state) via
 ``safe_path`` — a model can no more read its own harness's auth store or
 credentials through a tool call than an HTTP caller can through `input_file`.
 """
@@ -14,7 +14,6 @@ import hashlib
 import ipaddress
 import shlex
 import socket
-import subprocess
 import threading
 from pathlib import Path
 from typing import Any
@@ -24,8 +23,10 @@ from urllib.parse import urlsplit
 
 from hiveloom import ext
 from hiveloom.catalog import BUILTIN_TOOLS
+from hiveloom.confine import ConfinementUnavailable, run_confined
 from hiveloom.package import is_sensitive_path
-from hiveloom.spec.schema import BuiltinToolRef
+from hiveloom.private import env_files, is_private
+from hiveloom.spec.schema import BuiltinToolRef, ConfinementConfig
 from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 
 _MAX_HTTP_BYTES = 200_000
@@ -50,11 +51,18 @@ _EXTRA_ARGS_SAFE_BINARIES = {
 }
 
 
-def safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
+def safe_path(
+    base: Path,
+    path: str,
+    *,
+    trace_dir: Path | None = None,
+    private_paths: list[Path] | None = None,
+) -> Path:
     """Resolve ``path``, ensure it stays within ``base`` (no traversal), and
-    refuse anything ``package.py`` would never ship either (``.hiveloom/``,
-    ``.env*`` except checked-in templates, VCS/cache noise, and — when the
-    caller supplies it — the configured trace directory).
+    refuse anything ``package.py`` would never ship or the runtime-private path
+    resolver names (``.hiveloom/``, ``.env*`` except checked-in templates,
+    VCS/cache noise, the configured trace directory, the Hive and user-level
+    runtime state).
 
     Staying inside the harness directory is necessary but not sufficient:
     ``.hiveloom/`` (the trust store, construction log, and — for a served
@@ -75,7 +83,10 @@ def safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
     if candidate != base_resolved and base_resolved not in candidate.parents:
         raise ToolError(f"path '{path}' escapes the working directory")
     rel = candidate.relative_to(base_resolved)
-    if is_sensitive_path(rel, trace_dir=trace_dir):
+    if is_sensitive_path(rel, trace_dir=trace_dir) or (
+        private_paths is not None
+        and is_private(candidate, private_paths, base=base_resolved)
+    ):
         raise ToolError(f"path '{path}' is protected harness state, not accessible here")
     return candidate
 
@@ -83,9 +94,16 @@ def safe_path(base: Path, path: str, *, trace_dir: Path | None = None) -> Path:
 class FileReadTool(Tool):
     """Read a UTF-8 text file from the working directory."""
 
-    def __init__(self, base: Path, *, trace_dir: Path | None = None):
+    def __init__(
+        self,
+        base: Path,
+        *,
+        trace_dir: Path | None = None,
+        private_paths: list[Path] | None = None,
+    ):
         self._base = base
         self._trace_dir = trace_dir
+        self._private_paths = private_paths
         entry = BUILTIN_TOOLS["file_read"]
         self.name = "file_read"
         self.description = entry.description
@@ -97,7 +115,12 @@ class FileReadTool(Tool):
         }
 
     def run(self, path: str = "", **_: Any) -> str:
-        target = safe_path(self._base, path, trace_dir=self._trace_dir)
+        target = safe_path(
+            self._base,
+            path,
+            trace_dir=self._trace_dir,
+            private_paths=self._private_paths,
+        )
         if not target.exists():
             raise ToolError(f"file not found: {path}")
         return target.read_text(encoding="utf-8")
@@ -115,9 +138,16 @@ def _file_state(target: Path) -> dict[str, Any] | None:
 class FileWriteTool(Tool):
     """Write a UTF-8 text file within the working directory."""
 
-    def __init__(self, base: Path, *, trace_dir: Path | None = None):
+    def __init__(
+        self,
+        base: Path,
+        *,
+        trace_dir: Path | None = None,
+        private_paths: list[Path] | None = None,
+    ):
         self._base = base
         self._trace_dir = trace_dir
+        self._private_paths = private_paths
         entry = BUILTIN_TOOLS["file_write"]
         self.name = "file_write"
         self.description = entry.description
@@ -132,7 +162,12 @@ class FileWriteTool(Tool):
         }
 
     def run(self, path: str = "", content: str = "", **_: Any) -> ToolResult:
-        target = safe_path(self._base, path, trace_dir=self._trace_dir)
+        target = safe_path(
+            self._base,
+            path,
+            trace_dir=self._trace_dir,
+            private_paths=self._private_paths,
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         # Serialize writes per resolved path: with loop.tool_execution set to
         # parallel, two calls in one batch may target the same file.
@@ -215,11 +250,35 @@ class LoadSkillTool(Tool):
 
 
 class ShellTool(Tool):
-    """Run an allowlisted shell command (disabled without an allowlist)."""
+    """Run an allowlisted shell command (disabled without an allowlist).
 
-    def __init__(self, base: Path, allowed: list[Any]):
+    The allowlist answers *which* command may run; ``spec.confinement`` answers
+    what it may do once it runs. Both are checked here, in that order, and the
+    spawn itself goes through :func:`hiveloom.confine.run_confined`.
+    """
+
+    def __init__(
+        self,
+        base: Path,
+        allowed: list[Any],
+        confinement: Any = None,
+        *,
+        trace_root: Path | None = None,
+        trace_dir: Path | None = None,
+        private_paths: list[Path] | None = None,
+    ):
         self._base = base
         self._allowed = [_parse_shell_rule(rule) for rule in allowed]
+        self._confinement = confinement or ConfinementConfig()
+        self._trace_dir = trace_dir
+        # The runtime's own state is not part of the machine a spawned command
+        # gets to see: the journal records every tool result in full, the spill
+        # store beside it holds the ones too large to inline, and the Hive holds
+        # every earlier run. One resolver decides what that set is — see
+        # :mod:`hiveloom.private`.
+        self._masked = private_paths or [base / ".hiveloom"]
+        if trace_root is not None and trace_root not in self._masked:
+            self._masked.append(trace_root)
         entry = BUILTIN_TOOLS["shell"]
         self.name = "shell"
         self.description = entry.description
@@ -229,6 +288,9 @@ class ShellTool(Tool):
             "properties": {"command": {"type": "string", "description": "Command to run."}},
             "required": ["command"],
         }
+
+    def _refuse_runtime_state(self, parts: list[str], masked: list[Path]) -> None:
+        _refuse_runtime_state_impl(parts, self._base, masked, self._trace_dir)
 
     def run(self, command: str = "", **_: Any) -> str:
         if not self._allowed:
@@ -245,18 +307,66 @@ class ShellTool(Tool):
         )
         if not permitted:
             raise ToolError(f"command '{parts[0]}' is not in the allowlist")
+        # Re-globbed per call: a `.env` written during the run is private from
+        # the moment it exists, not from the next process start.
+        masked = [*self._masked, *(p for p in env_files(self._base) if p not in self._masked)]
+        self._refuse_runtime_state(parts, masked)
         try:
-            proc = subprocess.run(
+            result = run_confined(
                 parts,
                 cwd=self._base,
-                capture_output=True,
-                text=True,
-                timeout=30,
+                config=self._confinement,
+                mask=masked,
             )
-        except subprocess.TimeoutExpired as exc:  # pragma: no cover - timing dependent
-            raise ToolError("command timed out") from exc
-        out = proc.stdout + proc.stderr
-        return f"exit={proc.returncode}\n{out}"
+        except ConfinementUnavailable as exc:
+            raise ToolError(str(exc)) from exc
+        except OSError as exc:
+            raise ToolError(f"command could not be started: {exc}") from exc
+
+        notes = []
+        if result.timed_out:
+            notes.append(
+                f"the command was killed after {self._confinement.timeout_seconds}s"
+            )
+        if result.truncated:
+            notes.append(
+                f"{result.discarded_bytes} bytes of output were dropped; the head "
+                "and tail shown fit the configured budget"
+            )
+        suffix = f"\n[{'; '.join(notes)}]" if notes else ""
+        return f"exit={result.returncode}\n{result.output}{suffix}"
+
+
+def _refuse_runtime_state_impl(
+    parts: list[str], base: Path, masked: list[Path], trace_dir: Path | None
+) -> None:
+    """Refuse a command that *names* a path holding the runtime's own state.
+
+    The kernel mask is the real control, and it holds wherever a sandbox
+    backend exists. This is the portable half: it catches the direct form
+    (``grep secret .hiveloom/traces``) on a machine with no backend, using the
+    same predicate ``file_read`` refuses paths with. It cannot catch a
+    recursive walk that never names the directory — which is what
+    ``confinement.mode: require`` is for.
+    """
+    root = base.resolve()
+    hidden = [path.resolve() for path in masked]
+    for argument in parts[1:]:
+        if not argument or argument.startswith("-"):
+            continue
+        candidate = Path(argument)
+        candidate = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+        if any(candidate == path or path in candidate.parents for path in hidden):
+            raise ToolError(
+                f"'{argument}' is inside the harness's runtime state "
+                "(.hiveloom / the trace directory), which the shell tool cannot read"
+            )
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError:
+            continue
+        if relative.parts and is_sensitive_path(relative, trace_dir=trace_dir):
+            raise ToolError(f"'{argument}' is a protected path in this harness")
 
 
 def _parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
@@ -346,34 +456,66 @@ class _SafeRedirectHandler(urlrequest.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+
 def make_builtin_tool(
     ref: BuiltinToolRef,
     base: Path,
     *,
     trace_dir: Path | None = None,
     skills: list[str] | None = None,
+    confinement: Any = None,
+    trace_root: Path | None = None,
+    private_paths: list[Path] | None = None,
 ) -> Tool:
     """Instantiate the catalog tool named by ``ref`` (builtin or extension)."""
     return ext.build(
         "tools",
         ref.builtin,
         ref.params(),
-        ext.BuildContext(base=base, trace_dir=trace_dir, skills=list(skills or [])),
+        ext.BuildContext(
+            base=base,
+            trace_dir=trace_dir,
+            skills=list(skills or []),
+            confinement=confinement,
+            trace_root=trace_root,
+            private_paths=list(private_paths or []),
+        ),
     )
 
 
 def _register_factories() -> None:
     ext.register_builtin_factory(
-        "tools", "file_read", lambda _p, ctx: FileReadTool(ctx.base, trace_dir=ctx.trace_dir)
+        "tools",
+        "file_read",
+        lambda _p, ctx: FileReadTool(
+            ctx.base,
+            trace_dir=ctx.trace_dir,
+            private_paths=list(ctx.private_paths or []),
+        ),
     )
     ext.register_builtin_factory(
-        "tools", "file_write", lambda _p, ctx: FileWriteTool(ctx.base, trace_dir=ctx.trace_dir)
+        "tools",
+        "file_write",
+        lambda _p, ctx: FileWriteTool(
+            ctx.base,
+            trace_dir=ctx.trace_dir,
+            private_paths=list(ctx.private_paths or []),
+        ),
     )
     ext.register_builtin_factory(
         "tools", "load_skill", lambda _p, ctx: LoadSkillTool(ctx.base, ctx.skills)
     )
     ext.register_builtin_factory(
-        "tools", "shell", lambda p, ctx: ShellTool(ctx.base, list(p.get("commands", []) or []))
+        "tools",
+        "shell",
+        lambda p, ctx: ShellTool(
+            ctx.base,
+            list(p.get("commands", []) or []),
+            confinement=ctx.confinement,
+            trace_root=ctx.trace_root,
+            trace_dir=ctx.trace_dir,
+            private_paths=list(ctx.private_paths or []),
+        ),
     )
     ext.register_builtin_factory("tools", "http_get", lambda _p, ctx: HttpGetTool(ctx.base))
 

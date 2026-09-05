@@ -17,7 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hiveloom import __version__, trust
+from hiveloom import __version__, confine, trust
+from hiveloom.confine import ConfinementUnavailable
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
 from hiveloom.guardrails.builtin import build_guardrails
@@ -354,6 +355,12 @@ def run_harness(
             base, input_value, conversation, literal_input=literal_input
         )
     registry = build_registry(spec, base)
+    # An explicitly required process sandbox is checked before any paid model
+    # turn. The default `auto` policy is opportunistic and never blocks a run.
+    gap = confine.unavailable_reason(spec.confinement)
+    if gap is not None:
+        registry.close()
+        raise ConfinementUnavailable(gap)
     # Bound before the try: several steps below it can raise, and an unbound
     # name in the finally would mask the real error with a NameError.
     router: ModelRouter | None = None

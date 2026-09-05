@@ -446,6 +446,78 @@ def extensions(
 
 
 @app.command()
+def confinement(
+    directory: str | None = typer.Argument(
+        None, help="Harness directory. Omit to report this machine's capability alone."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Report how this machine will confine processes a harness spawns.
+
+    The `shell` tool and the `command_succeeds` validator start subprocesses.
+    What the spec asks for and what the machine can enforce are different
+    questions — a policy of `network: false` is only real where a sandbox
+    backend exists. This answers the second question before a run does.
+
+    With no argument it reports the machine alone, against schema defaults. A
+    directory that is named must load: answering for a harness that does not
+    exist, with defaults it never declared, is worse than saying so.
+    """
+    from hiveloom import confine
+    from hiveloom.egress import policy_name
+    from hiveloom.spec.loader import harness_path, load_spec
+    from hiveloom.spec.schema import ConfinementConfig, EgressConfig
+
+    spec = None
+    if directory is None:
+        config = ConfinementConfig()
+        source = "(no harness named; schema defaults)"
+    else:
+        try:
+            spec = load_spec(harness_path(directory))
+        except (SpecError, OSError) as exc:
+            _fail(str(exc), json_output, ExitCode.SPEC_ERROR)
+        config = spec.confinement
+        source = str(harness_path(directory))
+    info = confine.describe(config)
+    info["provider_egress_policy"] = policy_name(
+        spec.egress if spec is not None else EgressConfig()
+    )
+    blocked = confine.unavailable_reason(config)
+    if json_output:
+        _emit_json({"ok": blocked is None, "source": source, "blocked": blocked, **info})
+        # A policy this machine cannot honor is a non-zero exit in both output
+        # modes: the JSON caller is usually the one gating a deploy on it.
+        if blocked:
+            raise typer.Exit(ExitCode.SPEC_ERROR)
+        return
+
+    _console.print(f"[dim]{source}[/dim]")
+    table = Table(title="process confinement")
+    table.add_column("property", style="bold cyan")
+    table.add_column("value")
+    table.add_row("declared mode", info["mode"])
+    table.add_row("backend in use", info["backend"])
+    table.add_row("filesystem isolated", "yes" if info["filesystem_isolated"] else "no")
+    table.add_row("runtime state hidden", "yes" if info["runtime_state_hidden"] else "no")
+    table.add_row("network isolated", "yes" if info["network_isolated"] else "no")
+    table.add_row("home hidden", "yes" if info["home_hidden"] else "no")
+    table.add_row("resource limits", "yes" if info["limits_applied"] else "no")
+    table.add_row("provider egress", info["provider_egress_policy"])
+    _console.print(table)
+    if info["backend"] == "none" and info["mode"] != "off":
+        _console.print(
+            "[yellow]no OS sandbox on this host[/yellow]: spawned processes get a "
+            "scrubbed environment, resource limits and a timeout. That is not "
+            "filesystem isolation — the harness's .hiveloom, journal and spill "
+            "store stay readable to any command allowed to read files."
+        )
+    if blocked:
+        _err_console.print(f"[red]{blocked}[/red]")
+        raise typer.Exit(ExitCode.SPEC_ERROR)
+
+
+@app.command()
 def guide(
     topic: str = typer.Argument(
         "agents", help="Topic to print: agents (default), all, or a skill name."

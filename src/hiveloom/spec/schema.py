@@ -901,6 +901,94 @@ class RetentionConfig(BaseModel):
         return self
 
 
+class ConfinementConfig(BaseModel):
+    """How the runtime confines the processes it spawns.
+
+    Applies to the ``shell`` tool and the ``command_succeeds`` validator — the
+    two builtins that start a subprocess. Frozen from evolution: a harness may
+    not loosen its own containment. See :mod:`hiveloom.confine`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["auto", "off", "require"] = Field(
+        default="auto",
+        description=(
+            "'auto' uses an OS sandbox when the machine has one and the "
+            "portable baseline (scrubbed environment, resource limits, timeout) "
+            "when it does not; 'require' refuses to spawn without a sandbox; "
+            "'off' keeps the baseline but skips the sandbox."
+        ),
+    )
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _accept_yaml_off(cls, value: Any) -> Any:
+        """`mode: off` is a YAML 1.1 boolean, and unquoted it arrives as False.
+
+        Rejecting it would mean documenting a value that only works in quotes,
+        which is a worse contract than accepting the thing the author plainly
+        meant.
+        """
+        return "off" if value is False else value
+
+    network: bool = Field(
+        default=False,
+        description=(
+            "Let spawned processes reach the network. Only enforceable where a "
+            "sandbox backend is available. Turn on for validators that install "
+            "dependencies or call a service."
+        ),
+    )
+    writable: bool = Field(
+        default=True,
+        description=(
+            "Let spawned processes write inside the harness directory. Off "
+            "makes the whole filesystem read-only except a private /tmp."
+        ),
+    )
+    hide_home: bool = Field(
+        default=True,
+        description=(
+            "Hide the user's home directory from spawned processes — where SSH "
+            "keys, cloud credentials and the Hive itself live. HOME points at a "
+            "private scratch directory instead, and a harness that lives inside "
+            "home stays reachable. Turn off for a build that needs a toolchain "
+            "cache under home."
+        ),
+    )
+    env_passthrough: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Environment variable names forwarded to spawned processes. The "
+            "default environment carries only PATH/HOME/locale, so the runtime's "
+            "own API keys are never inherited by an allowlisted command."
+        ),
+    )
+    timeout_seconds: int = Field(
+        default=30, gt=0, description="Wall-clock ceiling for a `shell` tool call."
+    )
+    max_output_bytes: int = Field(
+        default=1_048_576,
+        gt=0,
+        description=(
+            "Most stdout/stderr retained from one spawn. Output is drained "
+            "through bounded head/tail collectors, so a command that writes "
+            "without bound cannot grow the runtime's memory or disk usage."
+        ),
+    )
+    max_memory_mb: int = Field(
+        default=2048, ge=0, description="Address-space limit per spawned process (0 = unlimited)."
+    )
+    max_processes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "RLIMIT_NPROC for spawned processes (0 = unlimited). The limit is "
+            "per-user, not per-command, so set it only where hiveloom owns the uid."
+        ),
+    )
+
+
 class EgressConfig(BaseModel):
     """What may leave this machine in a model request. Frozen from evolution.
 
@@ -1224,6 +1312,7 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "evolution.auto_propose",
     "evolution.trace_excerpts",
     "evolution.objectives",
+    "confinement",
     "egress",
 )
 
@@ -1330,6 +1419,10 @@ class HarnessSpec(BaseModel):
     )
     loop: LoopConfig = Field(default_factory=LoopConfig, description="Agent loop policy.")
     verify: VerifyConfig = Field(default_factory=VerifyConfig, description="Verification policy.")
+    confinement: ConfinementConfig = Field(
+        default_factory=ConfinementConfig,
+        description="OS confinement for spawned processes (frozen from evolution).",
+    )
     egress: EgressConfig = Field(
         default_factory=EgressConfig,
         description="What may leave in a model request (frozen from evolution).",

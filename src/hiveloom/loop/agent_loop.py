@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from hiveloom import confine
 from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
 from hiveloom.context.spill import SpillStore
@@ -46,6 +47,7 @@ from hiveloom.models.provider import (
 )
 from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
+from hiveloom.private import runtime_private_paths
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry, ToolResult
 from hiveloom.verify.base import (
@@ -169,6 +171,7 @@ class AgentLoop:
         harness_version_hash: str = "",
         runtime_version: str = "",
         runtime_config: dict[str, Any] | None = None,
+        hive_path: str | Path | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -217,6 +220,9 @@ class AgentLoop:
             provider,
         )
         self._control = control
+        # Where this run's evidence will land, so the runtime knows which Hive
+        # counts as this run's private state rather than the ambient default.
+        self._hive_path = hive_path
         # The egress filter is built once: its patterns come from the spec, and
         # `logging.redact` feeds it too, so a pattern scrubbed from the journal
         # is also scrubbed from the provider request rather than only from the
@@ -297,6 +303,20 @@ class AgentLoop:
                 self._base,
                 include_files=self._spec.logging.snapshot_files,
             ),
+            # What the machine could actually enforce, not what the spec asked
+            # for. A journal that records `mode: auto` says nothing about
+            # whether a sandbox existed; this says which one ran, and whether
+            # the run's private state was really hidden from what it spawned.
+            # Facts only — no absolute paths: a journal is shareable, and the
+            # layout of the machine that produced it is not part of the run.
+            confinement={
+                **confine.describe(self._spec.confinement),
+                "private_paths": len(
+                    runtime_private_paths(
+                        self._base, self._spec, hive_path=self._hive_path
+                    )
+                ),
+            },
             egress={
                 "policy": egress_policy_name(self._spec.egress),
                 "detect_credentials": self._spec.egress.detect_credentials,
@@ -1248,7 +1268,18 @@ class AgentLoop:
             return self._verifiers
         from hiveloom.verify.builtin import build_verifiers_from_refs
 
-        return [*self._verifiers, *build_verifiers_from_refs(refs, self._base)]
+        return [
+            *self._verifiers,
+            *build_verifiers_from_refs(
+                refs,
+                self._base,
+                confinement=self._spec.confinement,
+                trace_root=self._trace.path.parent,
+                private_paths=runtime_private_paths(
+                    self._base, self._spec, hive_path=self._hive_path
+                ),
+            ),
+        ]
 
     def _verify(self, output: str) -> list[VerdictResult]:
         self._verification_attempts += 1

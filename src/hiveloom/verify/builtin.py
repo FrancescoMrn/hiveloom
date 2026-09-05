@@ -5,18 +5,21 @@ from __future__ import annotations
 import inspect
 import json
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from hiveloom import ext
+from hiveloom.confine import ConfinementUnavailable, run_confined, shell_argv
 from hiveloom.json_path import extract_json_path, parse_json_path
+from hiveloom.package import resolve_trace_dir
+from hiveloom.private import runtime_private_paths
 from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import (
     BuiltinValidatorRef,
     CodeValidatorRef,
+    ConfinementConfig,
     HarnessSpec,
 )
 from hiveloom.verify.base import VerdictResult, VerificationContext, Verifier
@@ -109,9 +112,28 @@ class FileExistsVerifier(Verifier):
 class CommandSucceedsVerifier(Verifier):
     name = "command_succeeds"
 
-    def __init__(self, command: str, base: Path):
+    def __init__(
+        self,
+        command: str,
+        base: Path,
+        *,
+        timeout: int = 600,
+        confinement: Any = None,
+        trace_root: Path | None = None,
+        private_paths: list[Path] | None = None,
+    ):
         self._command = command
         self._base = base
+        self._timeout = timeout
+        self._confinement = confinement or ConfinementConfig()
+        # Same masking the shell tool gets. A validator command is authored in
+        # the spec rather than by the model, but `verify.validators` is a
+        # mutable field, and a check has no business reading the journal that
+        # records its own verdict. A code validator remains the way to inspect
+        # run state — it is Python in the hiveloom process, not a spawn.
+        self._masked = list(private_paths or [base / ".hiveloom"])
+        if trace_root is not None and trace_root not in self._masked:
+            self._masked.append(trace_root)
 
     def validate(
         self,
@@ -120,18 +142,37 @@ class CommandSucceedsVerifier(Verifier):
         verification_context: VerificationContext | None = None,
     ) -> VerdictResult:
         del run_output, run_context, verification_context
-        proc = subprocess.run(
-            self._command,
-            shell=True,  # noqa: S602 - command is spec-authored, not model output
-            cwd=self._base,
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode == 0:
+        # Still a shell string — the command is spec-authored and often a
+        # pipeline — but the shell now runs inside the confinement policy like
+        # any other spawn, and under a timeout: a validator that never returns
+        # used to hang the run with no verdict at all.
+        try:
+            result = run_confined(
+                shell_argv(self._command),
+                cwd=self._base,
+                config=self._confinement,
+                timeout=self._timeout,
+                mask=self._masked,
+            )
+        except ConfinementUnavailable as exc:
+            return VerdictResult(passed=False, feedback=str(exc), verifier=self.name)
+        except OSError as exc:
+            return VerdictResult(
+                passed=False,
+                feedback=f"command could not be started: {exc}",
+                verifier=self.name,
+            )
+        if result.timed_out:
+            return VerdictResult(
+                passed=False,
+                feedback=f"command did not finish within {self._timeout}s",
+                verifier=self.name,
+            )
+        if result.returncode == 0:
             return VerdictResult(passed=True, verifier=self.name)
         return VerdictResult(
             passed=False,
-            feedback=f"command failed (exit {proc.returncode}): {proc.stdout}{proc.stderr}",
+            feedback=f"command failed (exit {result.returncode}): {result.output}",
             verifier=self.name,
         )
 
@@ -268,10 +309,28 @@ class GroundedReferencesVerifier(Verifier):
 
 def build_verifiers(spec: HarnessSpec, base_dir: str | Path) -> list[Verifier]:
     """Instantiate verifiers (builtins + code hooks) from a spec."""
-    return build_verifiers_from_refs(spec.verify.validators, base_dir)
+    base = Path(base_dir)
+    return build_verifiers_from_refs(
+        spec.verify.validators,
+        base_dir,
+        confinement=spec.confinement,
+        trace_root=resolve_trace_dir(
+            base.parent if base.is_file() else base, spec.logging.trace_dir
+        ),
+        private_paths=runtime_private_paths(
+            base.parent if base.is_file() else base, spec
+        ),
+    )
 
 
-def build_verifiers_from_refs(refs: list[Any], base_dir: str | Path) -> list[Verifier]:
+def build_verifiers_from_refs(
+    refs: list[Any],
+    base_dir: str | Path,
+    *,
+    confinement: Any = None,
+    trace_root: Path | None = None,
+    private_paths: list[Path] | None = None,
+) -> list[Verifier]:
     """Instantiate verifiers from validator refs.
 
     Split out of :func:`build_verifiers` so a playbook's mode-scoped
@@ -284,7 +343,9 @@ def build_verifiers_from_refs(refs: list[Any], base_dir: str | Path) -> list[Ver
     verifiers: list[Verifier] = []
     for ref in refs:
         if isinstance(ref, BuiltinValidatorRef):
-            verifiers.append(_make_builtin(ref, base))
+            verifiers.append(
+                _make_builtin(ref, base, confinement, trace_root, private_paths)
+            )
         elif isinstance(ref, CodeValidatorRef):
             func = import_hook(ref.code, base)
             _, func_name = ref.code.rsplit(":", 1)
@@ -292,8 +353,24 @@ def build_verifiers_from_refs(refs: list[Any], base_dir: str | Path) -> list[Ver
     return verifiers
 
 
-def _make_builtin(ref: BuiltinValidatorRef, base: Path) -> Verifier:
-    return ext.build("validators", ref.builtin, ref.params(), ext.BuildContext(base=base))
+def _make_builtin(
+    ref: BuiltinValidatorRef,
+    base: Path,
+    confinement: Any = None,
+    trace_root: Path | None = None,
+    private_paths: list[Path] | None = None,
+) -> Verifier:
+    return ext.build(
+        "validators",
+        ref.builtin,
+        ref.params(),
+        ext.BuildContext(
+            base=base,
+            confinement=confinement,
+            trace_root=trace_root,
+            private_paths=list(private_paths or []),
+        ),
+    )
 
 
 def _register_factories() -> None:
@@ -311,7 +388,14 @@ def _register_factories() -> None:
     ext.register_builtin_factory(
         "validators",
         "command_succeeds",
-        lambda p, ctx: CommandSucceedsVerifier(p["command"], ctx.base),
+        lambda p, ctx: CommandSucceedsVerifier(
+            p["command"],
+            ctx.base,
+            timeout=p.get("timeout", 600),
+            confinement=ctx.confinement,
+            trace_root=ctx.trace_root,
+            private_paths=list(ctx.private_paths or []),
+        ),
     )
     ext.register_builtin_factory(
         "validators",

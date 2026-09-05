@@ -211,6 +211,8 @@ BUILTIN_VALIDATORS: dict[str, CatalogEntry] = _entries(
         params=[
             ParamSpec(name="command", type="str", required=True,
                       description="Command to execute; exit code 0 means pass."),
+            ParamSpec(name="timeout", type="int", required=False, default=600,
+                      description="Seconds before the command is killed and the check fails."),
         ],
     ),
     CatalogEntry(

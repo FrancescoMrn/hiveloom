@@ -116,6 +116,29 @@ def test_file_write_refuses_configured_trace_dir(tmp_path: Path):
         tool.run(path="run_logs/run_x.jsonl", content="forged trace entry")
 
 
+def test_file_tools_consume_the_runtime_private_path_resolver(
+    tmp_path: Path, monkeypatch
+):
+    runtime_home = tmp_path / "nonstandard-runtime-home"
+    runtime_home.mkdir()
+    (runtime_home / "models.yaml").write_text("private", encoding="utf-8")
+    monkeypatch.setenv("HIVELOOM_HOME", str(runtime_home))
+    spec = HarnessSpec(
+        name="private-paths",
+        description="test",
+        system_prompt="test",
+        tools=[BuiltinToolRef(builtin="file_read"), BuiltinToolRef(builtin="file_write")],
+    )
+    registry = build_registry(spec, tmp_path)
+
+    with pytest.raises(ToolError, match="protected harness state"):
+        registry.get("file_read").run(path="nonstandard-runtime-home/models.yaml")
+    with pytest.raises(ToolError, match="protected harness state"):
+        registry.get("file_write").run(
+            path="nonstandard-runtime-home/new-secret", content="private"
+        )
+
+
 def test_safe_path_refuses_configured_trace_dir_case_insensitively(tmp_path: Path):
     """`trace_dir` is opt-in (only the HTTP control plane currently has a
     spec loaded to supply it — file_read/file_write don't pass one, so they

@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field, create_model, field_validator
 
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
-from hiveloom.package import trace_dir_relative_to
+from hiveloom.package import resolve_trace_dir, trace_dir_relative_to
+from hiveloom.private import runtime_private_paths
 from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
@@ -399,6 +400,11 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
     # protection the HTTP control plane's input_file and the evolver's
     # code-change containment get when they have a spec loaded.
     trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
+    # The absolute form too: `shell` masks it from the processes it spawns,
+    # and a trace directory outside the harness still has to be masked even
+    # though it has no harness-relative path to refuse.
+    trace_root = resolve_trace_dir(base, spec.logging.trace_dir)
+    private_paths = runtime_private_paths(base, spec)
 
     registry = ToolRegistry()
     has_deferred = False
@@ -407,7 +413,13 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
         has_deferred = has_deferred or not active
         if isinstance(tool_ref, BuiltinToolRef):
             tool = builtin.make_builtin_tool(
-                tool_ref, base, trace_dir=trace_dir, skills=spec.skills
+                tool_ref,
+                base,
+                trace_dir=trace_dir,
+                skills=spec.skills,
+                confinement=spec.confinement,
+                trace_root=trace_root,
+                private_paths=private_paths,
             )
             registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):
