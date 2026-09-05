@@ -434,6 +434,7 @@ def run_harness(
             harness_version_hash=version_hash,
             runtime_version=__version__,
             runtime_config=runtime_config,
+            hive_path=hive_path,
         )
         result = loop.run()
     finally:

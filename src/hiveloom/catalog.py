@@ -113,6 +113,49 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
         description="Perform an HTTP GET request and return the response body.",
         tags=["network", "read"],
     ),
+    CatalogEntry(
+        name="recall_runs",
+        description=(
+            "Look up this harness's own prior runs in the Hive — successes as "
+            "worked examples, failures with the verifier feedback that rejected "
+            "them. Opt-in: a harness only sees its own history, and only if the "
+            "spec declares this tool."
+        ),
+        tags=["read", "memory"],
+        params=[
+            ParamSpec(
+                name="limit",
+                type="int",
+                required=False,
+                default=3,
+                description=(
+                    "Most runs one call may return (hard-capped at 10). Prior runs "
+                    "are context: a large recall crowds out the task."
+                ),
+            ),
+            ParamSpec(
+                name="include_output",
+                type="bool",
+                required=False,
+                default=True,
+                description=(
+                    "Include each recalled run's final output. Turn off when past "
+                    "outputs carry data a later run should not see."
+                ),
+            ),
+            ParamSpec(
+                name="scope",
+                type="str",
+                required=False,
+                default="harness",
+                description=(
+                    "'harness' recalls every version's runs; 'version' recalls only "
+                    "runs of the harness version now executing — evidence that "
+                    "cannot have come from different instructions."
+                ),
+            ),
+        ],
+    ),
 )
 
 

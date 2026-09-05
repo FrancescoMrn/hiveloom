@@ -31,6 +31,11 @@ from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 
 _MAX_HTTP_BYTES = 200_000
 
+#: Ceilings on one ``recall_runs`` call. Prior runs compete with the task for
+#: context, so the spec's `limit` is itself capped and each field is clipped.
+_RECALL_MAX_LIMIT = 10
+_RECALL_FIELD_CHARS = 1200
+
 # One lock per resolved target path (never dropped: paths per process are few
 # and bounded by the working directory's file count).
 _WRITE_LOCKS: dict[str, threading.Lock] = {}
@@ -457,6 +462,162 @@ class _SafeRedirectHandler(urlrequest.HTTPRedirectHandler):
 
 
 
+class RecallRunsTool(Tool):
+    """Look up this harness's own prior runs in the Hive (opt-in).
+
+    The evolver already reads run history *between* runs; this makes the same
+    evidence available *during* one, on request. A small executor benefits
+    disproportionately: a worked example of the same task from the same harness
+    is worth more than another paragraph of instruction, and a past failure
+    carries the verifier feedback that rejected it.
+
+    Two boundaries make that safe to hand a model:
+
+    * **Own history only.** Every query is keyed on the running harness's own
+      key, taken from the run context rather than from tool input, so a model
+      cannot name another harness — or another harness's customer data.
+    * **Already redacted.** The Hive is ingested from journals, and
+      ``logging.redact`` is applied before a journal is written, so recall can
+      only return what the record already kept.
+
+    Recall is disabled for a run whose Hive is unreachable rather than being an
+    error the model has to reason about: history is an aid, never a dependency.
+    """
+
+    def __init__(
+        self,
+        *,
+        limit: int = 3,
+        include_output: bool = True,
+        scope: str = "harness",
+    ):
+        entry = BUILTIN_TOOLS["recall_runs"]
+        self.name = "recall_runs"
+        self.description = entry.description
+        self.tags = list(entry.tags)
+        self.guidelines = (
+            "recall_runs returns this harness's own earlier runs. Prefer it over "
+            "guessing at house style or output shape: a past success shows what "
+            "was accepted, a past failure shows what the validators rejected and "
+            "why. It never returns another harness's runs."
+        )
+        self._limit = max(1, min(int(limit), _RECALL_MAX_LIMIT))
+        self._include_output = bool(include_output)
+        if scope not in ("harness", "version"):
+            raise ToolError(
+                f"recall_runs scope must be 'harness' or 'version' (got {scope!r})"
+            )
+        self._scope = scope
+        self.wants_run_context = True
+        self.input_schema = {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["success", "failed", "any"],
+                    "description": (
+                        "'success' for worked examples (default), 'failed' for runs "
+                        "the validators rejected and why, 'any' for both."
+                    ),
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Only runs whose task or output contains this text.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": f"Runs to return (at most {self._limit}).",
+                },
+            },
+        }
+
+    def run(
+        self,
+        status: str = "success",
+        query: str = "",
+        limit: Any = None,
+        run_context: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> str:
+        context = run_context or {}
+        harness_key = context.get("harness_id") or context.get("harness_name") or ""
+        if not harness_key:
+            raise ToolError("recall_runs has no harness identity to scope the lookup to")
+        if status not in ("success", "failed", "any"):
+            raise ToolError(
+                f"status must be 'success', 'failed' or 'any' (got {status!r})"
+            )
+        try:
+            wanted = self._limit if limit in (None, "") else int(limit)
+        except (TypeError, ValueError) as exc:
+            raise ToolError(f"limit must be a number (got {limit!r})") from exc
+
+        from hiveloom.logging.hive import Hive  # local import: sqlite only when used
+
+        try:
+            with Hive(context.get("hive_path")) as hive:
+                runs = hive.recall(
+                    harness_key,
+                    status=status,
+                    query=query or None,
+                    version=(
+                        context.get("harness_version_hash")
+                        if self._scope == "version"
+                        else None
+                    ),
+                    limit=max(1, min(wanted, self._limit)),
+                    exclude_run_id=context.get("run_id"),
+                )
+        except Exception as exc:  # noqa: BLE001 - history is an aid, not a dependency
+            raise ToolError(f"the run history is unavailable: {exc}") from exc
+
+        if not runs:
+            scope = "this harness version" if self._scope == "version" else "this harness"
+            hint = f" matching '{query}'" if query else ""
+            return f"no earlier {status} runs of {scope}{hint} are recorded yet"
+        return "\n\n".join(self._render(run) for run in runs)
+
+    def _render(self, run: dict[str, Any]) -> str:
+        lines = [
+            f"{run.get('run_id', '?')} · {run.get('status', '?')} · "
+            f"{run.get('finished_at') or 'unfinished'} · "
+            f"v{run.get('harness_version_hash', '?')}"
+        ]
+        task = (run.get("task") or "").strip()
+        if task:
+            lines.append(f"task: {_clip(task, _RECALL_FIELD_CHARS)}")
+        if run.get("status") == "success":
+            if self._include_output:
+                output = (run.get("output") or "").strip()
+                lines.append(
+                    f"output: {_clip(output, _RECALL_FIELD_CHARS)}"
+                    if output
+                    else "output: (not recorded)"
+                )
+        else:
+            reason = (run.get("reason") or "").strip()
+            if reason:
+                lines.append(f"reason: {_clip(reason, _RECALL_FIELD_CHARS)}")
+            for verdict in run.get("failed_verifications", []):
+                lines.append(
+                    f"rejected by {verdict.get('verifier', '?')}: "
+                    f"{_clip((verdict.get('feedback') or '').strip(), _RECALL_FIELD_CHARS)}"
+                )
+            for trigger in run.get("guardrail_triggers", []):
+                lines.append(
+                    f"guardrail {trigger.get('guardrail', '?')} "
+                    f"({trigger.get('kind', '?')}): {trigger.get('reason', '')}"
+                )
+        return "\n".join(lines)
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… [+{len(text) - limit} chars]"
+
+
 def make_builtin_tool(
     ref: BuiltinToolRef,
     base: Path,
@@ -518,6 +679,15 @@ def _register_factories() -> None:
         ),
     )
     ext.register_builtin_factory("tools", "http_get", lambda _p, ctx: HttpGetTool(ctx.base))
+    ext.register_builtin_factory(
+        "tools",
+        "recall_runs",
+        lambda p, _ctx: RecallRunsTool(
+            limit=p.get("limit", 3),
+            include_output=p.get("include_output", True),
+            scope=p.get("scope", "harness"),
+        ),
+    )
 
 
 _register_factories()

@@ -532,16 +532,16 @@ class ContextConfig(BaseModel):
     strategy: Literal["rolling", "full", "summary"] = Field(
         default="rolling", description="How message history is assembled."
     )
-    tool_results: ToolResultsConfig = Field(
-        default_factory=ToolResultsConfig,
-        description="Inline budget for tool results, and where the rest goes.",
-    )
     compaction: CompactionConfig = Field(
         default_factory=CompactionConfig, description="Compaction trigger and method."
     )
     pinned: list[str] = Field(
         default_factory=lambda: ["system_prompt", "task_statement"],
         description="Context items always kept, never compacted.",
+    )
+    tool_results: ToolResultsConfig = Field(
+        default_factory=ToolResultsConfig,
+        description="Inline budget for tool results, and where the rest goes.",
     )
 
 
@@ -1301,6 +1301,8 @@ class EvolutionConfig(BaseModel):
 # its own scorecard would make an apparent improvement meaningless.
 # `id` is identity, not behaviour: letting evolution (or a remote caller)
 # rewrite it would detach a harness from its own accumulated evidence.
+# `confinement` bounds what a spawned process may do; a harness that could
+# widen its own containment does not have one.
 ALWAYS_FROZEN: tuple[str, ...] = (
     "id",
     "guardrails",
@@ -1419,6 +1421,9 @@ class HarnessSpec(BaseModel):
     )
     loop: LoopConfig = Field(default_factory=LoopConfig, description="Agent loop policy.")
     verify: VerifyConfig = Field(default_factory=VerifyConfig, description="Verification policy.")
+    logging: LoggingConfig = Field(
+        default_factory=LoggingConfig, description="Trace/logging policy."
+    )
     confinement: ConfinementConfig = Field(
         default_factory=ConfinementConfig,
         description="OS confinement for spawned processes (frozen from evolution).",
@@ -1426,9 +1431,6 @@ class HarnessSpec(BaseModel):
     egress: EgressConfig = Field(
         default_factory=EgressConfig,
         description="What may leave in a model request (frozen from evolution).",
-    )
-    logging: LoggingConfig = Field(
-        default_factory=LoggingConfig, description="Trace/logging policy."
     )
     evolution: EvolutionConfig = Field(
         default_factory=EvolutionConfig, description="Evolution policy."
@@ -1578,16 +1580,7 @@ class HarnessSpec(BaseModel):
         refs = [*self.verify.validators]
         for playbook in self.playbooks:
             refs.extend(playbook.validators)
-        # The runtime-managed tools count as available: `switch_playbook` and
-        # `search_tools` are auto-added by the registry, and the spill readers
-        # are re-asserted by the loop while any handle is live, so naming them
-        # in a subset is redundant rather than wrong.
-        available = self.tool_names() | {
-            "switch_playbook",
-            "search_tools",
-            "read_tool_result",
-            "search_tool_result",
-        }
+        available = self.tool_names() | {"switch_playbook", "search_tools"}
         for ref in refs:
             if not (
                 isinstance(ref, BuiltinValidatorRef)
@@ -1644,7 +1637,16 @@ class HarnessSpec(BaseModel):
         # registry is built, so their names cannot be known here. Validating
         # them would mean either refusing valid specs or requiring every
         # declared server to be reachable just to parse the YAML.
-        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        # The runtime-managed tools count as available: `switch_playbook` and
+        # `search_tools` are auto-added by the registry, and the spill readers
+        # are re-asserted by the loop while any handle is live, so naming them
+        # in a subset is redundant rather than wrong.
+        available = self.tool_names() | {
+            "switch_playbook",
+            "search_tools",
+            "read_tool_result",
+            "search_tool_result",
+        }
         for playbook in self.playbooks:
             declared = {t for t in (playbook.tools or []) if not t.startswith("mcp__")}
             unknown = sorted(declared - available)

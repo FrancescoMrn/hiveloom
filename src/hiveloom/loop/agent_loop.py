@@ -220,14 +220,16 @@ class AgentLoop:
             provider,
         )
         self._control = control
-        # Where this run's evidence will land, so the runtime knows which Hive
-        # counts as this run's private state rather than the ambient default.
+        # Where this run's evidence will land, so a tool that reads run history
+        # (``recall_runs``) reads the same Hive the run will be ingested into
+        # rather than whatever the ambient default happens to be.
         self._hive_path = hive_path
         # The egress filter is built once: its patterns come from the spec, and
         # `logging.redact` feeds it too, so a pattern scrubbed from the journal
         # is also scrubbed from the provider request rather than only from the
-        # record of it. `logging.redact` is a structured RedactionConfig; egress
-        # reuses only its regex list.
+        # record of it.
+        # `logging.redact` became a structured RedactionConfig; egress reuses
+        # only its regex list, which is what it matched against before.
         self._egress = EgressFilter(spec.egress, spec.logging.redact.patterns)
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
@@ -649,7 +651,9 @@ class AgentLoop:
                     )
         # Hooks are trusted harness code, but they can patch the exact wire
         # request after the first pass above. Screen again at the actual egress
-        # point so no provider request can bypass the frozen policy.
+        # point so no provider request can bypass the frozen policy. The first
+        # pass remains intentional: it also keeps default credential matches
+        # out of the model-call journal payload.
         system, messages, tools = self._screen_egress(system, messages, tools, phase)
         response = self._router.provider.complete(
             system=system,
@@ -826,32 +830,6 @@ class AgentLoop:
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
 
-    def _result_block(self, call: Any, result: Any) -> dict[str, Any]:
-        """The context-facing form of a finalized result, spilled if oversized.
-
-        Called *after* hooks and after-guardrails, so what gets stored is the
-        accepted canonical result rather than a value something later rejected
-        or rewrote. The journal keeps the whole result either way; this only
-        decides how much of it the model carries.
-        """
-        content = result.content
-        if self._spill is not None and call.name not in spill.EXEMPT_TOOLS:
-            record = self._spill.spill(tool=call.name, content=content)
-            if record is not None:
-                content = record.preview
-                # Deferred until now: the readers cost payload on every turn,
-                # and until something is spilled there is nothing to read.
-                self._registry.activate(list(spill.TOOL_NAMES))
-                self._trace.emit(
-                    "tool_spilled",
-                    id=call.id,
-                    name=call.name,
-                    handle=record.handle,
-                    bytes=record.total_bytes,
-                    omitted_bytes=record.omitted_bytes,
-                )
-        return {"tool_use_id": call.id, "content": content, "is_error": result.is_error}
-
     def _dispatch_parallel(self, response: ModelResponse) -> tuple[str | None, str | None]:
         plan: list[tuple[Any, str | None]] = []
         for call in response.tool_calls:
@@ -899,6 +877,32 @@ class AgentLoop:
             results.append(self._result_block(call, result))
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
+
+    def _result_block(self, call: Any, result: Any) -> dict[str, Any]:
+        """The context-facing form of a finalized result, spilled if oversized.
+
+        Called *after* hooks and after-guardrails, so what gets stored is the
+        accepted canonical result rather than a value something later rejected
+        or rewrote. The journal keeps the whole result either way; this only
+        decides how much of it the model carries.
+        """
+        content = result.content
+        if self._spill is not None and call.name not in spill.EXEMPT_TOOLS:
+            record = self._spill.spill(tool=call.name, content=content)
+            if record is not None:
+                content = record.preview
+                # Deferred until now: the readers cost payload on every turn,
+                # and until something is spilled there is nothing to read.
+                self._registry.activate(list(spill.TOOL_NAMES))
+                self._trace.emit(
+                    "tool_spilled",
+                    id=call.id,
+                    name=call.name,
+                    handle=record.handle,
+                    bytes=record.total_bytes,
+                    omitted_bytes=record.omitted_bytes,
+                )
+        return {"tool_use_id": call.id, "content": content, "is_error": result.is_error}
 
     def _preflight_call(self, call: Any) -> tuple[str, str] | None:
         """Guardrails then hooks for one call. ``("halt", r)``/``("block", r)``/None."""
@@ -1245,6 +1249,14 @@ class AgentLoop:
             "input": self._run_input,
             "harness_dir": str(self._base),
             "run_id": self._run_id,
+            # Which harness, at which version, writing to which Hive. A tool
+            # that reads the harness's own history needs all three to scope the
+            # lookup, and taking them from here rather than from tool input is
+            # what keeps the scope out of the model's reach.
+            "harness_id": self._spec.id,
+            "harness_name": self._spec.name,
+            "harness_version_hash": self._trace.version_hash,
+            "hive_path": str(self._hive_path) if self._hive_path else None,
             "context": self._context_values,
             # A snapshot of what the run has produced so far. This is what
             # makes a playbook exit gate expressible ("you entered targeting

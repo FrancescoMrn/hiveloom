@@ -55,6 +55,9 @@ def normalize_feedback(feedback: str) -> str:
 # search a run, not enough to become a shadow copy of the journal.
 _TASK_CHARS = 2000
 _FRICTION_SUMMARY_CHARS = 500
+#: Cap on the stored final output. The journal holds it in full; the Hive keeps
+#: enough of it to serve as a worked example, not a second copy of every run.
+_OUTPUT_CHARS = 4000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -75,7 +78,8 @@ CREATE TABLE IF NOT EXISTS runs (
     parent_run_id TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
-    task TEXT
+    task TEXT,
+    output TEXT
 );
 CREATE TABLE IF NOT EXISTS verifications (
     run_id TEXT,
@@ -329,6 +333,7 @@ class Hive:
             ("effective_model", "TEXT"),
             ("execution_fingerprint", "TEXT"),
             ("trace_pruned_at", "TEXT"),
+            ("output", "TEXT"),
         ):
             if column not in existing:
                 self._alter_runs(
@@ -561,6 +566,7 @@ class Hive:
             "effective_provider": "",
             "effective_model": "",
             "execution_fingerprint": "",
+            "output": None,
         }
         verifications: list[tuple] = []
         triggers: list[tuple] = []
@@ -615,6 +621,9 @@ class Hive:
                             json.dumps(step.get("violations") or []),
                         )
                     )
+                output = payload.get("output")
+                if isinstance(output, str) and output:
+                    row["output"] = output[:_OUTPUT_CHARS]
             elif etype == "verification_result":
                 verifications.append(
                     (
@@ -661,13 +670,13 @@ class Hive:
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
             "parent_run_id, forked_at_seq, model_path, task, requested_provider, "
             "requested_model, effective_provider, effective_model, execution_fingerprint, "
-            "trace_pruned_at) "
+            "trace_pruned_at, output) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
             ":parent_run_id, :forked_at_seq, :model_path, :task, :requested_provider, "
             ":requested_model, :effective_provider, :effective_model, "
-            ":execution_fingerprint, :trace_pruned_at)",
+            ":execution_fingerprint, :trace_pruned_at, :output)",
             row,
         )
         cur.executemany(
@@ -1069,6 +1078,76 @@ class Hive:
             entry["guardrail_triggers"] = [dict(t) for t in triggers]
             result.append(entry)
         return result
+
+    def recall(
+        self,
+        harness_key: str,
+        *,
+        status: str = "success",
+        query: str | None = None,
+        version: str | None = None,
+        limit: int = 3,
+        exclude_run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Prior runs of one harness, newest first — worked examples or pitfalls.
+
+        This is the read behind the ``recall_runs`` tool, so it is deliberately
+        narrow: one harness (never another harness's evidence), completed runs
+        only, and the capped ``task``/``output`` text the ingest already keeps
+        rather than anything read back out of a journal file.
+
+        ``status`` is ``success``, ``failed`` (anything else that finished), or
+        ``any``. Failed rows carry their failing verifier feedback and any
+        guardrail triggers, which is the part that makes a failure instructive.
+        """
+        where = ["harness_key=?", "finished_at IS NOT NULL"]
+        params: list[Any] = [harness_key]
+        if status == "success":
+            where.append("status='success'")
+        elif status == "failed":
+            where.append("status != 'success'")
+        elif status != "any":
+            raise ValueError(f"unknown status filter '{status}' (success, failed, any)")
+        if version:
+            where.append("harness_version_hash=?")
+            params.append(version)
+        if exclude_run_id:
+            where.append("run_id != ?")
+            params.append(exclude_run_id)
+        if query and query.strip():
+            escaped = (
+                query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            where.append("(task LIKE ? ESCAPE '\\' OR output LIKE ? ESCAPE '\\')")
+            params += [f"%{escaped}%", f"%{escaped}%"]
+
+        rows = self._conn.execute(
+            f"SELECT * FROM runs WHERE {' AND '.join(where)} "  # noqa: S608
+            "ORDER BY finished_at DESC LIMIT ?",
+            (*params, max(1, limit)),
+        ).fetchall()
+
+        recalled: list[dict[str, Any]] = []
+        for row in rows:
+            entry = dict(row)
+            if entry.get("status") != "success":
+                entry["failed_verifications"] = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        "SELECT verifier, feedback FROM verifications "
+                        "WHERE run_id=? AND passed=0 AND feedback != ''",
+                        (entry["run_id"],),
+                    )
+                ]
+                entry["guardrail_triggers"] = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        "SELECT guardrail, kind, reason FROM guardrail_triggers WHERE run_id=?",
+                        (entry["run_id"],),
+                    )
+                ]
+            recalled.append(entry)
+        return recalled
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         """Fetch one run with verification, guardrail, friction, and step receipts."""
