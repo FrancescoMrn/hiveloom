@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hiveloom import construct, runner
+from hiveloom import __version__, construct, runner
 from hiveloom.models.fake import FakeModelProvider, text_response
 
 
@@ -45,7 +45,7 @@ def test_clean_first_pass_has_complete_execution_receipt(tmp_path: Path):
     assert execution.schema_version == "0.2.0"
     assert len(execution.behavior_hash) == 12
     assert len(execution.execution_fingerprint) == 64
-    assert execution.hiveloom_version == "1.0.0"
+    assert execution.hiveloom_version == __version__
     assert execution.requested_provider == "claude"
     assert execution.requested_model == "claude-haiku-4-5"
     assert execution.resolved_provider == "claude"

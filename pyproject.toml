@@ -1,6 +1,9 @@
 [project]
 name = "hiveloom"
-version = "1.0.0"
+# Read from hiveloom.__version__, which `hiveloom package` stamps into every
+# harness lock. Two hand-maintained copies of one number drift, and the way
+# that failure shows up is a wheel published under a version it is not.
+dynamic = ["version"]
 description = "Generate, run, and evolve agent harnesses on the fly so small models reliably perform company tasks."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -54,6 +57,9 @@ hiveloom = "hiveloom.cli:app"
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/hiveloom/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hiveloom"]
