@@ -79,7 +79,10 @@ before spending model budget. Legacy strings keep their existing behavior.
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
-  (allowlist-only, disabled without one), `http_get`.
+  (allowlist-only; variable file-reading arguments need an OS sandbox),
+  `http_get` (declare repeatable `hosts`; new hosts otherwise need an
+  interactive operator decision and fail closed in agent/JSON runs).
+  Add them with repeated `--host` flags; never hand-edit the tool entry.
 - **Validators** (the reward signal — always add at least one):
   `output_schema --schema-file`, `regex_match --pattern`, `file_exists --path`,
   `command_succeeds --command`, `grounded_references --output-path

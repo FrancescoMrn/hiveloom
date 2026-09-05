@@ -64,12 +64,24 @@ def test_a_timeout_kills_the_whole_process_tree(tmp_path: Path):
         # group-wide, which is the whole reason the spawn gets its own session.
         ["/bin/sh", "-c", f"(sleep 4; touch {marker}) & sleep 4"],
         cwd=tmp_path,
-        config=ConfinementConfig(timeout_seconds=1),
+        config=ConfinementConfig(mode="off", timeout_seconds=1),
     )
     assert result.timed_out
     assert time.monotonic() - started < 3
     time.sleep(4)
     assert not marker.exists()
+
+
+def test_descendants_holding_pipes_share_the_same_deadline(tmp_path: Path):
+    started = time.monotonic()
+    result = run_confined(
+        ["/bin/sh", "-c", "sleep 5 &"],
+        cwd=tmp_path,
+        config=ConfinementConfig(mode="off", timeout_seconds=1),
+    )
+
+    assert result.timed_out
+    assert time.monotonic() - started < 2
 
 
 def test_runaway_output_is_bounded_in_memory_and_on_disk(tmp_path: Path):
@@ -92,13 +104,13 @@ def test_a_gigabyte_of_output_costs_neither_memory_nor_disk(tmp_path: Path):
 
     before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     result = run_confined(
-        ["/bin/sh", "-c", "yes flooding | head -c 200000000"],
+        ["/bin/sh", "-c", "yes flooding | head -c 1000000000"],
         cwd=tmp_path,
         config=ConfinementConfig(max_output_bytes=2000, timeout_seconds=120),
     )
     after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
-    assert result.discarded_bytes > 100_000_000
+    assert result.discarded_bytes > 999_000_000
     assert len(result.stdout.encode()) <= 2100
     # The excess is drained and dropped, never buffered or spooled to a file.
     assert after - before < 32 * 1024  # KiB on Linux
@@ -264,6 +276,7 @@ def test_the_cli_reports_what_this_machine_can_enforce(tmp_path: Path):
     assert result.exit_code == 0
     assert '"backend"' in result.stdout
     assert '"mode": "auto"' in result.stdout
+    assert '"safe_for_untrusted_input": true' in result.stdout
 
 
 def test_the_human_cli_makes_an_auto_fallback_visible(tmp_path: Path, monkeypatch):
@@ -572,7 +585,23 @@ def test_the_journal_states_what_was_enforced_not_where(tmp_path: Path):
         "network_isolated",
     }
     assert payload["egress"]["policy"] == "redact"
+    boundary = payload["prompt_injection_boundary"]
+    assert boundary["safe_for_untrusted_input"]
+    assert boundary["provider_egress_active"]
     # A journal is shareable; the layout of the machine that produced it is not
     # part of the run.
     assert str(tmp_path) not in json.dumps(facts)
     assert isinstance(facts["private_paths"], int)
+
+
+def test_diagnostic_does_not_claim_safety_when_egress_is_disabled(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="unsafe", task="Do a thing.")
+    construct.set_field(directory, "egress.mode", '"off"')
+
+    result = cli.invoke(app, ["confinement", str(directory), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert not payload["provider_egress_active"]
+    assert not payload["prompt_injection_boundary"]["safe_for_untrusted_input"]

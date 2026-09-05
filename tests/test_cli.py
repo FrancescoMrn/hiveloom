@@ -568,6 +568,32 @@ def test_add_playbook_rejects_a_duplicate_name(tmp_path: Path):
     assert "already listed" in json.loads(result.stdout)["error"]
 
 
+def test_add_http_tool_can_preapprove_hosts(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="http", task="Fetch a document.")
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "tool",
+            "--builtin",
+            "http_get",
+            "--host",
+            "example.com",
+            "--host",
+            "*.example.org",
+            "--dir",
+            str(directory),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    tool = next(ref for ref in load_spec(directory).tools if ref.builtin == "http_get")
+    assert tool.params()["hosts"] == ["example.com", "*.example.org"]
+
+
 def test_version_flag_reports_the_installed_version():
     """`hiveloom --version` is the first command the install docs tell a new
     user to run, so it has to exist and print something parseable."""

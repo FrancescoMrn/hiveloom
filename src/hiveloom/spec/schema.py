@@ -971,7 +971,8 @@ class ConfinementConfig(BaseModel):
         default=1_048_576,
         gt=0,
         description=(
-            "Most stdout/stderr retained from one spawn. Output is drained "
+            "Most bytes retained from each of stdout and stderr for one spawn. "
+            "Output is drained "
             "through bounded head/tail collectors, so a command that writes "
             "without bound cannot grow the runtime's memory or disk usage."
         ),
@@ -992,9 +993,9 @@ class ConfinementConfig(BaseModel):
 class EgressConfig(BaseModel):
     """What may leave this machine in a model request. Frozen from evolution.
 
-    Defence in depth behind path isolation: pattern matching cannot recognise
-    arbitrary sensitive text, so this catches credentials, not secrets in
-    general. See :mod:`hiveloom.egress`.
+    Defence in depth behind capability and destination scoping: pattern matching
+    cannot recognise arbitrary sensitive text, so this catches credentials and
+    explicitly configured data, not secrets in general. See :mod:`hiveloom.egress`.
     """
 
     model_config = ConfigDict(extra="forbid")

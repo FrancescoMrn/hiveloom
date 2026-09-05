@@ -468,12 +468,18 @@ def add_tool(
     builtin: str | None = None,
     code: str | None = None,
     description: str | None = None,
+    *,
+    hosts: list[str] | None = None,
 ) -> HarnessSpec:
     """Add a tool. Exactly one of ``builtin`` / ``code`` must be given."""
     directory = Path(directory)
     entry, created = _make_ref(
         directory, "tool", builtin, code, description, require_description=True
     )
+    if hosts and builtin != "http_get":
+        raise SpecError("hosts may only be declared for the http_get builtin")
+    if builtin == "http_get" and hosts:
+        entry["hosts"] = list(hosts)
     raw = load_raw(directory)
     raw.setdefault("tools", []).append(entry)
     return _commit(directory, raw, created, "add_tool", {"builtin": builtin, "code": code})

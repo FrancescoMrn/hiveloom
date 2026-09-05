@@ -23,6 +23,9 @@ the library; humans should start at [README.md](README.md).
    `hiveloom extensions` — installed packs may have widened the catalog. MCP
    tools are the named exception: servers expose them dynamically at run time,
    so inspect them with `hiveloom mcp list-tools`.
+   `http_get` destinations are capabilities too: declare repeatable hosts in
+   the tool's `hosts` parameter. An undeclared host needs an interactive
+   operator decision and is denied in non-interactive/`--json` runs.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
    `egress`, `confinement`, `extensions`, `hooks`, `mcp_servers`,
    `evolution.auto_propose`, `evolution.trace_excerpts`, and

@@ -8,9 +8,9 @@ injected instruction would ask a tool to fetch and hand back to a remote model.
 
 Before this module the answer lived in three places — ``file_read``'s path
 check, the packager's exclusion list, and the shell tool's own idea of what to
-refuse — and three definitions of one boundary drift. :func:`runtime_private_paths`
-is now the single resolver: absolute paths, for the callers that mask or refuse
-them, derived from the same facts the packager uses.
+refuse — and three definitions of one boundary drift. :class:`RunBoundary` is
+now the single per-run resolver, created after caller overrides are known and
+shared by everything that masks, refuses, writes, or reports these paths.
 
 Two consumers, two enforcement mechanisms:
 
@@ -28,6 +28,7 @@ filesystem does not.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,101 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: Credential files inside a harness. ``.env.example`` and friends are checked
 #: in on purpose and carry no secrets — the packager ships them too.
 ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
+
+
+@dataclass(frozen=True)
+class RunBoundary:
+    """The effective runtime-private filesystem boundary for one run.
+
+    This object is resolved only after caller overrides have been applied and
+    is then passed to every tool, verifier, trace writer and diagnostic.  It
+    prevents a runtime ``trace_dir``/``hive_path`` from becoming a second,
+    less-protected interpretation of the spec.
+
+    ``private_paths`` is deliberately a method rather than a frozen list:
+    credential files are discovered again immediately before each access or
+    spawn, so an ``.env`` created during a run is private straight away.
+    """
+
+    base: Path
+    trace_dir: Path
+    spill_dir: Path
+    hive_path: Path
+    home: Path
+    trust_store: Path
+
+    @classmethod
+    def resolve(
+        cls,
+        base: str | Path,
+        spec: HarnessSpec | None = None,
+        *,
+        trace_dir: str | Path | None = None,
+        hive_path: str | Path | None = None,
+    ) -> RunBoundary:
+        """Resolve the actual paths this run will use, including overrides."""
+        from hiveloom.logging.hive import default_db_path
+        from hiveloom.paths import hiveloom_home
+        from hiveloom.trust import trust_store_path
+
+        root = Path(base).expanduser().resolve()
+        if trace_dir is not None:
+            traces = Path(trace_dir).expanduser()
+            # Preserve the SDK/CLI override contract: like Path.resolve(), an
+            # explicit relative override is relative to the caller's cwd. The
+            # trace_dir inside the spec remains relative to the harness.
+            traces = traces if traces.is_absolute() else Path.cwd() / traces
+            traces = traces.resolve()
+        elif spec is not None:
+            traces = resolve_trace_dir(root, spec.logging.trace_dir).resolve()
+        else:
+            traces = (root / ".hiveloom" / "traces").resolve()
+
+        database = Path(hive_path) if hive_path is not None else default_db_path()
+        database = database.expanduser()
+        database = database if database.is_absolute() else Path.cwd() / database
+        database = database.resolve()
+        home = hiveloom_home().expanduser().resolve()
+        trust_store = trust_store_path().expanduser().resolve()
+        return cls(
+            base=root,
+            trace_dir=traces,
+            spill_dir=traces / "spill",
+            hive_path=database,
+            home=home,
+            trust_store=trust_store,
+        )
+
+    @property
+    def trace_dir_relative(self) -> Path | None:
+        """Trace directory relative to the harness, when it is inside it."""
+        try:
+            return self.trace_dir.relative_to(self.base)
+        except ValueError:
+            return None
+
+    def private_paths(self) -> list[Path]:
+        """Return the current private set, re-discovering credential files."""
+        database = self.hive_path
+        candidates = [
+            self.base / ".hiveloom",
+            self.trace_dir,
+            self.spill_dir,
+            self.home,
+            self.trust_store,
+            database,
+            *(
+                database.with_name(database.name + suffix)
+                for suffix in ("-wal", "-shm", "-journal")
+            ),
+            *env_files(self.base),
+        ]
+        resolved: list[Path] = []
+        for path in candidates:
+            candidate = path.resolve()
+            if candidate not in resolved:
+                resolved.append(candidate)
+        return resolved
 
 
 def env_files(base: str | Path) -> list[Path]:
@@ -62,6 +158,7 @@ def runtime_private_paths(
     base: str | Path,
     spec: HarnessSpec | None = None,
     *,
+    trace_dir: str | Path | None = None,
     hive_path: str | Path | None = None,
 ) -> list[Path]:
     """Every absolute path holding this run's private state, existing or not.
@@ -74,41 +171,9 @@ def runtime_private_paths(
     location under ``.hiveloom`` is already covered. ``hive_path`` names a
     Hive outside the user directory, as an embedding caller may pass.
     """
-    from hiveloom.logging.hive import default_db_path
-    from hiveloom.paths import hiveloom_home
-    from hiveloom.trust import trust_store_path
-
-    root = Path(base).resolve()
-    paths: list[Path] = [root / ".hiveloom"]
-
-    if spec is not None:
-        traces = resolve_trace_dir(root, spec.logging.trace_dir)
-        paths += [traces, traces / "spill"]
-
-    # The user-level directory holds the trust store, the model declarations
-    # and — by default — the Hive. Named explicitly rather than left to
-    # `hide_home`, because $HIVELOOM_HOME may point anywhere.
-    paths.append(hiveloom_home())
-    paths.append(trust_store_path())
-
-    database = Path(hive_path) if hive_path is not None else default_db_path()
-    paths.append(database)
-    # SQLite's write-ahead log and shared-memory files hold committed rows that
-    # are not yet in the main database file. Masking only the database would
-    # leave the most recent runs readable beside it.
-    paths += [database.with_name(database.name + suffix) for suffix in ("-wal", "-shm", "-journal")]
-
-    paths += _env_files(root)
-
-    resolved: list[Path] = []
-    for path in paths:
-        # Resolved, so a symlink into private state is masked and refused by
-        # its target rather than by the name that points at it.
-        candidate = path if path.is_absolute() else (root / path)
-        candidate = candidate.resolve()
-        if candidate not in resolved:
-            resolved.append(candidate)
-    return resolved
+    return RunBoundary.resolve(
+        base, spec, trace_dir=trace_dir, hive_path=hive_path
+    ).private_paths()
 
 
 def is_private(

@@ -81,30 +81,45 @@ objectives rather than raw failure counts.
   control-plane, and sync references, all readable from an installed wheel
   without a repository checkout.
 
-- **A single definition of runtime-private state, enforced everywhere.**
-  `hiveloom.private.runtime_private_paths` resolves `.hiveloom`, the trace and
-  spill directories (wherever configured), the Hive and its WAL sidecars, the
-  trust store, `$HIVELOOM_HOME` and `.env` files; the file tools, the shell
-  tool and the sandbox all use that one set instead of three drifting copies.
+- **A single effective definition of runtime-private state, enforced
+  everywhere.** A per-run `RunBoundary`, resolved after SDK/CLI path overrides,
+  names `.hiveloom`, the actual trace and spill directories, the actual Hive
+  and its WAL sidecars, the trust store, `$HIVELOOM_HOME` and `.env` files; the
+  file tools, shell, validators, trace writer, spill store, sandbox and
+  diagnostics all use it instead of parallel interpretations of the spec.
   Spawned processes get directories masked with empty mounts and files with
   inaccessible ones, applied to resolved targets so a symlink into private
   state leads to the mask rather than around it.
 - **A spill handle is no longer a capability.** Each run writes to its own
   `spill/<run_id>/` directory (0700, objects created exclusively at 0600) and
   resolves handles through a per-run authorization map. Quoting a handle in the
-  conversation no longer grants access to it — a resumed fork inherits an
-  explicit list that `hiveloom fork` writes from the parent's hash-verified
-  journal, not from the transcript.
-- **A provider-egress safeguard.** A new frozen `egress` section screens the
-  exact request before it leaves for the model provider: `logging.redact`
-  patterns now apply on the way out as well as to the journal, well-known
+  conversation no longer grants access to it — a resumed fork inherits a
+  size/hash-bound manifest written from the parent's verified chain, not from
+  the transcript. Unchained historical journals can still be forked as context
+  but grant no spill bytes, and objects are re-verified when read.
+- **Outbound safeguards.** A new frozen `egress` section screens the exact
+  post-hook request before it leaves for the model provider:
+  `logging.redact` keys, paths and patterns apply on the way out as well as to
+  the journal (including dictionary keys), well-known
   credential shapes are detected by default, and matches are redacted
   (`mode: redact`) or the request is refused (`mode: block`). Findings are
   journalled as pattern names and counts as `provider_egress_redacted` /
-  `provider_egress_blocked` — never the matched text.
+  `provider_egress_blocked` — never the matched text. HTTP/MCP tool arguments
+  pass through the same screen and block on a match. `http_get` destinations
+  are pre-approved with `hosts` or receive an interactive run-scoped operator
+  decision; non-interactive runs deny undeclared hosts, and redirects cannot
+  escape the approved set.
+- **An opinionated portable shell boundary.** OS isolation remains optional,
+  but its absence is not permission for model-controlled filesystem traversal:
+  variable arguments for file-reading commands run only behind a sandbox.
+  Without one, harmless `echo`/`printf` arguments and exact author-declared
+  argv remain available, except recursive walks across runtime-private state.
+  Subprocess deadlines now cover descendants that keep output pipes open after
+  their direct parent exits.
 - **`hiveloom confinement --json`** reports outcomes rather than intentions:
   `filesystem_isolated`, `runtime_state_hidden`, `network_isolated`,
-  `home_hidden`, `provider_egress_policy`. The same resolved facts go into
+  `home_hidden`, truthful egress activity, and an inspectable prompt-injection
+  blast-radius summary. The same resolved facts go into
   `run_started`, with no absolute paths — a journal is shareable, and the
   layout of the machine that produced it is not part of the run.
 

@@ -39,9 +39,12 @@ cannot disagree about where a fork goes.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,7 +52,7 @@ from typing import Any
 
 import yaml
 
-from hiveloom.context.spill import handles_in_messages
+from hiveloom.context.spill import _write_private, handles_in_messages
 from hiveloom.errors import SpecError
 from hiveloom.logging.journal import (
     ContextState,
@@ -296,7 +299,9 @@ def find_harness_source(trace_path: str | Path) -> Path | None:
     return None
 
 
-def _spilled_in_journal(events: list[dict[str, Any]], until_seq: int) -> set[str]:
+def _spilled_in_journal(
+    events: list[dict[str, Any]], until_seq: int
+) -> dict[str, dict[str, Any]]:
     """Handles the parent run is *recorded* as having minted, up to the fork point.
 
     The journal is hash-chained and verified before this runs, so it is the one
@@ -304,11 +309,41 @@ def _spilled_in_journal(events: list[dict[str, Any]], until_seq: int) -> set[str
     is not: it is model-visible, and a transcript that mentions a handle must
     never be what grants access to it.
     """
-    return {
-        str(event.get("payload", {}).get("handle", ""))
-        for event in events
-        if event.get("type") == "tool_spilled" and event.get("seq", 0) <= until_seq
-    }
+    minted: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if event.get("type") != "tool_spilled" or event.get("seq", 0) > until_seq:
+            continue
+        payload = event.get("payload", {})
+        handle = str(payload.get("handle", ""))
+        digest = str(payload.get("sha256", ""))
+        size = payload.get("bytes")
+        if re.fullmatch(r"tr_[0-9a-f]{16}", handle) and re.fullmatch(
+            r"[0-9a-f]{64}", digest
+        ) and isinstance(size, int) and size >= 0:
+            minted[handle] = {"handle": handle, "sha256": digest, "bytes": size}
+    return minted
+
+
+def _verified_spill_bytes(path: Path, manifest: dict[str, Any]) -> bytes | None:
+    """Read one spill without following symlinks and verify its journal digest."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != manifest["bytes"]:
+            return None
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            raw = stream.read()
+    except OSError:
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return raw if hashlib.sha256(raw).hexdigest() == manifest["sha256"] else None
 
 
 def _carry_spill(
@@ -316,8 +351,8 @@ def _carry_spill(
     snapshot: dict[str, Any],
     target: Path,
     state: ContextState,
-    minted: set[str],
-) -> tuple[list[str], list[str]]:
+    minted: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Copy the spilled results this fork is entitled to inherit.
 
     Two conditions, both required: the folded conversation still quotes the
@@ -343,24 +378,32 @@ def _carry_spill(
         (configured if configured.is_absolute() else target / configured) / "spill" / INHERITED_DIR
     )
 
-    inherited: list[str] = []
+    inherited: list[dict[str, Any]] = []
     missing: list[str] = []
     for handle in quoted:
         matches = list(source.glob(f"*/{handle}.txt")) + [source / f"{handle}.txt"]
-        body = next((path for path in matches if path.is_file()), None)
-        if body is None:
+        manifest = minted[handle]
+        verified = next(
+            (
+                (path, raw)
+                for path in matches
+                if (raw := _verified_spill_bytes(path, manifest)) is not None
+            ),
+            None,
+        )
+        if verified is None:
             missing.append(handle)
             continue
         try:
             destination.mkdir(parents=True, exist_ok=True)
             destination.chmod(0o700)
-            shutil.copy2(body, destination / body.name)
-            (destination / body.name).chmod(0o600)
-            meta = body.with_suffix(".json")
-            if meta.is_file():
-                shutil.copy2(meta, destination / meta.name)
-                (destination / meta.name).chmod(0o600)
-            inherited.append(handle)
+            body, raw = verified
+            _write_private(destination / body.name, raw)
+            _write_private(
+                destination / f"{handle}.json",
+                json.dumps(manifest, indent=2).encode("utf-8"),
+            )
+            inherited.append(manifest)
         except OSError:
             missing.append(handle)
     warnings: list[str] = []
@@ -436,9 +479,11 @@ def create_fork(
     override = _apply_model_override(target, model, model_provider)
     version_hash = _fork_version_hash(target)
 
-    inherited, spill_warnings = _carry_spill(
-        trace_path, snapshot, target, state, _spilled_in_journal(events, point.seq)
-    )
+    # An unchained journal may still be forked as historical context, but it
+    # cannot grant access to files. Only a verified chain can authorize spill
+    # bytes, and every authorization is bound to their digest and size.
+    minted = _spilled_in_journal(events, point.seq) if chain.chained else {}
+    inherited, spill_warnings = _carry_spill(trace_path, snapshot, target, state, minted)
     warnings.extend(spill_warnings)
 
     envelope = events[0]
@@ -454,7 +499,8 @@ def create_fork(
         # The manifest of spilled results this fork may read back. Authority
         # travels as an explicit list written from the verified parent journal,
         # never as "a handle appears in the transcript".
-        "spill_handles": inherited,
+        "spill_handles": [item["handle"] for item in inherited],
+        "spill_manifest": inherited,
     }
     if override is not None:
         lineage["model_override"] = override

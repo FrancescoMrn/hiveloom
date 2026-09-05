@@ -41,9 +41,15 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 
 List them with `hiveloom catalog <tools|guardrails|validators|policies|compaction|hooks>`.
 
+For an autonomous HTTP reader, pre-approve destinations transactionally rather
+than editing YAML: `hiveloom add tool --builtin http_get --host example.com
+--host '*.example.org' --json`. Omit `--host` to require an interactive decision
+for each new hostname during a plain CLI run.
+
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
-  (allowlist-only, disabled without one), `http_get`, `load_skill` (reads a
-  declared skill in full — progressive disclosure without a filesystem reader),
+  (allowlist-only, disabled without one), `http_get` (declared hosts or a
+  run-time operator decision), `load_skill` (reads a declared skill in full —
+  progressive disclosure without a filesystem reader),
   `recall_runs` (this harness's own prior runs, from the Hive).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
@@ -279,7 +285,7 @@ confinement:
   hide_home: true         # keep the user's home directory out of reach
   env_passthrough: []     # extra environment variables to forward
   timeout_seconds: 30     # wall-clock ceiling for a `shell` call
-  max_output_bytes: 1048576
+  max_output_bytes: 1048576 # retained per stream (stdout and stderr)
   max_memory_mb: 2048     # 0 = unlimited
   max_processes: 0        # RLIMIT_NPROC; per-user, so 0 unless hiveloom owns the uid
 ```
@@ -308,9 +314,10 @@ runs in is always bound in, and hiding home does not undo that.
 
 ### Runtime-private state
 
-One resolver — `hiveloom.private.runtime_private_paths` — decides what counts as
-the runtime's own state, and every builtin that reads files or starts a process
-uses it, so the definition cannot drift between them:
+One effective `RunBoundary` decides what counts as the runtime's own state after
+SDK/CLI `trace_dir` and `hive_path` overrides are known. Every builtin, verifier,
+trace writer, spill store, and diagnostic uses that same object, so an override
+cannot create a second, less-protected interpretation of the spec:
 
 - `.hiveloom/` and the configured trace directory (wherever it is, inside the
   harness or out), which hold the journal — every tool result, in full;
@@ -328,7 +335,11 @@ so a symlink pointing into private state leads to the mask, not around it. On
 every platform, the `shell` tool also refuses *arguments* that resolve into
 those paths. That catches the direct form (`grep secret .hiveloom/traces`) but
 not a recursive walk that never names the directory; only the optional kernel
-mask stops that class of read.
+mask stops that class of read. Therefore a shell rule that accepts arbitrary
+extra arguments for a file-reading command is executable only when that mask is
+active. Without a backend the model may use harmless `echo`/`printf` arguments,
+or exact argv declared by the harness author, but cannot choose traversal paths;
+an exact recursive walk across runtime-private state is refused too.
 
 ### Modes, and what happens without a backend
 
@@ -338,8 +349,8 @@ mask stops that class of read.
   with the portable controls. A missing backend never blocks the run.
 - **`require`** — refuses to spawn anything without a sandbox, `shell` or not.
 - **`off`** — skips backend discovery: portable controls only, with shell
-  private-path argument refusal still applied. (`off` is a YAML boolean
-  unquoted; the spec takes it either way.)
+  private-path and variable-reader restrictions still applied. (`off` is a YAML
+  boolean unquoted; the spec takes it either way.)
 
 The baseline is a scrubbed environment, resource limits and a timeout. It is
 **not** filesystem isolation, and nothing in the runtime describes it as such.
@@ -357,7 +368,12 @@ hiveloom confinement <harness> --json
   "runtime_state_hidden": true,
   "network_isolated": true,
   "home_hidden": true,
-  "provider_egress_policy": "redact"
+  "provider_egress_policy": "redact",
+  "provider_egress_active": true,
+  "prompt_injection_boundary": {
+    "safe_for_untrusted_input": true,
+    "http_undeclared_hosts_require_approval": true
+  }
 }
 ```
 
@@ -393,17 +409,25 @@ instead. Both journal a `provider_egress_redacted` / `provider_egress_blocked`
 event carrying pattern names and counts — never the matched text, because a
 safeguard that recorded what it caught would be the leak it exists to prevent.
 
-Two sources of patterns: the harness's own `logging.redact` (so a pattern that
-scrubs the journal also scrubs the request — previously it protected the record
-of a leak rather than preventing it) and well-known credential shapes (private
-key blocks, AWS keys, Anthropic/OpenAI/GitHub/Slack/Google tokens, JWTs, bearer
-headers).
+Two sources of rules: the harness's complete `logging.redact` policy (recursive
+keys, structured paths, and regex patterns) and well-known credential shapes
+(private key blocks, AWS keys, Anthropic/OpenAI/GitHub/Slack/Google tokens,
+JWTs, bearer headers). Dictionary keys are screened as well as values. The
+recorded request checksum is calculated after hooks and screening, so it
+describes what actually went on the wire.
+
+External tool calls are outbound boundaries too. Arguments to `http_get` and
+MCP tools pass through the same screen; a match blocks the action rather than
+silently rewriting it. `http_get` also scopes destinations: `hosts` pre-approves
+exact hosts or `*.example.com` subdomains, while an undeclared host requires a
+one-run operator decision. A non-interactive caller that supplies no approval
+callback denies it, and every redirect is checked against the resulting set.
 
 This is defence in depth, not a prompt-injection detector. Pattern matching
 cannot recognise arbitrary sensitive text — a previous run's customer data is
-not shaped like a credential. Prefer narrow typed tools for untrusted input;
-if a harness exposes a general-purpose shell and private runtime state must be
-unreachable, use `confinement.mode: require`. `egress` is frozen from evolution.
+not shaped like a credential. The primary controls remain narrow typed tools,
+declared destinations, and the shell's portable restrictions; OS isolation adds
+defence in depth where available. `egress` is frozen from evolution.
 
 ## Playbooks
 
@@ -563,11 +587,12 @@ schema --json` and validate its components with `hiveloom eval validate`; see
    timeout, bounded output and resource limits. OS isolation is opportunistic
    in `auto`, mandatory only in `require`, and skipped in `off`; the reported
    confinement facts never describe the portable baseline as isolation.
-8. A spill handle grants no authority on its own: it resolves only in the run
-   that minted it, or in a fork that inherited it explicitly from a verified
-   parent journal.
-9. Outgoing provider requests are screened by `egress` before they leave.
-7. `recall_runs` is scoped to the running harness from the run context, so no
+7. A spill handle grants no authority on its own: inheritance requires a
+   verified parent journal and a size/hash-bound manifest; unchained journals
+   may fork as context but grant no spill bytes.
+8. Provider requests and external tool arguments are screened before they leave.
+9. New `http_get` hosts require an operator decision unless pre-approved.
+10. `recall_runs` is scoped to the running harness from the run context, so no
    tool input can widen it to another harness's evidence.
 
 ## The harness directory

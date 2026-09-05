@@ -13,6 +13,7 @@ import errno
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from hiveloom.models.provider import ModelProvider
 from hiveloom.models.router import ModelRouter
 from hiveloom.package import resolve_trace_dir
 from hiveloom.playbooks import PlaybookManager, load_playbooks
+from hiveloom.private import RunBoundary
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
 from hiveloom.tools.registry import build_registry
@@ -175,7 +177,8 @@ def dry_run(
         spec, model_override=model_override, provider_override=provider_override
     )
     resolve_hooks(spec, base)
-    registry = build_registry(spec, base)
+    run_boundary = RunBoundary.resolve(base, spec)
+    registry = build_registry(spec, base, run_boundary=run_boundary)
     try:
         history, run_input = _resolve_conversation(
             base, input_value, conversation, literal_input=literal_input
@@ -272,6 +275,7 @@ def run_harness(
     resume_messages: list[dict[str, Any]] | None = None,
     lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
+    approve_network: Callable[[str], bool] | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -322,6 +326,11 @@ def run_harness(
     :mod:`hiveloom.fork`. ``lineage`` is the accompanying provenance record
     (parent run id, journal seq) written into ``run_started``.
 
+    ``approve_network`` is the run-scoped decision point for an undeclared
+    ``http_get`` hostname. It receives only the normalized hostname and returns
+    true to allow that host for the rest of this run. Without a callback the
+    request fails closed; interactive CLI runs supply the operator prompt.
+
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
     untrusted caller (``hiveloom serve`` and the HTTP control plane): over
@@ -354,7 +363,12 @@ def run_harness(
         history, run_input = _resolve_conversation(
             base, input_value, conversation, literal_input=literal_input
         )
-    registry = build_registry(spec, base)
+    # Resolve caller overrides exactly once, before any component is built.
+    # Every path-sensitive component receives this same effective boundary.
+    run_boundary = RunBoundary.resolve(
+        base, spec, trace_dir=trace_dir, hive_path=hive_path
+    )
+    registry = build_registry(spec, base, run_boundary=run_boundary)
     # An explicitly required process sandbox is checked before any paid model
     # turn. The default `auto` policy is opportunistic and never blocks a run.
     gap = confine.unavailable_reason(spec.confinement)
@@ -366,7 +380,7 @@ def run_harness(
     router: ModelRouter | None = None
     try:
         guardrails = build_guardrails(spec, registry, base)
-        verifiers = build_verifiers(spec, base)
+        verifiers = build_verifiers(spec, base, run_boundary=run_boundary)
         skills = load_skills(spec, base)
         playbooks = (
             PlaybookManager(load_playbooks(spec, base), registry)
@@ -391,11 +405,7 @@ def run_harness(
 
         version_hash = spec_version_hash(spec, base)
         trace = TraceWriter(
-            (
-                Path(trace_dir).expanduser().resolve()
-                if trace_dir is not None
-                else resolve_trace_dir(base, spec.logging.trace_dir)
-            ),
+            run_boundary.trace_dir,
             run_id=run_id,
             harness_name=spec.name,
             harness_id=spec.id,
@@ -435,6 +445,8 @@ def run_harness(
             runtime_version=__version__,
             runtime_config=runtime_config,
             hive_path=hive_path,
+            run_boundary=run_boundary,
+            approve_network=approve_network,
         )
         result = loop.run()
     finally:

@@ -43,6 +43,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -74,6 +75,11 @@ NONE = "none"
 
 _PROBE_LOCK = threading.Lock()
 _PROBE_CACHE: dict[str, bool] = {}
+
+# Commands whose variable arguments cannot discover new local data or open a
+# network connection. Shared with the shell tool and the risk report so the
+# enforced rule and the reported rule cannot drift.
+PORTABLE_VARIABLE_ARGV = frozenset({"echo", "printf"})
 
 
 def _decode(data: bytes) -> str:
@@ -176,6 +182,58 @@ def describe(config: ConfinementConfig) -> dict[str, Any]:
         "home_hidden": sandboxed and config.hide_home,
         "limits_applied": resource is not None,
         "platform": platform.system(),
+    }
+
+
+def risk_facts(spec: Any, *, provider_egress_active: bool) -> dict[str, Any]:
+    """Describe the opinionated prompt-injection blast-radius baseline.
+
+    These are effective facts, not more policy knobs. The runtime always
+    enforces them: variable file-reading shell arguments need a sandbox,
+    undeclared HTTP hosts need a run-scoped operator decision, and external
+    arguments pass through the egress screen.
+    """
+    from urllib.parse import urlsplit
+
+    dynamic_shell_commands: list[str] = []
+    http_hosts: set[str] = set()
+    network_tools: list[str] = []
+    for ref in spec.tools:
+        if getattr(ref, "builtin", None) == "shell":
+            for rule in ref.params().get("commands", []):
+                if not isinstance(rule, dict) or not rule.get("allow_extra_args"):
+                    continue
+                argv = rule.get("argv") or []
+                if argv and argv[0] not in PORTABLE_VARIABLE_ARGV:
+                    dynamic_shell_commands.append(str(argv[0]))
+        if getattr(ref, "builtin", None) == "http_get":
+            network_tools.append("http_get")
+            http_hosts.update(str(host).casefold() for host in ref.params().get("hosts", []))
+
+    mcp_destinations: list[str] = []
+    for server in spec.mcp_servers:
+        network_tools.append(f"mcp:{server.name}")
+        if getattr(server, "transport", None) == "http":
+            hostname = urlsplit(server.url).hostname
+            if hostname:
+                mcp_destinations.append(hostname.casefold())
+        else:
+            mcp_destinations.append(f"stdio:{server.name}")
+
+    sandboxed = resolve_backend(spec.confinement) != NONE
+    return {
+        "safe_for_untrusted_input": provider_egress_active,
+        "shell_exposed": any(getattr(ref, "builtin", None) == "shell" for ref in spec.tools),
+        "shell_dynamic_readers": sorted(set(dynamic_shell_commands)),
+        "shell_dynamic_readers_available": sandboxed or not dynamic_shell_commands,
+        "shell_dynamic_readers_blocked_without_sandbox": bool(
+            dynamic_shell_commands and not sandboxed
+        ),
+        "provider_egress_active": provider_egress_active,
+        "network_tools": sorted(set(network_tools)),
+        "http_preapproved_hosts": sorted(http_hosts),
+        "http_undeclared_hosts_require_approval": "http_get" in network_tools,
+        "mcp_destinations": sorted(set(mcp_destinations)),
     }
 
 
@@ -514,16 +572,28 @@ def run_confined(
             reader.start()
 
         timed_out = False
+        deadline = time.monotonic() + limit
         try:
-            returncode = process.wait(timeout=limit)
+            returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             timed_out = True
             _kill_tree(process)
             returncode = _reap(process)
-        # Join after the process is gone: the readers end at EOF, and joining
-        # is what guarantees every byte written before exit was collected.
+        # Descendants can keep the inherited pipes open after the direct child
+        # exits. Pipe draining is part of the same deadline, not an extra
+        # unbounded tail on the configured timeout.
         for reader in readers:
-            reader.join(timeout=10)
+            reader.join(timeout=max(0.0, deadline - time.monotonic()))
+        if any(reader.is_alive() for reader in readers):
+            timed_out = True
+            _kill_tree(process)
+            for stream in (process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except (AttributeError, OSError):
+                    pass
+            for reader in readers:
+                reader.join(timeout=0.1)
 
     return ConfinedResult(
         returncode=returncode,
@@ -610,6 +680,10 @@ def _kill_tree(process: subprocess.Popen[Any]) -> None:
     the reasons the sandbox backends are the platforms that have one.
     """
     try:
-        os.killpg(os.getpgid(process.pid), 9)
+        # ``start_new_session`` makes the leader pid the process-group id. Use
+        # it directly: the leader may already have exited while a descendant
+        # still owns its stdout/stderr pipes, in which case getpgid(leader)
+        # fails even though the group still exists.
+        os.killpg(process.pid, 9)
     except (ProcessLookupError, PermissionError, AttributeError, OSError):
         process.kill()

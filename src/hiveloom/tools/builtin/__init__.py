@@ -23,9 +23,15 @@ from urllib.parse import urlsplit
 
 from hiveloom import ext
 from hiveloom.catalog import BUILTIN_TOOLS
-from hiveloom.confine import ConfinementUnavailable, run_confined
+from hiveloom.confine import (
+    NONE,
+    PORTABLE_VARIABLE_ARGV,
+    ConfinementUnavailable,
+    resolve_backend,
+    run_confined,
+)
 from hiveloom.package import is_sensitive_path
-from hiveloom.private import env_files, is_private
+from hiveloom.private import RunBoundary, env_files, is_private
 from hiveloom.spec.schema import BuiltinToolRef, ConfinementConfig
 from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 
@@ -105,10 +111,12 @@ class FileReadTool(Tool):
         *,
         trace_dir: Path | None = None,
         private_paths: list[Path] | None = None,
+        run_boundary: RunBoundary | None = None,
     ):
         self._base = base
         self._trace_dir = trace_dir
         self._private_paths = private_paths
+        self._run_boundary = run_boundary
         entry = BUILTIN_TOOLS["file_read"]
         self.name = "file_read"
         self.description = entry.description
@@ -124,7 +132,11 @@ class FileReadTool(Tool):
             self._base,
             path,
             trace_dir=self._trace_dir,
-            private_paths=self._private_paths,
+            private_paths=(
+                self._run_boundary.private_paths()
+                if self._run_boundary is not None
+                else self._private_paths
+            ),
         )
         if not target.exists():
             raise ToolError(f"file not found: {path}")
@@ -149,10 +161,12 @@ class FileWriteTool(Tool):
         *,
         trace_dir: Path | None = None,
         private_paths: list[Path] | None = None,
+        run_boundary: RunBoundary | None = None,
     ):
         self._base = base
         self._trace_dir = trace_dir
         self._private_paths = private_paths
+        self._run_boundary = run_boundary
         entry = BUILTIN_TOOLS["file_write"]
         self.name = "file_write"
         self.description = entry.description
@@ -171,7 +185,11 @@ class FileWriteTool(Tool):
             self._base,
             path,
             trace_dir=self._trace_dir,
-            private_paths=self._private_paths,
+            private_paths=(
+                self._run_boundary.private_paths()
+                if self._run_boundary is not None
+                else self._private_paths
+            ),
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         # Serialize writes per resolved path: with loop.tool_execution set to
@@ -271,6 +289,7 @@ class ShellTool(Tool):
         trace_root: Path | None = None,
         trace_dir: Path | None = None,
         private_paths: list[Path] | None = None,
+        run_boundary: RunBoundary | None = None,
     ):
         self._base = base
         self._allowed = [_parse_shell_rule(rule) for rule in allowed]
@@ -282,6 +301,7 @@ class ShellTool(Tool):
         # every earlier run. One resolver decides what that set is — see
         # :mod:`hiveloom.private`.
         self._masked = private_paths or [base / ".hiveloom"]
+        self._run_boundary = run_boundary
         if trace_root is not None and trace_root not in self._masked:
             self._masked.append(trace_root)
         entry = BUILTIN_TOOLS["shell"]
@@ -295,7 +315,13 @@ class ShellTool(Tool):
         }
 
     def _refuse_runtime_state(self, parts: list[str], masked: list[Path]) -> None:
-        _refuse_runtime_state_impl(parts, self._base, masked, self._trace_dir)
+        _refuse_runtime_state_impl(
+            parts,
+            self._base,
+            masked,
+            self._trace_dir,
+            protect_ancestors=resolve_backend(self._confinement) == NONE,
+        )
 
     def run(self, command: str = "", **_: Any) -> str:
         if not self._allowed:
@@ -307,14 +333,35 @@ class ShellTool(Tool):
             raise ToolError(f"command '{parts[0]}' is not permitted in the shell tool")
         if any(arg in _BLOCKED_SHELL_ARGUMENTS for arg in parts[1:]):
             raise ToolError("command includes a dangerous shell argument")
-        permitted = any(
-            _matches_shell_rule(parts, argv, allow_extra) for argv, allow_extra in self._allowed
+        matched = next(
+            (
+                (argv, allow_extra)
+                for argv, allow_extra in self._allowed
+                if _matches_shell_rule(parts, argv, allow_extra)
+            ),
+            None,
         )
-        if not permitted:
+        if matched is None:
             raise ToolError(f"command '{parts[0]}' is not in the allowlist")
+        if (
+            matched[1]
+            and parts[0] not in PORTABLE_VARIABLE_ARGV
+            and resolve_backend(self._confinement) == NONE
+        ):
+            raise ToolError(
+                f"variable arguments for '{parts[0]}' require an OS sandbox; "
+                "without one, declare each permitted argv exactly"
+            )
         # Re-globbed per call: a `.env` written during the run is private from
         # the moment it exists, not from the next process start.
-        masked = [*self._masked, *(p for p in env_files(self._base) if p not in self._masked)]
+        masked = (
+            self._run_boundary.private_paths()
+            if self._run_boundary is not None
+            else [
+                *self._masked,
+                *(p for p in env_files(self._base) if p not in self._masked),
+            ]
+        )
         self._refuse_runtime_state(parts, masked)
         try:
             result = run_confined(
@@ -343,7 +390,12 @@ class ShellTool(Tool):
 
 
 def _refuse_runtime_state_impl(
-    parts: list[str], base: Path, masked: list[Path], trace_dir: Path | None
+    parts: list[str],
+    base: Path,
+    masked: list[Path],
+    trace_dir: Path | None,
+    *,
+    protect_ancestors: bool = False,
 ) -> None:
     """Refuse a command that *names* a path holding the runtime's own state.
 
@@ -356,6 +408,7 @@ def _refuse_runtime_state_impl(
     """
     root = base.resolve()
     hidden = [path.resolve() for path in masked]
+    recursive_reader = _is_recursive_reader(parts)
     for argument in parts[1:]:
         if not argument or argument.startswith("-"):
             continue
@@ -366,12 +419,37 @@ def _refuse_runtime_state_impl(
                 f"'{argument}' is inside the harness's runtime state "
                 "(.hiveloom / the trace directory), which the shell tool cannot read"
             )
+        traverses_private = any(
+            candidate == path or candidate in path.parents for path in hidden
+        )
+        if protect_ancestors and recursive_reader and traverses_private:
+            raise ToolError(
+                f"'{argument}' would recursively traverse the harness's runtime state"
+            )
         try:
             relative = candidate.relative_to(root)
         except ValueError:
             continue
         if relative.parts and is_sensitive_path(relative, trace_dir=trace_dir):
             raise ToolError(f"'{argument}' is a protected path in this harness")
+
+
+def _is_recursive_reader(parts: list[str]) -> bool:
+    """Recognize builtin commands whose path arguments walk descendants."""
+    command = Path(parts[0]).name
+    flags = set(parts[1:])
+    if command in {"find", "rg", "ripgrep", "tree"}:
+        return True
+    if command == "grep":
+        return bool(flags & {"-r", "-R", "--recursive"}) or any(
+            flag.startswith("-") and "r" in flag.casefold().lstrip("-")
+            for flag in flags
+        )
+    if command == "ls":
+        return bool(flags & {"-R", "--recursive"}) or any(
+            flag.startswith("-") and "R" in flag.lstrip("-") for flag in flags
+        )
+    return False
 
 
 def _parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
@@ -405,10 +483,17 @@ def _matches_shell_rule(parts: list[str], argv: list[str], allow_extra: bool) ->
 class HttpGetTool(Tool):
     """Perform an HTTP GET and return the (truncated) response body."""
 
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, hosts: list[str] | None = None):
+        del base
+        self._hosts = _normalize_http_hosts(hosts or [])
+        self._approved_hosts: set[str] = set()
         entry = BUILTIN_TOOLS["http_get"]
         self.name = "http_get"
-        self.description = entry.description
+        declared = ", ".join(self._hosts) or "none"
+        self.description = (
+            f"{entry.description} Pre-approved hosts: {declared}; any other host "
+            "requires an operator decision for this run."
+        )
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
@@ -417,7 +502,7 @@ class HttpGetTool(Tool):
         }
 
     def run(self, url: str = "", **_: Any) -> str:
-        _validate_public_http_url(url)
+        _validate_public_http_url(url, self.allowed_hosts)
         # Identify ourselves: many APIs (e.g. Wikipedia) 403 urllib's default UA.
         from hiveloom import __version__
 
@@ -425,19 +510,62 @@ class HttpGetTool(Tool):
             url, headers={"User-Agent": f"hiveloom/{__version__} (+https://pypi.org/project/hiveloom)"}
         )
         try:
-            opener = urlrequest.build_opener(_SafeRedirectHandler())
+            opener = urlrequest.build_opener(_SafeRedirectHandler(self.allowed_hosts))
             with opener.open(request, timeout=30) as resp:  # noqa: S310 - validated URL and redirects
                 body = resp.read(_MAX_HTTP_BYTES)
         except (urlerror.URLError, ValueError) as exc:
             raise ToolError(f"http_get failed: {exc}") from exc
         return body.decode("utf-8", errors="replace")
 
+    @property
+    def allowed_hosts(self) -> tuple[str, ...]:
+        """Static and operator-approved destinations for this run."""
+        return (*self._hosts, *sorted(self._approved_hosts))
 
-def _validate_public_http_url(url: str) -> None:
+    def network_destination(self, tool_input: dict[str, Any]) -> str:
+        """Return the hostname whose authority this call requests."""
+        parsed = urlsplit(str(tool_input.get("url", "")))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ToolError("url must be an absolute http:// or https:// URL")
+        return parsed.hostname.rstrip(".").casefold()
+
+    def destination_allowed(self, hostname: str) -> bool:
+        return _host_allowed(hostname, self.allowed_hosts)
+
+    def approve_destination(self, hostname: str) -> None:
+        self._approved_hosts.add(hostname.rstrip(".").casefold())
+
+
+def _normalize_http_hosts(hosts: list[str]) -> tuple[str, ...]:
+    """Validate and normalize an HTTP destination allowlist."""
+    normalized: list[str] = []
+    for raw in hosts:
+        host = str(raw).strip().rstrip(".").casefold()
+        bare = host[2:] if host.startswith("*.") else host
+        if not bare or ":" in bare or "/" in bare or bare.startswith("."):
+            raise ToolError(f"invalid http_get host allowlist entry: {raw!r}")
+        normalized.append(host)
+    return tuple(dict.fromkeys(normalized))
+
+
+def _host_allowed(host: str, allowed: tuple[str, ...]) -> bool:
+    hostname = host.rstrip(".").casefold()
+    return any(
+        hostname == rule
+        or (rule.startswith("*.") and hostname.endswith(rule[1:]) and hostname != rule[2:])
+        for rule in allowed
+    )
+
+
+def _validate_public_http_url(
+    url: str, allowed_hosts: tuple[str, ...] | None = None
+) -> None:
     """Reject non-HTTP URLs and destinations outside the public internet."""
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ToolError("url must be an absolute http:// or https:// URL")
+    if allowed_hosts is not None and not _host_allowed(parsed.hostname, allowed_hosts):
+        raise ToolError(f"url host '{parsed.hostname}' is not declared by this harness")
     try:
         addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 80, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
@@ -456,8 +584,12 @@ class _SafeRedirectHandler(urlrequest.HTTPRedirectHandler):
     max_repeats = 3
     max_redirections = 3
 
+    def __init__(self, allowed_hosts: tuple[str, ...]):
+        super().__init__()
+        self._allowed_hosts = allowed_hosts
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        _validate_public_http_url(newurl)
+        _validate_public_http_url(newurl, self._allowed_hosts)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -627,6 +759,7 @@ def make_builtin_tool(
     confinement: Any = None,
     trace_root: Path | None = None,
     private_paths: list[Path] | None = None,
+    run_boundary: RunBoundary | None = None,
 ) -> Tool:
     """Instantiate the catalog tool named by ``ref`` (builtin or extension)."""
     return ext.build(
@@ -640,6 +773,7 @@ def make_builtin_tool(
             confinement=confinement,
             trace_root=trace_root,
             private_paths=list(private_paths or []),
+            run_boundary=run_boundary,
         ),
     )
 
@@ -652,6 +786,7 @@ def _register_factories() -> None:
             ctx.base,
             trace_dir=ctx.trace_dir,
             private_paths=list(ctx.private_paths or []),
+            run_boundary=ctx.run_boundary,
         ),
     )
     ext.register_builtin_factory(
@@ -661,6 +796,7 @@ def _register_factories() -> None:
             ctx.base,
             trace_dir=ctx.trace_dir,
             private_paths=list(ctx.private_paths or []),
+            run_boundary=ctx.run_boundary,
         ),
     )
     ext.register_builtin_factory(
@@ -676,9 +812,12 @@ def _register_factories() -> None:
             trace_root=ctx.trace_root,
             trace_dir=ctx.trace_dir,
             private_paths=list(ctx.private_paths or []),
+            run_boundary=ctx.run_boundary,
         ),
     )
-    ext.register_builtin_factory("tools", "http_get", lambda _p, ctx: HttpGetTool(ctx.base))
+    ext.register_builtin_factory(
+        "tools", "http_get", lambda p, ctx: HttpGetTool(ctx.base, list(p.get("hosts", [])))
+    )
     ext.register_builtin_factory(
         "tools",
         "recall_runs",

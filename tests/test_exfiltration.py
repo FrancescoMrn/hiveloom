@@ -17,8 +17,9 @@ import pytest
 
 from hiveloom import confine, construct, runner
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
-from hiveloom.private import is_private, runtime_private_paths
+from hiveloom.private import RunBoundary, is_private, runtime_private_paths
 from hiveloom.spec.loader import load_spec
+from hiveloom.verify.builtin import CommandSucceedsVerifier
 
 # The string that must never reach a provider request. Assembled at run time so
 # it never appears in this file, the harness source, or any .pyc beside them —
@@ -180,6 +181,38 @@ def test_a_trace_directory_outside_the_harness_is_also_hidden(tmp_path: Path):
 
 
 @sandboxed
+def test_runtime_trace_and_hive_overrides_use_the_same_boundary(tmp_path: Path):
+    harness = _harness(tmp_path)
+    trace_override = tmp_path / "runtime-traces"
+    trace_override.mkdir()
+    (trace_override / "prior.txt").write_text(SENTINEL, encoding="utf-8")
+    hive_override = tmp_path / "runtime-hive.db"
+    hive_override.write_text(SENTINEL, encoding="utf-8")
+    provider = FakeModelProvider(
+        [
+            tool_response(
+                "shell",
+                {"command": f"grep -r HIVELOOM {tmp_path}"},
+                call_id="p0",
+            ),
+            text_response("done"),
+        ]
+    )
+
+    runner.run_harness(
+        harness,
+        "go",
+        provider=provider,
+        literal_input=True,
+        ingest=False,
+        trace_dir=trace_override,
+        hive_path=hive_override,
+    )
+
+    assert SENTINEL not in _everything_sent_to_the_provider(provider)
+
+
+@sandboxed
 def test_a_symlink_into_private_state_leads_nowhere(tmp_path: Path):
     harness = _harness(tmp_path)
     _earlier_run_holding_the_secret(harness)
@@ -244,6 +277,21 @@ def test_a_symlink_is_private_by_its_target(tmp_path: Path):
     assert is_private(harness / "shortcut" / "traces", paths)
 
 
+@sandboxed
+def test_command_verifier_refreshes_env_files_before_spawn(tmp_path: Path):
+    harness = _harness(tmp_path)
+    boundary = RunBoundary.resolve(harness, load_spec(harness))
+    verifier = CommandSucceedsVerifier(
+        "grep -q CREATED_AFTER_BUILD .env",
+        harness,
+        confinement=load_spec(harness).confinement,
+        run_boundary=boundary,
+    )
+    (harness / ".env").write_text("CREATED_AFTER_BUILD=yes\n", encoding="utf-8")
+
+    assert not verifier.validate("", {}).passed
+
+
 # --------------------------------------------------------------------------- #
 # Optional OS isolation
 # --------------------------------------------------------------------------- #
@@ -262,10 +310,10 @@ def test_auto_shell_runs_with_portable_controls_without_a_sandbox(tmp_path: Path
     assert result.status == "success"
 
 
-def test_default_egress_stops_a_credential_leak_without_a_sandbox(
+def test_dynamic_file_reading_arguments_are_blocked_without_a_sandbox(
     tmp_path: Path, monkeypatch
 ):
-    """Prompt safety is still useful when the optional OS layer is absent."""
+    """The portable baseline refuses model-chosen file traversal arguments."""
     monkeypatch.setattr(confine, "available_backend", lambda: "none")
     harness = _harness(tmp_path)
     secret = "AKIA" + "INJECTEDLEAK1234"
@@ -287,7 +335,7 @@ def test_default_egress_stops_a_credential_leak_without_a_sandbox(
 
     assert result.status == "success"
     assert secret not in _everything_sent_to_the_provider(provider)
-    assert "[REDACTED]" in _everything_sent_to_the_provider(provider)
+    assert "require an OS sandbox" in _everything_sent_to_the_provider(provider)
 
 
 def test_a_harness_without_shell_still_runs_without_a_sandbox(tmp_path: Path, monkeypatch):
@@ -306,7 +354,7 @@ def test_a_harness_without_shell_still_runs_without_a_sandbox(tmp_path: Path, mo
     assert result.status == "success"
 
 
-def test_mode_off_is_how_an_operator_accepts_the_weaker_behavior(tmp_path: Path, monkeypatch):
+def test_mode_off_does_not_disable_the_portable_shell_boundary(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(confine, "available_backend", lambda: "none")
     harness = _harness(tmp_path, **{"confinement.mode": "off"})
 
@@ -316,14 +364,16 @@ def test_mode_off_is_how_an_operator_accepts_the_weaker_behavior(tmp_path: Path,
     result = runner.run_harness(harness, "go", provider=provider, literal_input=True, ingest=False)
 
     assert result.status == "success"
-    # Even then, the *named* path is refused — that half is portable.
+    assert "require an OS sandbox" in _everything_sent_to_the_provider(provider)
+    # Turning the optional OS backend off does not turn the portable decision
+    # into an unrestricted shell.
     blocked = FakeModelProvider(
         [tool_response("shell", {"command": "ls .hiveloom"}, call_id="p0"), text_response("done")]
     )
     runner.run_harness(harness, "go", provider=blocked, literal_input=True, ingest=False)
     blocks = blocked.calls[1]["messages"][-1]["content"]
     seen = "".join(b["content"] for b in blocks if b["type"] == "tool_result")
-    assert "runtime state" in seen
+    assert "require an OS sandbox" in seen
 
 
 def test_the_platform_reports_what_it_can_enforce():

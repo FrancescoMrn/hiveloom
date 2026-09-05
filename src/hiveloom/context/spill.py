@@ -17,8 +17,9 @@ trace directory, which ``file_read``/``file_write`` refuse like the rest of
 ``.hiveloom`` (see :func:`hiveloom.package.is_sensitive_path`). Authority is a
 recorded fact, never inferred from a name: a handle resolves only through a
 per-run map, filled either by minting the object (:meth:`SpillStore.spill`) or
-by an explicit grant a fork carried over from its parent's *verified* journal
-(:meth:`SpillStore.inherit`). Inventing, guessing or quoting a handle grants
+by an explicit size/hash-bound grant a fork carried over from its parent's
+*verified, chained* journal (:meth:`SpillStore.inherit`). Inventing, guessing
+or quoting a handle grants
 nothing — including in a resumed fork, whose transcript is model-visible text.
 Each run writes into its own 0700 directory, and objects are created
 exclusively at 0600.
@@ -30,8 +31,9 @@ every tool result in full. Two things narrow it:
 :mod:`hiveloom.confine` masks ``.hiveloom`` and the trace directory from every
 spawned process wherever an OS sandbox exists, and the shell tool refuses
 arguments that name those paths on every platform. A recursive walk that never
-names the directory is only stopped by the sandbox, which is what
-``confinement.mode: require`` is for. Files are written 0600 in a 0700
+names the directory is stopped by the sandbox; without one, the portable shell
+policy refuses model-controlled arguments for file-reading commands. Files are
+written 0600 in a 0700
 directory, so on a shared machine the boundary holds against other users
 regardless.
 
@@ -46,10 +48,12 @@ than losing the result.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
+import stat
 import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
@@ -111,6 +115,7 @@ class SpillRecord:
     total_bytes: int
     omitted_bytes: int
     path: Path
+    sha256: str
 
 
 def _private_dir(path: Path) -> None:
@@ -146,6 +151,21 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _matches_manifest(path: Path, digest: str, expected_bytes: int) -> bool:
+    """Verify a regular, non-symlink spill object against its authorization."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size != expected_bytes:
+            return False
+        hasher = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest() == digest
+    except OSError:
+        return False
+
+
 class SpillStore:
     """Run-scoped storage for oversized tool results.
 
@@ -174,7 +194,7 @@ class SpillStore:
         self._lock = threading.Lock()
         # handle -> the file this run is authorized to read for it. Authority
         # is a recorded fact, never inferred from a name.
-        self._authorized: dict[str, Path] = {}
+        self._authorized: dict[str, tuple[Path, str, int]] = {}
 
     @property
     def inherited_dir(self) -> Path:
@@ -203,6 +223,7 @@ class SpillStore:
             return None
         stored = self._redact(content) if self._redact is not None else content
         data = stored.encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
         handle = f"tr_{secrets.token_hex(8)}"
         body = self._run_dir / f"{handle}.txt"
         try:
@@ -217,6 +238,7 @@ class SpillStore:
                         "run_id": self._run_id,
                         "tool": tool,
                         "bytes": len(data),
+                        "sha256": digest,
                         "created_at": datetime.now(UTC).isoformat(),
                     },
                     indent=2,
@@ -226,7 +248,7 @@ class SpillStore:
             # Best effort by design: the caller keeps the full result inline.
             return None
         with self._lock:
-            self._authorized[handle] = body
+            self._authorized[handle] = (body, digest, len(data))
         preview, omitted = self._preview(handle, data)
         return SpillRecord(
             handle=handle,
@@ -234,6 +256,7 @@ class SpillStore:
             total_bytes=len(data),
             omitted_bytes=omitted,
             path=body,
+            sha256=digest,
         )
 
     def _preview(self, handle: str, data: bytes) -> tuple[str, int]:
@@ -260,8 +283,8 @@ class SpillStore:
     # ------------------------------------------------------------------ #
     # Admission & resolution
     # ------------------------------------------------------------------ #
-    def inherit(self, handles: Sequence[str], source: str | Path) -> list[str]:
-        """Authorize handles a fork explicitly carried over, from ``source``.
+    def inherit(self, manifests: Sequence[Any], source: str | Path) -> list[str]:
+        """Authorize hash-bound objects a fork explicitly carried over.
 
         The list comes from the fork record, which ``hiveloom fork`` writes
         from the parent's *verified* journal — not from the seeded messages.
@@ -272,14 +295,36 @@ class SpillStore:
         """
         directory = Path(source)
         granted: list[str] = []
-        for handle in handles:
+        for manifest in manifests:
+            if isinstance(manifest, str) and HANDLE_RE.fullmatch(manifest):
+                # SDK callers may still pass the compact handle list. It is
+                # accepted only when the copied sidecar supplies the same
+                # hash-bound manifest; an old handle-only object stays denied.
+                try:
+                    candidate = json.loads(
+                        (directory / f"{manifest}.json").read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if candidate.get("handle") != manifest:
+                    continue
+                manifest = candidate
+            if not isinstance(manifest, dict):
+                continue
+            handle = str(manifest.get("handle", ""))
+            digest = str(manifest.get("sha256", ""))
+            expected_bytes = manifest.get("bytes")
             if not HANDLE_RE.fullmatch(str(handle)):
                 continue
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                continue
+            if not isinstance(expected_bytes, int) or expected_bytes < 0:
+                continue
             body = directory / f"{handle}.txt"
-            if not body.is_file():
+            if not _matches_manifest(body, digest, expected_bytes):
                 continue
             with self._lock:
-                self._authorized[handle] = body
+                self._authorized[handle] = (body, digest, expected_bytes)
             granted.append(handle)
         return granted
 
@@ -292,17 +337,19 @@ class SpillStore:
         """
         handle = (handle or "").strip()
         with self._lock:
-            path = self._authorized.get(handle)
-        if path is None:
+            record = self._authorized.get(handle)
+        if record is None:
             raise SpillError(
                 f"unknown handle '{handle}'. A handle grants no access on its own: "
                 "it is readable only in the run that produced it, or in a fork that "
                 "explicitly inherited it."
             )
-        if not path.is_file():
-            raise SpillError(f"the stored result for '{handle}' is no longer on disk")
+        path, digest, expected_bytes = record
+        if not _matches_manifest(path, digest, expected_bytes):
+            raise SpillError(
+                f"the stored result for '{handle}' no longer matches its authorization"
+            )
         return path
-
     # ------------------------------------------------------------------ #
     # Reading
     # ------------------------------------------------------------------ #

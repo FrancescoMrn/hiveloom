@@ -481,8 +481,14 @@ def confinement(
         source = str(harness_path(directory))
     info = confine.describe(config)
     info["provider_egress_policy"] = policy_name(
-        spec.egress if spec is not None else EgressConfig()
+        spec.egress if spec is not None else EgressConfig(),
+        spec.logging.redact if spec is not None else None,
     )
+    info["provider_egress_active"] = info["provider_egress_policy"] != "off"
+    if spec is not None:
+        info["prompt_injection_boundary"] = confine.risk_facts(
+            spec, provider_egress_active=info["provider_egress_active"]
+        )
     blocked = confine.unavailable_reason(config)
     if json_output:
         _emit_json({"ok": blocked is None, "source": source, "blocked": blocked, **info})
@@ -504,6 +510,14 @@ def confinement(
     table.add_row("home hidden", "yes" if info["home_hidden"] else "no")
     table.add_row("resource limits", "yes" if info["limits_applied"] else "no")
     table.add_row("provider egress", info["provider_egress_policy"])
+    if spec is not None:
+        boundary = info["prompt_injection_boundary"]
+        table.add_row(
+            "safe for untrusted input",
+            "yes" if boundary["safe_for_untrusted_input"] else "no",
+        )
+        if boundary["http_undeclared_hosts_require_approval"]:
+            table.add_row("new HTTP hosts", "operator approval required")
     _console.print(table)
     if info["backend"] == "none" and info["mode"] != "off":
         _console.print(
@@ -675,12 +689,23 @@ def add_tool_cmd(
     builtin: str | None = typer.Option(None, "--builtin", help="Builtin tool name."),
     code: str | None = typer.Option(None, "--code", help="Code hook path.py:function."),
     description: str | None = typer.Option(None, "--description", help="Tool description."),
+    host: list[str] = typer.Option(
+        [],
+        "--host",
+        help="Pre-approve an http_get hostname (repeatable; other hosts prompt at run time).",
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Add a tool. ``--code`` scaffolds a stub file if it does not exist."""
     with _guard(json_output):
-        construct.add_tool(directory, builtin=builtin, code=code, description=description)
+        construct.add_tool(
+            directory,
+            builtin=builtin,
+            code=code,
+            description=description,
+            hosts=host or None,
+        )
         _added(json_output, "tool", builtin or code)
 
 
@@ -937,6 +962,21 @@ def _trust_prompt(json_output: bool):
             "Its code hooks will run with your permissions."
         )
         return typer.confirm("Trust this harness folder?", default=False)
+
+    return approve
+
+
+def _network_prompt(non_interactive: bool):
+    """Ask for one run-scoped HTTP destination, or fail closed."""
+    if non_interactive:
+        return None
+
+    def approve(hostname: str) -> bool:
+        _console.print(
+            f"[yellow]network access requested[/yellow] {hostname}\n"
+            "The model is asking to send an HTTP request to this host."
+        )
+        return typer.confirm("Allow this host for the rest of this run?", default=False)
 
     return approve
 
@@ -1297,6 +1337,7 @@ def run(
                     "parent_line_hash": record.get("parent_line_hash", ""),
                     # The spilled results this fork was granted at fork time.
                     "spill_handles": record.get("spill_handles") or [],
+                    "spill_manifest": record.get("spill_manifest") or [],
                 },
                 on_event=on_event,
                 run_id=run_id,
@@ -1304,6 +1345,7 @@ def run(
                 model_override=model,
                 provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
+                approve_network=_network_prompt(json_output or stream),
             )
         else:
             result = runner.run_harness(
@@ -1316,6 +1358,7 @@ def run(
                 model_override=model,
                 provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
+                approve_network=_network_prompt(json_output or stream),
             )
         payload = runner.run_result_payload(result)
         if stream:

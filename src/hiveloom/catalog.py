@@ -110,8 +110,24 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
     ),
     CatalogEntry(
         name="http_get",
-        description="Perform an HTTP GET request and return the response body.",
+        description=(
+            "Perform an HTTP GET against explicitly declared public hosts and "
+            "return the response body."
+        ),
         tags=["network", "read"],
+        params=[
+            ParamSpec(
+                name="hosts",
+                type="list",
+                required=False,
+                default=[],
+                description=(
+                    "Hosts pre-approved by the harness. Undeclared hosts need "
+                    "an operator decision during the run. Use an exact host or "
+                    "*.example.com for subdomains."
+                ),
+            )
+        ],
     ),
     CatalogEntry(
         name="recall_runs",

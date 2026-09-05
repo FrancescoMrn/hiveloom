@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
 from hiveloom.package import resolve_trace_dir, trace_dir_relative_to
-from hiveloom.private import runtime_private_paths
+from hiveloom.private import RunBoundary, runtime_private_paths
 from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
@@ -388,7 +388,12 @@ class SearchToolsTool(Tool):
         return "\n".join(lines)
 
 
-def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
+def build_registry(
+    spec: HarnessSpec,
+    base_dir: str | Path,
+    *,
+    run_boundary: RunBoundary | None = None,
+) -> ToolRegistry:
     """Instantiate catalog tools and import code-hook tools from a spec."""
     from hiveloom.tools import builtin  # local import to avoid cycles
 
@@ -399,12 +404,24 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
     # not just the .hiveloom/.env* coverage they get regardless — the same
     # protection the HTTP control plane's input_file and the evolver's
     # code-change containment get when they have a spec loaded.
-    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
+    trace_dir = (
+        run_boundary.trace_dir_relative
+        if run_boundary is not None
+        else trace_dir_relative_to(base, spec.logging.trace_dir)
+    )
     # The absolute form too: `shell` masks it from the processes it spawns,
     # and a trace directory outside the harness still has to be masked even
     # though it has no harness-relative path to refuse.
-    trace_root = resolve_trace_dir(base, spec.logging.trace_dir)
-    private_paths = runtime_private_paths(base, spec)
+    trace_root = (
+        run_boundary.trace_dir
+        if run_boundary is not None
+        else resolve_trace_dir(base, spec.logging.trace_dir)
+    )
+    private_paths = (
+        run_boundary.private_paths()
+        if run_boundary is not None
+        else runtime_private_paths(base, spec)
+    )
 
     registry = ToolRegistry()
     has_deferred = False
@@ -420,6 +437,7 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
                 confinement=spec.confinement,
                 trace_root=trace_root,
                 private_paths=private_paths,
+                run_boundary=run_boundary,
             )
             registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):

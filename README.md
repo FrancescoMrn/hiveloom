@@ -65,9 +65,12 @@ for the exact boundary.
 For prompt injection, the design confines consequences rather than claiming to
 recognize every malicious instruction: injected text cannot add capabilities,
 authorize spilled data, change frozen policy, or mark its own result successful,
-and provider egress screens credentials and configured sensitive patterns.
-Generic shell is the sharp edge; omit it for untrusted input, or require OS
-confinement when the shell must not see runtime-private state.
+and every outbound boundary screens credentials and configured sensitive data.
+The runtime assumes input is untrusted: variable file-reading shell arguments
+run only behind an available OS sandbox, while a new HTTP destination needs an
+operator allow/deny decision. Repeated automation can pre-approve its hosts in
+the `http_get` declaration. These are runtime defaults, not another security
+profile a harness author has to assemble correctly.
 
 The *hive* is the collective memory of runs. The *loom* turns task intent and
 that evidence into an improvable harness.

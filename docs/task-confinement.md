@@ -60,12 +60,15 @@ obedient model can do with them:
 - prefer narrow, typed tools whose authorization comes from run context rather
   than model-supplied arguments;
 - the final provider request is screened for known credential shapes plus the
-  harness's configured redaction patterns, including changes made by request
-  hooks; matches are redacted or block the request;
-- shell is an explicit escape hatch. An allowlisted general-purpose reader can
-  still traverse files without naming a blocked path. If untrusted content and
-  runtime-state confidentiality meet in a shell-enabled harness, either remove
-  that capability or opt into `confinement.mode: require`.
+  harness's full redaction policy (keys, paths, and patterns), including changes
+  made by request hooks; external tool arguments are screened too;
+- a shell rule with model-controlled arguments may read files only when an OS
+  sandbox is active. Without one, harmless `echo`/`printf` arguments remain
+  usable and every other command must be declared as exact argv; an exact
+  recursive walk that would cross runtime-private state is still refused;
+- `http_get` may contact a host listed in its `hosts` parameter. Any other host
+  asks the operator once during an interactive run and is denied by default in
+  non-interactive runs. Redirects cannot escape the approved set.
 
 The useful guarantee is therefore not “the model ignored the injection.” It is
 “the injection could not grant itself undeclared authority, and the output was
@@ -113,7 +116,8 @@ and a timeout that kills the whole process tree. OS isolation is optional:
 otherwise continues with those portable controls; `require` is the explicit
 fail-closed choice; `off` skips discovery. `hiveloom confinement` reports what
 a given machine will actually enforce, and the run journal records which
-backend was used. See [the `confinement` section](spec.md#process-confinement).
+backend was used. The portable shell restriction above still applies in all
+three modes. See [the `confinement` section](spec.md#process-confinement).
 
 That boundary stops at the process the runtime starts. Custom Python hooks and
 extensions execute inside the hiveloom process itself, and declared MCP servers

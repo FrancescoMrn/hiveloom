@@ -180,6 +180,7 @@ def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> d
             builtin=body.get("builtin"),
             code=body.get("code"),
             description=body.get("description"),
+            hosts=body.get("hosts"),
         )
         return {"ok": True, "added": "tool", "ref": body.get("builtin") or body.get("code")}
 

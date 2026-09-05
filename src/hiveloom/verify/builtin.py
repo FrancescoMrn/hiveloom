@@ -14,7 +14,7 @@ from hiveloom import ext
 from hiveloom.confine import ConfinementUnavailable, run_confined, shell_argv
 from hiveloom.json_path import extract_json_path, parse_json_path
 from hiveloom.package import resolve_trace_dir
-from hiveloom.private import runtime_private_paths
+from hiveloom.private import RunBoundary, runtime_private_paths
 from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import (
     BuiltinValidatorRef,
@@ -121,6 +121,7 @@ class CommandSucceedsVerifier(Verifier):
         confinement: Any = None,
         trace_root: Path | None = None,
         private_paths: list[Path] | None = None,
+        run_boundary: RunBoundary | None = None,
     ):
         self._command = command
         self._base = base
@@ -132,6 +133,7 @@ class CommandSucceedsVerifier(Verifier):
         # records its own verdict. A code validator remains the way to inspect
         # run state — it is Python in the hiveloom process, not a spawn.
         self._masked = list(private_paths or [base / ".hiveloom"])
+        self._run_boundary = run_boundary
         if trace_root is not None and trace_root not in self._masked:
             self._masked.append(trace_root)
 
@@ -152,7 +154,11 @@ class CommandSucceedsVerifier(Verifier):
                 cwd=self._base,
                 config=self._confinement,
                 timeout=self._timeout,
-                mask=self._masked,
+                mask=(
+                    self._run_boundary.private_paths()
+                    if self._run_boundary is not None
+                    else self._masked
+                ),
             )
         except ConfinementUnavailable as exc:
             return VerdictResult(passed=False, feedback=str(exc), verifier=self.name)
@@ -307,19 +313,31 @@ class GroundedReferencesVerifier(Verifier):
         )
 
 
-def build_verifiers(spec: HarnessSpec, base_dir: str | Path) -> list[Verifier]:
+def build_verifiers(
+    spec: HarnessSpec,
+    base_dir: str | Path,
+    *,
+    run_boundary: RunBoundary | None = None,
+) -> list[Verifier]:
     """Instantiate verifiers (builtins + code hooks) from a spec."""
     base = Path(base_dir)
     return build_verifiers_from_refs(
         spec.verify.validators,
         base_dir,
         confinement=spec.confinement,
-        trace_root=resolve_trace_dir(
-            base.parent if base.is_file() else base, spec.logging.trace_dir
+        trace_root=(
+            run_boundary.trace_dir
+            if run_boundary is not None
+            else resolve_trace_dir(
+                base.parent if base.is_file() else base, spec.logging.trace_dir
+            )
         ),
-        private_paths=runtime_private_paths(
-            base.parent if base.is_file() else base, spec
+        private_paths=(
+            run_boundary.private_paths()
+            if run_boundary is not None
+            else runtime_private_paths(base.parent if base.is_file() else base, spec)
         ),
+        run_boundary=run_boundary,
     )
 
 
@@ -330,6 +348,7 @@ def build_verifiers_from_refs(
     confinement: Any = None,
     trace_root: Path | None = None,
     private_paths: list[Path] | None = None,
+    run_boundary: RunBoundary | None = None,
 ) -> list[Verifier]:
     """Instantiate verifiers from validator refs.
 
@@ -344,7 +363,14 @@ def build_verifiers_from_refs(
     for ref in refs:
         if isinstance(ref, BuiltinValidatorRef):
             verifiers.append(
-                _make_builtin(ref, base, confinement, trace_root, private_paths)
+                _make_builtin(
+                    ref,
+                    base,
+                    confinement,
+                    trace_root,
+                    private_paths,
+                    run_boundary,
+                )
             )
         elif isinstance(ref, CodeValidatorRef):
             func = import_hook(ref.code, base)
@@ -359,6 +385,7 @@ def _make_builtin(
     confinement: Any = None,
     trace_root: Path | None = None,
     private_paths: list[Path] | None = None,
+    run_boundary: RunBoundary | None = None,
 ) -> Verifier:
     return ext.build(
         "validators",
@@ -369,6 +396,7 @@ def _make_builtin(
             confinement=confinement,
             trace_root=trace_root,
             private_paths=list(private_paths or []),
+            run_boundary=run_boundary,
         ),
     )
 
@@ -395,6 +423,7 @@ def _register_factories() -> None:
             confinement=ctx.confinement,
             trace_root=ctx.trace_root,
             private_paths=list(ctx.private_paths or []),
+            run_boundary=ctx.run_boundary,
         ),
     )
     ext.register_builtin_factory(

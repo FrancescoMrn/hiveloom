@@ -43,10 +43,10 @@ boundary. The exact guarantees and limits are described in
   │                   ToolRegistry owns the MCP sync/async bridge       │
   │    context/       assembly, budgeting, compaction, spill, skills   │
   │    guardrails/    Allow/Block/Halt hooks (frozen from evolution)    │
-  │  private.py       the one definition of runtime-private state       │
+  │  private.py       effective RunBoundary: one private-state view      │
   │  confine.py       OS confinement for spawned processes: bwrap /     │
   │                   sandbox-exec + rlimits, scrubbed env, timeouts    │
-  │  egress.py        last check before a request leaves for a provider │
+  │  egress.py        provider + external-tool outbound screening       │
   │    events.py      lifecycle event bus (spec `hooks:` + ambient)     │
   │    verify/        validators = the reward signal                    │
   │    loop/          engine + pluggable policies (react | plan | …)    │
@@ -88,6 +88,7 @@ boundary. The exact guarantees and limits are described in
 hiveloom run ./h --input notes.txt
   │
   ├─ load spec, resolve code hooks (fail fast)
+  ├─ resolve effective RunBoundary (including per-run path overrides)
   ├─ build: tool registry · guardrails · verifiers · context manager · trace
   │
   ├─ AgentLoop (react):
@@ -138,7 +139,8 @@ events (`run_started`, `context_append`, `context_system`, `context_tools`,
 `model_call`, `model_response`, `tool_call`, `tool_update`, `tool_result`,
 `tool_spilled`, `guardrail_triggered`, `hook_triggered`, `hook_error`,
 `context_compaction`, `playbook_switch`, `model_swap`,
-`provider_egress_redacted`, `provider_egress_blocked`, `verification_result`,
+`provider_egress_redacted`, `provider_egress_blocked`, `tool_egress_blocked`,
+`network_access_decision`, `verification_result`,
 `run_finished`).
 
 Three properties make it more than a log, and each buys something concrete:

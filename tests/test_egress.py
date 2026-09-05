@@ -10,8 +10,11 @@ import pytest
 from hiveloom import construct, runner
 from hiveloom.egress import CREDENTIAL_PATTERNS, EgressFilter, policy_name
 from hiveloom.logging.journal import read_events
+from hiveloom.logging.trace import payload_hash
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
-from hiveloom.spec.schema import EgressConfig
+from hiveloom.spec.schema import EgressConfig, RedactionConfig
+from hiveloom.tools.builtin import HttpGetTool, _validate_public_http_url
+from hiveloom.tools.registry import ToolError
 
 LEAKY_TOOL = '''
 from hiveloom.tools import tool
@@ -132,11 +135,46 @@ def test_tool_schemas_are_part_of_the_screened_request():
     assert "[REDACTED]" in json.dumps(verdict.tools)
 
 
+def test_dictionary_keys_are_screened_too():
+    secret = "CUST-4821"
+    verdict = _filter(redact=[r"CUST-\d+"]).apply(
+        "", [{"role": "user", "content": {secret: "value"}}]
+    )
+
+    assert secret not in json.dumps(verdict.messages)
+
+
+def test_structured_logging_redaction_applies_outbound():
+    redaction = RedactionConfig(keys=["token"], paths=["payload.secret"])
+    verdict = EgressFilter(EgressConfig(), redaction).apply(
+        "",
+        [
+            {
+                "role": "user",
+                "content": {
+                    "token": "known-by-key",
+                    "payload": {"secret": "known-by-path"},
+                },
+            }
+        ],
+    )
+
+    serialized = json.dumps(verdict.messages)
+    assert "known-by-key" not in serialized
+    assert "known-by-path" not in serialized
+
+
 def test_the_filter_can_be_switched_off():
     secret = "AKIA" + "ABCDEFGHIJKLMNOP"
     verdict = _filter(mode="off").apply("", [{"role": "user", "content": secret}])
     assert verdict.clean
     assert policy_name(EgressConfig(mode="off")) == "off"
+
+
+def test_an_empty_noncredential_policy_is_reported_as_inactive():
+    config = EgressConfig(detect_credentials=False)
+    assert not EgressFilter(config).enabled
+    assert policy_name(config) == "off"
 
 
 # --------------------------------------------------------------------------- #
@@ -243,3 +281,106 @@ def test_provider_request_hooks_cannot_bypass_the_egress_screen(tmp_path: Path):
     assert result.status == "success"
     assert secret not in json.dumps(provider.calls)
     assert "[REDACTED]" in json.dumps(provider.calls)
+    model_call = next(
+        event for event in read_events(result.trace_path) if event["type"] == "model_call"
+    )
+    sent = provider.calls[0]
+    assert model_call["payload"]["request_hash"] == payload_hash(
+        {"system": sent["system"], "messages": sent["messages"], "tools": sent["tools"]}
+    )
+
+
+def _http_harness(tmp_path: Path, tools: str = "[{builtin: http_get}]") -> Path:
+    directory = tmp_path / "http"
+    construct.init_harness(directory, name="http", task="Fetch a public document.")
+    construct.set_field(directory, "loop.require_verification", "false")
+    construct.set_field(directory, "tools", tools)
+    return directory
+
+
+def test_undeclared_http_destination_fails_closed_without_an_operator(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(HttpGetTool, "run", lambda self, url="", **_: "fetched")
+    harness = _http_harness(tmp_path)
+    provider = FakeModelProvider(
+        [
+            tool_response("http_get", {"url": "https://example.com/doc"}, call_id="h1"),
+            text_response("done"),
+        ]
+    )
+
+    result = runner.run_harness(
+        harness, "go", provider=provider, literal_input=True, ingest=False
+    )
+
+    assert result.status == "success"
+    assert "was not approved" in json.dumps(provider.calls[1]["messages"])
+    decision = next(
+        event
+        for event in read_events(result.trace_path)
+        if event["type"] == "network_access_decision"
+    )
+    assert decision["payload"] == {
+        "host": "example.com",
+        "allowed": False,
+        "source": "fail_closed",
+    }
+
+
+def test_operator_can_approve_an_http_destination_for_the_run(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(HttpGetTool, "run", lambda self, url="", **_: "fetched")
+    harness = _http_harness(tmp_path)
+    requested: list[str] = []
+    provider = FakeModelProvider(
+        [
+            tool_response("http_get", {"url": "https://example.com/doc"}, call_id="h1"),
+            text_response("done"),
+        ]
+    )
+
+    result = runner.run_harness(
+        harness,
+        "go",
+        provider=provider,
+        literal_input=True,
+        ingest=False,
+        approve_network=lambda host: requested.append(host) or True,
+    )
+
+    assert result.status == "success"
+    assert requested == ["example.com"]
+    assert "fetched" in json.dumps(provider.calls[1]["messages"])
+
+
+def test_http_redirect_cannot_escape_the_approved_hosts():
+    with pytest.raises(ToolError, match="not declared"):
+        _validate_public_http_url("https://attacker.example/path", ("example.com",))
+
+
+def test_credentials_in_external_tool_arguments_are_blocked(tmp_path: Path, monkeypatch):
+    called = False
+
+    def run(self, url="", **_):
+        nonlocal called
+        called = True
+        return "fetched"
+
+    monkeypatch.setattr(HttpGetTool, "run", run)
+    harness = _http_harness(
+        tmp_path, "[{builtin: http_get, hosts: [example.com]}]"
+    )
+    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    provider = FakeModelProvider(
+        [
+            tool_response(
+                "http_get", {"url": f"https://example.com/{secret}"}, call_id="h1"
+            ),
+            text_response("done"),
+        ]
+    )
+
+    runner.run_harness(harness, "go", provider=provider, literal_input=True, ingest=False)
+
+    assert not called
+    assert "outbound tool call blocked" in json.dumps(provider.calls[1]["messages"])

@@ -8,7 +8,7 @@ import pytest
 from typing_extensions import TypedDict
 
 from hiveloom.models.provider import ToolCall
-from hiveloom.spec.schema import BuiltinToolRef, HarnessSpec
+from hiveloom.spec.schema import BuiltinToolRef, ConfinementConfig, HarnessSpec
 from hiveloom.tools.builtin import (
     FileReadTool,
     FileWriteTool,
@@ -191,6 +191,34 @@ def test_shell_legacy_rules_are_exact_and_wildcards_are_limited(tmp_path: Path):
         exact.run(command="git status --short")
     with pytest.raises(ToolError, match="cannot allow arbitrary"):
         ShellTool(tmp_path, allowed=[{"argv": ["git", "status"], "allow_extra_args": True}])
+
+
+def test_exact_shell_argv_remains_usable_without_os_isolation(tmp_path: Path):
+    (tmp_path / "visible.txt").write_text("ok", encoding="utf-8")
+    exact = ShellTool(
+        tmp_path,
+        allowed=["ls -1 ."],
+        confinement=ConfinementConfig(mode="off"),
+    )
+
+    assert "visible.txt" in exact.run(command="ls -1 .")
+
+
+def test_exact_recursive_shell_argv_cannot_walk_runtime_state_without_isolation(
+    tmp_path: Path,
+):
+    private = tmp_path / ".hiveloom"
+    private.mkdir()
+    (private / "secret.txt").write_text("needle", encoding="utf-8")
+    shell = ShellTool(
+        tmp_path,
+        allowed=["grep -r needle ."],
+        confinement=ConfinementConfig(mode="off"),
+        private_paths=[private],
+    )
+
+    with pytest.raises(ToolError, match="recursively traverse"):
+        shell.run(command="grep -r needle .")
 
 
 def test_http_get_rejects_private_addresses(tmp_path: Path):

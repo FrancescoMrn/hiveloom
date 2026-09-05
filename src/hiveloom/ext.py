@@ -75,6 +75,11 @@ class BuildContext:
     # set and process-spawning factories mask it rather than each keeping their
     # own idea of private state.
     private_paths: list[Path] = field(default_factory=list)
+    # The fully resolved per-run boundary. Unlike ``private_paths`` this can
+    # refresh dynamic entries such as .env files immediately before a spawn.
+    # Kept optional for extension compatibility and factories built outside a
+    # running harness.
+    run_boundary: Any = None
 
 
 class ModelInfo(BaseModel):

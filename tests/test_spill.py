@@ -210,6 +210,23 @@ def test_inheritance_is_an_explicit_grant_against_real_files(tmp_path: Path):
     assert "z" in heir.read(record.handle)
 
 
+def test_inherited_bytes_are_rechecked_after_authorization(tmp_path: Path):
+    producer = _store(tmp_path, run_id="run_one")
+    record = producer.spill(tool="t", content="z" * 500)
+    heir = _store(tmp_path, run_id="run_two")
+    manifest = {
+        "handle": record.handle,
+        "sha256": record.sha256,
+        "bytes": record.total_bytes,
+    }
+    source = tmp_path / "spill" / "run_one"
+    assert heir.inherit([manifest], source) == [record.handle]
+    (source / f"{record.handle}.txt").write_text("substituted", encoding="utf-8")
+
+    with pytest.raises(SpillError, match="no longer matches"):
+        heir.read(record.handle)
+
+
 def test_an_invented_handle_is_refused(tmp_path: Path):
     store = _store(tmp_path)
     store.spill(tool="t", content="z" * 500)
@@ -434,6 +451,7 @@ def test_a_fork_carries_the_objects_its_context_quotes(tmp_path: Path):
     # parent journal — not inferred from the transcript.
     record = fork_mod.load_fork(forked.directory)
     assert record["spill_handles"] == [handle]
+    assert record["spill_manifest"][0]["handle"] == handle
 
     resumed = runner.run_harness(
         forked.directory,
@@ -456,6 +474,33 @@ def test_a_fork_carries_the_objects_its_context_quotes(tmp_path: Path):
     # a preview it can never expand.
     tools = {t["name"] for t in _first_tools(resumed.trace_path)}
     assert "read_tool_result" in tools
+
+
+def test_an_unchained_journal_cannot_authorize_spill_inheritance(tmp_path: Path):
+    harness = _harness(tmp_path, BIG_TOOL, "report")
+    parent = runner.run_harness(
+        harness,
+        "go",
+        provider=FakeModelProvider(
+            [tool_response("report", {}, call_id="c1"), text_response("done")]
+        ),
+        literal_input=True,
+        ingest=False,
+    )
+    lines = []
+    trace_path = Path(parent.trace_path)
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        event.pop("prev", None)
+        lines.append(json.dumps(event))
+    trace_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    forked = fork_mod.create_fork(parent.trace_path, tmp_path / "unchained-fork")
+    record = fork_mod.load_fork(forked.directory)
+
+    assert record["spill_handles"] == []
+    assert record["spill_manifest"] == []
+    assert any("unchained" in warning for warning in forked.warnings)
 
 
 def _first_tools(trace_path) -> list[dict]:

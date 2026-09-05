@@ -14,6 +14,7 @@ tool calls, patch results, transform context). Guardrails always run first.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,7 +48,7 @@ from hiveloom.models.provider import (
 )
 from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
-from hiveloom.private import runtime_private_paths
+from hiveloom.private import RunBoundary
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry, ToolResult
 from hiveloom.verify.base import (
@@ -172,6 +173,8 @@ class AgentLoop:
         runtime_version: str = "",
         runtime_config: dict[str, Any] | None = None,
         hive_path: str | Path | None = None,
+        run_boundary: RunBoundary | None = None,
+        approve_network: Callable[[str], bool] | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
@@ -224,13 +227,16 @@ class AgentLoop:
         # (``recall_runs``) reads the same Hive the run will be ingested into
         # rather than whatever the ambient default happens to be.
         self._hive_path = hive_path
+        self._run_boundary = run_boundary or RunBoundary.resolve(
+            self._base, spec, hive_path=hive_path
+        )
+        self._approve_network = approve_network
+        self._network_decisions: dict[str, bool] = {}
         # The egress filter is built once: its patterns come from the spec, and
         # `logging.redact` feeds it too, so a pattern scrubbed from the journal
         # is also scrubbed from the provider request rather than only from the
         # record of it.
-        # `logging.redact` became a structured RedactionConfig; egress reuses
-        # only its regex list, which is what it matched against before.
-        self._egress = EgressFilter(spec.egress, spec.logging.redact.patterns)
+        self._egress = EgressFilter(spec.egress, spec.logging.redact)
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
         self._usage = Usage()
@@ -245,7 +251,7 @@ class AgentLoop:
         self._spill: SpillStore | None = None
         if spec.context.tool_results.max_inline_bytes:
             self._spill = SpillStore(
-                trace.path.parent / "spill",
+                self._run_boundary.spill_dir,
                 run_id=run_id,
                 config=spec.context.tool_results,
                 redact=trace.redact_text,
@@ -314,15 +320,19 @@ class AgentLoop:
             confinement={
                 **confine.describe(self._spec.confinement),
                 "private_paths": len(
-                    runtime_private_paths(
-                        self._base, self._spec, hive_path=self._hive_path
-                    )
+                    self._run_boundary.private_paths()
                 ),
             },
             egress={
-                "policy": egress_policy_name(self._spec.egress),
+                "policy": egress_policy_name(
+                    self._spec.egress, self._spec.logging.redact
+                ),
+                "active": self._egress.enabled,
                 "detect_credentials": self._spec.egress.detect_credentials,
             },
+            prompt_injection_boundary=confine.risk_facts(
+                self._spec, provider_egress_active=self._egress.enabled
+            ),
         )
         self._started_at = started.timestamp
         self._events.emit(
@@ -351,7 +361,10 @@ class AgentLoop:
             # model-visible text: quoting a handle must not be what grants
             # access to the object behind it.
             inherited = self._spill.inherit(
-                self._lineage.get("spill_handles") or [], self._spill.inherited_dir
+                self._lineage.get("spill_manifest")
+                or self._lineage.get("spill_handles")
+                or [],
+                self._spill.inherited_dir,
             )
             if inherited:
                 self._registry.activate(list(spill.TOOL_NAMES))
@@ -564,63 +577,9 @@ class AgentLoop:
         # provider call goes through here — act turns, compaction, playbook
         # gates — so there is one egress point rather than one per phase.
         system, messages, tools = self._screen_egress(system, messages, tools, phase)
-        input_tokens = self._router.provider.count_tokens(
-            system=system, messages=messages, tools=tools
-        )
-        self._state.pending_cost_usd = self._router.provider.estimated_cost(
-            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
-            self._router.config.id,
-            self._router.config.provider,
-        )
-        halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
-        if halt is not None:
-            self._state.pending_cost_usd = 0.0
-            raise GuardrailHalt(halt)
-        if phase == "compaction":
-            # An out-of-band request: a one-off summarisation prompt that is
-            # not part of the conversation. It is recorded inline (it is small,
-            # and it has no context events of its own) and flagged so the
-            # journal fold skips it instead of mistaking it for history.
-            self._trace.emit(
-                "model_call",
-                turn=self._state.turns,
-                phase=phase,
-                num_messages=len(messages),
-                inline=True,
-                system=system,
-                messages=messages,
-            )
-        else:
-            # The conversation itself is already journalled message by message;
-            # the system prompt and tool payload are journalled only when they
-            # change. So a model_call records what it *consumed*, not a copy of
-            # it — see hiveloom.logging.journal for the fold that reads it back.
-            system_hash = self._trace.emit_context_system(system)
-            tools_hash = self._trace.emit_context_tools(tools)
-            self._trace.emit(
-                "model_call",
-                turn=self._state.turns,
-                phase=phase,
-                num_messages=len(messages),
-                context_head=self._trace.context_head,
-                system_hash=system_hash,
-                tools_hash=tools_hash,
-                # The context meter. Both numbers are already known here —
-                # `input_tokens` was just counted for the cost guardrail — and
-                # recording them is what lets a reader see how close a call ran
-                # to the budget without re-tokenizing the whole conversation.
-                input_tokens=input_tokens,
-                max_input_tokens=self._spec.context.max_input_tokens,
-                # A checksum of what actually went on the wire. The fold
-                # reconstructs the persisted conversation; a `context_assemble`
-                # hook patches one request without persisting it, so this is
-                # how a reader detects that the reconstruction is not the whole
-                # story rather than silently believing it.
-                messages_hash=payload_hash(messages),
-            )
         self._events.emit("before_model_call", {"turn": self._state.turns, "phase": phase})
         # Request middleware: patches apply to this request only, and run
-        # after guardrails so a hook can never widen what a guardrail vetoed.
+        # before the final cost guardrail and wire journal are calculated.
         if self._events.has_handlers("before_provider_request"):
             for outcome in self._events.emit(
                 "before_provider_request",
@@ -655,6 +614,47 @@ class AgentLoop:
         # pass remains intentional: it also keeps default credential matches
         # out of the model-call journal payload.
         system, messages, tools = self._screen_egress(system, messages, tools, phase)
+        input_tokens = self._router.provider.count_tokens(
+            system=system, messages=messages, tools=tools
+        )
+        self._state.pending_cost_usd = self._router.provider.estimated_cost(
+            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
+            self._router.config.id,
+            self._router.config.provider,
+        )
+        halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
+        if halt is not None:
+            self._state.pending_cost_usd = 0.0
+            raise GuardrailHalt(halt)
+        if phase == "compaction":
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                inline=True,
+                system=system,
+                messages=messages,
+            )
+        else:
+            system_hash = self._trace.emit_context_system(system)
+            tools_hash = self._trace.emit_context_tools(tools)
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                context_head=self._trace.context_head,
+                system_hash=system_hash,
+                tools_hash=tools_hash,
+                input_tokens=input_tokens,
+                max_input_tokens=self._spec.context.max_input_tokens,
+                # Checksums describe the post-hook, post-screen wire request.
+                messages_hash=payload_hash(messages),
+                request_hash=payload_hash(
+                    {"system": system, "messages": messages, "tools": tools}
+                ),
+            )
         response = self._router.provider.complete(
             system=system,
             messages=messages,
@@ -900,6 +900,7 @@ class AgentLoop:
                     name=call.name,
                     handle=record.handle,
                     bytes=record.total_bytes,
+                    sha256=record.sha256,
                     omitted_bytes=record.omitted_bytes,
                 )
         return {"tool_use_id": call.id, "content": content, "is_error": result.is_error}
@@ -947,6 +948,55 @@ class AgentLoop:
                     event="before_tool_call",
                     hook=outcome["_handler"],
                     action="patch_input",
+                )
+        tool = self._registry.get(call.name)
+        if tool is not None and hasattr(tool, "network_destination"):
+            try:
+                hostname = tool.network_destination(call.input)
+            except Exception as exc:  # tool owns validation and its error text
+                return "block", str(exc)
+            if not tool.destination_allowed(hostname):
+                allowed = self._network_decisions.get(hostname)
+                if allowed is None:
+                    allowed = False
+                    if self._approve_network is not None:
+                        try:
+                            allowed = bool(self._approve_network(hostname))
+                        except Exception:
+                            allowed = False
+                    self._network_decisions[hostname] = allowed
+                    self._trace.emit(
+                        "network_access_decision",
+                        host=hostname,
+                        allowed=allowed,
+                        source="operator" if self._approve_network is not None else "fail_closed",
+                    )
+                if not allowed:
+                    return (
+                        "block",
+                        f"network destination '{hostname}' was not approved for this run",
+                    )
+                tool.approve_destination(hostname)
+        is_external = call.name.startswith("mcp__") or (
+            tool is not None and "network" in getattr(tool, "tags", [])
+        )
+        if is_external and self._egress.enabled:
+            # External tool arguments are an outbound boundary too. Redacting
+            # an action silently changes its meaning, so any match blocks the
+            # call regardless of whether provider requests use redact mode.
+            verdict = self._egress.apply(
+                "", [{"role": "tool", "content": call.input}], []
+            )
+            if not verdict.clean:
+                self._trace.emit(
+                    "tool_egress_blocked",
+                    name=call.name,
+                    patterns=verdict.findings,
+                )
+                return (
+                    "block",
+                    "outbound tool call blocked: its arguments matched "
+                    f"{verdict.summary()}",
                 )
         return None
 
@@ -1286,10 +1336,9 @@ class AgentLoop:
                 refs,
                 self._base,
                 confinement=self._spec.confinement,
-                trace_root=self._trace.path.parent,
-                private_paths=runtime_private_paths(
-                    self._base, self._spec, hive_path=self._hive_path
-                ),
+                trace_root=self._run_boundary.trace_dir,
+                private_paths=self._run_boundary.private_paths(),
+                run_boundary=self._run_boundary,
             ),
         ]
 
