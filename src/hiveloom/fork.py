@@ -49,6 +49,7 @@ from typing import Any
 
 import yaml
 
+from hiveloom.context.spill import handles_in_messages
 from hiveloom.errors import SpecError
 from hiveloom.logging.journal import (
     ContextState,
@@ -57,9 +58,17 @@ from hiveloom.logging.journal import (
     verify_chain,
 )
 from hiveloom.spec.loader import atomic_write_text
+from hiveloom.spec.schema import LoggingConfig
 
 FORK_FILE = "fork.yaml"
 CONTEXT_FILE = ".hiveloom/fork-context.json"
+#: Where a fork keeps the spilled results it inherited from its parent, beside
+#: the per-run directories the fork's own runs will write.
+INHERITED_DIR = "inherited"
+#: Where traces (and the spill objects beside them) live when the forked spec
+#: does not say. Read off the schema so a fork cannot drift from the default
+#: it is reconstructing.
+DEFAULT_TRACE_DIR = LoggingConfig.model_fields["trace_dir"].default
 
 # Where a fork belongs: inside the harness it came from, under the protected
 # workbench state rather than beside it. A fork is an experiment *on* a
@@ -287,6 +296,83 @@ def find_harness_source(trace_path: str | Path) -> Path | None:
     return None
 
 
+def _spilled_in_journal(events: list[dict[str, Any]], until_seq: int) -> set[str]:
+    """Handles the parent run is *recorded* as having minted, up to the fork point.
+
+    The journal is hash-chained and verified before this runs, so it is the one
+    trustworthy statement of which objects belong to the parent. Message text
+    is not: it is model-visible, and a transcript that mentions a handle must
+    never be what grants access to it.
+    """
+    return {
+        str(event.get("payload", {}).get("handle", ""))
+        for event in events
+        if event.get("type") == "tool_spilled" and event.get("seq", 0) <= until_seq
+    }
+
+
+def _carry_spill(
+    trace_path: str | Path,
+    snapshot: dict[str, Any],
+    target: Path,
+    state: ContextState,
+    minted: set[str],
+) -> tuple[list[str], list[str]]:
+    """Copy the spilled results this fork is entitled to inherit.
+
+    Two conditions, both required: the folded conversation still quotes the
+    handle (so the fork needs it), and the parent's verified journal says the
+    parent minted it (so the fork may have it). Returns
+    ``(inherited_handles, warnings)``.
+
+    A fork is a folder that must stand on its own, so the objects are copied in
+    rather than referenced across into the parent's trace directory.
+    """
+    quoted = [h for h in handles_in_messages(state.messages) if h in minted]
+    if not quoted:
+        return [], []
+    source = Path(trace_path).parent / "spill"
+    try:
+        trace_dir = (yaml.safe_load(snapshot["spec"]) or {}).get("logging", {}).get(
+            "trace_dir", DEFAULT_TRACE_DIR
+        )
+    except yaml.YAMLError:
+        trace_dir = DEFAULT_TRACE_DIR
+    configured = Path(trace_dir)
+    destination = (
+        (configured if configured.is_absolute() else target / configured) / "spill" / INHERITED_DIR
+    )
+
+    inherited: list[str] = []
+    missing: list[str] = []
+    for handle in quoted:
+        matches = list(source.glob(f"*/{handle}.txt")) + [source / f"{handle}.txt"]
+        body = next((path for path in matches if path.is_file()), None)
+        if body is None:
+            missing.append(handle)
+            continue
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            destination.chmod(0o700)
+            shutil.copy2(body, destination / body.name)
+            (destination / body.name).chmod(0o600)
+            meta = body.with_suffix(".json")
+            if meta.is_file():
+                shutil.copy2(meta, destination / meta.name)
+                (destination / meta.name).chmod(0o600)
+            inherited.append(handle)
+        except OSError:
+            missing.append(handle)
+    warnings: list[str] = []
+    if missing:
+        warnings.append(
+            f"{len(missing)} spilled tool result(s) could not be carried into the "
+            "fork; the previews in its context remain, but reading the omitted "
+            "bytes back will fail"
+        )
+    return inherited, warnings
+
+
 def create_fork(
     trace_path: str | Path,
     target_dir: str | Path,
@@ -350,6 +436,11 @@ def create_fork(
     override = _apply_model_override(target, model, model_provider)
     version_hash = _fork_version_hash(target)
 
+    inherited, spill_warnings = _carry_spill(
+        trace_path, snapshot, target, state, _spilled_in_journal(events, point.seq)
+    )
+    warnings.extend(spill_warnings)
+
     envelope = events[0]
     lineage = {
         "parent_run_id": envelope.get("run_id", ""),
@@ -360,6 +451,10 @@ def create_fork(
         "created_at": datetime.now(UTC).isoformat(),
         "context_file": CONTEXT_FILE,
         "harness_version_hash": version_hash,
+        # The manifest of spilled results this fork may read back. Authority
+        # travels as an explicit list written from the verified parent journal,
+        # never as "a handle appears in the transcript".
+        "spill_handles": inherited,
     }
     if override is not None:
         lineage["model_override"] = override

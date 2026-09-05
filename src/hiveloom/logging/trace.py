@@ -18,9 +18,10 @@ that reads it back.
 
 Event types: ``run_started``, ``context_append``, ``context_system``,
 ``context_tools``, ``model_call``, ``model_response``, ``tool_call``,
-``tool_update``, ``tool_result``, ``guardrail_triggered``, ``hook_triggered``,
-``hook_error``, ``context_compaction``, ``verification_result``,
-``run_finished``.
+``tool_update``, ``tool_result``, ``tool_spilled``, ``guardrail_triggered``,
+``hook_triggered``, ``hook_error``, ``context_compaction``,
+``provider_egress_redacted``, ``provider_egress_blocked``,
+``verification_result``, ``run_finished``.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import hashlib
 import json
 import re
 import threading
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -265,6 +267,13 @@ class TraceWriter:
     ):
         self._dir = ensure_trace_root(trace_dir)
         self._path = self._dir / f"{run_id}.jsonl"
+        # A journal records every tool result in full, so it is as sensitive as
+        # the data the run touched: readable by its owner, nobody else. Applied
+        # to the directory and to the file before anything is written to it.
+        with suppress(OSError, NotImplementedError):  # pragma: no cover - Windows
+            self._dir.chmod(0o700)
+            self._path.touch(mode=0o600, exist_ok=True)
+            self._path.chmod(0o600)
         self._run_id = run_id
         self._name = harness_name
         self._harness_id = harness_id
@@ -298,6 +307,11 @@ class TraceWriter:
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def version_hash(self) -> str:
+        """The harness version this run is recorded under."""
+        return self._version
 
     @property
     def context_head(self) -> int:
@@ -351,6 +365,7 @@ class TraceWriter:
                 "tool_update",
                 "tool_retry",
                 "tool_result",
+                "tool_spilled",
                 "guardrail_triggered",
                 "verification_result",
             }:
@@ -372,6 +387,15 @@ class TraceWriter:
 
     def redact(self, value: Any) -> Any:
         """Return an in-memory value scrubbed by the trace's logging policy."""
+        return self._redact(value)
+
+    def redact_text(self, value: str) -> str:
+        """Apply this run's redact patterns to text persisted outside the journal.
+
+        Spilled tool results live beside the journal and are as persistent as
+        it is, so they go through the same patterns. ``logging.redact`` must
+        not be escapable by being too large to inline.
+        """
         return self._redact(value)
 
     def _redact(self, value: Any) -> Any:

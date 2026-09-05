@@ -239,7 +239,15 @@ def test_build_registry_from_spec(tmp_path: Path):
         }
     )
     registry = build_registry(spec, tmp_path)
-    assert set(registry.names()) == {"file_read", "http_get"}
+    assert set(registry.active_names()) == {"file_read", "http_get"}
+    # The spill readers are registered but inactive: they cost nothing in the
+    # tool payload until a result actually spills.
+    assert set(registry.names()) == {
+        "file_read",
+        "http_get",
+        "read_tool_result",
+        "search_tool_result",
+    }
     payload = registry.anthropic_payload()
     assert all("input_schema" in t for t in payload)
 

@@ -1223,6 +1223,8 @@ def run(
                     "parent_run_id": record.get("parent_run_id", ""),
                     "forked_at_seq": record.get("at_seq"),
                     "parent_line_hash": record.get("parent_line_hash", ""),
+                    # The spilled results this fork was granted at fork time.
+                    "spill_handles": record.get("spill_handles") or [],
                 },
                 on_event=on_event,
                 run_id=run_id,

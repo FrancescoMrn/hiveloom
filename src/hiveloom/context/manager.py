@@ -3,10 +3,16 @@
 Owns the message history for every model call. Enforces ``max_input_tokens``:
 when the trigger fires, the configured compaction method runs (a catalog entry
 — ``truncate_oldest``/``summarize`` builtin, more via
-``ExtensionAPI.register_compaction``). Large tool results are truncated
-in-context with a marker (the full result is persisted to the trace by the
-loop). Every compaction is a trace event, and the ``before_compaction`` event
-lets hooks cancel a round or supply the summary themselves.
+``ExtensionAPI.register_compaction``). Every compaction is a trace event, and
+the ``before_compaction`` event lets hooks cancel a round or supply the summary
+themselves.
+
+Oversized tool results are handled before they get here, by
+:mod:`hiveloom.context.spill`: the loop stores them whole and passes a
+retrievable preview. The in-context truncation below is the backstop for what
+spilling does not cover (a blocked call's message, a harness that set
+``tool_results.max_inline_bytes: 0``) — it keeps the run inside the budget, but
+what it cuts is only recoverable from the trace afterwards.
 
 Every mutation of the message list is journalled as it happens — an append as
 ``context_append``, a compaction as ``context_compaction`` carrying the

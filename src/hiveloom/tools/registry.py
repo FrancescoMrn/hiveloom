@@ -365,14 +365,21 @@ class SearchToolsTool(Tool):
 
     def run(self, query: str = "", **_: Any) -> str:
         words = [w for w in query.lower().split() if w]
+        # Runtime machinery (the spill readers) is inactive but not deferred:
+        # the loop activates it when it has something to read. Offering it here
+        # would promise a capability with nothing to point it at.
+        candidates = [
+            tool
+            for tool in (self._registry.get(n) for n in self._registry.inactive_names())
+            if "meta" not in tool.tags
+        ]
         matches: list[Tool] = []
-        for name in self._registry.inactive_names():
-            tool = self._registry.get(name)
+        for tool in candidates:
             haystack = " ".join([tool.name, tool.description, " ".join(tool.tags)]).lower()
             if not words or any(w in haystack for w in words):
                 matches.append(tool)
         if not matches:
-            available = ", ".join(self._registry.inactive_names()) or "none"
+            available = ", ".join(t.name for t in candidates) or "none"
             return f"no deferred tools matched '{query}' (still inactive: {available})"
         self._registry.activate([t.name for t in matches])
         lines = [f"activated {len(matches)} tool(s):"]
@@ -436,6 +443,16 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
 
     if has_deferred:
         registry.register(SearchToolsTool(registry))
+    if spec.context.tool_results.max_inline_bytes:
+        # Registered *after* the deferred check and inactive: these are runtime
+        # machinery, not spec-deferred tools, so they must neither pull in
+        # search_tools nor be findable by it. The agent loop binds them to the
+        # run's store and activates them on the first spill — a harness that
+        # never spills never pays for them in its tool payload.
+        from hiveloom.context.spill import spill_tools  # local import to avoid cycles
+
+        for tool in spill_tools():
+            registry.register(tool, active=False)
     if spec.playbooks:
         registry.register(
             SwitchPlaybookTool([(p.name, p.description) for p in spec.playbooks])

@@ -21,7 +21,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
+from hiveloom.context.spill import SpillStore
 from hiveloom.egress import EgressFilter
 from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
@@ -228,6 +230,22 @@ class AgentLoop:
         self._tool_evidence: list[ToolEvidenceRecord] = []
         self._tool_evidence_truncated = False
         self._context.set_compaction_model_call(self._compaction_model_turn)
+        # Oversized tool results go to run-private storage beside the journal,
+        # readable only through the handle quoted in their preview. Redaction
+        # is applied on the way in, so a spilled object carries exactly what
+        # the journal would have carried.
+        self._spill: SpillStore | None = None
+        if spec.context.tool_results.max_inline_bytes:
+            self._spill = SpillStore(
+                trace.path.parent / "spill",
+                run_id=run_id,
+                config=spec.context.tool_results,
+                redact=trace.redact_text,
+            )
+            for name in spill.TOOL_NAMES:
+                tool = registry.get(name)
+                if tool is not None:
+                    tool.bind(self._spill)
 
     # ------------------------------------------------------------------ #
     # Public surface for policies and hooks
@@ -303,6 +321,19 @@ class AgentLoop:
 
         # Prior turns first, so the current input stays the newest message —
         # policies and compaction both rely on that position.
+        if self._spill is not None and self._lineage:
+            # A resumed fork re-enters a thread that quotes its parent's
+            # handles, and `hiveloom fork` copied those objects in. Authority
+            # comes from the fork record — written from the parent's *verified*
+            # journal — and never from the seeded transcript, which is
+            # model-visible text: quoting a handle must not be what grants
+            # access to the object behind it.
+            inherited = self._spill.inherit(
+                self._lineage.get("spill_handles") or [], self._spill.inherited_dir
+            )
+            if inherited:
+                self._registry.activate(list(spill.TOOL_NAMES))
+                self._trace.emit("spill_inherited", handles=inherited)
         self._context.seed_history(self._history)
         if not self._resume:
             self._context.add_user(self._run_input)
@@ -476,6 +507,11 @@ class AgentLoop:
 
     # ------------------------------------------------------------------ #
     def model_turn(self, *, phase: str = "act") -> ModelResponse:
+        if self._spill is not None and self._spill.handles:
+            # A playbook's tool subset replaces the active set outright, which
+            # would strand handles the context still quotes. Re-asserting here
+            # covers every path that narrows tools mid-run.
+            self._registry.activate(list(spill.TOOL_NAMES))
         system, messages = self._context.assemble()
         tools = self._registry.anthropic_payload()
         try:
@@ -766,11 +802,35 @@ class AgentLoop:
             )
             self._record_tool_evidence(call, result)
             dispatched.append(result)
-            results.append(
-                {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
-            )
+            results.append(self._result_block(call, result))
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
+
+    def _result_block(self, call: Any, result: Any) -> dict[str, Any]:
+        """The context-facing form of a finalized result, spilled if oversized.
+
+        Called *after* hooks and after-guardrails, so what gets stored is the
+        accepted canonical result rather than a value something later rejected
+        or rewrote. The journal keeps the whole result either way; this only
+        decides how much of it the model carries.
+        """
+        content = result.content
+        if self._spill is not None and call.name not in spill.EXEMPT_TOOLS:
+            record = self._spill.spill(tool=call.name, content=content)
+            if record is not None:
+                content = record.preview
+                # Deferred until now: the readers cost payload on every turn,
+                # and until something is spilled there is nothing to read.
+                self._registry.activate(list(spill.TOOL_NAMES))
+                self._trace.emit(
+                    "tool_spilled",
+                    id=call.id,
+                    name=call.name,
+                    handle=record.handle,
+                    bytes=record.total_bytes,
+                    omitted_bytes=record.omitted_bytes,
+                )
+        return {"tool_use_id": call.id, "content": content, "is_error": result.is_error}
 
     def _dispatch_parallel(self, response: ModelResponse) -> tuple[str | None, str | None]:
         plan: list[tuple[Any, str | None]] = []
@@ -816,9 +876,7 @@ class AgentLoop:
             )
             self._record_tool_evidence(call, result)
             dispatched.append(result)
-            results.append(
-                {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
-            )
+            results.append(self._result_block(call, result))
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
 

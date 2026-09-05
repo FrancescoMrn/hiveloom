@@ -471,6 +471,56 @@ class CompactionConfig(BaseModel):
         return value
 
 
+class ToolResultsConfig(BaseModel):
+    """How oversized tool results are kept out of context without being lost.
+
+    Above ``max_inline_bytes`` a result is written whole to run-private storage
+    and replaced in context by a head/tail preview plus an opaque handle; the
+    ``read_tool_result``/``search_tool_result`` tools appear automatically at
+    the first spill and read it back. See :mod:`hiveloom.context.spill`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_inline_bytes: int = Field(
+        default=16384,
+        ge=0,
+        le=10_000_000,
+        description=(
+            "Largest tool result shown inline, in UTF-8 bytes. Bigger results "
+            "are spilled to retrievable storage. 0 disables spilling (results "
+            "are then truncated in place, and the omitted part is unreadable "
+            "for the rest of the run)."
+        ),
+    )
+    preview_head_bytes: int = Field(
+        default=2048,
+        ge=0,
+        description="Leading bytes of a spilled result kept in context.",
+    )
+    preview_tail_bytes: int = Field(
+        default=1024,
+        ge=0,
+        description=(
+            "Trailing bytes of a spilled result kept in context. Worth keeping: "
+            "summary lines, totals, and error tails live at the end."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _preview_fits(self) -> ToolResultsConfig:
+        """A preview at least as large as the budget would spill nothing usefully."""
+        if self.max_inline_bytes:
+            preview = self.preview_head_bytes + self.preview_tail_bytes
+            if preview >= self.max_inline_bytes:
+                raise ValueError(
+                    f"preview_head_bytes + preview_tail_bytes ({preview}) must be "
+                    f"below max_inline_bytes ({self.max_inline_bytes}); a preview "
+                    "that big would replace a large result with something just as large"
+                )
+        return self
+
+
 class ContextConfig(BaseModel):
     """Context assembly, budgeting, and compaction policy."""
 
@@ -481,6 +531,10 @@ class ContextConfig(BaseModel):
     )
     strategy: Literal["rolling", "full", "summary"] = Field(
         default="rolling", description="How message history is assembled."
+    )
+    tool_results: ToolResultsConfig = Field(
+        default_factory=ToolResultsConfig,
+        description="Inline budget for tool results, and where the rest goes.",
     )
     compaction: CompactionConfig = Field(
         default_factory=CompactionConfig, description="Compaction trigger and method."
@@ -1431,7 +1485,16 @@ class HarnessSpec(BaseModel):
         refs = [*self.verify.validators]
         for playbook in self.playbooks:
             refs.extend(playbook.validators)
-        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        # The runtime-managed tools count as available: `switch_playbook` and
+        # `search_tools` are auto-added by the registry, and the spill readers
+        # are re-asserted by the loop while any handle is live, so naming them
+        # in a subset is redundant rather than wrong.
+        available = self.tool_names() | {
+            "switch_playbook",
+            "search_tools",
+            "read_tool_result",
+            "search_tool_result",
+        }
         for ref in refs:
             if not (
                 isinstance(ref, BuiltinValidatorRef)
