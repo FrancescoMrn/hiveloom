@@ -22,6 +22,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.context.manager import ContextManager
+from hiveloom.egress import EgressFilter
+from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
 from hiveloom.execution import (
     RunExecutionEnvelope,
@@ -213,6 +215,12 @@ class AgentLoop:
             provider,
         )
         self._control = control
+        # The egress filter is built once: its patterns come from the spec, and
+        # `logging.redact` feeds it too, so a pattern scrubbed from the journal
+        # is also scrubbed from the provider request rather than only from the
+        # record of it. `logging.redact` is a structured RedactionConfig; egress
+        # reuses only its regex list.
+        self._egress = EgressFilter(spec.egress, spec.logging.redact.patterns)
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
         self._usage = Usage()
@@ -271,6 +279,10 @@ class AgentLoop:
                 self._base,
                 include_files=self._spec.logging.snapshot_files,
             ),
+            egress={
+                "policy": egress_policy_name(self._spec.egress),
+                "detect_credentials": self._spec.egress.detect_credentials,
+            },
         )
         self._started_at = started.timestamp
         self._events.emit(
@@ -490,6 +502,10 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         phase: str,
     ) -> ModelResponse:
+        # The last thing that happens before content leaves the machine. Every
+        # provider call goes through here — act turns, compaction, playbook
+        # gates — so there is one egress point rather than one per phase.
+        system, messages, tools = self._screen_egress(system, messages, tools, phase)
         input_tokens = self._router.provider.count_tokens(
             system=system, messages=messages, tools=tools
         )
@@ -575,6 +591,10 @@ class AgentLoop:
                         hook=outcome["_handler"],
                         action="patch_request",
                     )
+        # Hooks are trusted harness code, but they can patch the exact wire
+        # request after the first pass above. Screen again at the actual egress
+        # point so no provider request can bypass the frozen policy.
+        system, messages, tools = self._screen_egress(system, messages, tools, phase)
         response = self._router.provider.complete(
             system=system,
             messages=messages,
@@ -652,6 +672,43 @@ class AgentLoop:
         if halt is not None:
             raise GuardrailHalt(halt)
         return response
+
+    def _screen_egress(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        phase: str,
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+        """Apply the egress policy to one outgoing request.
+
+        Findings are journalled as pattern names and counts. The matched text
+        is never recorded anywhere — a safeguard that logged what it caught
+        would be the leak it exists to prevent.
+        """
+        if self._egress is None or not self._egress.enabled:
+            return system, messages, tools
+        verdict = self._egress.apply(system, messages, tools)
+        if verdict.clean:
+            return system, messages, tools
+        if verdict.blocked:
+            self._trace.emit(
+                "provider_egress_blocked",
+                phase=phase,
+                patterns=verdict.findings,
+                mode="block",
+            )
+            raise GuardrailHalt(
+                "the request was blocked before it left the machine: it matched "
+                f"{verdict.summary()} (egress.mode is 'block')"
+            )
+        self._trace.emit(
+            "provider_egress_redacted",
+            phase=phase,
+            patterns=verdict.findings,
+            mode="redact",
+        )
+        return verdict.system, verdict.messages, verdict.tools
 
     def _dispatch_tools(self, response: ModelResponse) -> tuple[str | None, str | None]:
         """Dispatch a turn's tool calls.

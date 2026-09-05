@@ -847,6 +847,41 @@ class RetentionConfig(BaseModel):
         return self
 
 
+class EgressConfig(BaseModel):
+    """What may leave this machine in a model request. Frozen from evolution.
+
+    Defence in depth behind path isolation: pattern matching cannot recognise
+    arbitrary sensitive text, so this catches credentials, not secrets in
+    general. See :mod:`hiveloom.egress`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["redact", "block", "off"] = Field(
+        default="redact",
+        description=(
+            "'redact' replaces matches in the outgoing request (history keeps "
+            "what happened); 'block' refuses the request and halts the run; "
+            "'off' disables the check."
+        ),
+    )
+    detect_credentials: bool = Field(
+        default=True,
+        description=(
+            "Match well-known credential shapes (private keys, cloud keys, API "
+            "tokens, JWTs) in addition to the harness's own patterns."
+        ),
+    )
+    patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra regexes checked on the way out. `logging.redact` is applied "
+            "here too, so a pattern scrubbed from the journal is also scrubbed "
+            "from the provider request."
+        ),
+    )
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -1135,6 +1170,7 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "evolution.auto_propose",
     "evolution.trace_excerpts",
     "evolution.objectives",
+    "egress",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They
@@ -1240,6 +1276,10 @@ class HarnessSpec(BaseModel):
     )
     loop: LoopConfig = Field(default_factory=LoopConfig, description="Agent loop policy.")
     verify: VerifyConfig = Field(default_factory=VerifyConfig, description="Verification policy.")
+    egress: EgressConfig = Field(
+        default_factory=EgressConfig,
+        description="What may leave in a model request (frozen from evolution).",
+    )
     logging: LoggingConfig = Field(
         default_factory=LoggingConfig, description="Trace/logging policy."
     )
