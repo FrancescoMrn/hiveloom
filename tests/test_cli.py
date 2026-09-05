@@ -426,7 +426,18 @@ def test_guide_lists_every_topic():
     r = runner.invoke(app, ["guide", "--list", "--json"])
     assert r.exit_code == ExitCode.OK
     names = [t["name"] for t in _json(r)["topics"]]
-    assert names[:2] == ["agents", "all"]
+    assert names[:3] == ["agents", "all", "confinement"]
+    assert {
+        "spec",
+        "architecture",
+        "models",
+        "extending",
+        "journal",
+        "workbench",
+        "deploying",
+        "control-plane",
+        "sync-protocol",
+    } <= set(names)
     # One topic per lifecycle skill, named without the hiveloom- prefix.
     assert {"build", "run", "evolve", "extend", "ship"} <= set(names)
     assert all(t["description"] for t in _json(r)["topics"])
@@ -440,6 +451,14 @@ def test_guide_prints_raw_markdown():
     skill = runner.invoke(app, ["guide", "build"])
     assert skill.exit_code == ExitCode.OK
     assert "name: hiveloom-build" in skill.stdout
+
+    confinement = runner.invoke(app, ["guide", "confinement"])
+    assert confinement.exit_code == ExitCode.OK
+    assert "Agent = model + harness" in confinement.stdout
+
+    spec = runner.invoke(app, ["guide", "spec"])
+    assert spec.exit_code == ExitCode.OK
+    assert spec.stdout.startswith("# Harness spec reference")
 
 
 def test_guide_unknown_topic_is_a_spec_error():

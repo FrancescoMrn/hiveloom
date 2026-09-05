@@ -1,10 +1,12 @@
 # hiveloom for agents
 
-hiveloom turns a task into a **harness**: a self-contained folder
-(`harness.yaml` + code hooks) that scaffolds tools, loop policy, context
-strategy, guardrails, and verification around a small executor model. The CLI
-is agent-native: every command has `--json`, every mutating command validates
-the whole spec and rolls back on error, and the contract is machine-emittable
+hiveloom starts from **agent = model + harness**. It turns the harness for one
+repeatable task into a self-contained folder (`harness.yaml` + code hooks) that
+confines the task, tools, loop policy, context, budgets, guardrails, and
+verification around a small executor model. A capable builder agent can declare
+that boundary; the executor then runs inside it repeatedly. The CLI is
+agent-native: every command has `--json`, every mutating command validates the
+whole spec and rolls back on error, and the contract is machine-emittable
 (`hiveloom schema --json`). This file is the entry point for an agent driving
 the library; humans should start at [README.md](README.md).
 
@@ -22,12 +24,12 @@ the library; humans should start at [README.md](README.md).
    tools are the named exception: servers expose them dynamically at run time,
    so inspect them with `hiveloom mcp list-tools`.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
-   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-   `evolution.trace_excerpts`, and `evolution.objectives` are frozen from
-   evolution; the cost guardrail
-   defaults on; `shell` is
-   allowlist-only; foreign harness folders are trust-gated before their code
-   loads. Don't route around any of this on a user's behalf.
+   `egress`, `confinement`, `extensions`, `hooks`, `mcp_servers`,
+   `evolution.auto_propose`, `evolution.trace_excerpts`, and
+   `evolution.objectives` are frozen from evolution; the cost guardrail
+   defaults on; `shell` is allowlist-only; foreign harness folders are
+   trust-gated before their code loads. Don't route around any of this on a
+   user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
    `extensions`, `guide`, and `run --dry-run` never call the model API. A
    harness with `mcp_servers` is the one exception to "free": its tools are
@@ -41,7 +43,10 @@ the library; humans should start at [README.md](README.md).
 Focused skills live in [`skills/`](skills/README.md); the compact all-in-one
 variant is the root [`SKILL.md`](SKILL.md). Both ship inside the package, so
 without a checkout of this repository read them with `hiveloom guide --list`,
-then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file).
+then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file). The
+reference documents below also ship as guide topics: for example,
+`hiveloom guide confinement`, `hiveloom guide spec`, or
+`hiveloom guide architecture`.
 
 | You are asked to… | Load | Core commands |
 |---|---|---|
@@ -60,6 +65,8 @@ applying still needs an explicit `proposals apply`.
 
 ## Reference docs
 
+- [docs/task-confinement.md](docs/task-confinement.md) — the product boundary:
+  builder agent, executor model, runtime guarantees, and security limits.
 - [docs/spec.md](docs/spec.md) — the spec contract and builtins (the live
   source is `hiveloom schema`/`explain`).
 - [docs/architecture.md](docs/architecture.md) — components, data flow,

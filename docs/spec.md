@@ -1,10 +1,12 @@
 # Harness spec reference
 
-The harness spec is a declarative YAML document (`harness.yaml`) with code
-escape hatches (`path/to/file.py:function`). It is defined by the pydantic models
-in `src/hiveloom/spec/schema.py` — the authoritative, machine-checked source. Two
-commands emit the contract directly from that schema, so this document can never
-be the thing that drifts:
+The harness spec is the task-confinement contract: a declarative YAML document
+(`harness.yaml`) that fixes the task, available capabilities, autonomy limits,
+acceptance checks, and evolution boundary, with code escape hatches
+(`path/to/file.py:function`). It is defined by the pydantic models in
+`src/hiveloom/spec/schema.py` — the authoritative, machine-checked source. The
+commands below emit the contract directly from that schema, so this document
+can never be the thing that drifts:
 
 ```bash
 hiveloom schema --json        # the JSON schema
@@ -26,10 +28,12 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
 | `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `model`/`model_provider` (**always frozen**), `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
-| `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned` |
+| `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
+| `confinement` | OS confinement for spawned processes | `mode` (`auto`\|`off`\|`require`), `network`, `writable`, `hide_home`, `env_passthrough`, `timeout_seconds`, `max_output_bytes`, `max_memory_mb`, `max_processes`; **frozen from evolution** |
+| `egress` | What may leave in a model request | `mode` (`redact`\|`block`\|`off`), `detect_credentials`, `patterns`; **frozen from evolution** |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
 | `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all three nested policies are frozen |
 
@@ -39,7 +43,8 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
   (allowlist-only, disabled without one), `http_get`, `load_skill` (reads a
-  declared skill in full — progressive disclosure without a filesystem reader).
+  declared skill in full — progressive disclosure without a filesystem reader),
+  `recall_runs` (this harness's own prior runs, from the Hive).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
   `regex_output_filter` are *singletons*: only one entry is meaningful, so
@@ -47,8 +52,9 @@ List them with `hiveloom catalog <tools|guardrails|validators|policies|compactio
   default `max_cost_usd`) rather than appending a redundant second entry.
   `regex_output_filter` composes as a list — one entry per pattern.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
-  `file_exists`, `command_succeeds` (exit 0 = pass), `grounded_references`
-  (selected output IDs must occur in approved evidence from this run).
+  `file_exists`, `command_succeeds` (exit 0 = pass; `timeout` seconds, default
+  600, and confined like any other spawn), `grounded_references` (selected
+  output IDs must occur in approved evidence from this run).
 - **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
   ordered `loop.steps` list; object steps can enforce tools and call limits).
 - **Compaction:** `summarize`, `truncate_oldest`.
@@ -120,8 +126,10 @@ strings, null and missing values are ignored, and failure feedback lists only
 missing normalized references rather than the surrounding private records.
 
 A tool that declares a `run_context` parameter is handed the run context
-(`input`, `harness_dir`, `run_id`, and the caller's own `context` dict from
-`run_harness(context=...)`) instead of having the model supply it; the
+(`input`, `harness_dir`, `run_id`, `harness_id`, `harness_name`,
+`harness_version_hash`, `hive_path`, `artifacts`, and the caller's own
+`context` dict from `run_harness(context=...)`) instead of having the model
+supply it; the
 parameter is hidden from the tool's JSON schema and cannot be forged by a
 model-supplied key of the same name. A tool that returns a `ToolResult` may
 attach `Artifact(kind=..., data=...)` side-products, which reach the caller on
@@ -149,6 +157,253 @@ Construct the list with `hiveloom set evolution.objectives '...' --dir ./h
 list. Optional `source`, `scope`, and `unit` filters narrow the series. A finite
 `floor` or `ceiling` is a hard per-observation constraint, not a weighted
 preference. Objective policy is frozen from evolution.
+## Large tool results
+
+A tool result above `context.tool_results.max_inline_bytes` (16 KB by default)
+is **spilled**: the whole result is written to run-private storage beside the
+journal, and the model gets a bounded head/tail preview, the omitted byte
+count, and an opaque handle:
+
+```
+REPORT HEAD
+… first 2 KB …
+
+[hiveloom spill] handle=tr_9f2c1a04b7e35d16 — this result was 184320 bytes;
+181248 are omitted here and stored whole.
+Shown above: bytes 0-2048. Shown below: bytes 183296-184320.
+Read the omitted part with read_tool_result(handle="tr_…", offset=2048,
+limit=4096), or locate it first with search_tool_result(handle="tr_…",
+query="..."). Do not guess at the omitted content — read it.
+[/hiveloom spill]
+
+… last 1 KB …
+REPORT TAIL
+```
+
+`read_tool_result` and `search_tool_result` are added automatically, and stay
+**inactive until the first spill** — a harness that never spills never pays for
+them in its tool payload. Neither is spellable in a spec, and neither can be
+reached by `search_tools`.
+
+The point is that nothing is thrown away. Before, an oversized result was cut
+to its leading characters and the model was told the rest was in the trace —
+which its file tools deliberately cannot read, so the omitted part was gone for
+the rest of the run. Now the tail (where totals, summary lines and error
+messages live) survives in the preview, and everything between is one tool call
+away.
+
+Rules that keep it honest:
+
+- Spilling runs **after** `after_tool_call` hooks and guardrails, so what is
+  stored is the accepted canonical result — not a value something later
+  rewrote or rejected.
+- The journal still records the result in full; spilling changes only what the
+  model carries.
+- `logging.redact` is applied **before** the write. A spilled object carries
+  exactly what the journal would have carried.
+- **A handle is not a capability.** Authority is a recorded fact, never
+  inferred from a name: each run writes into its own `spill/<run_id>/`
+  directory (0700, objects created exclusively at 0600) and resolves handles
+  through a per-run map. Inventing one, guessing one, or quoting one back in
+  the conversation grants nothing — including in a resumed fork, whose
+  transcript is model-visible text.
+- **A fork inherits explicitly.** `hiveloom fork` copies the objects its
+  context quotes *and* the parent's hash-verified journal records as minted,
+  then writes the handle list into `fork.yaml`. The resumed run authorizes that
+  list, not whatever its messages happen to mention.
+- **`shell` never sees the store.** The retrieval tools are the only sanctioned
+  route from private storage into a model request; spawned processes have the
+  whole of [runtime-private state](#runtime-private-state) masked away, and a
+  `shell` harness will not run where that cannot be enforced.
+- Retrieval results are never themselves spilled, and a read is capped at
+  `max_inline_bytes`, so reading back can neither loop nor blow the budget.
+- Storage is best effort: if the object cannot be written, the full result goes
+  to the model unchanged.
+
+Set `max_inline_bytes: 0` to switch spilling off; oversized results are then
+truncated in place and the omitted part is unreadable for the rest of the run.
+A tool that truncates *its own* output before returning (`http_get` caps the
+response body) is outside this mechanism — the runtime can only preserve what
+the tool hands it.
+
+## Recalling prior runs
+
+`recall_runs` is opt-in memory: declare it and the executor can look up **this
+harness's own** earlier runs while it works.
+
+```yaml
+tools:
+  - builtin: recall_runs
+    limit: 3              # most runs per call (hard cap 10)
+    include_output: true  # include what a past success produced
+    scope: harness        # or: version — only runs of the version now executing
+```
+
+The model calls it with `status` (`success` for worked examples, `failed` for
+runs the validators rejected and why, `any` for both), an optional `query`
+matched against past tasks and outputs, and a `limit`. A failed run comes back
+with the verifier feedback that rejected it and any guardrail that fired —
+which is the part that makes it instructive rather than discouraging.
+
+The evolver already reads this history *between* runs; this makes the same
+evidence available *during* one. For a small executor, a worked example of the
+same task from the same harness is usually worth more than another paragraph of
+instruction.
+
+Three properties bound it:
+
+- **Own history only.** The harness key comes from the run context, not from
+  tool input, so there is no parameter through which a model could ask for
+  another harness's runs — or another harness's customer data.
+- **Already redacted.** The Hive is ingested from journals, and `logging.redact`
+  is applied before a journal is written, so recall can only return what the
+  record already kept. Set `include_output: false` where even that is too much.
+- **Bounded.** Runs per call and characters per field are both capped, and a
+  large recall spills like any other tool result.
+
+Recall reads the same Hive the run will be ingested into. A harness with no
+history yet gets a plain "nothing recorded" answer rather than an error.
+
+## Process confinement
+
+Two builtins start subprocesses: the `shell` tool (argv the *model* chose, from
+your allowlist) and the `command_succeeds` validator (a command *you* chose).
+Allowlisting which command may run is a different question from what it may do
+once it runs, and `confinement` answers the second:
+
+```yaml
+confinement:
+  mode: auto              # auto | off | require
+  network: false          # may spawned processes reach the network?
+  writable: true          # may they write inside the harness directory?
+  hide_home: true         # keep the user's home directory out of reach
+  env_passthrough: []     # extra environment variables to forward
+  timeout_seconds: 30     # wall-clock ceiling for a `shell` call
+  max_output_bytes: 1048576
+  max_memory_mb: 2048     # 0 = unlimited
+  max_processes: 0        # RLIMIT_NPROC; per-user, so 0 unless hiveloom owns the uid
+```
+
+Every spawn gets a **portable baseline**, on every platform: a scrubbed
+environment (an allowlisted command cannot read the API key that pays for the
+run — only `PATH`, `HOME`, locale, and anything in `env_passthrough` survive),
+closed stdin, its own session so a timeout kills the whole process tree rather
+than orphaning a backgrounded grandchild, POSIX resource limits, and output
+streamed through bounded head/tail collectors so a runaway writer cannot
+exhaust the runtime's memory or disk.
+
+Where the platform has a sandbox — `bwrap` (bubblewrap) on Linux,
+`sandbox-exec` on macOS — it also gets **kernel-enforced isolation**: the
+filesystem readable but writable only inside the harness directory, a private
+`/tmp` (another process's scratch files are not part of the machine a command
+gets to see), no network at all unless `network: true`, and — unless
+`hide_home: false` — no access to the user's home directory, where SSH keys,
+cloud credentials, shell history and the Hive itself live.
+
+`HOME` never points at the operator's home either: a confined command gets a
+private scratch directory, so a tool that looks for credentials by convention
+finds an empty one. That part holds on every platform, backend or not. A
+harness that lives *inside* home is still reachable — the directory a command
+runs in is always bound in, and hiding home does not undo that.
+
+### Runtime-private state
+
+One resolver — `hiveloom.private.runtime_private_paths` — decides what counts as
+the runtime's own state, and every builtin that reads files or starts a process
+uses it, so the definition cannot drift between them:
+
+- `.hiveloom/` and the configured trace directory (wherever it is, inside the
+  harness or out), which hold the journal — every tool result, in full;
+- the spill store beside it;
+- the Hive database and its `-wal`/`-shm` sidecars;
+- the trust and authorized-key stores, and `$HIVELOOM_HOME`;
+- `.env` and other credential files (re-read per spawn, so one written mid-run
+  is private from the moment it exists).
+
+When an OS sandbox backend is active, spawned processes cannot reach any of it.
+Directories are masked with an empty mount and files with an inaccessible one,
+applied *after* the harness bind so a path inside the harness is hidden while
+the directory around it stays readable. Masks are applied to resolved targets,
+so a symlink pointing into private state leads to the mask, not around it. On
+every platform, the `shell` tool also refuses *arguments* that resolve into
+those paths. That catches the direct form (`grep secret .hiveloom/traces`) but
+not a recursive walk that never names the directory; only the optional kernel
+mask stops that class of read.
+
+### Modes, and what happens without a backend
+
+`mode` decides what happens when no backend exists:
+
+- **`auto`** (default) — uses the strongest available backend, otherwise runs
+  with the portable controls. A missing backend never blocks the run.
+- **`require`** — refuses to spawn anything without a sandbox, `shell` or not.
+- **`off`** — skips backend discovery: portable controls only, with shell
+  private-path argument refusal still applied. (`off` is a YAML boolean
+  unquoted; the spec takes it either way.)
+
+The baseline is a scrubbed environment, resource limits and a timeout. It is
+**not** filesystem isolation, and nothing in the runtime describes it as such.
+
+```bash
+hiveloom confinement <harness>   # what THIS machine will enforce for that harness
+hiveloom confinement             # the machine's capability alone
+hiveloom confinement <harness> --json
+```
+```json
+{
+  "ok": true,
+  "backend": "bwrap",
+  "filesystem_isolated": true,
+  "runtime_state_hidden": true,
+  "network_isolated": true,
+  "home_hidden": true,
+  "provider_egress_policy": "redact"
+}
+```
+
+A directory that is named must load — the diagnostic will not answer for a
+harness that does not exist by falling back to defaults it never declared.
+
+The resolved backend is recorded in `run_started`, so a journal states whether
+a run's processes were really isolated rather than implying it from the spec.
+
+`confinement` is frozen from evolution: a harness that could widen its own
+containment does not have one. And the boundary is around *spawned processes* —
+code hooks, extensions, and MCP servers still run with the permissions of the
+hiveloom process by design, gated by the trust prompt. See
+[task confinement](task-confinement.md).
+
+## What may leave the machine
+
+Capability scoping limits what a model may read. `egress` is the last check on
+what leaves: the exact system prompt, messages, and tool schemas handed to the
+provider are inspected after request hooks and before the call.
+
+```yaml
+egress:
+  mode: redact          # redact | block | off
+  detect_credentials: true
+  patterns: []          # extra regexes, on top of logging.redact
+```
+
+`redact` (the default) replaces matches in the outgoing copy; history keeps
+what actually happened, so the journal stays a true record and the model simply
+never carries the secret onward. `block` refuses the request and halts the run
+instead. Both journal a `provider_egress_redacted` / `provider_egress_blocked`
+event carrying pattern names and counts — never the matched text, because a
+safeguard that recorded what it caught would be the leak it exists to prevent.
+
+Two sources of patterns: the harness's own `logging.redact` (so a pattern that
+scrubs the journal also scrubs the request — previously it protected the record
+of a leak rather than preventing it) and well-known credential shapes (private
+key blocks, AWS keys, Anthropic/OpenAI/GitHub/Slack/Google tokens, JWTs, bearer
+headers).
+
+This is defence in depth, not a prompt-injection detector. Pattern matching
+cannot recognise arbitrary sensitive text — a previous run's customer data is
+not shaped like a credential. Prefer narrow typed tools for untrusted input;
+if a harness exposes a general-purpose shell and private runtime state must be
+unreachable, use `confinement.mode: require`. `egress` is frozen from evolution.
 
 ## Playbooks
 
@@ -304,6 +559,16 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 4. Redaction patterns are applied before any trace is persisted.
 5. The cost guardrail defaults **on** (`max_cost_usd: 1.00`) even if omitted from
    a spec.
+6. Every subprocess the runtime spawns runs with a scrubbed environment, a
+   timeout, bounded output and resource limits. OS isolation is opportunistic
+   in `auto`, mandatory only in `require`, and skipped in `off`; the reported
+   confinement facts never describe the portable baseline as isolation.
+8. A spill handle grants no authority on its own: it resolves only in the run
+   that minted it, or in a fork that inherited it explicitly from a verified
+   parent journal.
+9. Outgoing provider requests are screened by `egress` before they leave.
+7. `recall_runs` is scoped to the running harness from the run context, so no
+   tool input can widen it to another harness's evidence.
 
 ## The harness directory
 

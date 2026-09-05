@@ -1,8 +1,9 @@
 # hiveloom agent skills
 
 A series of focused [Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)
-for driving hiveloom. Each is a self-contained `SKILL.md` an agent loads on
-demand; together they cover the full lifecycle:
+for driving hiveloom. The coding agent is the harness builder; a smaller model
+executes the resulting task boundary. Each skill is a self-contained `SKILL.md`
+an agent loads on demand; together they cover the full lifecycle:
 
 | Skill | Use when |
 |---|---|
@@ -35,7 +36,8 @@ convention expects.
 These files also ship inside the package, so an agent with hiveloom installed
 and no checkout can read them directly: `hiveloom guide --list`, then
 `hiveloom guide build` (or `run`/`eval`/`evolve`/`extend`/`ship`, `all` for the
-compact variant).
+compact variant). `hiveloom guide confinement` explains the product boundary
+and its security limits.
 
 > Not to be confused with a *harness's own* `skills/` folder
 > (`hiveloom add skill …`), which holds progressive-disclosure instructions for

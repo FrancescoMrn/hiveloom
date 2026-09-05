@@ -7,7 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-04
+
+The containment and evidence release. Large tool results stay retrievable
+instead of being truncated away, a harness can read its own run history while
+it works, and provider egress and subprocess capabilities have inspectable
+boundaries. Alongside that, runs return a complete execution envelope,
+evaluation gains a resumable native runner with reports and paired
+comparisons, and evolution reasons over recorded friction and metric
+objectives rather than raw failure counts.
+
 ### Added
+
+
+- **Opt-in model retrieval of prior runs.** A new `recall_runs` builtin tool
+  lets the executor look up this harness's own earlier runs while it works:
+  successes as worked examples, failures with the verifier feedback and
+  guardrail triggers that rejected them, optionally filtered by a query over
+  past tasks and outputs. The evolver already read that history between runs;
+  this makes it available during one. The harness key comes from the run
+  context rather than tool input, so no call can reach another harness's
+  evidence, and recall returns only what the journal already kept after
+  `logging.redact`. Runs per call and characters per field are capped
+  (`limit`, `include_output`, `scope: harness|version`). The Hive now stores
+  each run's final output (capped) alongside its task, and the run context
+  gained `harness_id`, `harness_name`, `harness_version_hash`, and `hive_path`.
+
+- **OS-level confinement for spawned processes.** The `shell` tool and the
+  `command_succeeds` validator no longer run with the full permissions,
+  environment, and lifetime of the hiveloom process. Every spawn now gets a
+  portable baseline — scrubbed environment (the runtime's API keys are not
+  inherited), closed stdin, its own session so a timeout kills the whole
+  process tree, POSIX resource limits, and output captured under a cap — plus
+  kernel-enforced filesystem and network isolation where the platform has a
+  sandbox (`bwrap` on Linux, `sandbox-exec` on macOS), which also masks the
+  user's home directory — SSH keys, cloud credentials, the Hive — and gives the
+  command a private `/tmp` and a scratch `HOME`. Configured by a new frozen
+  `confinement` spec section (`mode: auto|off|require`, `network`,
+  `writable`, `hide_home`, `env_passthrough`, `timeout_seconds`, `max_output_bytes`,
+  `max_memory_mb`, `max_processes`); `hiveloom confinement` reports what a
+  machine can actually enforce, and `run_started` records the backend that ran.
+  The harness's own `.hiveloom` and trace directory are masked from every spawn,
+  so a harness that allowlists `grep` cannot read back the journal or another
+  run's spilled results; the `shell` tool refuses arguments naming those paths
+  on every platform, and `max_output_bytes` is enforced while the command runs
+  rather than after it exits. `command_succeeds` also gained a `timeout`
+  (default 600s) — a validator that never returned used to hang the run with no
+  verdict at all.
+
+- **Retrievable tool-output spilling.** A tool result above
+  `context.tool_results.max_inline_bytes` (16 KB by default) is written whole
+  to run-private storage beside the journal and replaced in context by a
+  head/tail preview, an omitted-byte count, and an opaque handle. Two tools,
+  `read_tool_result` and `search_tool_result`, are added automatically and stay
+  inactive until the first spill, so a harness that never spills pays nothing
+  for them. Previously an oversized result was cut to its leading characters
+  and the model was pointed at the trace, which its file tools cannot read —
+  the omitted part, including the tail where totals and error messages live,
+  was unrecoverable for the rest of the run. Spilling runs after tool-result
+  hooks and guardrails (what is stored is the accepted result), applies
+  `logging.redact` before the write, keeps the full result in the journal, and
+  falls back to the unchanged result if storage fails. Handles resolve only in
+  the run that minted them; `hiveloom fork` carries the objects a fork's
+  context still quotes, so a resumed fork can read them too. Objects are stored
+  0600 in a 0700 directory, masked from spawned processes by confinement, and
+  searched in overlapping windows rather than loaded into memory.
+
+- **The product and reference documentation now ships as an agent-native guide
+  surface.** `hiveloom guide confinement` explains `agent = model + harness`,
+  the builder-agent and small-executor roles, the enforced task boundary, and
+  its security limits. `guide --list --json` also discovers the spec,
+  architecture, models, extension, journal, workbench, deployment,
+  control-plane, and sync references, all readable from an installed wheel
+  without a repository checkout.
+
+- **A single definition of runtime-private state, enforced everywhere.**
+  `hiveloom.private.runtime_private_paths` resolves `.hiveloom`, the trace and
+  spill directories (wherever configured), the Hive and its WAL sidecars, the
+  trust store, `$HIVELOOM_HOME` and `.env` files; the file tools, the shell
+  tool and the sandbox all use that one set instead of three drifting copies.
+  Spawned processes get directories masked with empty mounts and files with
+  inaccessible ones, applied to resolved targets so a symlink into private
+  state leads to the mask rather than around it.
+- **A spill handle is no longer a capability.** Each run writes to its own
+  `spill/<run_id>/` directory (0700, objects created exclusively at 0600) and
+  resolves handles through a per-run authorization map. Quoting a handle in the
+  conversation no longer grants access to it — a resumed fork inherits an
+  explicit list that `hiveloom fork` writes from the parent's hash-verified
+  journal, not from the transcript.
+- **A provider-egress safeguard.** A new frozen `egress` section screens the
+  exact request before it leaves for the model provider: `logging.redact`
+  patterns now apply on the way out as well as to the journal, well-known
+  credential shapes are detected by default, and matches are redacted
+  (`mode: redact`) or the request is refused (`mode: block`). Findings are
+  journalled as pattern names and counts as `provider_egress_redacted` /
+  `provider_egress_blocked` — never the matched text.
+- **`hiveloom confinement --json`** reports outcomes rather than intentions:
+  `filesystem_isolated`, `runtime_state_hidden`, `network_isolated`,
+  `home_hidden`, `provider_egress_policy`. The same resolved facts go into
+  `run_started`, with no absolute paths — a journal is shareable, and the
+  layout of the machine that produced it is not part of the run.
 
 - Provider responses can report the served model, provider request ID, billed
   amount and currency, a USD conversion, opaque reasoning replay data, and
@@ -100,6 +199,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The offline `ranked-retrieval` harness demonstrates a search-and-verify tool,
   enforced retrieval and answer phases, grounded synthetic IDs, and a local
   eval with Recall@3, nDCG@3, and hallucination-rate objectives.
+
+
+### Changed
+
+- **OS isolation is optional.** The default `auto` uses a sandbox when one is
+  available and otherwise continues with portable controls; only an explicit
+  `confinement.mode: require` refuses to run without a backend. This keeps the
+  prompt-safety layer cross-platform without misreporting a scrubbed environment
+  or argument checks as filesystem isolation. Shell remains an explicit escape
+  hatch: use `require` when untrusted input and runtime-state confidentiality
+  meet in the same harness.
+- **Subprocess output is streamed through bounded collectors** instead of
+  captured to temporary files: a command that writes a gigabyte now costs
+  neither memory nor disk, keeps a bounded head *and* tail, and reports how
+  many bytes were dropped. `search_tool_result` likewise scans a spilled object
+  in overlapping windows rather than loading it.
+- **Spawned processes no longer inherit the runtime's environment, network, or
+  home directory.** This is a behavior change for existing harnesses that use
+  `shell` or `command_succeeds`, and each part has a knob:
+  a command needing credentials or `PYTHONPATH` lists them in
+  `confinement.env_passthrough`; one that installs dependencies or calls a
+  service needs `confinement.network: true`; one that uses a toolchain cache
+  under `$HOME` (cargo, npm, pip, pyenv) needs `confinement.hide_home: false`;
+  and `confinement.mode: off` skips the OS sandbox. Environment scrubbing,
+  bounded output, resource limits and timeout always apply. Only the network
+  and filesystem parts are kernel-enforced, and only where a sandbox backend
+  exists — `hiveloom confinement` says which apply on a given machine.
+- `command_succeeds` now runs under a timeout (default 600s, configurable with
+  `timeout`) and through the platform's shell rather than a hardcoded
+  `/bin/sh`, so it works on Windows.
+- The journal directory and its files, and the spill store beside them, are
+  created 0700/0600 rather than world-readable.
+- Spawned processes can no longer reach the harness's `.hiveloom` or trace
+  directory. This also applies to `command_succeeds`: a validator that read the
+  journal (rare, and better served by a code validator, which runs in-process)
+  needs `confinement.mode: off`.
+- The distribution version is derived from `hiveloom.__version__` instead of
+  being repeated in `pyproject.toml`, so a wheel cannot be published under a
+  version the module does not report.
 
 ### Fixed
 

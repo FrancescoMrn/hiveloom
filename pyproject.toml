@@ -71,6 +71,16 @@ packages = ["src/hiveloom"]
 "AGENTS.md" = "hiveloom/agent_docs/AGENTS.md"
 "SKILL.md" = "hiveloom/agent_docs/SKILL.md"
 "skills" = "hiveloom/agent_docs/skills"
+"docs/task-confinement.md" = "hiveloom/agent_docs/docs/task-confinement.md"
+"docs/spec.md" = "hiveloom/agent_docs/docs/spec.md"
+"docs/architecture.md" = "hiveloom/agent_docs/docs/architecture.md"
+"docs/models.md" = "hiveloom/agent_docs/docs/models.md"
+"docs/extending.md" = "hiveloom/agent_docs/docs/extending.md"
+"docs/journal.md" = "hiveloom/agent_docs/docs/journal.md"
+"docs/workbench.md" = "hiveloom/agent_docs/docs/workbench.md"
+"docs/deploying-and-evolving.md" = "hiveloom/agent_docs/docs/deploying-and-evolving.md"
+"docs/control-plane.md" = "hiveloom/agent_docs/docs/control-plane.md"
+"docs/sync-protocol.md" = "hiveloom/agent_docs/docs/sync-protocol.md"
 
 # The sdist carries the library, the example harnesses, and the agent
 # guidance — nothing else. The wheel deliberately ships only the library and
@@ -84,6 +94,16 @@ only-include = [
     "skills",
     "AGENTS.md",
     "SKILL.md",
+    "docs/task-confinement.md",
+    "docs/spec.md",
+    "docs/architecture.md",
+    "docs/models.md",
+    "docs/extending.md",
+    "docs/journal.md",
+    "docs/workbench.md",
+    "docs/deploying-and-evolving.md",
+    "docs/control-plane.md",
+    "docs/sync-protocol.md",
     "README.md",
     "LICENSE",
 ]

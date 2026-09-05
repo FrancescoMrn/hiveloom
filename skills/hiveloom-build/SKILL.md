@@ -10,9 +10,11 @@ description: >-
 
 # Building a hiveloom harness
 
-A harness is a self-contained folder (`harness.yaml` + code hooks) that
-scaffolds tools, loop policy, context strategy, guardrails, and verification
-around a small executor model (default `claude-haiku-4-5`).
+A harness is the task-specific half of **agent = model + harness**: a
+self-contained folder (`harness.yaml` + code hooks) that declares the tools,
+loop policy, context, budgets, guardrails, and verification around a small
+executor model (default `claude-haiku-4-5`). You are the builder agent; create a
+boundary that lets that smaller model perform one repeatable job reliably.
 
 **Never hand-edit `harness.yaml`.** Drive the CLI — every mutating command
 validates the full spec and rolls back on error, so the folder is never left

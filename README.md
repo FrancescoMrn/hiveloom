@@ -7,13 +7,14 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/FrancescoMrn/hiveloom/blob/main/pyproject.toml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/FrancescoMrn/hiveloom/blob/main/LICENSE)
 
-**Build durable agent harnesses so smaller models can perform repeatable,
-verifiable tasks.**
+**Confine an agent to one job — and make success provable.**
 
-A model is only one part of an agent. Tools, context, loop policy, guardrails,
-and verification often decide whether the same model succeeds or fails.
-hiveloom makes that surrounding system a self-contained folder that can be
-validated, versioned, run anywhere, measured, and deliberately improved.
+**An agent is a model plus its harness.** hiveloom turns the harness for a
+repeatable task into a self-contained folder: the task, tools, context, budgets,
+stopping rules, and validators that decide whether the result may be returned
+as a success. A human or a capable coding agent can declare that boundary; a
+smaller model can then execute inside it repeatedly. The runtime enforces what
+the prompt alone cannot.
 
 ![Task success by model, raw versus the same model inside a hiveloom harness](https://raw.githubusercontent.com/FrancescoMrn/hiveloom/main/docs/assets/01-task-success.png)
 
@@ -23,24 +24,50 @@ at this sample size, and one is slightly worse. Which is the point:
 [the evidence is measured per task and model](#measured-performance), not
 assumed.
 
-> **Status:** `1.0.0`. The spec, CLI, Python SDK, runtime, journal/Hive
+> **Status:** `1.1.0`. The spec, CLI, Python SDK, runtime, journal/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
 > serving surfaces are implemented, along with playbooks, structured artifacts,
 > run control, and a tamper-evident run journal you can fork from, replay, and
 > read in [the workbench](#the-workbench).
 
-## The moat: Your harness is the product
+## Why hiveloom: task confinement
 
-- **A durable artifact:** `harness.yaml` and its code hooks replace fragile,
-  conversation-only setup.
-- **One validated construction path:** CLI edits and model-generated plans use
-  the same transactional API; invalid changes roll back.
-- **Closed-loop evidence:** every run produces a version-hashed trace, so
-  `stats` can show whether a harness change improved success, cost, or turns.
-- **Safety outside the model:** cost limits, tool allowlists, redaction,
-  verification, and frozen evolution fields are enforced in code.
-- **Open and portable:** builtins, extension packs, custom providers, and MCP
-  tools share one runtime contract; a harness remains a normal folder.
+A general agent starts with broad capabilities and works out how to use them. A
+hiveloom harness starts with one job and declares its operating boundary:
+
+| The harness confines | How |
+|---|---|
+| **Purpose** | One task and one system prompt travel with the harness. |
+| **Capabilities** | Only declared tools, skills, playbooks, and MCP servers enter the loop. |
+| **Autonomy** | Turn, time, cost, context, and tool policies stop unbounded execution. |
+| **Acceptance** | Deterministic validators — not the model — decide whether an answer counts as success. |
+| **Change** | Evolution is limited to declared mutable fields; safety-critical fields stay frozen. |
+| **Evidence** | Every run is tied to the exact harness version and written to a checkable journal. |
+
+The result is more reliable than a prompt and narrower than a general-purpose
+agent: a portable, versioned agent program for a task you can define and check.
+CLI edits and model-generated plans use the same transactional construction API,
+so invalid changes roll back instead of leaving a half-valid harness.
+
+The interface is agent-native on both sides. A builder agent can inspect the
+machine-readable schema and catalog, then create or change the harness through
+commands that all support `--json`. Once deployed, another agent can call that
+harness as an MCP tool and receive a structured, validator-checked result. The
+harness turns broad intelligence at build time into bounded, economical
+execution at run time.
+
+This is **task confinement**, not a claim that arbitrary hook code runs in a
+virtual machine. Builtin file access is rooted, shell commands are allowlisted,
+foreign harnesses are trust-gated, and containers can provide a stronger
+deployment boundary. Read [what a harness confines](docs/task-confinement.md)
+for the exact boundary.
+
+For prompt injection, the design confines consequences rather than claiming to
+recognize every malicious instruction: injected text cannot add capabilities,
+authorize spilled data, change frozen policy, or mark its own result successful,
+and provider egress screens credentials and configured sensitive patterns.
+Generic shell is the sharp edge; omit it for untrusted input, or require OS
+confinement when the shell must not see runtime-private state.
 
 The *hive* is the collective memory of runs. The *loom* turns task intent and
 that evidence into an improvable harness.
@@ -462,10 +489,12 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - The shell tool is disabled unless explicitly configured and remains
   allowlist-only.
 - Redaction runs before trace persistence.
+- Provider egress screens the final request after request hooks.
 - Foreign harness code is trust-gated before loading.
 
 ## Documentation
 
+- [Task confinement: the product boundary](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/task-confinement.md)
 - [Agent entry point](https://github.com/FrancescoMrn/hiveloom/blob/main/AGENTS.md) and [lifecycle skills](https://github.com/FrancescoMrn/hiveloom/blob/main/skills/README.md)
 - [Evaluations](https://github.com/FrancescoMrn/hiveloom/blob/main/evals/README.md)
 - [Local eval SDK and spec](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/evaluating.md)

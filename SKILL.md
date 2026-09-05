@@ -12,12 +12,17 @@ description: >-
 
 # hiveloom
 
-hiveloom turns a task into a **harness**: a self-contained folder (`harness.yaml`
-+ code hooks) that scaffolds tools, loop policy, context strategy, guardrails,
-and verification around a small executor model (default `claude-haiku-4-5`). The
-harness — not the conversation — is the durable, versionable, improvable
-artifact. Run traces are memory (the *Hive*), and an evolve loop improves the
-harness after failures.
+hiveloom starts from **agent = model + harness**. It turns the harness for one
+repeatable task into a self-contained folder (`harness.yaml` + code hooks) that
+declares tools, loop policy, context, budgets, guardrails, and verification
+around a small executor model (default `claude-haiku-4-5`). A capable builder
+agent can construct that boundary through the machine-readable CLI; the small
+model then executes inside it repeatedly. The harness — not the conversation —
+is the durable, versionable, improvable artifact. Run traces are memory (the
+*Hive*), and an evolve loop improves the harness after failures.
+
+Read `hiveloom guide confinement` when the task requires the precise product
+boundary, including what task confinement does and does not guarantee.
 
 This is the compact all-in-one skill. Focused per-stage skills (build / run /
 evolve / extend / ship) live in [`skills/`](skills/README.md), and

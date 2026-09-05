@@ -164,6 +164,28 @@ commands report pruned evidence instead of following a stale path. If the same
 run was re-ingested from another durable location, pruning an older copy does
 not clear that newer reference. At-rest encryption is not part of this policy;
 it needs a separate key storage, rotation, and recovery design.
+### What confined the run
+
+`run_started` carries a `confinement` record — the declared mode and the
+backend that was actually available on the machine. A spec asking for
+`mode: auto` says nothing about whether a sandbox existed; the journal says
+which one ran, so "these processes were isolated" is a checkable claim about a
+particular run rather than a property of the configuration. See
+[Process confinement](spec.md#process-confinement).
+
+### Spilled tool results
+
+A tool result too large to inline is stored whole under `trace_dir/spill/` and
+reaches the model as a preview plus a handle (see
+[Large tool results](spec.md#large-tool-results)). The journal is unaffected:
+`tool_result` still carries the complete content, and a `tool_spilled` event
+records the handle, the total size, and how many bytes the model did not see —
+so a trace shows both what the tool produced and what the run actually reasoned
+over. Redaction is applied to spill objects exactly as it is to the journal.
+
+`hiveloom fork` copies the objects a fork's context still quotes into the
+fork's own trace directory, so a resumed fork can read them back rather than
+inheriting previews it can never expand.
 
 ## Forking a run
 

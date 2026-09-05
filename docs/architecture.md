@@ -1,9 +1,16 @@
 # hiveloom architecture
 
-hiveloom's bet: the **harness** (tools, loop policy, context strategy,
-guardrails, verification) governs agentic performance as much as the model. A
-strong model or a human *generates* a harness; a small, cheap model *executes*
-inside it; run traces are *memory* that feed an *evolution* loop.
+hiveloom starts from a simple definition: **agent = model + harness**. It
+confines that agent to one job and makes its success provable. The harness
+declares the task, tools, context, loop policy, budgets, guardrails, and
+verification as one versioned execution boundary. A capable builder agent or a
+human *generates* that boundary; a small, cheap model *executes* inside it; the
+runtime decides whether the result satisfies the contract; and run traces
+become *memory* for a gated evolution loop.
+
+This is behavioral task confinement rather than a virtual-machine security
+boundary. The exact guarantees and limits are described in
+[`task-confinement.md`](task-confinement.md).
 
 ## The pieces
 
@@ -34,8 +41,12 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                   it — mid-run hot-swap at a turn boundary          │
   │    tools/         registry (active/deferred) + sandboxed builtins; │
   │                   ToolRegistry owns the MCP sync/async bridge       │
-  │    context/       assembly, budgeting, pluggable compaction, skills │
+  │    context/       assembly, budgeting, compaction, spill, skills   │
   │    guardrails/    Allow/Block/Halt hooks (frozen from evolution)    │
+  │  private.py       the one definition of runtime-private state       │
+  │  confine.py       OS confinement for spawned processes: bwrap /     │
+  │                   sandbox-exec + rlimits, scrubbed env, timeouts    │
+  │  egress.py        last check before a request leaves for a provider │
   │    events.py      lifecycle event bus (spec `hooks:` + ambient)     │
   │    verify/        validators = the reward signal                    │
   │    loop/          engine + pluggable policies (react | plan | …)    │
@@ -125,8 +136,10 @@ Every run is an append-only JSONL **journal** with a common envelope (`run_id`,
 `harness_name`, `harness_version_hash`, `seq`, `timestamp`, `prev`) and typed
 events (`run_started`, `context_append`, `context_system`, `context_tools`,
 `model_call`, `model_response`, `tool_call`, `tool_update`, `tool_result`,
-`guardrail_triggered`, `hook_triggered`, `hook_error`, `context_compaction`,
-`playbook_switch`, `model_swap`, `verification_result`, `run_finished`).
+`tool_spilled`, `guardrail_triggered`, `hook_triggered`, `hook_error`,
+`context_compaction`, `playbook_switch`, `model_swap`,
+`provider_egress_redacted`, `provider_egress_blocked`, `verification_result`,
+`run_finished`).
 
 Three properties make it more than a log, and each buys something concrete:
 
