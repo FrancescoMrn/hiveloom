@@ -276,6 +276,7 @@ def run_harness(
     lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
     approve_network: Callable[[str], bool] | None = None,
+    cost_cap_usd: float | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -325,6 +326,13 @@ def run_harness(
     the parent was. This is what ``hiveloom run <fork> --resume`` passes; see
     :mod:`hiveloom.fork`. ``lineage`` is the accompanying provenance record
     (parent run id, journal seq) written into ``run_started``.
+
+    ``cost_cap_usd`` installs one extra ``max_cost_usd`` guardrail for this run
+    only, on top of whatever the spec declares. It never mutates the spec — the
+    harness's own cap is the user's decision and stays the user's decision —
+    and, being additive, it can only ever make a run cheaper. This is how a
+    delegated child is confined to a share of its parent's remaining budget
+    (see :mod:`hiveloom.delegation`).
 
     ``approve_network`` is the run-scoped decision point for an undeclared
     ``http_get`` hostname. It receives only the normalized hostname and returns
@@ -380,6 +388,12 @@ def run_harness(
     router: ModelRouter | None = None
     try:
         guardrails = build_guardrails(spec, registry, base)
+        if cost_cap_usd is not None:
+            # Appended, never substituted: a caller-supplied cap tightens the
+            # run, it does not replace the spec's frozen safety layer.
+            from hiveloom.guardrails.builtin import MaxCostGuardrail
+
+            guardrails.append(MaxCostGuardrail(cost_cap_usd))
         verifiers = build_verifiers(spec, base, run_boundary=run_boundary)
         skills = load_skills(spec, base)
         playbooks = (
@@ -608,6 +622,15 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         # Structural fakes and 1.0-era embedding adapters may still return the
         # pre-override result shape. Keep that additive transition readable.
         "runtime_config": getattr(result, "runtime_config", {}),
+        # Delegation receipts: what this run handed to a peer, what that cost,
+        # and which peers it could only refer. Absent on a 1.0-era result
+        # shape, hence the defensive reads.
+        "delegations": [
+            record.model_dump(mode="json")
+            for record in getattr(result, "delegations", [])
+        ],
+        "referrals": list(getattr(result, "referrals", [])),
+        "delegated_cost_usd": getattr(result, "delegated_cost_usd", 0.0),
         "execution": (
             result.execution.model_dump(mode="json")
             if getattr(result, "execution", None) is not None

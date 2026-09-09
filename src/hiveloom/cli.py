@@ -1912,11 +1912,13 @@ def lineage(
     run_id: str = typer.Argument(..., help="Run to show the fork tree around."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    """Show a run's forks and the parent they diverged from.
+    """Show a run's children and the parent it came from.
 
     A fork shares its parent's journal up to the seq it re-entered at, so the
     two are comparable on that identical prefix — which is what makes a fork a
-    controlled experiment rather than a second, unrelated run.
+    controlled experiment rather than a second, unrelated run. A delegated
+    child is the other kind of descendant: a peer harness that was handed the
+    task, listed here with `kind=delegation`.
     """
     from hiveloom.logging.hive import Hive
 
@@ -1958,14 +1960,25 @@ def lineage(
                 f"at seq {run.get('forked_at_seq')}[/dim]"
             )
         _console.print(_line(run, prefix="> "))
-        if not tree["forks"]:
-            _console.print("[dim]no forks of this run[/dim]")
+        children = tree.get("children") or tree["forks"]
+        if not children:
+            _console.print("[dim]no forks or delegated runs from this run[/dim]")
             return
-        _console.print(
-            f"[bold]{len(tree['forks'])} fork(s)[/bold] — identical prefix, one change each"
-        )
-        for child in tree["forks"]:
-            _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
+        forks = [c for c in children if (c.get("lineage_kind") or "fork") == "fork"]
+        delegated = [c for c in children if c.get("lineage_kind") == "delegation"]
+        if forks:
+            _console.print(
+                f"[bold]{len(forks)} fork(s)[/bold] — identical prefix, one change each"
+            )
+            for child in forks:
+                _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
+        if delegated:
+            _console.print(
+                f"[bold]{len(delegated)} delegated run(s)[/bold] — a peer harness "
+                "did the work; its cost is included in the parent's"
+            )
+            for child in delegated:
+                _console.print(_line(child, prefix="  -> "))
 
 
 @friction_app.command("list")

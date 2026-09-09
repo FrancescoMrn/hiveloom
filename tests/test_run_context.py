@@ -90,6 +90,7 @@ def test_tool_receives_caller_context(tmp_path: Path):
         "harness_name",
         "harness_version_hash",
         "hive_path",
+        "lineage",
         "context",
         "artifacts",
     }

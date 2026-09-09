@@ -23,7 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from hiveloom import confine
+from hiveloom import confine, delegation
 from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
 from hiveloom.context.notes import (
@@ -31,6 +31,7 @@ from hiveloom.context.notes import (
 )
 from hiveloom.context.notes import NOTES_TOOL, NotesStore, NotesTool
 from hiveloom.context.spill import SpillError, SpillStore
+from hiveloom.delegation import DelegationRecord, PeerCandidate
 from hiveloom.egress import EgressFilter
 from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
@@ -41,6 +42,7 @@ from hiveloom.execution import (
     execution_fingerprint,
 )
 from hiveloom.guardrails.base import Guardrail, RunState
+from hiveloom.guardrails.builtin import MaxCostGuardrail
 from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
 from hiveloom.loop.policies import LoopPolicy, StepPolicyHalt, build_policy
@@ -56,7 +58,7 @@ from hiveloom.playbooks import PlaybookManager
 from hiveloom.private import RunBoundary
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.builtin import PROPOSE_MEMORY_TOOL, ProposeMemoryTool
-from hiveloom.tools.registry import ToolError, ToolRegistry, ToolResult
+from hiveloom.tools.registry import SearchToolsTool, ToolError, ToolRegistry, ToolResult
 from hiveloom.verify.base import (
     ToolEvidenceRecord,
     VerdictResult,
@@ -127,6 +129,14 @@ class RunResult(BaseModel):
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     execution: RunExecutionEnvelope | None = None
     steps: list[StepExecutionRecord] = Field(default_factory=list)
+    # Peer harnesses this run actually handed work to, in order. `cost_usd`
+    # above INCLUDES what they spent — the parent's budget is the user's total
+    # budget — and `delegated_cost_usd` is that share, so the split is visible.
+    delegations: list[DelegationRecord] = Field(default_factory=list)
+    # Peers that fit but were not used automatically: who they are, how they
+    # measure, and why. This is what lets a run tell the user "ask X instead".
+    referrals: list[dict[str, Any]] = Field(default_factory=list)
+    delegated_cost_usd: float = 0.0
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -255,6 +265,17 @@ class AgentLoop:
         self._egress = EgressFilter(spec.egress, spec.logging.redact)
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
+        # Delegation bookkeeping. `depth`/`chain` come from the lineage this
+        # run was started with, so an inherited chain is what depth and cycle
+        # refusals are judged against — not something this run can restate.
+        self._delegation = spec.delegation
+        self._delegation_depth = int((lineage or {}).get("depth") or 0)
+        self._delegation_chain = list((lineage or {}).get("chain") or [])
+        self._delegations: list[DelegationRecord] = []
+        self._referrals: list[dict[str, Any]] = []
+        self._referred: set[str] = set()
+        self._candidate_cache: list[PeerCandidate] | None = None
+        self._verify_fail_delegated = False
         self._usage = Usage()
         self._verification_attempts = 0
         self._tool_evidence: list[ToolEvidenceRecord] = []
@@ -452,6 +473,14 @@ class AgentLoop:
         self._context.seed_history(self._history)
         if not self._resume:
             self._context.add_user(self._run_input)
+        self._setup_delegation_tools()
+        if self._delegation_mode("on_start"):
+            try:
+                delegated = self._delegate_whole_task(mode="on_start")
+            except GuardrailHalt as exc:
+                return self._finish("guardrail_halt", reason=str(exc))
+            if delegated is not None:
+                return delegated
         try:
             self._policy.on_run_start(self)
         except StepPolicyHalt as exc:
@@ -601,6 +630,9 @@ class AgentLoop:
                         f"Verification failed:\n{feedback}\nRevise your answer and try again."
                     )
                     continue
+                escalated = self._escalate_on_verify_fail()
+                if escalated is not None:
+                    return escalated
                 if truncation_exhausted:
                     return self._finish(
                         "truncated",
@@ -1509,6 +1541,329 @@ class AgentLoop:
         self._context.add_user(" ".join(note))
         return True
 
+    # ------------------------------------------------------------------ #
+    # Delegation — the phone line
+    # ------------------------------------------------------------------ #
+    # The decision to hand a task over is enforced here, by the runtime, and
+    # not asked of the model in the system prompt: a prompt-only "look for a
+    # specialist first" instruction is skipped by exactly the small executor
+    # models this exists to help. What the model *may* still do is choose
+    # (`model_choice`), because choosing is a judgement; whether the choice is
+    # allowed, how deep it may go, and what it may spend are not.
+    #
+    # Note on guardrails: the parent's wall-clock and turn guardrails are
+    # evaluated at turn boundaries only, so a long child run is not interrupted
+    # mid-flight. Cost is the exception — the child carries its own cap and its
+    # spend is charged back to the parent as soon as it finishes.
+
+    def _delegation_mode(self, mode: str) -> bool:
+        return self._delegation.enabled and mode in self._delegation.when
+
+    def _chain(self) -> list[str]:
+        """Harness ids root -> this run, the ancestry a child inherits."""
+        return [*self._delegation_chain, self._spec.identity]
+
+    def _cost_limit(self) -> float | None:
+        """This run's total cost ceiling, from its own max_cost guardrail."""
+        limits = [g.limit for g in self._guardrails if isinstance(g, MaxCostGuardrail)]
+        return min(limits) if limits else None
+
+    def _child_cost_cap(self) -> float | None:
+        limit = self._cost_limit()
+        if limit is None:
+            return None
+        return delegation.child_cost_cap(
+            limit - self._state.cost_usd, self._delegation.budget_share
+        )
+
+    def _peer_candidates(self) -> list[PeerCandidate]:
+        """The peer directory for this run, discovered at most once."""
+        if self._candidate_cache is None:
+            try:
+                self._candidate_cache = delegation.discover_candidates(
+                    self._spec, self._base, hive_path=self._hive_path
+                )
+            except Exception as exc:  # noqa: BLE001 - a directory fault is not a run failure
+                self._candidate_cache = []
+                self._trace.emit(
+                    "delegation_skipped",
+                    mode="directory",
+                    reason="directory_error",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        return self._candidate_cache
+
+    def _record_referrals(
+        self, candidates: list[PeerCandidate], reason: str
+    ) -> None:
+        for candidate in candidates:
+            if candidate.harness_id in self._referred:
+                continue
+            self._referred.add(candidate.harness_id)
+            self._referrals.append(candidate.referral(reason))
+
+    def _setup_delegation_tools(self) -> None:
+        """Register ``list_peers`` and the deferred ``delegate__*`` tools.
+
+        ``list_peers`` is registered whenever delegation is enabled in
+        ``model_choice`` mode even if nothing is currently delegable: it is one
+        cheap active tool, and being able to *name* the harness that fits is
+        useful to the user even when the runtime will not spend on it.
+        """
+        if not self._delegation_mode("model_choice"):
+            return
+        candidates = self._peer_candidates()
+        list_tool = delegation.ListPeersTool(candidates)
+        list_tool.bind(self._handle_list_peers)
+        self._registry.register(list_tool, active=True)
+        self._initial_active_tools.add(list_tool.name)
+
+        child_depth = self._delegation_depth + 1
+        if child_depth > self._delegation.max_depth:
+            self._trace.emit(
+                "delegation_skipped", mode="model_choice", reason=delegation.DEPTH
+            )
+            self._sync_tool_names()
+            return
+        chain = set(self._chain())
+        peers = [
+            candidate
+            for candidate in delegation.eligible(candidates, self._delegation)
+            if candidate.harness_id not in chain
+        ]
+        for candidate in peers:
+            tool = delegation.DelegateTool(candidate)
+            tool.bind(self._handle_delegate)
+            self._registry.register(tool, active=False)
+        if peers and self._registry.get("search_tools") is None:
+            # Deferred tools are only discoverable through search_tools, and a
+            # harness that defers nothing of its own has none registered yet.
+            self._registry.register(SearchToolsTool(self._registry))
+        if not peers:
+            self._trace.emit(
+                "delegation_skipped",
+                mode="model_choice",
+                reason=delegation.BELOW_FITNESS if candidates else delegation.NO_CANDIDATES,
+            )
+        self._sync_tool_names()
+
+    def _sync_tool_names(self) -> None:
+        """Keep the allowlist guardrail aware of tools registered after init."""
+        self._state.tool_names = set(self._registry.names())
+
+    def _select_peer(self, task: str, *, mode: str) -> PeerCandidate | None:
+        candidates = self._peer_candidates()
+        if not candidates:
+            self._trace.emit(
+                "delegation_skipped", mode=mode, reason=delegation.NO_CANDIDATES
+            )
+            return None
+        selection = delegation.select_peer(
+            self._router.provider,
+            self._router.config,
+            task,
+            candidates,
+            self._delegation,
+            screen=lambda system, messages, tools: self._screen_egress(
+                system, messages, tools, f"delegation_{mode}"
+            ),
+        )
+        # The selection call is the parent's own model on the parent's own
+        # budget, so it is charged like any other turn.
+        self._state.cost_usd += selection.cost_usd
+        if selection.candidate is None:
+            self._trace.emit(
+                "delegation_skipped",
+                mode=mode,
+                reason=selection.reason,
+                candidates=[c.name for c in candidates],
+                cost_usd=selection.cost_usd,
+            )
+            self._record_referrals(candidates, selection.reason)
+            return None
+        chosen = selection.candidate
+        self._trace.emit(
+            "delegation_selected",
+            mode=mode,
+            harness=chosen.name,
+            harness_id=chosen.harness_id,
+            success_rate=round(chosen.success_rate, 3),
+            total_runs=chosen.total_runs,
+            cost_usd=selection.cost_usd,
+        )
+        return chosen
+
+    def _run_delegation(
+        self, candidate: PeerCandidate, task: str, *, mode: str
+    ) -> DelegationRecord | None:
+        """Refuse or perform one hand-off, charging what it spent to this run."""
+        child_depth = self._delegation_depth + 1
+        chain = self._chain()
+        refused = delegation.refusal(
+            candidate,
+            child_depth=child_depth,
+            chain=chain,
+            max_depth=self._delegation.max_depth,
+        )
+        if refused is not None:
+            self._trace.emit(
+                "delegation_skipped", mode=mode, reason=refused, harness=candidate.name
+            )
+            self._record_referrals([candidate], refused)
+            return None
+        cap = self._child_cost_cap()
+        if cap is not None and cap <= 0:
+            self._trace.emit(
+                "delegation_skipped",
+                mode=mode,
+                reason=delegation.BUDGET,
+                harness=candidate.name,
+            )
+            self._record_referrals([candidate], delegation.BUDGET)
+            return None
+        self._trace.emit(
+            "delegation_started",
+            mode=mode,
+            harness=candidate.name,
+            harness_id=candidate.harness_id,
+            depth=child_depth,
+            chain=chain,
+            cost_cap_usd=cap,
+        )
+        try:
+            record = delegation.delegate(
+                candidate,
+                task,
+                lineage=delegation.build_lineage(
+                    parent_run_id=self._run_id,
+                    parent_harness_id=self._spec.identity,
+                    depth=child_depth,
+                    chain=chain,
+                ),
+                cost_cap_usd=cap,
+                hive_path=self._hive_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - a peer's failure is not a crash here
+            self._trace.emit(
+                "delegation_finished",
+                mode=mode,
+                harness=candidate.name,
+                status="error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        # The parent's cap is the user's total budget, so the child's spend is
+        # the parent's spend — visible separately as `delegated_cost_usd`.
+        self._state.cost_usd += record.cost_usd
+        self._state.delegated_cost_usd += record.cost_usd
+        self._delegations.append(record)
+        self._trace.emit(
+            "delegation_finished",
+            mode=mode,
+            harness=record.harness,
+            run_id=record.run_id,
+            status=record.status,
+            cost_usd=record.cost_usd,
+            turns=record.turns,
+            reason=record.reason,
+        )
+        return record
+
+    def _delegate_whole_task(
+        self, *, mode: str, task: str | None = None
+    ) -> RunResult | None:
+        """Select, hand over, and finish this run on the child's answer."""
+        statement = task if task is not None else self._run_input
+        candidate = self._select_peer(statement, mode=mode)
+        if candidate is None:
+            return None
+        record = self._run_delegation(candidate, statement, mode=mode)
+        if record is None:
+            return None
+        return self._finish_delegated(record)
+
+    def _finish_delegated(self, record: DelegationRecord) -> RunResult:
+        """Adopt a child's output — and grade it with *this* harness's validators.
+
+        Verification never travels with the task. The peer ran its own
+        validators on its own contract; this harness still owes its caller the
+        contract it promised, so the answer is re-verified here before it
+        counts as a success.
+        """
+        output = self._transform_output(record.output)
+        self._state.output = output
+        block = self._on_output(output)
+        if block is not None:
+            reason = block[5:] if block.startswith("HALT:") else block
+            return self._finish(
+                "guardrail_halt",
+                output=output,
+                reason=f"delegated output blocked: {reason}",
+            )
+        verdicts: list[VerdictResult] = []
+        if self._spec.loop.require_verification:
+            verdicts = self._verify(output)
+        if verdicts and not all(v.passed for v in verdicts):
+            status = "verify_failed"
+        elif record.status != "success":
+            # A peer that did not succeed cannot be laundered into a success by
+            # this harness's validators passing on a partial answer.
+            status = record.status
+        else:
+            status = "success"
+        reason = (
+            ""
+            if status == "success"
+            else (
+                f"delegated to '{record.harness}' (run {record.run_id}): "
+                f"{record.reason or record.status}"
+            )
+        )
+        return self._finish(status, output=output, reason=reason, verdicts=verdicts)
+
+    def _escalate_on_verify_fail(self) -> RunResult | None:
+        """One last hand-off after this harness has exhausted its own retries."""
+        if not self._delegation_mode("on_verify_fail") or self._verify_fail_delegated:
+            return None
+        self._verify_fail_delegated = True
+        try:
+            return self._delegate_whole_task(mode="on_verify_fail")
+        except GuardrailHalt as exc:
+            return self._finish("guardrail_halt", reason=str(exc))
+
+    def _handle_delegate(
+        self, candidate: PeerCandidate, task: str
+    ) -> ToolResult:
+        """Back one ``delegate__<peer>`` tool call."""
+        record = self._run_delegation(
+            candidate, task or self._run_input, mode="model_choice"
+        )
+        if record is None:
+            return ToolResult(
+                content=(
+                    f"delegation to '{candidate.name}' was refused by the runtime "
+                    "(depth, cycle, budget, or the peer could not run). Continue "
+                    "the task yourself, or tell the user which harness would fit."
+                ),
+                is_error=True,
+                retryable=False,
+            )
+        header = (
+            f"[{record.harness} run {record.run_id} finished: {record.status}, "
+            f"{record.turns} turn(s), ${record.cost_usd:.4f}]"
+        )
+        body = record.output or record.reason or "(no output)"
+        return ToolResult(
+            content=f"{header}\n{body}",
+            is_error=record.status != "success",
+            # Never retried automatically: a repeat is a second paid child run.
+            retryable=False,
+        )
+
+    def _handle_list_peers(self, candidates: list[PeerCandidate]) -> ToolResult:
+        self._record_referrals(list(candidates), delegation.LISTED)
+        return ToolResult(content=delegation.render_peers(candidates))
+
     def _run_context(self, **extra: Any) -> dict[str, Any]:
         """The per-run dict handed to code tools and validators.
 
@@ -1530,6 +1885,10 @@ class AgentLoop:
             "harness_name": self._spec.name,
             "harness_version_hash": self._trace.version_hash,
             "hive_path": str(self._hive_path) if self._hive_path else None,
+            # Where this run came from (a fork's parent, or the harness that
+            # delegated to it). A tool that delegates onward extends this
+            # chain, which is what bounds the depth and catches a cycle.
+            "lineage": self._lineage,
             "context": self._context_values,
             # A snapshot of what the run has produced so far. This is what
             # makes a playbook exit gate expressible ("you entered targeting
@@ -1724,6 +2083,12 @@ class AgentLoop:
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
             duration_seconds=duration_seconds,
+            # The split between what this run spent itself and what it paid a
+            # peer to do. `cost_usd` above is the total, which is what the
+            # user's budget is about.
+            delegated_cost_usd=self._state.delegated_cost_usd,
+            delegations=[record.model_dump(mode="json") for record in self._delegations],
+            referrals=self._referrals,
             execution=execution.model_dump(mode="json"),
             # The answer and the judgements on it. A journal that reports a
             # run's status but not what it produced is not a complete record
@@ -1764,6 +2129,9 @@ class AgentLoop:
             runtime_config=self._runtime_config,
             execution=execution,
             steps=step_records,
+            delegations=list(self._delegations),
+            referrals=list(self._referrals),
+            delegated_cost_usd=self._state.delegated_cost_usd,
         )
 
     def _verification_summary(self, status: str) -> VerificationSummary:

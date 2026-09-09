@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS runs (
     trace_path TEXT,
     trace_pruned_at TEXT,
     parent_run_id TEXT,
+    lineage_kind TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
     task TEXT,
@@ -322,6 +323,10 @@ class Hive:
             existing.remove("session_id")
         for column, decl in (
             ("parent_run_id", "TEXT"),
+            # What kind of child this run is: "fork" (re-entered a parent's
+            # journal) or "delegation" (a peer harness ran it). Both hang off
+            # parent_run_id, and telling them apart is the whole point.
+            ("lineage_kind", "TEXT"),
             ("forked_at_seq", "INTEGER"),
             ("model_path", "TEXT"),
             ("task", "TEXT"),
@@ -558,6 +563,7 @@ class Hive:
             "trace_path": trace_path,
             "trace_pruned_at": None,
             "parent_run_id": None,
+            "lineage_kind": None,
             "forked_at_seq": None,
             "model_path": "",
             "task": None,
@@ -587,6 +593,11 @@ class Hive:
                 if isinstance(lineage, dict):
                     row["parent_run_id"] = lineage.get("parent_run_id") or None
                     row["forked_at_seq"] = lineage.get("forked_at_seq")
+                    kind = lineage.get("kind")
+                    if not kind and row["parent_run_id"]:
+                        # Pre-delegation journals only ever recorded forks.
+                        kind = "fork"
+                    row["lineage_kind"] = kind or None
             elif etype == "run_finished":
                 row["status"] = payload.get("status", "incomplete")
                 row["turns"] = payload.get("turns", 0)
@@ -668,13 +679,14 @@ class Hive:
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "parent_run_id, forked_at_seq, model_path, task, requested_provider, "
+            "parent_run_id, lineage_kind, forked_at_seq, model_path, task, requested_provider, "
             "requested_model, effective_provider, effective_model, execution_fingerprint, "
             "trace_pruned_at, output) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":parent_run_id, :forked_at_seq, :model_path, :task, :requested_provider, "
+            ":parent_run_id, :lineage_kind, :forked_at_seq, :model_path, :task, "
+            ":requested_provider, "
             ":requested_model, :effective_provider, :effective_model, "
             ":execution_fingerprint, :trace_pruned_at, :output)",
             row,
@@ -1374,13 +1386,32 @@ class Hive:
             ancestors.append(parent)
             cursor = parent.get("parent_run_id")
 
-        forks = [
+        children = self.children(run_id)
+        return {
+            "run": run,
+            "ancestors": ancestors,
+            # Historically forks only; a delegated child hangs off the same
+            # parent link, so it belongs in the same tree. `lineage_kind` on
+            # each row says which kind it is.
+            "forks": children,
+            "children": children,
+        }
+
+    def children(self, run_id: str, *, kind: str | None = None) -> list[dict[str, Any]]:
+        """Runs started from this one: forks, delegated peer runs, or both.
+
+        One indexed lookup on ``parent_run_id`` — cheap enough for a trace
+        summary to ask on every display.
+        """
+        sql = "SELECT * FROM runs WHERE parent_run_id=?"
+        params: list[Any] = [run_id]
+        if kind is not None:
+            sql += " AND lineage_kind=?"
+            params.append(kind)
+        return [
             dict(row)
-            for row in self._conn.execute(
-                "SELECT * FROM runs WHERE parent_run_id=? ORDER BY started_at", (run_id,)
-            )
+            for row in self._conn.execute(sql + " ORDER BY started_at", params)
         ]
-        return {"run": run, "ancestors": ancestors, "forks": forks}
 
     def search_runs(
         self, query: str, *, harness_key: str | None = None, limit: int = 50

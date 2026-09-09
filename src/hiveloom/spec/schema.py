@@ -1296,6 +1296,86 @@ class EgressConfig(BaseModel):
     )
 
 
+class DelegationConfig(BaseModel):
+    """A phone line for every harness: hand a task to a fitter peer.
+
+    The harness's ``model`` is the user's choice and never changes (it is in
+    :data:`ALWAYS_FROZEN`). Delegation is the other axis: at run time a harness
+    may look for a peer that is *more specific* or has *better measured odds*
+    on the Hive, hand the task to it, and verify the answer with its own
+    validators — or, when nothing qualifies automatically, refer the user to
+    the peer that would fit.
+
+    Enforcement lives in the runtime, not in the prompt: a model asked nicely
+    to "look for a specialist first" will skip it. The ``when`` modes are
+    executed by the loop.
+
+    Not frozen from evolution: which peers a harness reaches for, and how
+    strict it is about their fitness, is exactly the kind of tuning evidence
+    should drive. What evolution can never do is change the model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether this harness may hand work to peer harnesses at all.",
+    )
+    directory: Literal["local"] = Field(
+        default="local",
+        description=(
+            "Where peers are discovered. 'local' is this machine's harness "
+            "registry (`hiveloom registry add`). A remote MCP switchboard is a "
+            "documented follow-up, not implemented."
+        ),
+    )
+    when: list[Literal["on_start", "on_verify_fail", "model_choice"]] = Field(
+        default_factory=lambda: ["model_choice"],
+        description=(
+            "Modes: 'on_start' selects a peer before the first model turn; "
+            "'on_verify_fail' tries the best peer once after verification has "
+            "exhausted its retries; 'model_choice' offers a delegate__<peer> "
+            "tool per eligible peer so the model can hand off mid-run."
+        ),
+    )
+    min_peer_success_rate: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Measured Hive success rate a peer must reach to be chosen "
+            "automatically. Peers below it are never auto-selected, but may "
+            "still be reported as referrals."
+        ),
+    )
+    min_peer_runs: int = Field(
+        default=0, ge=0,
+        description=(
+            "Hive runs a peer needs before its fitness counts. A peer with "
+            "fewer is treated as unmeasured, never as good."
+        ),
+    )
+    max_depth: int = Field(
+        default=2, ge=1, le=5,
+        description="How many delegation hops a chain may take before it is refused.",
+    )
+    budget_share: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description=(
+            "Fraction of the parent's REMAINING max_cost_usd budget a child "
+            "run may spend. The child's cost counts against the parent's cap."
+        ),
+    )
+    exclude: list[str] = Field(
+        default_factory=list,
+        description="Harness names this harness must never delegate to.",
+    )
+
+    @model_validator(mode="after")
+    def _unique_modes(self) -> DelegationConfig:
+        if len(set(self.when)) != len(self.when):
+            raise ValueError("delegation.when must not repeat a mode")
+        return self
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -1367,6 +1447,10 @@ def _default_mutable() -> list[str]:
         # one changes what the model is told without touching a capability, and
         # the budgets around it stay frozen (see ALWAYS_FROZEN below).
         "memory.entries",
+        # Which peers this harness reaches for, and how strict it is about
+        # their measured fitness, is evidence-driven tuning. The executor
+        # model stays frozen (ALWAYS_FROZEN) either way.
+        "delegation",
     ]
 
 
@@ -1726,6 +1810,13 @@ class HarnessSpec(BaseModel):
     egress: EgressConfig = Field(
         default_factory=EgressConfig,
         description="What may leave in a model request (frozen from evolution).",
+    )
+    delegation: DelegationConfig = Field(
+        default_factory=DelegationConfig,
+        description=(
+            "Whether and how this harness may hand a task to a peer harness "
+            "(disabled by default). Tunable by evolution; the model is not."
+        ),
     )
     evolution: EvolutionConfig = Field(
         default_factory=EvolutionConfig, description="Evolution policy."

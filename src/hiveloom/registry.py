@@ -87,6 +87,17 @@ def unregister(target: str | Path) -> RegisteredHarness:
     raise SpecError(f"'{target}' is not a registered harness path or name")
 
 
+def registered_paths() -> list[str]:
+    """The registered directories, without loading any harness spec.
+
+    :func:`registered` resolves every entry, which *imports the harness's
+    declared extensions*. A caller that must apply the trust gate before any
+    foreign code loads (delegation's peer directory) needs the bare paths
+    first — hence this split.
+    """
+    return _load_paths()
+
+
 def registered() -> list[RegisteredHarness]:
     """Every entry with its live spec state; broken entries carry the error."""
     items: list[RegisteredHarness] = []

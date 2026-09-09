@@ -55,6 +55,11 @@ REFERENCE_TOPICS = (
         "docs/evaluating.md",
     ),
     (
+        "delegation",
+        "Handing a task to a fitter peer harness: modes, fitness, lineage, cost.",
+        "docs/delegation.md",
+    ),
+    (
         "journal",
         "Run journals, integrity checks, forks, lineage, and model swaps.",
         "docs/journal.md",
