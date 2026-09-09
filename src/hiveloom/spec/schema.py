@@ -1544,6 +1544,12 @@ class HarnessSpec(BaseModel):
             available.add("search_tools")
         if self.playbooks:
             available.add("switch_playbook")
+        # The spill readers are auto-added and re-asserted by the loop while a
+        # handle is live, exactly as the playbook subset validator below already
+        # allows. A step that reads back an oversized result has to be able to
+        # say so: without these, `tool_results` spilling and `sequential_steps`
+        # cannot be used together at all.
+        available |= {"read_tool_result", "search_tool_result"}
         for step in self.loop.steps:
             if not isinstance(step, SequentialStep):
                 continue

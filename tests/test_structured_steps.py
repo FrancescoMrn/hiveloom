@@ -276,3 +276,51 @@ def test_structured_step_schema_rejects_ambiguous_constraints(tmp_path: Path):
     }
     with pytest.raises(ValueError, match="requires deferred tool"):
         HarnessSpec.model_validate(raw)
+
+
+def test_step_may_name_the_spill_readers(tmp_path: Path):
+    """Auto-added retrieval tools must be nameable, or spilling and
+    sequential_steps cannot be combined at all."""
+    harness = _harness(tmp_path)
+
+    construct.set_value(
+        harness,
+        "loop.steps",
+        [
+            {
+                "id": "read",
+                "instruction": "Read the deal.",
+                "tools": ["file_read"],
+                "require_tool_calls": ["file_read"],
+                "max_model_calls": 2,
+                "max_tool_calls": 1,
+            },
+            {
+                "id": "inspect",
+                "instruction": "Read back whatever spilled.",
+                "tools": ["read_tool_result", "search_tool_result"],
+                "max_model_calls": 2,
+            },
+        ],
+    )
+    construct.set_value(harness, "loop.policy", "sequential_steps")
+
+    spec = load_spec(harness)
+    assert spec.loop.steps[1].tools == ["read_tool_result", "search_tool_result"]
+
+
+def test_step_still_rejects_a_genuinely_unknown_tool(tmp_path: Path):
+    harness = _harness(tmp_path)
+    with pytest.raises(SpecError, match="unknown tool"):
+        construct.set_value(
+            harness,
+            "loop.steps",
+            [
+                {
+                    "id": "read",
+                    "instruction": "Read the deal.",
+                    "tools": ["read_tool_resul"],
+                    "max_model_calls": 1,
+                }
+            ],
+        )
