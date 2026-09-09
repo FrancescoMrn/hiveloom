@@ -322,6 +322,13 @@ objectives rather than raw failure counts.
   `harnesses/ranked-retrieval/eval.yaml` no longer ships `model_identity: exact`
   — the shipped demo eval could not get past its own provider probe, so the
   `hiveloom eval run eval.yaml` in its README failed for everyone who tried it.
+- **The `ranked-retrieval` demo eval scored 0.0 for a second reason.** With the
+  identity probe passing, all six cells then ended in `max_turns`: the harness
+  emits strict JSON but never declared the `strip_json_fence` hook the other
+  JSON demos use, so a fenced answer failed `output_schema` and
+  `grounded_references`, burned both retries and the three-turn budget, and
+  reported nothing. With the hook it is 6/6 first-pass valid — Recall@3 1.0,
+  nDCG@3 0.95, hallucination rate 0.0 — which is what its README describes.
 - **The version gates still read `pyproject.toml`'s `project.version`.**
   Deriving the distribution version from `hiveloom.__version__` removed that
   key, so both steps that read it raise `KeyError`: CI's consistency check and

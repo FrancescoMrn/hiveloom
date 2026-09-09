@@ -21,6 +21,9 @@ tools:
     candidates.
 mcp_servers: []
 playbooks: []
+hooks:
+- builtin: strip_json_fence
+  event: before_verification
 context:
   max_input_tokens: 30000
   strategy: rolling
@@ -30,6 +33,10 @@ context:
   pinned:
   - system_prompt
   - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
 guardrails:
 - builtin: max_cost_usd
   value: 1.0
@@ -71,6 +78,20 @@ logging:
   level: journal
   redact: []
   snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
 evolution:
   enabled: true
   mutable:
