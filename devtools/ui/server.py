@@ -1213,12 +1213,22 @@ class _CopilotWorkbench:
                         "detail": payload.get("content"),
                     }
                 )
+        finished = next(
+            (event for event in reversed(events) if event.get("type") == "run_finished"),
+            None,
+        )
+        finish_payload = (finished or {}).get("payload") or {}
         return {
             "run": run,
             "evidence": evidence,
             "lineage": lineage,
             "integrity": verify_chain(trace_path).summary() if trace_path.is_file() else None,
             "event_count": len(events),
+            # What this run handed to a peer, and which peers it could only
+            # name. The copilot answers "why did this cost that much" with it.
+            "delegations": finish_payload.get("delegations") or [],
+            "referrals": finish_payload.get("referrals") or [],
+            "delegated_cost_usd": finish_payload.get("delegated_cost_usd") or 0.0,
         }
 
     def list_runs(self, harness_id: str = "", limit: int = 10) -> dict[str, Any]:
@@ -2211,6 +2221,13 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                     for point in fork_points(events)
                 ],
                 "artifacts": finish_payload.get("artifacts") or [],
+                # Delegation receipts, read back off the same recorded
+                # `run_finished` event the artifacts come from. `lineage`
+                # already carries `children`, so a delegated child is
+                # reachable from its parent without a second query.
+                "delegations": finish_payload.get("delegations") or [],
+                "referrals": finish_payload.get("referrals") or [],
+                "delegated_cost_usd": finish_payload.get("delegated_cost_usd") or 0.0,
             }
 
         return JSONResponse(await asyncio.to_thread(work))

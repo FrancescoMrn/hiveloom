@@ -157,6 +157,27 @@ browser must never choose where.
 `POST /api/harnesses/{id}/resume` re-runs a fork from the journal point it was
 created at.
 
+## Delegated runs read as one run
+
+A harness that hands its task to a peer ([delegation](delegation.md)) produces
+two runs, and the workbench keeps the link between them visible from both ends.
+
+A turn's reply carries a **delegated to `<peer>`** line per hand-off — status,
+cost, turns, and a click straight into the child run — and the cost footer says
+how much of the total was spent elsewhere (`incl. $0.0310 delegated`). Peers
+that fitted but were not used appear under it as referrals, with the measured
+odds that ruled them out: `ranked-retrieval · success 82% over 44 runs ·
+below_fitness`. That is the run answering "I am not the right harness for this,
+ask that one" rather than guessing.
+
+In the Trace tab, the run header gains a **delegation** stat, a delegated run
+says so and links to the parent that handed it the work, and the Lineage
+evidence lists every child — forks by their re-entry seq, delegated runs by the
+harness that did the work — each one clickable. **Delegation** is its own event
+filter: the four `delegation_*` events read as one hand-off each, showing the
+peer and its fitness, the depth, chain and cost cap, and the child's status,
+cost and run id — or, when nothing was handed over, the reason.
+
 ## Improvement stays gated
 
 The copilot may draft an improvement; **applying it is a distinct user action**.

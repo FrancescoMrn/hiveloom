@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { formatMs, preview, projectTrajectory } from '../trajectory'
 import type { Span } from '../trajectory'
 import type { RunWorkspace, Turn } from '../useRun'
-import type { HarnessDetail, TraceEvent } from '../types'
+import type { Delegation, HarnessDetail, Referral, RunResult, TraceEvent } from '../types'
 import { taskGuideFor } from '../taskGuide'
 import { Notice, StatusPill, VerdictChip } from './common'
 
@@ -171,6 +171,7 @@ function TurnView({
 
       {turn.result && (
         <>
+          <DelegationTrail result={turn.result} onOpenRun={onOpenTrajectory} />
           {turn.result.verdicts.length > 0 && (
             <div className="verdict-row">
               {turn.result.verdicts.map((verdict) => (
@@ -187,6 +188,14 @@ function TurnView({
             <StatusPill status={turn.result.status} />
             <span>{turn.result.turns} turns</span>
             <span>${turn.result.cost_usd.toFixed(4)}</span>
+            {(turn.result.delegated_cost_usd ?? 0) > 0 && (
+              <span
+                className="delegated-cost"
+                title="Part of the cost beside it: what this run's children spent, charged to the same budget"
+              >
+                incl. ${turn.result.delegated_cost_usd!.toFixed(4)} delegated
+              </span>
+            )}
             <span>{turn.result.duration_seconds.toFixed(1)}s</span>
             {turn.result.reason && <span>{turn.result.reason}</span>}
             <button
@@ -246,6 +255,65 @@ function TurnView({
           )}
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * What this turn handed to a peer, and who it would have handed it to.
+ *
+ * Both halves of the same fact: `delegations` is work that actually happened
+ * somewhere else and is charged to this run, `referrals` is the harness that
+ * would have fitted but was not used — which is the answer to "I am not the
+ * right harness for this" rather than a silent guess.
+ *
+ * Rendered from the result rather than from the trace, so a restored
+ * conversation shows it too; a result recorded before delegation existed
+ * carries neither list and renders nothing.
+ */
+export function DelegationTrail({
+  result,
+  onOpenRun,
+}: {
+  result: Pick<RunResult, 'delegations' | 'referrals'>
+  /** Navigate to a run id — the same route Inspect and the fork links take. */
+  onOpenRun: (runId: string) => void
+}) {
+  const delegations: Delegation[] = result.delegations ?? []
+  const referrals: Referral[] = result.referrals ?? []
+  if (delegations.length === 0 && referrals.length === 0) return null
+  return (
+    <div className="delegation-trail">
+      {delegations.map((record, index) => (
+        <div className="delegation-row" key={`${record.harness}-${record.run_id || index}`}>
+          <i className="ph ph-arrow-bend-up-right" />
+          <span className="delegation-name">delegated to {record.harness}</span>
+          <StatusPill status={record.status} />
+          <span className="mono">${(record.cost_usd ?? 0).toFixed(4)}</span>
+          <span className="mono">{record.turns ?? 0} turns</span>
+          {record.reason && <span className="delegation-reason">{record.reason}</span>}
+          {record.run_id && (
+            <button
+              className="msg-action"
+              onClick={() => onOpenRun(record.run_id)}
+              title={`Open ${record.run_id}`}
+            >
+              <i className="ph ph-list-magnifying-glass" />
+              Open run
+            </button>
+          )}
+        </div>
+      ))}
+      {referrals.map((referral, index) => (
+        <div className="delegation-row referral" key={`${referral.harness}-${index}`}>
+          <i className="ph ph-signpost" />
+          <span className="delegation-name">{referral.harness}</span>
+          <span className="delegation-reason" title={referral.description}>
+            success {Math.round((referral.success_rate ?? 0) * 100)}% over{' '}
+            {referral.total_runs ?? 0} runs · {referral.reason}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

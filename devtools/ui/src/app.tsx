@@ -416,6 +416,7 @@ export function App() {
             models={copilotModels}
             model={copilotModel}
             onModel={setCopilotModel}
+            onOpenRun={(id) => selectRun(id)}
             onDetachRun={() => {
               setSelectedRun(null)
               if (inspectorOpen && !artifact) {
