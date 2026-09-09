@@ -151,6 +151,17 @@ def _identity(
     warning = (
         f"provider served {', '.join(effective)} for requested model {requested}"
     )
+    if policy != "warn":
+        # The same sentence is a note under `warn` and a hard stop otherwise, so
+        # say which policy rejected it and what accepting it would take. A
+        # provider that resolves an alias to a dated id trips this on the very
+        # first run, and the bare observation reads like a provider fault.
+        warning += (
+            f" (model_identity is '{policy}', which does not accept that). "
+            "Add the served id to model_aliases and set model_identity: alias "
+            "to pin it, or model_identity: warn to record the difference "
+            "without failing. Aliases are bare model ids, not provider/model."
+        )
     return IdentityEvidence(
         policy=policy,
         status="mismatch",

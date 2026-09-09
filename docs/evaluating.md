@@ -24,7 +24,7 @@ scorers:
       k: 5
 repetitions: 3
 model_identity: exact
-# model_aliases: [provider/canonical-model]
+# model_aliases: [canonical-model-id]   # bare model ids, not provider/model
 ```
 
 Inspect the schema without loading extensions, then validate the complete
@@ -120,6 +120,20 @@ can make up to two provider calls and may incur cost. Eval documents default
 to `model_identity: exact`; use `alias` only with an explicit `model_aliases`
 set. A rejected identity or missing required capability stops the batch before
 the first case runs.
+
+`exact` means the provider must serve the model id the harness requested, which
+providers that resolve an alias to a dated snapshot never do — asking Anthropic
+for `claude-haiku-4-5` gets `claude-haiku-4-5-20251001` back, and `exact`
+rejects that before the first case. Pin the served id instead:
+
+```yaml
+model_identity: alias
+model_aliases: [claude-haiku-4-5-20251001]
+```
+
+Aliases are matched against the **bare model id the provider reports**, not
+`provider/model`. Use `model_identity: warn` to record a difference on the
+manifest without failing the batch.
 
 The manifest records eval, dataset, scorer, and harness identities plus every
 cell's case digest, repetition, requested and effective model, execution

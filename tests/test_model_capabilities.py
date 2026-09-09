@@ -99,6 +99,10 @@ def test_wrong_model_is_rejected_or_explicitly_accepted_as_alias():
 
     assert rejected.identity.status == "mismatch"
     assert rejected.identity.accepted is False
+    # A rejection has to name the policy that rejected it and the way out;
+    # the bare observation reads like a provider fault.
+    assert "model_identity is 'exact'" in rejected.identity.warning
+    assert "model_aliases" in rejected.identity.warning
     with pytest.raises(SpecError, match="served-model"):
         require_compatible_probe(rejected)
 

@@ -8,4 +8,9 @@ dataset:
 scorers:
   - ranked_retrieval_metrics
 repetitions: 2
-model_identity: exact
+# `exact` cannot pass here: asking Anthropic for the alias `claude-haiku-4-5`
+# gets the dated snapshot back, and the probe rejects that before case one.
+# Pin the id the provider actually serves — bare model id, not provider/model.
+model_identity: alias
+model_aliases:
+  - claude-haiku-4-5-20251001
