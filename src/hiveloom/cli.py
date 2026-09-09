@@ -652,7 +652,9 @@ def init(
 
 @app.command("set")
 def set_cmd(
-    path: str = typer.Argument(..., help="Dotted field path, e.g. loop.max_turns."),
+    path: str = typer.Argument(
+        ..., help="Dotted field path, e.g. loop.max_turns or guardrails.0.value."
+    ),
     value: str | None = typer.Argument(None, help="Value (parsed as a YAML scalar)."),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     file: str | None = typer.Option(None, "--file", help="Read the value from this file."),
@@ -662,7 +664,14 @@ def set_cmd(
 
     Examples: ``hiveloom set loop.max_turns 30`` /
     ``hiveloom set system_prompt --file prompt.txt`` /
-    ``hiveloom set model openai/gpt-4.1-mini``.
+    ``hiveloom set model openai/gpt-4.1-mini`` /
+    ``hiveloom set guardrails.0.value 0.05`` (a numeric segment indexes an
+    existing list item — read-modify-write only, no appending via ``set``).
+
+    A plain ``str`` schema field (e.g. ``system_prompt``) keeps the value
+    exactly as typed instead of parsing it as YAML, so text containing
+    ``": "`` or similar doesn't get misread as a mapping; use ``--file`` when
+    that heuristic can't tell (or for anything long/multi-line).
 
     ``set model provider/model-id`` is the way to switch labs: provider and id
     validate against each other, so they must change in one commit.
@@ -925,6 +934,14 @@ def add_mcp_server_cmd(
     deferred: bool = typer.Option(
         False, "--deferred", help="Register discovered tools inactive until search_tools."
     ),
+    timeout_seconds: float | None = typer.Option(
+        None,
+        "--timeout-seconds",
+        help=(
+            "Timeout for connect/initialize and each tool call (default 30s; "
+            "must be > 0 and <= 600). Raise it for a slower peer harness/tool."
+        ),
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -947,13 +964,20 @@ def add_mcp_server_cmd(
             header_env=_parse_kv_pairs(header_env, "--header-env") or None,
             tools=tool or None,
             deferred=deferred,
+            timeout_seconds=timeout_seconds,
         )
         _added(json_output, "mcp-server", name)
 
 
 @app.command()
 def remove(
-    target: str = typer.Argument(..., help="Builtin name, code ref, or dotted field path."),
+    target: str = typer.Argument(
+        ...,
+        help=(
+            "Builtin name, code ref, or dotted (optionally indexed, e.g. "
+            "guardrails.0) field path."
+        ),
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:

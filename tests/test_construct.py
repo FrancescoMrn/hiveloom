@@ -91,6 +91,110 @@ def test_set_invalid_rolls_back(harness_dir: Path):
     assert (harness_dir / "harness.yaml").read_text() == before
 
 
+# --------------------------------------------------------------------------- #
+# set_field: list-index paths (defect 1)
+# --------------------------------------------------------------------------- #
+def test_set_field_indexes_into_an_existing_guardrail(harness_dir: Path):
+    """`init` already injects the cost guardrail at guardrails.0 (the
+    ``_ensure_cost_guardrail`` safety invariant), so this is the exact
+    new-user path: `hiveloom set guardrails.0.value 0.05` on a fresh harness.
+
+    Before the fix, a numeric segment was walked as a dict key, which
+    replaced the whole `guardrails` list with `{"0": {"value": ...}}` and
+    failed with "Input should be a valid list".
+    """
+    spec = load_spec(harness_dir)
+    assert spec.guardrails[0].builtin == "max_cost_usd"
+
+    construct.set_field(harness_dir, "guardrails.0.value", value="0.05")
+
+    spec = load_spec(harness_dir)
+    assert isinstance(spec.guardrails, list)
+    assert spec.guardrails[0].value == 0.05
+
+
+def test_set_field_indexes_into_an_mcp_server(harness_dir: Path):
+    construct.add_mcp_server(harness_dir, name="echo", stdio_command="npx")
+    construct.set_field(harness_dir, "mcp_servers.0.timeout_seconds", value="120")
+    spec = load_spec(harness_dir)
+    assert spec.mcp_servers[0].timeout_seconds == 120
+
+
+def test_set_field_list_index_does_not_disturb_other_items(harness_dir: Path):
+    construct.add_guardrail(harness_dir, builtin="max_wall_clock_seconds", value=300)
+    construct.set_field(harness_dir, "guardrails.1.value", value="120")
+    spec = load_spec(harness_dir)
+    assert len(spec.guardrails) == 2
+    assert spec.guardrails[0].builtin == "max_cost_usd"
+    assert spec.guardrails[0].value == 1.0
+    assert spec.guardrails[1].builtin == "max_wall_clock_seconds"
+    assert spec.guardrails[1].value == 120
+
+
+def test_set_field_list_index_out_of_range_names_the_length(harness_dir: Path):
+    with pytest.raises(SpecError, match=r"list has 1 item"):
+        construct.set_field(harness_dir, "guardrails.5.value", value="1")
+
+
+def test_set_field_non_numeric_segment_into_a_list_raises(harness_dir: Path):
+    with pytest.raises(SpecError, match="not a list index"):
+        construct.set_field(harness_dir, "guardrails.value.foo", value="1")
+
+
+def test_set_field_dotted_object_paths_still_autovivify(harness_dir: Path):
+    """Existing behaviour of dotted object paths is unchanged: a missing
+    intermediate mapping (here, simulating an older/hand-trimmed document
+    that omits an optional section entirely) is still created on the way to
+    the leaf, exactly as before this fix.
+    """
+    raw = loader.load_raw(harness_dir)
+    del raw["context"]
+    (harness_dir / "harness.yaml").write_text(yaml.dump(raw))
+
+    construct.set_field(harness_dir, "context.max_input_tokens", value="5000")
+
+    spec = load_spec(harness_dir)
+    assert spec.context.max_input_tokens == 5000
+
+
+# --------------------------------------------------------------------------- #
+# set_field: string fields keep raw CLI text (defect 2)
+# --------------------------------------------------------------------------- #
+def test_set_field_keeps_raw_text_for_a_string_field(harness_dir: Path):
+    text = 'Reply with {"words": N}: nothing else'
+    construct.set_field(harness_dir, "system_prompt", value=text)
+    spec = load_spec(harness_dir)
+    assert spec.system_prompt == text
+
+
+def test_set_field_keeps_raw_text_even_when_it_looks_like_a_yaml_mapping(harness_dir: Path):
+    construct.set_field(harness_dir, "system_prompt", value="Answer: yes")
+    spec = load_spec(harness_dir)
+    assert spec.system_prompt == "Answer: yes"
+
+
+def test_set_field_still_yaml_parses_non_string_fields(harness_dir: Path):
+    """Non-string fields are unaffected: `"30"` still coerces to an int."""
+    construct.set_field(harness_dir, "loop.max_turns", value="30")
+    spec = load_spec(harness_dir)
+    assert spec.loop.max_turns == 30
+    assert isinstance(spec.loop.max_turns, int)
+
+
+def test_set_field_string_coercion_failure_hints_at_file(harness_dir: Path):
+    """A field this heuristic can't resolve to a plain `str` type (here,
+    `tools.0.description` sits behind the ToolRef discriminated union) still
+    YAML-parses the value; when that produces a validation failure, the error
+    now points at `--file` instead of leaving the user to guess.
+    """
+    construct.add_tool(
+        harness_dir, code="tools/x.py:my_tool", description="placeholder"
+    )
+    with pytest.raises(SpecError, match="valid string") as exc_info:
+        construct.set_field(harness_dir, "tools.0.description", value="Answer: yes")
+    assert "--file" in str(exc_info.value)
+
+
 def test_set_model_switches_lab_in_one_commit(harness_dir: Path):
     """Provider and id must move together — the only way to change labs."""
     spec = construct.set_model(harness_dir, "openai/gpt-4.1-mini")
@@ -315,6 +419,24 @@ def test_remove_nonexistent_raises(harness_dir: Path):
         construct.remove_item(harness_dir, "not-a-thing")
 
 
+def test_remove_list_index_drops_one_item(harness_dir: Path):
+    """`remove` shares the same dotted/indexed path walker as `set`."""
+    construct.add_guardrail(harness_dir, builtin="max_wall_clock_seconds", value=300)
+    spec = load_spec(harness_dir)
+    assert len(spec.guardrails) == 2
+
+    construct.remove_item(harness_dir, "guardrails.1")
+
+    spec = load_spec(harness_dir)
+    assert len(spec.guardrails) == 1
+    assert spec.guardrails[0].builtin == "max_cost_usd"
+
+
+def test_remove_list_index_out_of_range_raises(harness_dir: Path):
+    with pytest.raises(SpecError, match=r"list has 1 item"):
+        construct.remove_item(harness_dir, "guardrails.5")
+
+
 # --------------------------------------------------------------------------- #
 # add_mcp_server
 # --------------------------------------------------------------------------- #
@@ -384,6 +506,35 @@ def test_add_mcp_server_omits_empty_optionals(harness_dir: Path):
     assert entry["env"] == {}
     assert entry["env_from_host_env"] == {}
     assert entry["deferred"] is False
+
+
+def test_add_mcp_server_timeout_seconds(harness_dir: Path):
+    """Defect 3: the default 30s timeout is too short for a peer harness run;
+    `add mcp-server` needs a way to raise it."""
+    construct.add_mcp_server(
+        harness_dir, name="echo", stdio_command="npx", timeout_seconds=120.0
+    )
+    spec = load_spec(harness_dir)
+    assert spec.mcp_servers[0].timeout_seconds == 120.0
+
+
+def test_add_mcp_server_timeout_seconds_defaults_when_omitted(harness_dir: Path):
+    construct.add_mcp_server(harness_dir, name="echo", stdio_command="npx")
+    spec = load_spec(harness_dir)
+    assert spec.mcp_servers[0].timeout_seconds == 30.0
+
+
+def test_add_mcp_server_timeout_seconds_validated_through_schema(harness_dir: Path):
+    """gt=0, le=600 on McpStdioServerRef/McpHttpServerRef -- not re-validated
+    ad hoc in construct.add_mcp_server, just passed through to the schema."""
+    with pytest.raises(SpecError):
+        construct.add_mcp_server(
+            harness_dir, name="echo", stdio_command="npx", timeout_seconds=700.0
+        )
+    with pytest.raises(SpecError):
+        construct.add_mcp_server(
+            harness_dir, name="echo", stdio_command="npx", timeout_seconds=0.0
+        )
 
 
 def test_add_mcp_server_round_trips_through_remove(harness_dir: Path):

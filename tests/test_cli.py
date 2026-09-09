@@ -71,6 +71,40 @@ def test_set_model_selector_rejects_a_bare_model_id(tmp_path: Path):
     assert "provider/model-id" in _json(r)["error"]
 
 
+def test_set_list_index_updates_an_existing_guardrail(tmp_path: Path):
+    """New-user defect: `init` already seeds guardrails.0 (the default cost
+    guardrail), so `set guardrails.0.value` is the first thing a new user
+    tries. It used to fail with "Input should be a valid list"."""
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app, ["set", "guardrails.0.value", "0.05", "--dir", directory, "--json"]
+    )
+    assert r.exit_code == ExitCode.OK
+    assert load_spec(directory).guardrails[0].value == 0.05
+
+
+def test_set_list_index_out_of_range(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app, ["set", "guardrails.9.value", "1", "--dir", directory, "--json"]
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "out of range" in _json(r)["error"]
+
+
+def test_set_string_field_keeps_colon_space_verbatim(tmp_path: Path):
+    """New-user defect: a system_prompt value with `: ` in it used to be
+    misread as a YAML mapping and rejected as "not a valid string"."""
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    prompt = 'Reply with {"words": N}: nothing else'
+    r = runner.invoke(app, ["set", "system_prompt", prompt, "--dir", directory, "--json"])
+    assert r.exit_code == ExitCode.OK
+    assert load_spec(directory).system_prompt == prompt
+
+
 def test_catalog_json(tmp_path: Path):
     r = runner.invoke(app, ["catalog", "tools", "--json"])
     assert r.exit_code == ExitCode.OK
@@ -173,6 +207,21 @@ def test_add_and_remove_tool(tmp_path: Path):
     r = runner.invoke(app, ["remove", "file_read", "--dir", directory, "--json"])
     assert r.exit_code == ExitCode.OK
     assert _json(r)["removed"] == "file_read"
+
+
+def test_remove_list_index(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    runner.invoke(
+        app,
+        ["add", "guardrail", "--builtin", "max_wall_clock_seconds", "--value", "300",
+         "--dir", directory],
+    )
+    assert len(load_spec(directory).guardrails) == 2
+
+    r = runner.invoke(app, ["remove", "guardrails.1", "--dir", directory, "--json"])
+    assert r.exit_code == ExitCode.OK
+    assert len(load_spec(directory).guardrails) == 1
 
 
 def test_add_guardrail_reports_replacement(tmp_path: Path):

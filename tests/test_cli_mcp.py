@@ -83,6 +83,35 @@ def test_add_mcp_server_http_cli_writes_expected_yaml(tmp_path: Path):
     assert entry["deferred"] is True
 
 
+def test_add_mcp_server_timeout_seconds_cli(tmp_path: Path):
+    """Defect 3: the 30s default is too short for a peer harness run."""
+    directory = _init(tmp_path)
+    r = runner.invoke(
+        app,
+        [
+            "add", "mcp-server", "--name", "echo", "--stdio-command", "npx",
+            "--timeout-seconds", "120",
+            "--dir", directory, "--json",
+        ],
+    )
+    assert r.exit_code == ExitCode.OK
+    raw = yaml.safe_load((Path(directory) / "harness.yaml").read_text())
+    assert raw["mcp_servers"][0]["timeout_seconds"] == 120.0
+
+
+def test_add_mcp_server_timeout_seconds_out_of_range_rejected(tmp_path: Path):
+    directory = _init(tmp_path)
+    r = runner.invoke(
+        app,
+        [
+            "add", "mcp-server", "--name", "echo", "--stdio-command", "npx",
+            "--timeout-seconds", "601",
+            "--dir", directory, "--json",
+        ],
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+
+
 def test_add_mcp_server_malformed_env_pair(tmp_path: Path):
     directory = _init(tmp_path)
     r = runner.invoke(
