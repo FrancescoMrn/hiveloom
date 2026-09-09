@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-09-04
+## [1.1.0] - 2026-09-09
 
 The containment and evidence release. Large tool results stay retrievable
 instead of being truncated away, a harness can read its own run history while
@@ -215,6 +215,24 @@ objectives rather than raw failure counts.
   enforced retrieval and answer phases, grounded synthetic IDs, and a local
   eval with Recall@3, nDCG@3, and hallucination-rate objectives.
 
+- **A seventh demo harness, `harnesses/log-forensics`,** covers the release:
+  an allowlisted `shell` under an explicit `confinement` section, a 77 KB
+  `cat` spilled to a handle and read back with `search_tool_result` /
+  `read_tool_result` (the answer to one of its three questions is in the tail
+  the old truncation discarded), `recall_runs` scoped to one harness version,
+  and `egress` screening the request that carries it all. Verified end to end:
+  exit 0, first-pass verification, ~7 turns.
+
+- **`hiveloom add tool --param name=value`** (and `params` on the SDK's
+  `add_tool` / the served `POST /add/tool`) declares a builtin's catalog
+  parameters when the tool is added, validated and rolled back like every
+  other construction step. Before this, `shell`'s `commands` allowlist had no
+  supported spelling at all: `add tool` accepted only `--host`, and
+  `set 'tools[0].commands'` cannot address a list element — `set` splits on
+  `.` alone, so it wrote a top-level key named `tools[0]` and failed with
+  `tools[0]: Extra inputs are not permitted`. Declaring the allowlist meant
+  hand-editing `harness.yaml`, against the first rule in `AGENTS.md`.
+
 
 ### Changed
 
@@ -261,6 +279,58 @@ objectives rather than raw failure counts.
   cycle; scripts should move to the explicit flags.
 - Managed trace roots publish their marker atomically, so concurrent eval cells
   cannot observe a valid marker between file creation and its content write.
+- **Shell allowlist rules are validated with the rest of the spec.** A rule
+  such as `{argv: [cat], allow_extra_args: true}` — `allow_extra_args` on a
+  command outside the small safe set — passed `hiveloom validate` ("harness is
+  valid") and was reported by `hiveloom confinement` as an available dynamic
+  reader, then failed at run time with exit 4 when the tool was constructed.
+  `hiveloom.catalog` now owns the rule parser and the safe-binary set that the
+  runtime uses, so validation refuses exactly what the runtime would, before a
+  run is paid for. The refusal also names the commands `allow_extra_args` is
+  limited to.
+- **An eval identity mismatch says which policy rejected it and how to accept
+  it.** `model_identity` defaults to `exact`, which no provider that resolves
+  an alias to a dated snapshot can satisfy — asking for `claude-haiku-4-5`
+  returns `claude-haiku-4-5-20251001` — so a first `eval run` stopped on
+  `provider served claude-haiku-4-5-20251001 for requested model
+  claude-haiku-4-5`, a sentence written as a `warn`-mode note and reused as a
+  hard error. It now names the policy, points at `model_aliases`/`warn`, and
+  says aliases are bare model ids.
+- **Compaction could orphan a `tool_result` and kill the run with a provider
+  400.** Both builtin methods reclaim space by removing whole messages, and
+  the boundary can fall between an assistant's `tool_use` and the
+  `tool_result` answering it — `summarize` keeps the newest message
+  unconditionally, and `truncate_oldest` deletes from the front. The provider
+  then rejects the transcript (`unexpected tool_use_id found in tool_result
+  blocks`) and the run ends in `error` instead of continuing shorter. Any
+  conversation that crosses the compaction threshold mid-tool-cycle hit this,
+  which is exactly what a harness reading large tool results does. Orphaned
+  results are now repaired once in `_compact_now`, so hook summaries and
+  extension-registered methods are covered too.
+- **A `sequential_steps` step could not name the spill readers.** Listing
+  `read_tool_result` or `search_tool_result` in a step's `tools` failed
+  validation as an unknown tool, because they are auto-added at the first
+  spill rather than declared. The playbook subset validator already allowed
+  them for the same reason; the step validator now matches, so
+  `context.tool_results` spilling and `sequential_steps` can be used together.
+- **`docs/evaluating.md` documented `model_aliases` as
+  `[provider/canonical-model]`.** Aliases match the bare model id the provider
+  reports, so the documented form never matched and `model_identity: alias`
+  failed the same way `exact` did.
+- **The demo harnesses pin this release.** All seven moved from
+  `hiveloom==1.0.0` to `hiveloom==1.1.0`, and
+  `harnesses/ranked-retrieval/eval.yaml` no longer ships `model_identity: exact`
+  — the shipped demo eval could not get past its own provider probe, so the
+  `hiveloom eval run eval.yaml` in its README failed for everyone who tried it.
+- **The version gates still read `pyproject.toml`'s `project.version`.**
+  Deriving the distribution version from `hiveloom.__version__` removed that
+  key, so both steps that read it raise `KeyError`: CI's consistency check and
+  — the one that matters — the release workflow's tag check, which means
+  `v1.1.0` could not have been verified at all. Both read `__version__`
+  directly now, CI additionally asserts the built artifacts carry it, and the
+  sdist scope gate compares what it ships under `docs/` against the files the
+  wheel force-includes as `hiveloom guide` topics instead of rejecting the
+  prefix outright.
 
 ## [1.0.0] - 2026-08-28
 
