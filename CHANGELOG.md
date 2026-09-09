@@ -274,6 +274,15 @@ objectives rather than raw failure counts.
 
 ### Fixed
 
+- **Any harness setting `model.temperature` died at turn 0.** `anthropic` 1.0
+  removed `temperature` from `messages.create()`, so the provider's call raised
+  `TypeError: Messages.create() got an unexpected keyword argument
+  'temperature'` before the first request left the process — four of the seven
+  demo harnesses, `quickstart` and the README's own first run included. The
+  setting now travels in `extra_body`, which is the SDK's escape hatch for a
+  wire field it no longer names; which model ids accept it is unchanged. The
+  regression was invisible to the test suite because the faked SDK accepted
+  `**kwargs`; its `create` now has the real 1.x signature.
 - Legacy `--input` no longer raises `ENAMETOOLONG` when a large literal is
   checked as a possible filename. It remains available for one deprecation
   cycle; scripts should move to the explicit flags.

@@ -101,11 +101,16 @@ class ClaudeProvider(ModelProvider):
         if tools:
             tools_param = [*tools[:-1], {**tools[-1], "cache_control": _CACHE_CONTROL}]
         # Omitted when unset, and always for the ids whose API rejects sampling
-        # parameters — for those, any value at all is a 400.
+        # parameters — for those, any value at all is a 400. It travels in
+        # `extra_body` because `messages.create()` dropped `temperature` from its
+        # signature in anthropic 1.0 (a `TypeError`, not an API error); the wire
+        # field is unchanged, and the models below still honour it.
         send_temperature = config.temperature is not None and not config.id.startswith(
             _NO_SAMPLING_PREFIXES
         )
-        extra = {"temperature": config.temperature} if send_temperature else {}
+        extra = (
+            {"extra_body": {"temperature": config.temperature}} if send_temperature else {}
+        )
         raw = self._call_with_backoff(
             model=config.id,
             max_tokens=config.max_tokens,
