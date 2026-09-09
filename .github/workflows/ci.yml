@@ -69,6 +69,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dev dependencies
         run: uv sync --extra dev
+      - name: Install a sandbox backend, if the runner can have one
+        # Without bwrap the confinement tests marked `sandboxed` skip, and this
+        # release's kernel-enforced isolation goes untested here. This step
+        # cannot fail the job: if the runner will not give us a working bwrap,
+        # `available_backend()` reports none and those tests skip as before.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap || true
       # No ANTHROPIC_API_KEY on purpose: tests must pass offline with fake
       # providers (CONTRIBUTING.md contract).
       - name: Run tests with branch coverage

@@ -414,8 +414,15 @@ def test_the_sandboxs_tmp_is_private(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 # The runtime's own state is not part of the machine a command sees
 # --------------------------------------------------------------------------- #
-def _shell_harness(tmp_path: Path) -> Path:
-    """A harness whose shell may run the file-reading commands, with any args."""
+def _shell_harness(tmp_path: Path, *, commands: str | None = None) -> Path:
+    """A harness whose shell may run the file-reading commands.
+
+    The default rules take *any* arguments, which the runtime only permits when
+    a sandbox is masking its state — so tests using the default belong under
+    ``@sandboxed``. Pass ``commands`` to declare exact argv rules instead: those
+    run on every machine, and the runtime-state refusal applies to them just the
+    same, which is what makes that protection testable without a backend.
+    """
     directory = tmp_path / "leaky"
     construct.init_harness(directory, name="leaky", task="T")
     construct.set_field(directory, "loop.require_verification", "false")
@@ -430,12 +437,14 @@ def _shell_harness(tmp_path: Path) -> Path:
         '    marker = "".join(["SECRET", "-FROM-RUN-ONE"])\n'
         '    return marker + " " + ("z" * 40000)\n'
     )
+    rules = commands or (
+        "{argv: [ls], allow_extra_args: true}, {argv: [grep], allow_extra_args: true}"
+    )
     construct.set_field(
         directory,
         "tools",
         '[{code: "tools/big.py:big", description: "Emit a large result."},'
-        " {builtin: shell, commands: ["
-        "{argv: [ls], allow_extra_args: true}, {argv: [grep], allow_extra_args: true}]}]",
+        f" {{builtin: shell, commands: [{rules}]}}]",
     )
     return directory
 
@@ -463,8 +472,16 @@ def _shell(harness: Path, command: str) -> str:
 
 def test_the_shell_cannot_name_the_runtimes_own_state(tmp_path: Path):
     # The reported bypass: an allowlisted `ls`/`grep` walking .hiveloom to find
-    # an earlier run's spill handle and read the result it stands for.
-    harness = _shell_harness(tmp_path)
+    # an earlier run's spill handle and read the result it stands for. Declared
+    # as exact argv so the allowlist genuinely permits these two commands on any
+    # machine: what stops them here is the refusal, not the sandbox gate.
+    harness = _shell_harness(
+        tmp_path,
+        commands=(
+            "{argv: [ls, -la, .hiveloom/traces/spill]},"
+            " {argv: [grep, -o, SECRET-FROM-RUN-ONE, -r, .hiveloom]}"
+        ),
+    )
     _spill_a_result(harness)
 
     listing = _shell(harness, "ls -la .hiveloom/traces/spill")
@@ -472,7 +489,20 @@ def test_the_shell_cannot_name_the_runtimes_own_state(tmp_path: Path):
     assert "tr_" not in listing
 
     grepped = _shell(harness, "grep -o SECRET-FROM-RUN-ONE -r .hiveloom")
+    assert "runtime state" in grepped
     assert "SECRET-FROM-RUN-ONE" not in grepped
+
+
+@sandboxed
+def test_variable_arguments_cannot_name_the_runtimes_own_state(tmp_path: Path):
+    # The same refusal, reached the way a model actually would: arguments it
+    # chose itself. Those rules need a backend, so this half is sandbox-only.
+    harness = _shell_harness(tmp_path)
+    _spill_a_result(harness)
+
+    listing = _shell(harness, "ls -la .hiveloom/traces/spill")
+    assert "runtime state" in listing
+    assert "tr_" not in listing
 
 
 @sandboxed
@@ -501,6 +531,18 @@ def test_a_spilled_result_is_not_world_readable(tmp_path: Path):
 
 def test_an_ordinary_argument_still_passes(tmp_path: Path):
     # The refusal is about the runtime's state, not about paths in general.
+    harness = _shell_harness(
+        tmp_path,
+        # "-1" quoted: YAML would read a bare -1 as an integer, and an argv
+        # element that is not a string is refused by the rule parser.
+        commands='{argv: [ls, "-1", "."]}, {argv: [grep, -c, name, harness.yaml]}',
+    )
+    assert "harness.yaml" in _shell(harness, "ls -1 .")
+    assert "exit=0" in _shell(harness, "grep -c name harness.yaml")
+
+
+@sandboxed
+def test_model_chosen_arguments_run_when_a_backend_masks_runtime_state(tmp_path: Path):
     harness = _shell_harness(tmp_path)
     assert "harness.yaml" in _shell(harness, "ls -1 .")
     assert "exit=0" in _shell(harness, "grep -c name harness.yaml")
