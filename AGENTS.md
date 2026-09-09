@@ -83,6 +83,8 @@ lessons the run itself offered, reviewed the same way and curated with
   artifacts and the production feedback loop.
 - [docs/evaluating.md](docs/evaluating.md) — versioned local eval documents,
   dataset/scorer extensions, identity, metrics, and privacy.
+- [docs/delegation.md](docs/delegation.md) — handing a task to a fitter peer
+  harness: the three modes, fitness floors, lineage, cost, and limits.
 - [docs/journal.md](docs/journal.md) — the run journal, `trace --verify`,
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the

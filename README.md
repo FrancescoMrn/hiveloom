@@ -43,6 +43,7 @@ hiveloom harness starts with one job and declares its operating boundary:
 | **Acceptance** | Deterministic validators — not the model — decide whether an answer counts as success. |
 | **Change** | Evolution is limited to declared mutable fields; safety-critical fields stay frozen. |
 | **Evidence** | Every run is tied to the exact harness version and written to a checkable journal. |
+| **Help** | Optional delegation: a harness hands the task to a peer with better measured odds, verifies the answer itself, and charges the peer's cost to its own budget — or names the harness that fits. |
 
 The result is more reliable than a prompt and narrower than a general-purpose
 agent: a portable, versioned agent program for a task you can define and check.
@@ -393,7 +394,13 @@ hiveloom migrate ./legacy-harness --json
 hiveloom explain context.compaction --json
 hiveloom catalog validators --json
 hiveloom set loop.max_turns 20 --dir ./my-harness --json
+# `set`/`remove` paths may index an existing list item (read-modify-write,
+# no append via `set`); a string field like `system_prompt` keeps the CLI
+# text verbatim instead of parsing it as YAML.
+hiveloom set guardrails.0.value 0.05 --dir ./my-harness --json
 hiveloom add tool --builtin file_read --dir ./my-harness --json
+hiveloom add mcp-server --name jira --url https://mcp.acme.example/mcp \
+  --timeout-seconds 120 --dir ./my-harness --json
 
 # Run and inspect
 hiveloom run ./my-harness --input input.txt --stream
@@ -443,10 +450,24 @@ measured success rate and cost, so any MCP-capable agent can pick a harness on
 evidence and delegate a task to it — getting back a structured,
 validator-checked result instead of improvising the task itself. Input is
 always treated as literal text, and untrusted directories fail at startup
-(approve them with `hiveloom trust`). Register harnesses once with
-`hiveloom registry add <dir>` and serve them all with `--registered`; add
-`--http` (with `HIVELOOM_API_KEY`) to serve over streamable HTTP instead of
-stdio.
+(approve them with `hiveloom trust`; startup errors go to stderr, never to the
+protocol channel). Register harnesses once with `hiveloom registry add <dir>`
+and serve them all with `--registered`; add `--http` (with `HIVELOOM_API_KEY`)
+to serve over streamable HTTP instead of stdio. `--concurrency N` bounds
+parallel runs; `--max-depth N` (default 3) bounds delegation chains. A run that
+could not start at all comes back as `status: "error"` with the reason — data,
+not a protocol failure.
+
+The calling agent can be another harness: give it an `mcp_servers` entry
+pointing at a peer's `hiveloom mcp serve` and its `run_<name>` tools join the
+loop. Forward the credential explicitly
+(`env_from_host_env: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY}` for stdio,
+`header_env: {X-API-Key: HIVELOOM_API_KEY}` for HTTP — a stdio child is spawned
+with a minimal environment, and only `HIVELOOM_HOME`/`HIVELOOM_DB` are passed
+through so the peer shares this machine's Hive), and set `timeout_seconds` to
+cover the peer's whole run. The peer's run is recorded as a child of the
+caller's, and a chain that grows too deep or loops back is refused. See
+[docs/spec.md](docs/spec.md#harness--harness).
 
 ### Python SDK
 
@@ -496,6 +517,8 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - Redaction runs before trace persistence.
 - Provider egress screens the final request after request hooks.
 - Foreign harness code is trust-gated before loading.
+- A delegated peer run is depth- and cycle-bounded, capped at a share of the
+  parent's remaining budget, and counted into the parent's cost.
 
 ## Documentation
 
@@ -507,6 +530,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Architecture](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/architecture.md)
 - [The workbench](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/workbench.md)
 - [Journal, forks, and model swaps](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/journal.md)
+- [Delegation between harnesses](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/delegation.md)
 - [Models and providers](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/models.md)
 - [Extensions](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/extending.md)
 - [Deployment and evolution](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/deploying-and-evolving.md)

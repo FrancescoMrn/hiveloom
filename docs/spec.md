@@ -36,6 +36,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `confinement` | OS confinement for spawned processes | `mode` (`auto`\|`off`\|`require`), `network`, `writable`, `hide_home`, `env_passthrough`, `timeout_seconds`, `max_output_bytes`, `max_memory_mb`, `max_processes`; **frozen from evolution** |
 | `egress` | What may leave in a model request | `mode` (`redact`\|`block`\|`off`), `detect_credentials`, `patterns`; **frozen from evolution** |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
+| `delegation` | Whether this harness may hand a task to a peer harness | `enabled` (off by default), `directory` (`local`), `when` (`on_start`/`on_verify_fail`/`model_choice`), `min_peer_success_rate`, `min_peer_runs`, `max_depth`, `budget_share`, `exclude`; tunable by evolution |
 | `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all three nested policies are frozen |
 
 ## Builtins
@@ -758,6 +759,40 @@ frozen. None can be changed by evolution, including through a rewrite of the
 surrounding `playbooks` list. Prompts are the evolvable part — which is the
 point: evolution rewrites one mode's guidance on that mode's own evidence.
 
+## Delegation
+
+A harness's **model** is frozen; *which harness runs the task* is not. With
+`delegation` a run can look for a peer on this machine that is more specific,
+or has better measured odds, hand the task over, and verify the answer with its
+own validators — or name the peer that would have fitted. Full reference:
+[docs/delegation.md](delegation.md) (`hiveloom guide delegation`).
+
+```yaml
+delegation:
+  enabled: true
+  directory: local          # this machine's registry; remote MCP is a follow-up
+  when: [on_start, model_choice]
+  min_peer_success_rate: 0.7  # measured floor for an automatic hand-off
+  min_peer_runs: 5            # below this a peer counts as unmeasured
+  max_depth: 2                # hops before a chain is refused
+  budget_share: 0.5           # share of the parent's REMAINING budget
+  exclude: [scratch-harness]  # never delegate to these
+```
+
+`on_start` and `on_verify_fail` are executed by the loop, not requested of the
+model — a prompt-only "find a specialist first" instruction is skipped by
+exactly the small models this helps. `model_choice` registers one deferred
+`delegate__<peer>` tool per eligible peer (found through `search_tools`) plus an
+always-active `list_peers`.
+
+The child runs with its own tools, guardrails and journal, and a `max_cost_usd`
+cap of `budget_share × the parent's remaining budget`; its spend counts toward
+the parent's cap and is reported as `delegated_cost_usd`. Depth and cycle
+refusals are checked before the peer is contacted. Peers below the fitness
+floors are never chosen automatically but come back as `referrals`. Every
+outcome is traced: `delegation_selected`, `delegation_started`,
+`delegation_finished`, `delegation_skipped`.
+
 ## MCP servers
 
 A harness can declare MCP servers; their tools become ordinary dispatchable
@@ -805,6 +840,75 @@ mcp_servers:
 Add one with `hiveloom add mcp-server` (see `hiveloom add mcp-server --help`);
 inspect what a harness's declared servers actually expose with
 `hiveloom mcp list-tools --dir ./h`.
+
+### Harness → harness
+
+The server on the other end may itself be a harness: `hiveloom mcp serve`
+exposes one `run_<name>` tool per harness (plus `list_harnesses`), so harness A
+can hand a whole task to harness B — a versioned, guardrailed, verified
+executor — instead of improvising it.
+
+```yaml
+mcp_servers:
+  - name: peer
+    transport: stdio
+    command: hiveloom
+    args: ["mcp", "serve", "/srv/harnesses/summarizer"]
+    env_from_host_env:
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY   # REQUIRED: see below
+    timeout_seconds: 300                     # >= the peer's max_wall_clock_seconds
+```
+
+Over HTTP instead:
+
+```yaml
+mcp_servers:
+  - name: peer
+    transport: http
+    url: https://harnesses.internal/mcp
+    header_env:
+      X-API-Key: HIVELOOM_API_KEY
+    timeout_seconds: 300
+```
+
+What travels on that wire:
+
+- **The child's environment.** A stdio child is spawned with a *minimal* env
+  (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) — hiveloom adds
+  `HIVELOOM_HOME` and `HIVELOOM_DB` when they are set, so the peer writes to
+  the same Hive and trust store, and nothing else. **Credentials are never
+  auto-forwarded**: declare each one in `env_from_host_env`, or give the peer
+  harness its own `.env`. The same applies when an agent host (Claude Code,
+  Claude Desktop) launches `hiveloom mcp serve` — it too passes a minimal
+  environment, so the key has to be configured in the host's server entry or
+  in the harness folder.
+- **The result, always as data.** `{status, output, reason, turns, cost_usd,
+  run_id, verdicts}`. A peer that could not even start (no API key, an
+  untrusted folder) answers `status: "error"` with the reason in `reason` —
+  never a protocol error the calling model cannot read.
+- **Artifacts.** A peer run's `RunResult.artifacts` come back in the same
+  `_hiveloom` envelope described above, so they land on the caller's
+  `RunResult.artifacts`.
+- **Lineage.** The caller sends its run id, harness identity, depth and chain
+  in the request `_meta`; the peer records the run with `parent_run_id` set, so
+  `hiveloom lineage` and the Hive show the delegated run under its parent.
+  `hiveloom mcp serve --max-depth N` (default 3) refuses a chain deeper than
+  `N`, and a harness already on the chain refuses the call as a cycle — both as
+  `status: "error"`, before the first paid turn. That `_meta` (run id, harness
+  identities, depth — no secrets, no task text) rides every MCP tool call the
+  harness makes; a server that does not understand the key ignores it, as the
+  MCP spec requires of unknown `_meta`.
+
+Two limits worth sizing for:
+
+- **A caller timeout does not stop the peer's run.** The MCP SDK does send
+  `notifications/cancelled`, and `mcp serve` turns that into a graceful stop
+  request — the peer finishes its current turn, then stops. It is *not*
+  instant: size `timeout_seconds` at or above the peer's
+  `max_wall_clock_seconds` guardrail rather than relying on cancellation.
+- **Concurrency.** `hiveloom mcp serve --concurrency N` bounds how many runs
+  one server process executes at once (default unlimited). A call that finds no
+  free slot waits, so the caller's `timeout_seconds` also bounds that wait.
 
 ## Three identities, three jobs
 
@@ -868,6 +972,10 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 11. `propose_memory` writes no spec. It queues a gated proposal scoped the same
    way, redacted before it is stored, bounded per run — and a human still
    applies it.
+12. A delegated child never escapes its parent's budget: its cost is added to
+   the parent's, its own cap is a share of what the parent has left, and depth
+   and cycle refusals are applied before the peer is contacted. Untrusted peer
+   folders are never offered — trust is checked before a peer's spec is read.
 
 ## The harness directory
 

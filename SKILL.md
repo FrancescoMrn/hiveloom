@@ -61,7 +61,16 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    # For selected IDs, also require evidence from an allowed current-run tool:
    hiveloom add validator --builtin grounded_references --output-path '$.selected[*].id' --evidence-path 'file_read=$.items[*].id' --dir ./h --json
    hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
+   # `set`/`remove` paths may index into an existing list item, e.g. the
+   # cost guardrail `init` seeds at guardrails.0 (no append via `set`):
+   hiveloom set guardrails.0.value 0.05 --dir ./h
+   # add mcp-server: --timeout-seconds (default 30, 0 < t <= 600) covers
+   # connect/initialize + each tool call; raise it for a slow peer harness:
+   hiveloom add mcp-server --name jira --url https://mcp.acme.example/mcp --timeout-seconds 120 --dir ./h
    ```
+   A `set` value parses as YAML, except a plain string field (e.g.
+   `system_prompt`) keeps the CLI text verbatim so `": "` isn't misread as a
+   mapping; use `--file` when that heuristic can't resolve the field.
    For task-specific logic use a code hook — `add tool --code tools/x.py:fn
    --description "..."` scaffolds a correctly-signed stub for you to fill in.
    Also available: `add hook --on <event> --code hooks/x.py:fn` (lifecycle

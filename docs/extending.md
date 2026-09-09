@@ -218,6 +218,15 @@ hiveloom add mcp-server --name jira --url https://mcp.acme.com/mcp \
 hiveloom mcp list-tools --dir ./h   # see what a declared server actually exposes
 ```
 
+A stdio server is spawned with a **minimal environment** (`HOME`, `PATH`,
+`SHELL`, `TERM`, `USER`, `LOGNAME`), plus `HIVELOOM_HOME`/`HIVELOOM_DB` when
+this process has them — locations, so a child `hiveloom mcp serve` shares this
+machine's Hive and trust store. Credentials are never forwarded implicitly:
+name each one in `--env-from-host` (`env_from_host_env`), or give the server's
+own folder a `.env`. The same applies to a `hiveloom mcp serve` launched by an
+agent host (Claude Code, Claude Desktop): configure the key in the host's
+server entry.
+
 A stdio server (`--stdio-command`) is **arbitrary local exec** — the same
 trust boundary as any other code hook. `mcp_servers` is **always frozen** from
 evolution, the same risk class as `extensions`. A remote tool's own

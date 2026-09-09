@@ -376,9 +376,33 @@ queue, same dedup, just triggered on your own cadence instead of per-run.
   non-loopback bind without the key is refused. Same caller contract as the
   HTTP servers: input is always literal text, and trust is enforced per
   directory at startup (the command is non-interactive — stdout is the protocol
-  channel — so approve foreign folders with `hiveloom trust` first). Delegated
+  channel — so approve foreign folders with `hiveloom trust` first; every
+  startup error goes to stderr with an exit code, never to stdout). Delegated
   runs land in the Hive like any other, so tasks handed over by *other agents*
-  drive the evolve loop too.
+  drive the evolve loop too. `--concurrency N` bounds how many runs one server
+  process executes at once (default unlimited); a call that finds no free slot
+  waits, bounded by the caller's own timeout.
+- **Harness → harness (MCP)** — the calling agent can itself be a harness: give
+  it an `mcp_servers` entry pointing at a peer's `hiveloom mcp serve`, and its
+  `run_<name>` tools join the loop. Three things to get right:
+  - **Credentials.** A stdio child is spawned with a minimal environment;
+    hiveloom passes `HIVELOOM_HOME`/`HIVELOOM_DB` through so the peer shares
+    this machine's Hive and trust store, but **never** API keys. Declare them:
+    `env_from_host_env: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY}`, or give the
+    peer harness folder its own `.env`. (Agent hosts such as Claude Code and
+    Claude Desktop also launch `hiveloom mcp serve` with a minimal environment
+    — configure the key in the host's server entry.) Over HTTP, authenticate
+    with `header_env: {X-API-Key: HIVELOOM_API_KEY}`.
+  - **Timeouts.** A peer run is a whole agent loop, not a function call. Set
+    the entry's `timeout_seconds` at or above the peer's
+    `max_wall_clock_seconds`; a caller timeout asks the peer to stop
+    gracefully at its next turn boundary but does not kill it.
+  - **Bounds.** The caller sends its run id, harness identity, depth and chain
+    in the request `_meta`, so the peer's run is recorded with
+    `parent_run_id` and the pair shows up under `hiveloom lineage`. The server
+    refuses a chain deeper than `--max-depth` (default 3), and refuses a
+    harness that already appears in the chain (a cycle) — both as
+    `status: "error"` results, before spending anything.
 - **Git-backed harness** — keep `harness.yaml` + hooks in git (traces are
   gitignored by `init`). Evolution produces a clean diff (the `# evolved` counter
   and version hash); commit it and redeploy. Rollback = `git revert`.

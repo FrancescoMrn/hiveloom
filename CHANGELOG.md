@@ -146,6 +146,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes a derived object that can be narrowed again. `concat` reads under one
   running byte budget across the objects it joins rather than up to the scan
   ceiling for each.
+- **Delegation between harnesses (`delegation`, off by default).** A run can
+  hand its task to a peer harness from the local registry that is more specific
+  or has better measured Hive fitness, and verify the answer with its own
+  validators. Three runtime-enforced modes (`on_start`, `on_verify_fail`,
+  `model_choice`, the last one registering a deferred `delegate__<peer>` tool
+  per eligible peer plus an active `list_peers`), fitness floors, depth and
+  cycle refusals, and a child cost cap carved out of the parent's remaining
+  budget. Peers that do not qualify come back as `referrals`. The model stays
+  frozen; `delegation` is tunable by evolution. See `docs/delegation.md`.
+- `RunResult`/`run --json` gain `delegations`, `referrals` and
+  `delegated_cost_usd`; `runs.lineage_kind` distinguishes a delegated child
+  from a fork, and `Hive.children(run_id)` lists both.
+- **Harness-to-harness delegation over MCP.** `hiveloom mcp serve` accepts a
+  caller's lineage in the request `_meta`, links the peer run to its parent in
+  the Hive, and refuses a chain deeper than `--max-depth` (default 3) or one
+  that revisits a harness — as `status: "error"` data, before any spend.
+- `hiveloom mcp serve --concurrency N` bounds concurrent runs per server
+  process (default unlimited); waiting is bounded by the caller's timeout.
+- A peer run's artifacts now cross the wire in the `_hiveloom` envelope and
+  land on the calling run's `RunResult.artifacts`.
+
+### Fixed
+
+- `hiveloom set`/`remove` can now address an existing list item by numeric
+  path segment (e.g. `guardrails.0.value`, `mcp_servers.0.timeout_seconds`)
+  instead of the dotted-path walker silently clobbering the list into a dict.
+  An out-of-range index is a clear `SpecError` naming the list's length.
+- `hiveloom set` no longer YAML-parses a value going into a plain `str`
+  schema field (e.g. `system_prompt`); it keeps the CLI text verbatim, so
+  `": "` and similar can't be misread as a YAML mapping. A validation
+  failure that still occurs now hints at `--file`.
+- `hiveloom add mcp-server` gained `--timeout-seconds` (default 30s, `0 <
+  t <= 600`) to raise the connect/tool-call timeout for a slower peer
+  harness or tool.
+- `hiveloom mcp serve`'s `run_*` tools return every failure as data
+  (`status: "error"` with the reason); the traceback goes to stderr via
+  `logging`, not to a caller that cannot read it.
+- `hiveloom mcp serve` startup errors go to stderr with the proper exit code
+  instead of writing JSON into stdout — the MCP protocol channel — which
+  reached the caller as nothing but "Connection closed".
+- A stdio MCP child now inherits `HIVELOOM_HOME`/`HIVELOOM_DB` (locations, not
+  secrets), so a spawned `hiveloom mcp serve` shares the parent's Hive and
+  trust store instead of writing to a different one.
+- Provider factories read a harness's `.env` instead of `load_dotenv`-ing it
+  into the process, so one process serving several harnesses can no longer
+  hand harness B the credentials it found in harness A. Only the provider's
+  key variable is read from `.env`; other variables in that file are no
+  longer adopted into the process environment.
 
 ## [1.1.0] - 2026-09-09
 
