@@ -344,6 +344,14 @@ class ContextManager:
             method = ext.build("compaction", method_name, {}, ext.BuildContext())
             method.compact(self, budget)
 
+        # Every compaction reclaims space by removing whole messages, and the
+        # boundary it picks can fall between an assistant's ``tool_use`` and the
+        # ``tool_result`` answering it. Providers reject a transcript with a
+        # ``tool_result`` whose call is gone, so the run dies on the next turn
+        # with a 400 rather than continuing shorter. Repair here, once, so this
+        # holds for hook summaries and extension-registered methods too.
+        self.messages = _drop_orphan_tool_results(self.messages)
+
         if self._trace is not None:
             self._trace.emit(
                 "context_compaction",
@@ -358,6 +366,38 @@ class ContextManager:
                 messages=list(self.messages),
             )
         return True
+
+
+def _drop_orphan_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove ``tool_result`` blocks whose ``tool_use`` is no longer present.
+
+    A message left with no blocks at all is dropped with them: an empty
+    ``content`` list is itself an invalid request. Blocks of every other kind
+    are passed through untouched, so a message that mixes a surviving result
+    with an orphaned one keeps the half that is still answerable.
+    """
+    seen_tool_use_ids: set[str] = set()
+    repaired: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            repaired.append(message)
+            continue
+        kept: list[Any] = []
+        for block in content:
+            if not isinstance(block, dict):
+                kept.append(block)
+                continue
+            if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+                seen_tool_use_ids.add(block["id"])
+            elif block.get("type") == "tool_result":
+                if block.get("tool_use_id") not in seen_tool_use_ids:
+                    continue
+            kept.append(block)
+        if not kept:
+            continue
+        repaired.append(message if len(kept) == len(content) else {**message, "content": kept})
+    return repaired
 
 
 def _render_for_summary(messages: list[dict[str, Any]]) -> str:

@@ -225,3 +225,104 @@ def test_summarize_compaction_prompts_for_structured_sections():
     assert any(
         "summary of earlier turns" in str(m.get("content", "")) for m in cm.messages
     )
+
+
+def _tool_cycle(cm: ContextManager, call_id: str, filler: str = "") -> None:
+    """One assistant tool_use plus the user tool_result answering it."""
+    cm.add_assistant(
+        [
+            {"type": "text", "text": "working" + filler},
+            {"type": "tool_use", "id": call_id, "name": "shell", "input": {"command": "ls"}},
+        ]
+    )
+    cm.add_tool_results([{"tool_use_id": call_id, "content": "exit=0" + filler}])
+
+
+def test_summarize_does_not_orphan_the_trailing_tool_result():
+    """A retained tool_result whose tool_use was summarized away is a 400."""
+    from hiveloom.models.fake import text_response
+
+    spec = _spec(
+        max_input_tokens=40,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "summarize"},
+    )
+    provider = FakeModelProvider([text_response("# Goal\n- go\n# Next steps\n- none")])
+    cm = ContextManager(spec, provider, None)
+    cm.add_user("TASK: pinned first message")
+    for index in range(4):
+        _tool_cycle(cm, f"toolu_{index}", filler=" with enough length to force compaction")
+
+    assert cm.maybe_compact() is True
+
+    _assert_tool_blocks_paired(cm.messages)
+    assert all(m.get("content") for m in cm.messages)
+
+
+def test_truncate_oldest_does_not_orphan_a_tool_result():
+    spec = _spec(
+        max_input_tokens=40,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "truncate_oldest"},
+    )
+    cm = ContextManager(spec, FakeModelProvider([]), None)
+    cm.add_user("TASK: pinned first message")
+    for index in range(6):
+        _tool_cycle(cm, f"toolu_{index}", filler=" with enough length to force compaction")
+
+    assert cm.maybe_compact() is True
+
+    _assert_tool_blocks_paired(cm.messages)
+
+
+def test_orphan_repair_keeps_the_answerable_half_of_a_mixed_message():
+    from hiveloom.context.manager import _drop_orphan_tool_results
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "kept", "name": "shell", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "kept", "content": "ok"},
+                {"type": "tool_result", "tool_use_id": "dropped", "content": "orphan"},
+            ],
+        },
+    ]
+
+    repaired = _drop_orphan_tool_results(messages)
+
+    assert [b["tool_use_id"] for b in repaired[1]["content"]] == ["kept"]
+    # The input is not mutated in place; callers may still hold it.
+    assert len(messages[1]["content"]) == 2
+
+
+def test_orphan_repair_drops_a_message_left_with_no_blocks():
+    from hiveloom.context.manager import _drop_orphan_tool_results
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "gone", "content": "orphan"}],
+        },
+    ]
+
+    assert _drop_orphan_tool_results(messages) == [{"role": "user", "content": "task"}]
+
+
+def _assert_tool_blocks_paired(messages: list) -> None:
+    seen: set[str] = set()
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                seen.add(block["id"])
+            elif block.get("type") == "tool_result":
+                assert block["tool_use_id"] in seen, f"orphaned tool_result: {block}"
