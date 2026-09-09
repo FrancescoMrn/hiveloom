@@ -509,7 +509,6 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Models and providers](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/models.md)
 - [Extensions](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/extending.md)
 - [Deployment and evolution](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/deploying-and-evolving.md)
-- [One-click OpenShell deployment](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/openshell-one-click-deployment.md)
 - [Control plane](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/control-plane.md)
 - [Link/sync protocol](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/sync-protocol.md)
 - [Contributing and QA](https://github.com/FrancescoMrn/hiveloom/blob/main/CONTRIBUTING.md)
