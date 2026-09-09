@@ -13,6 +13,7 @@ metadata never drifts from behaviour.
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -373,6 +374,45 @@ CATALOGS: dict[str, dict[str, CatalogEntry]] = {
 }
 
 
+#: Commands whose *extra* arguments the model may choose. Anything that
+#: executes code, or that a caller could point at an arbitrary path in a way
+#: the argument screen cannot reason about, stays off this list. Shared with
+#: :mod:`hiveloom.tools.builtin` so a rule the runtime would refuse to build
+#: cannot pass ``hiveloom validate`` first.
+EXTRA_ARGS_SAFE_BINARIES: frozenset[str] = frozenset(
+    {"diff", "echo", "grep", "head", "ls", "printf", "pwd", "sort", "tail", "uniq", "wc"}
+)
+
+
+def parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
+    """Normalize one ``shell`` allowlist rule, or raise ``ValueError``.
+
+    A strict string matches an exact argv; a mapping may set
+    ``allow_extra_args`` to let the model append its own arguments, which only
+    :data:`EXTRA_ARGS_SAFE_BINARIES` may do. Spec validation and the runtime
+    both call this, so ``validate`` refuses a rule the tool could not build.
+    """
+    if isinstance(rule, str):
+        argv: Any = shlex.split(rule)
+        allow_extra = False
+    elif isinstance(rule, dict):
+        argv = rule.get("argv")
+        allow_extra = rule.get("allow_extra_args", False)
+    else:
+        raise ValueError("shell command rules must be strings or mappings")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) and a for a in argv)):
+        raise ValueError("shell command rules need a non-empty argv list")
+    if not isinstance(allow_extra, bool):
+        raise ValueError("shell command rule allow_extra_args must be boolean")
+    if allow_extra and argv[0] not in EXTRA_ARGS_SAFE_BINARIES:
+        safe = ", ".join(sorted(EXTRA_ARGS_SAFE_BINARIES))
+        raise ValueError(
+            f"shell rule for '{argv[0]}' cannot allow arbitrary extra arguments "
+            f"(allow_extra_args is limited to: {safe}); declare the exact argv instead"
+        )
+    return argv, allow_extra
+
+
 def validate_builtin_params(entry: CatalogEntry, provided: dict[str, Any]) -> list[str]:
     """Return a list of human-readable problems with ``provided`` params.
 
@@ -405,5 +445,12 @@ def validate_builtin_params(entry: CatalogEntry, provided: dict[str, Any]) -> li
                 f"'{entry.name}' parameter '{param.name}' must be {param.type}, "
                 f"got {type(value).__name__}"
             )
+
+    if entry.name == "shell" and isinstance(provided.get("commands"), list):
+        for index, rule in enumerate(provided["commands"]):
+            try:
+                parse_shell_rule(rule)
+            except ValueError as exc:
+                problems.append(f"shell commands[{index}]: {exc}")
 
     return problems

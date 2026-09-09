@@ -53,3 +53,29 @@ def test_bool_not_accepted_as_int():
     entry = catalog.BUILTIN_GUARDRAILS["max_wall_clock_seconds"]
     problems = catalog.validate_builtin_params(entry, {"value": True})
     assert problems
+
+
+def test_shell_rules_are_validated_at_spec_time():
+    """`hiveloom validate` must refuse what ShellTool would refuse to build."""
+    entry = catalog.BUILTIN_TOOLS["shell"]
+    assert catalog.validate_builtin_params(entry, {"commands": ["cat app.log"]}) == []
+
+    problems = catalog.validate_builtin_params(
+        entry, {"commands": [{"argv": ["cat"], "allow_extra_args": True}]}
+    )
+    assert problems and "cannot allow arbitrary extra arguments" in problems[0]
+    assert "commands[0]" in problems[0]
+
+
+def test_shell_rule_shape_problems_name_their_index():
+    entry = catalog.BUILTIN_TOOLS["shell"]
+    problems = catalog.validate_builtin_params(entry, {"commands": ["ls", 7]})
+    assert problems == ["shell commands[1]: shell command rules must be strings or mappings"]
+
+
+def test_parse_shell_rule_allows_extra_args_for_safe_binaries():
+    assert catalog.parse_shell_rule({"argv": ["grep"], "allow_extra_args": True}) == (
+        ["grep"],
+        True,
+    )
+    assert catalog.parse_shell_rule("wc -l app.log") == (["wc", "-l", "app.log"], False)

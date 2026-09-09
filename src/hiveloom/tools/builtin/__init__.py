@@ -22,7 +22,7 @@ from urllib import request as urlrequest
 from urllib.parse import urlsplit
 
 from hiveloom import ext
-from hiveloom.catalog import BUILTIN_TOOLS
+from hiveloom.catalog import BUILTIN_TOOLS, EXTRA_ARGS_SAFE_BINARIES, parse_shell_rule
 from hiveloom.confine import (
     NONE,
     PORTABLE_VARIABLE_ARGV,
@@ -57,9 +57,9 @@ _BLOCKED_SHELL_BINARIES = {
     "ruby", "sh", "zsh",
 }
 _BLOCKED_SHELL_ARGUMENTS = {"-exec", "-execdir", "-delete"}
-_EXTRA_ARGS_SAFE_BINARIES = {
-    "diff", "echo", "grep", "head", "ls", "printf", "pwd", "sort", "tail", "uniq", "wc",
-}
+#: Defined in :mod:`hiveloom.catalog` so spec validation refuses a rule the
+#: runtime would refuse to build, rather than letting it fail at run time.
+_EXTRA_ARGS_SAFE_BINARIES = EXTRA_ARGS_SAFE_BINARIES
 
 
 def safe_path(
@@ -453,27 +453,15 @@ def _is_recursive_reader(parts: list[str]) -> bool:
 
 
 def _parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
-    """Normalize a strict legacy command or a structured argv rule."""
-    if isinstance(rule, str):
-        argv = shlex.split(rule)
-        allow_extra = False
-    elif isinstance(rule, dict):
-        argv = rule.get("argv")
-        allow_extra = rule.get("allow_extra_args", False)
-    else:
-        raise ToolError("shell command rules must be strings or mappings")
-    valid_argv = isinstance(argv, list) and argv and all(
-        isinstance(arg, str) and arg for arg in argv
-    )
-    if not valid_argv:
-        raise ToolError("shell command rules need a non-empty argv list")
-    if not isinstance(allow_extra, bool):
-        raise ToolError("shell command rule allow_extra_args must be boolean")
-    if allow_extra and argv[0] not in _EXTRA_ARGS_SAFE_BINARIES:
-        raise ToolError(
-            f"shell rule for '{argv[0]}' cannot allow arbitrary extra arguments"
-        )
-    return argv, allow_extra
+    """Normalize a strict legacy command or a structured argv rule.
+
+    The rules live in :func:`hiveloom.catalog.parse_shell_rule` so that
+    ``hiveloom validate`` rejects the same specs this constructor would.
+    """
+    try:
+        return parse_shell_rule(rule)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _matches_shell_rule(parts: list[str], argv: list[str], allow_extra: bool) -> bool:
