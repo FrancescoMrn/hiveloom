@@ -2,14 +2,14 @@
 # the runtime that executes it, plus anything its tools, validators and
 # extensions import.
 #
-#     uv sync                        # or: pip install hiveloom==1.0.0
+#     uv sync                        # or: pip install hiveloom==1.1.0
 [project]
 name = "ranked-retrieval"
 version = "0.1.0"
 description = "Rank synthetic knowledge records and return only grounded identifiers."
 requires-python = ">=3.11"
 dependencies = [
-    "hiveloom==1.0.0",
+    "hiveloom==1.1.0",
 ]
 
 # Not a library: nothing here is built or installed, only the pins resolved.
