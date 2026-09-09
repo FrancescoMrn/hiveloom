@@ -694,6 +694,15 @@ def add_tool_cmd(
         "--host",
         help="Pre-approve an http_get hostname (repeatable; other hosts prompt at run time).",
     ),
+    param: list[str] = typer.Option(
+        [],
+        "--param",
+        help=(
+            "Builtin parameter as name=value, value parsed as YAML (repeatable). "
+            "See `hiveloom catalog tools` for each builtin's parameters, e.g. "
+            "--param 'commands=[\"grep app.log\"]'."
+        ),
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -705,6 +714,7 @@ def add_tool_cmd(
             code=code,
             description=description,
             hosts=host or None,
+            **_parse_params(param),
         )
         _added(json_output, "tool", builtin or code)
 
@@ -3251,6 +3261,28 @@ def keys_sign_cmd(
             _emit_json({"ok": True, "token": token, "key_id": key_id})
         else:
             _console.print(token)
+
+
+def _parse_params(pairs: list[str]) -> dict[str, Any]:
+    """Parse repeated ``--param name=value`` flags into builtin parameters.
+
+    The value is read as YAML, matching ``set``: ``limit=5`` is an int and
+    ``commands=["grep app.log"]`` is a list. Names are validated against the
+    catalog when the spec is committed, so a typo is rejected there with the
+    builtin's allowed parameter names.
+    """
+    import yaml
+
+    parsed: dict[str, Any] = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        name = name.strip()
+        if not sep or not name:
+            raise SpecError(f"--param expects name=value (got {pair!r})")
+        if name in parsed:
+            raise SpecError(f"--param {name} given more than once")
+        parsed[name] = yaml.safe_load(value)
+    return parsed
 
 
 def _added(json_output: bool, kind: str, ident: str | None) -> None:

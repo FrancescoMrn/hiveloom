@@ -55,6 +55,8 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    hiveloom set system_prompt --file prompt.txt --dir ./h
    hiveloom set loop.max_turns 15 --dir ./h
    hiveloom add tool --builtin file_read --dir ./h
+   # builtin parameters go on the same command; the value is parsed as YAML:
+   hiveloom add tool --builtin shell --param 'commands=["wc -l app.log"]' --dir ./h
    hiveloom add validator --builtin output_schema --schema-file ./schemas/output.json --dir ./h
    # For selected IDs, also require evidence from an allowed current-run tool:
    hiveloom add validator --builtin grounded_references --output-path '$.selected[*].id' --evidence-path 'file_read=$.items[*].id' --dir ./h --json

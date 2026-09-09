@@ -175,12 +175,16 @@ def _add_dispatch(harness_dir: str | Path, kind: str, body: dict[str, Any]) -> d
     Mirrors ``cli.py``'s ``add`` sub-Typer commands' exact response shapes.
     """
     if kind == "tool":
+        params = body.get("params") or {}
+        if not isinstance(params, dict):
+            raise SpecError("'params' must be an object of builtin parameters")
         construct.add_tool(
             harness_dir,
             builtin=body.get("builtin"),
             code=body.get("code"),
             description=body.get("description"),
             hosts=body.get("hosts"),
+            **params,
         )
         return {"ok": True, "added": "tool", "ref": body.get("builtin") or body.get("code")}
 

@@ -603,3 +603,45 @@ def test_version_flag_reports_the_installed_version():
         r = runner.invoke(app, [flag])
         assert r.exit_code == ExitCode.OK
         assert r.stdout.strip() == _version("hiveloom")
+
+
+def test_add_tool_param_declares_a_shell_allowlist(tmp_path: Path):
+    """The allowlist is reachable from the CLI; hand-editing YAML is not required."""
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+
+    r = runner.invoke(
+        app,
+        ["add", "tool", "--builtin", "shell", "--param", 'commands=["wc -l app.log"]',
+         "--dir", directory, "--json"],
+    )
+    assert r.exit_code == ExitCode.OK, r.stdout
+    spec = load_spec(directory)
+    shell = next(t for t in spec.tools if getattr(t, "builtin", None) == "shell")
+    assert shell.params() == {"commands": ["wc -l app.log"]}
+
+
+def test_add_tool_param_requires_name_equals_value(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app,
+        ["add", "tool", "--builtin", "shell", "--param", "commands", "--dir", directory,
+         "--json"],
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "name=value" in _json(r)["error"]
+
+
+def test_add_tool_param_rejects_unbuildable_shell_rule(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app,
+        ["add", "tool", "--builtin", "shell",
+         "--param", 'commands=[{argv: [cat], allow_extra_args: true}]',
+         "--dir", directory, "--json"],
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "arbitrary extra arguments" in _json(r)["error"]
+    assert load_spec(directory).tools == []

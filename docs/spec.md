@@ -41,8 +41,17 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 
 List them with `hiveloom catalog <tools|guardrails|validators|policies|compaction|hooks>`.
 
-For an autonomous HTTP reader, pre-approve destinations transactionally rather
-than editing YAML: `hiveloom add tool --builtin http_get --host example.com
+A builtin's catalog parameters are declared with the tool, transactionally,
+rather than by editing YAML — `--param name=value`, value read as YAML:
+
+```bash
+hiveloom add tool --builtin shell \
+  --param 'commands: ["wc -l app.log", {argv: [grep], allow_extra_args: true}]' --json
+hiveloom add tool --builtin recall_runs --param limit=5 --param scope=version --json
+```
+
+For an autonomous HTTP reader, pre-approve destinations the same way (or with
+the `--host` shorthand): `hiveloom add tool --builtin http_get --host example.com
 --host '*.example.org' --json`. Omit `--host` to require an interactive decision
 for each new hostname during a plain CLI run.
 

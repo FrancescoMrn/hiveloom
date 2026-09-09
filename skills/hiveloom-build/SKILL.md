@@ -48,6 +48,7 @@ hiveloom init ./h --name my-harness --task "One-line task."
 hiveloom set system_prompt --file prompt.txt --dir ./h
 hiveloom set loop.max_turns 15 --dir ./h
 hiveloom add tool --builtin file_read --dir ./h
+hiveloom add tool --builtin shell --param 'commands=["wc -l app.log"]' --dir ./h
 hiveloom add validator --builtin output_schema --schema-file ./schemas/output.json --dir ./h
 hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
 hiveloom remove file_read --dir ./h      # remove by identifier, or delete a field path

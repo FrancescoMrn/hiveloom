@@ -138,6 +138,40 @@ def test_add_builtin_tool(harness_dir: Path):
     assert any(getattr(t, "builtin", None) == "file_read" for t in spec.tools)
 
 
+def test_add_builtin_tool_takes_catalog_params(harness_dir: Path):
+    """A shell allowlist has to be declarable without hand-editing the YAML."""
+    construct.add_tool(harness_dir, builtin="shell", commands=["grep -c ERROR app.log"])
+    spec = load_spec(harness_dir)
+    shell = next(t for t in spec.tools if getattr(t, "builtin", None) == "shell")
+    assert shell.params() == {"commands": ["grep -c ERROR app.log"]}
+
+
+def test_add_builtin_tool_rejects_unknown_param(harness_dir: Path):
+    before = (harness_dir / "harness.yaml").read_text()
+    with pytest.raises(SpecError, match="has no parameter 'allowlist'"):
+        construct.add_tool(harness_dir, builtin="shell", allowlist=["ls"])
+    assert (harness_dir / "harness.yaml").read_text() == before
+
+
+def test_add_builtin_tool_rejects_unbuildable_shell_rule(harness_dir: Path):
+    """The rule the ShellTool would refuse must not reach a valid spec."""
+    before = (harness_dir / "harness.yaml").read_text()
+    with pytest.raises(SpecError, match="cannot allow arbitrary extra arguments"):
+        construct.add_tool(
+            harness_dir,
+            builtin="shell",
+            commands=[{"argv": ["cat"], "allow_extra_args": True}],
+        )
+    assert (harness_dir / "harness.yaml").read_text() == before
+
+
+def test_params_need_a_builtin(harness_dir: Path):
+    with pytest.raises(SpecError, match="only be declared for a builtin"):
+        construct.add_tool(
+            harness_dir, code="tools/x.py:go", description="Go.", commands=["ls"]
+        )
+
+
 def test_add_code_tool_scaffolds_stub(harness_dir: Path):
     construct.add_tool(
         harness_dir, code="tools/fetch.py:fetch", description="Fetch a thing."
