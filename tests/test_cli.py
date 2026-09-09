@@ -432,6 +432,7 @@ def test_guide_lists_every_topic():
         "architecture",
         "models",
         "extending",
+        "evaluating",
         "journal",
         "workbench",
         "deploying",

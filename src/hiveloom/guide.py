@@ -50,6 +50,11 @@ REFERENCE_TOPICS = (
         "docs/extending.md",
     ),
     (
+        "evaluating",
+        "Local eval documents, dataset loaders, scorers, and the native runner.",
+        "docs/evaluating.md",
+    ),
+    (
         "journal",
         "Run journals, integrity checks, forks, lineage, and model swaps.",
         "docs/journal.md",
