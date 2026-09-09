@@ -1123,6 +1123,18 @@ def mcp_serve_cmd(
     ),
     host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host (with --http)."),
     port: int = typer.Option(8765, "--port", help="HTTP bind port (with --http)."),
+    max_depth: int = typer.Option(
+        3,
+        "--max-depth",
+        help="Maximum harness-to-harness delegation depth accepted from a peer "
+        "hiveloom harness (a direct child is 1). Deeper calls are refused as data.",
+    ),
+    concurrency: int = typer.Option(
+        0,
+        "--concurrency",
+        help="Maximum runs executed at once by this process (0 = unlimited). "
+        "A call that arrives with no slot free waits, bounded by the caller's timeout.",
+    ),
 ) -> None:
     """Expose harnesses as MCP tools (one ``run_<name>`` tool each).
 
@@ -1131,11 +1143,19 @@ def mcp_serve_cmd(
     validator-checked result. Non-interactive by design — stdout is the MCP
     protocol channel — so untrusted directories fail at startup instead of
     prompting; approve them first with ``hiveloom trust <dir>``.
+
+    Startup errors go to stderr with the usual exit code, never to stdout: a
+    JSON error object written into the protocol channel reaches the calling
+    agent as nothing but "Connection closed".
     """
     from hiveloom import registry as registry_mod
     from hiveloom.serve.mcp import serve_http, serve_stdio
 
-    with _guard(True):
+    def _die(message: str, code: int) -> None:
+        print(f"error: {message}", file=sys.stderr)
+        raise typer.Exit(code)
+
+    try:
         if registered:
             dirs, skipped = registry_mod.serveable()
             for entry in skipped:
@@ -1154,10 +1174,27 @@ def mcp_serve_cmd(
             dirs = [Path(".")] if not directories else directories
         if http:
             serve_http(
-                dirs, host=host, port=port, api_key=os.environ.get("HIVELOOM_API_KEY")
+                dirs,
+                host=host,
+                port=port,
+                api_key=os.environ.get("HIVELOOM_API_KEY"),
+                max_depth=max_depth,
+                concurrency=concurrency or None,
             )
         else:
-            serve_stdio(dirs)
+            serve_stdio(dirs, max_depth=max_depth, concurrency=concurrency or None)
+    except typer.Exit:
+        raise
+    except SpecError as exc:
+        _die(str(exc), ExitCode.SPEC_ERROR)
+    except HiveloomError as exc:
+        _die(str(exc), ExitCode.RUNTIME_ERROR)
+    except (KeyError, ValueError) as exc:
+        _die(str(exc).strip("'\""), ExitCode.SPEC_ERROR)
+    except KeyboardInterrupt:  # pragma: no cover - operator stopped the server
+        raise typer.Exit(ExitCode.OK) from None
+    except Exception as exc:  # noqa: BLE001 - a server must not print a traceback to stdout
+        _die(str(exc) or type(exc).__name__, ExitCode.RUNTIME_ERROR)
 
 
 @mcp_app.command("list-tools")

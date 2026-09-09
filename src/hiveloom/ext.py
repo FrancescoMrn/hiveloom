@@ -726,24 +726,45 @@ _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
 }
 
 
-def _claude_factory(ctx: BuildContext) -> Any:
-    """Build the Claude provider, loading a harness-local .env if present."""
-    if ctx.base is not None:
-        env_file = ctx.base / ".env"
-        if env_file.exists():
-            try:
-                from dotenv import load_dotenv
+def _env_file_values(base: Path | None) -> dict[str, str]:
+    """Read ``<harness>/.env`` WITHOUT touching ``os.environ``.
 
-                load_dotenv(env_file)
-            except ImportError:  # pragma: no cover - dotenv is a declared dependency
-                pass
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    ``load_dotenv`` would adopt the first harness's credentials into the
+    process for every harness built after it — and one process now hosts many
+    harnesses (``hiveloom mcp serve --registered``, the workbench), so the
+    second harness would silently run on the first one's key. Reading the file
+    and handing the value straight to the provider keeps each harness's
+    credential its own.
+    """
+    if base is None:
+        return {}
+    env_file = Path(base) / ".env"
+    if not env_file.exists():
+        return {}
+    try:
+        from dotenv import dotenv_values
+    except ImportError:  # pragma: no cover - dotenv is a declared dependency
+        return {}
+    return {key: value for key, value in dotenv_values(env_file).items() if value}
+
+
+def _claude_factory(ctx: BuildContext) -> Any:
+    """Build the Claude provider, reading a harness-local .env if present.
+
+    Precedence is unchanged: the process environment wins over the harness
+    ``.env``. What changed is that the ``.env`` is *read*, not *loaded* — see
+    :func:`_env_file_values`.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or _env_file_values(ctx.base).get(
+        "ANTHROPIC_API_KEY"
+    )
+    if not api_key:
         raise SpecError(
             "ANTHROPIC_API_KEY is not set. Add it to the harness .env or the environment."
         )
     from hiveloom.models.claude import ClaudeProvider
 
-    return ClaudeProvider()
+    return ClaudeProvider(api_key=api_key)
 
 
 # Every other lab hiveloom ships with speaks the OpenAI chat-completions API,
@@ -1021,14 +1042,12 @@ def _openai_compat_factory(
     base_url: str, api_key_env: str | None, timeout: int | None = None
 ) -> ProviderFactory:
     def factory(ctx: BuildContext) -> Any:
-        if ctx.base is not None and (ctx.base / ".env").exists():
-            try:
-                from dotenv import load_dotenv
-
-                load_dotenv(ctx.base / ".env")
-            except ImportError:  # pragma: no cover
-                pass
+        # Same precedence as before (process environment first), same
+        # no-mutation rule as `_claude_factory`: one process serving several
+        # harnesses must not hand harness B the key it found in harness A.
         api_key = os.environ.get(api_key_env) if api_key_env else None
+        if api_key_env and not api_key:
+            api_key = _env_file_values(ctx.base).get(api_key_env)
         if api_key_env and not api_key:
             raise SpecError(
                 f"{api_key_env} is not set (required by this provider's models.yaml entry)."

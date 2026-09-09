@@ -531,7 +531,9 @@ def build_registry(
             for server_ref in spec.mcp_servers:
                 active = not server_ref.deferred
                 has_deferred = has_deferred or not active
-                for adapter in connect_mcp_server(server_ref, base, bridge):
+                # `spec.identity` is the Hive key: a peer hiveloom MCP server
+                # uses it to link the delegated run and to refuse a cycle.
+                for adapter in connect_mcp_server(server_ref, base, bridge, spec.identity):
                     registry.register(adapter, active=active)
         except Exception:
             # A later server failing to connect must not leak an earlier

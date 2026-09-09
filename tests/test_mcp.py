@@ -233,8 +233,34 @@ def test_intra_server_distinct_names_do_not_collide():
 
 def test_resolve_env_merges_literal_and_host_secrets(monkeypatch):
     monkeypatch.setenv("HL_TEST_SECRET", "shh")
+    monkeypatch.delenv("HIVELOOM_HOME", raising=False)
+    monkeypatch.delenv("HIVELOOM_DB", raising=False)
     ref = _stdio_ref(env={"FOO": "bar"}, env_from_host_env={"TOKEN": "HL_TEST_SECRET"})
     assert _resolve_env(ref) == {"FOO": "bar", "TOKEN": "shh"}
+
+
+def test_resolve_env_forwards_hiveloom_locations_but_no_credentials(monkeypatch):
+    """A child `hiveloom mcp serve` must write to the SAME Hive and trust store.
+
+    The SDK spawns a stdio child with only HOME/LOGNAME/PATH/SHELL/TERM/USER,
+    so without this the peer harness records its runs in a different database
+    and the delegated run vanishes from the parent's history. Locations travel;
+    credentials do not — those stay an explicit `env_from_host_env` decision.
+    """
+    monkeypatch.setenv("HIVELOOM_HOME", "/tmp/hl-home")
+    monkeypatch.setenv("HIVELOOM_DB", "/tmp/hl-hive.db")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-not-forwarded")
+
+    env = _resolve_env(_stdio_ref())
+
+    assert env == {"HIVELOOM_HOME": "/tmp/hl-home", "HIVELOOM_DB": "/tmp/hl-hive.db"}
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_resolve_env_literal_entries_win_over_forwarded_locations(monkeypatch):
+    monkeypatch.setenv("HIVELOOM_DB", "/tmp/host-hive.db")
+    ref = _stdio_ref(env={"HIVELOOM_DB": "/tmp/child-hive.db"})
+    assert _resolve_env(ref)["HIVELOOM_DB"] == "/tmp/child-hive.db"
 
 
 def test_resolve_env_missing_host_var_raises(monkeypatch):
@@ -556,3 +582,146 @@ def test_mcp_tool_can_return_caller_artifacts(tmp_path: Path):
     # The envelope is for the caller; the model must not be billed for it.
     assert "_hiveloom" not in result.content
     assert "chart AUM registered" in result.content
+
+
+# --------------------------------------------------------------------------- #
+# Delegation lineage on the wire (client half)
+# --------------------------------------------------------------------------- #
+class _CapturingSession:
+    """Records what the adapter puts on the wire (sync: `_FakeBridge` inlines)."""
+
+    def __init__(self) -> None:
+        self.arguments: dict | None = None
+        self.meta: dict | None = None
+
+    def call_tool(self, name, arguments, timeout, *, meta=None):
+        self.arguments = arguments
+        self.meta = meta
+        return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text="ok")])
+
+
+def _delegating_adapter(session: _CapturingSession, harness_id: str = "hl-caller"):
+    return McpToolAdapter(
+        bridge=_FakeBridge(),
+        session=session,
+        server_name="peer",
+        remote_name="run_child",
+        description="d",
+        input_schema={},
+        transport="stdio",
+        timeout=5.0,
+        harness_id=harness_id,
+    )
+
+
+def test_adapter_sends_this_run_as_the_parent_lineage():
+    session = _CapturingSession()
+    adapter = _delegating_adapter(session)
+
+    adapter.run(text="hi", run_context={"run_id": "run_abc", "harness_id": "hl-ignored"})
+
+    assert session.meta == {
+        "hiveloom": {
+            "kind": "delegation",
+            "parent_run_id": "run_abc",
+            "parent_harness_id": "hl-caller",
+            "depth": 1,
+            "chain": ["hl-caller"],
+        }
+    }
+    # The injected run context is hiveloom's, not the remote tool's input.
+    assert session.arguments == {"text": "hi"}
+
+
+def test_adapter_extends_an_inherited_delegation_chain():
+    """Depth and chain grow by one hop, which is what bounds the graph and
+    lets the callee spot itself in it."""
+    session = _CapturingSession()
+    adapter = _delegating_adapter(session, harness_id="hl-mid")
+
+    adapter.run(
+        run_context={
+            "run_id": "run_abc",
+            "lineage": {
+                "kind": "delegation",
+                "parent_run_id": "run_root",
+                "depth": 2,
+                "chain": ["hl-root", "hl-up"],
+            },
+        }
+    )
+
+    lineage = session.meta["hiveloom"]
+    assert lineage["depth"] == 3
+    assert lineage["chain"] == ["hl-root", "hl-up", "hl-mid"]
+
+
+def test_adapter_ignores_a_fork_lineage_when_counting_depth():
+    """A fork is not a delegation hop: only `kind: delegation` extends a chain."""
+    session = _CapturingSession()
+    adapter = _delegating_adapter(session)
+
+    adapter.run(
+        run_context={
+            "run_id": "run_abc",
+            "lineage": {"kind": "fork", "parent_run_id": "run_p", "forked_at_seq": 4},
+        }
+    )
+
+    assert session.meta["hiveloom"]["depth"] == 1
+
+
+def test_adapter_sends_no_lineage_outside_a_run():
+    session = _CapturingSession()
+    adapter = _delegating_adapter(session)
+
+    adapter.run(run_context={})
+
+    assert session.meta is None
+
+
+def test_registry_gives_adapters_the_calling_harness_identity(harness_dir: Path):
+    """The chain is written in Hive keys, so the adapter must carry
+    `spec.identity` — not the harness's directory name or display name."""
+    construct.set_field(
+        harness_dir, "mcp_servers",
+        _mcp_servers_yaml(
+            [{"name": "echo", "command": sys.executable, "args": [FIXTURE],
+              "timeout_seconds": 10.0}]
+        ),
+    )
+    spec = load_spec(harness_dir)
+    registry = build_registry(spec, harness_dir)
+    try:
+        adapter = registry.get("mcp__echo__echo")
+        meta = adapter._delegation_meta({"run_id": "run_1"})
+    finally:
+        registry.close()
+
+    assert meta["hiveloom"]["chain"] == [spec.identity]
+    assert meta["hiveloom"]["parent_harness_id"] == spec.identity
+
+
+def test_flatten_keeps_a_peer_run_result_readable_for_the_model():
+    """The run tool's envelope carries artifacts for the caller; the model must
+    still get the run result as plain JSON, without the envelope."""
+    structured = {
+        "status": "success",
+        "output": "done",
+        "reason": "",
+        "turns": 2,
+        "cost_usd": 0.01,
+        "run_id": "run_child",
+        "verdicts": [],
+        "_hiveloom": {"artifacts": [{"kind": "chart", "data": {"title": "T"}}]},
+    }
+    result = mcp_types.CallToolResult(
+        content=[mcp_types.TextContent(type="text", text=json.dumps(structured))],
+        structuredContent=structured,
+    )
+
+    text = _flatten_call_tool_result(result)
+
+    assert "_hiveloom" not in text
+    assert json.loads(text)["output"] == "done"
+    assert json.loads(text)["status"] == "success"

@@ -206,3 +206,38 @@ def test_mcp_list_tools_trust_gate_blocks_before_any_subprocess_spawns(
     r = runner.invoke(app, ["mcp", "list-tools", "--dir", directory, "--json"])
     assert r.exit_code == ExitCode.SPEC_ERROR
     assert "not trusted" in _json(r)["error"]
+
+
+# --------------------------------------------------------------------------- #
+# `mcp serve` startup errors: stderr only, never the protocol channel
+# --------------------------------------------------------------------------- #
+def test_mcp_serve_startup_error_goes_to_stderr_not_stdout(tmp_path: Path, monkeypatch):
+    """stdout IS the MCP protocol on stdio: a JSON error object written there
+    reaches the calling agent as nothing but "Connection closed"."""
+    directory = _init(tmp_path)
+    monkeypatch.setenv("HIVELOOM_TRUST", "never")
+    trust.revoke_trust(directory)
+
+    r = runner.invoke(app, ["mcp", "serve", directory])
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert r.stdout == ""
+    assert "not trusted" in r.stderr
+
+
+def test_mcp_serve_missing_harness_errors_to_stderr(tmp_path: Path):
+    r = runner.invoke(app, ["mcp", "serve", str(tmp_path / "nope")])
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert r.stdout == ""
+    assert r.stderr.startswith("error:")
+
+
+def test_mcp_serve_rejects_a_bad_bound(tmp_path: Path):
+    directory = _init(tmp_path)
+
+    r = runner.invoke(app, ["mcp", "serve", directory, "--max-depth", "0"])
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert r.stdout == ""
+    assert "max-depth" in r.stderr
