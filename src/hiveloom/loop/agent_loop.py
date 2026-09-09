@@ -13,18 +13,32 @@ tool calls, patch results, transform context). Guardrails always run first.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from hiveloom import confine
+from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
+from hiveloom.context.spill import SpillStore
+from hiveloom.egress import EgressFilter
+from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
+from hiveloom.execution import (
+    RunExecutionEnvelope,
+    StepExecutionRecord,
+    VerificationSummary,
+    execution_fingerprint,
+)
 from hiveloom.guardrails.base import Guardrail, RunState
 from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
-from hiveloom.loop.policies import LoopPolicy, build_policy
+from hiveloom.loop.policies import LoopPolicy, StepPolicyHalt, build_policy
 from hiveloom.models.provider import (
     ContextOverflowError,
     ModelConfig,
@@ -34,15 +48,58 @@ from hiveloom.models.provider import (
 )
 from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
+from hiveloom.private import RunBoundary
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.tools.registry import ToolRegistry, ToolResult
-from hiveloom.verify.base import VerdictResult, Verifier
+from hiveloom.verify.base import (
+    ToolEvidenceRecord,
+    VerdictResult,
+    VerificationContext,
+    Verifier,
+    invoke_verifier,
+)
+
+_EVIDENCE_RECORD_LIMIT = 2_000
+_EVIDENCE_STRING_LIMIT = 4_000
+_EVIDENCE_LIST_LIMIT = 2_000
+_EVIDENCE_DICT_LIMIT = 500
+_EVIDENCE_DEPTH_LIMIT = 20
+
+
+def _bound_evidence(value: Any, depth: int = 0) -> tuple[Any, bool]:
+    """Bound verifier evidence while preserving JSON structure and scalar IDs."""
+    if depth >= _EVIDENCE_DEPTH_LIMIT:
+        return "[TRUNCATED: depth limit]", True
+    if isinstance(value, str):
+        if len(value) <= _EVIDENCE_STRING_LIMIT:
+            return value, False
+        return value[:_EVIDENCE_STRING_LIMIT] + "[TRUNCATED]", True
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        truncated = len(value) > _EVIDENCE_DICT_LIMIT
+        for key, item in list(value.items())[:_EVIDENCE_DICT_LIMIT]:
+            bounded_item, child_truncated = _bound_evidence(item, depth + 1)
+            bounded[str(key)] = bounded_item
+            truncated = truncated or child_truncated
+        return bounded, truncated
+    if isinstance(value, (list, tuple)):
+        bounded_items = []
+        truncated = len(value) > _EVIDENCE_LIST_LIMIT
+        for item in list(value)[:_EVIDENCE_LIST_LIMIT]:
+            bounded_item, child_truncated = _bound_evidence(item, depth + 1)
+            bounded_items.append(bounded_item)
+            truncated = truncated or child_truncated
+        return bounded_items, truncated
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+    return str(value)[:_EVIDENCE_STRING_LIMIT], True
 
 
 class RunResult(BaseModel):
     """The outcome of a harness run."""
 
-    status: str  # success | verify_failed | guardrail_halt | max_turns | stopped | error
+    # success | verify_failed | guardrail_halt | step_failed | max_turns | stopped | error
+    status: str
     output: str = ""
     turns: int = 0
     cost_usd: float = 0.0
@@ -55,6 +112,14 @@ class RunResult(BaseModel):
     # Populated even on a failed run — a turn that proposed something before
     # hitting max_turns still produced it.
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    # One bounded public receipt per provider call. Opaque provider metadata
+    # stays on ModelResponse and in the redacted journal, never in this result.
+    provider_calls: list[dict[str, Any]] = Field(default_factory=list)
+    # Run-only model/provider choices. ``requested`` retains explicit CLI/SDK
+    # overrides; ``resolved`` is the validated config that the router used.
+    runtime_config: dict[str, Any] = Field(default_factory=dict)
+    execution: RunExecutionEnvelope | None = None
+    steps: list[StepExecutionRecord] = Field(default_factory=list)
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -104,11 +169,18 @@ class AgentLoop:
         router: ModelRouter | None = None,
         resume: bool = False,
         lineage: dict[str, Any] | None = None,
+        harness_version_hash: str = "",
+        runtime_version: str = "",
+        runtime_config: dict[str, Any] | None = None,
+        hive_path: str | Path | None = None,
+        run_boundary: RunBoundary | None = None,
+        approve_network: Callable[[str], bool] | None = None,
     ):
         self._spec = spec
         self._base = Path(base_dir)
         self._provider = provider
         self._registry = registry
+        self._initial_active_tools = set(registry.active_names())
         self._guardrails = guardrails
         self._verifiers = verifiers
         self._context = context
@@ -120,6 +192,13 @@ class AgentLoop:
         # the parent run was, so there is no new task statement to append.
         self._resume = resume
         self._lineage = lineage
+        self._harness_version_hash = harness_version_hash
+        self._runtime_version = runtime_version
+        self._runtime_config = runtime_config or {
+            "requested": {"model": None, "provider": None},
+            "resolved": {"model": spec.model.id, "provider": spec.model.provider},
+        }
+        self._started_at = ""
         # Kept by reference, not copied: a tool may accumulate run-scoped state
         # in it across calls, and the caller reads it back after the run.
         self._context_values = context_values if context_values is not None else {}
@@ -144,8 +223,43 @@ class AgentLoop:
             provider,
         )
         self._control = control
+        # Where this run's evidence will land, so a tool that reads run history
+        # (``recall_runs``) reads the same Hive the run will be ingested into
+        # rather than whatever the ambient default happens to be.
+        self._hive_path = hive_path
+        self._run_boundary = run_boundary or RunBoundary.resolve(
+            self._base, spec, hive_path=hive_path
+        )
+        self._approve_network = approve_network
+        self._network_decisions: dict[str, bool] = {}
+        # The egress filter is built once: its patterns come from the spec, and
+        # `logging.redact` feeds it too, so a pattern scrubbed from the journal
+        # is also scrubbed from the provider request rather than only from the
+        # record of it.
+        self._egress = EgressFilter(spec.egress, spec.logging.redact)
         self._state = RunState(tool_names=set(registry.names()))
+        self._provider_calls: list[dict[str, Any]] = []
+        self._usage = Usage()
+        self._verification_attempts = 0
+        self._tool_evidence: list[ToolEvidenceRecord] = []
+        self._tool_evidence_truncated = False
         self._context.set_compaction_model_call(self._compaction_model_turn)
+        # Oversized tool results go to run-private storage beside the journal,
+        # readable only through the handle quoted in their preview. Redaction
+        # is applied on the way in, so a spilled object carries exactly what
+        # the journal would have carried.
+        self._spill: SpillStore | None = None
+        if spec.context.tool_results.max_inline_bytes:
+            self._spill = SpillStore(
+                self._run_boundary.spill_dir,
+                run_id=run_id,
+                config=spec.context.tool_results,
+                redact=trace.redact_text,
+            )
+            for name in spill.TOOL_NAMES:
+                tool = registry.get(name)
+                if tool is not None:
+                    tool.bind(self._spill)
 
     # ------------------------------------------------------------------ #
     # Public surface for policies and hooks
@@ -158,14 +272,30 @@ class AgentLoop:
     def state(self) -> RunState:
         return self._state
 
+    def set_step_tools(self, names: list[str] | None) -> None:
+        """Apply one structured step's tool subset without activating deferred tools."""
+        if names is None:
+            return
+        self._registry.set_active(
+            [name for name in names if name in self._initial_active_tools]
+        )
+
+    def emit_step_event(self, event: str, **payload: Any) -> None:
+        """Emit a policy-owned step event through the run's trace."""
+        self._trace.emit(event, **payload)
+
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
         loop = self._spec.loop
-        self._trace.emit(
+        started = self._trace.emit(
             "run_started",
             input=self._run_input,
             policy=loop.policy,
             model=self._router.config.id,
+            provider=self._router.config.provider,
+            schema_version=self._spec.schema_version,
+            hiveloom_version=self._runtime_version,
+            runtime_config=self._runtime_config,
             history_turns=len(self._history),
             resumed=self._resume,
             # Where this run came from, when it is a fork: the parent run and
@@ -181,7 +311,30 @@ class AgentLoop:
                 self._base,
                 include_files=self._spec.logging.snapshot_files,
             ),
+            # What the machine could actually enforce, not what the spec asked
+            # for. A journal that records `mode: auto` says nothing about
+            # whether a sandbox existed; this says which one ran, and whether
+            # the run's private state was really hidden from what it spawned.
+            # Facts only — no absolute paths: a journal is shareable, and the
+            # layout of the machine that produced it is not part of the run.
+            confinement={
+                **confine.describe(self._spec.confinement),
+                "private_paths": len(
+                    self._run_boundary.private_paths()
+                ),
+            },
+            egress={
+                "policy": egress_policy_name(
+                    self._spec.egress, self._spec.logging.redact
+                ),
+                "active": self._egress.enabled,
+                "detect_credentials": self._spec.egress.detect_credentials,
+            },
+            prompt_injection_boundary=confine.risk_facts(
+                self._spec, provider_egress_active=self._egress.enabled
+            ),
         )
+        self._started_at = started.timestamp
         self._events.emit(
             "run_started",
             {
@@ -200,11 +353,29 @@ class AgentLoop:
 
         # Prior turns first, so the current input stays the newest message —
         # policies and compaction both rely on that position.
+        if self._spill is not None and self._lineage:
+            # A resumed fork re-enters a thread that quotes its parent's
+            # handles, and `hiveloom fork` copied those objects in. Authority
+            # comes from the fork record — written from the parent's *verified*
+            # journal — and never from the seeded transcript, which is
+            # model-visible text: quoting a handle must not be what grants
+            # access to the object behind it.
+            inherited = self._spill.inherit(
+                self._lineage.get("spill_manifest")
+                or self._lineage.get("spill_handles")
+                or [],
+                self._spill.inherited_dir,
+            )
+            if inherited:
+                self._registry.activate(list(spill.TOOL_NAMES))
+                self._trace.emit("spill_inherited", handles=inherited)
         self._context.seed_history(self._history)
         if not self._resume:
             self._context.add_user(self._run_input)
         try:
             self._policy.on_run_start(self)
+        except StepPolicyHalt as exc:
+            return self._finish("step_failed", reason=str(exc))
         except GuardrailHalt as exc:
             return self._finish("guardrail_halt", reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
@@ -233,7 +404,11 @@ class AgentLoop:
                 for request in self._control.drain_playbook_switches():
                     self._switch_playbook_from_operator(**request)
             try:
+                self._policy.before_model_turn(self)
                 response = self.model_turn()
+                self._policy.after_model_turn(self, response)
+            except StepPolicyHalt as exc:
+                return self._finish("step_failed", reason=str(exc))
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
@@ -244,12 +419,23 @@ class AgentLoop:
             if response.tool_calls:
                 try:
                     halt, terminate_output = self._dispatch_tools(response)
+                except StepPolicyHalt as exc:
+                    return self._finish("step_failed", reason=str(exc))
                 except ToolAbort as exc:
                     return self._finish("error", reason=str(exc))
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
                 if terminate_output is None:
+                    nudge = self._policy.after_tool_turn(self, response)
+                    if nudge is not None:
+                        self._context.add_user(nudge)
+                        self._state.policy_nudges += 1
+                    continue
+                nudge = self._policy.wants_continue_after_tools(self, response)
+                if nudge is not None:
+                    self._context.add_user(nudge)
+                    self._state.policy_nudges += 1
                     continue
                 # Every tool result in the batch asked to terminate: treat the
                 # last result as the final output, skipping a model turn.
@@ -356,6 +542,11 @@ class AgentLoop:
 
     # ------------------------------------------------------------------ #
     def model_turn(self, *, phase: str = "act") -> ModelResponse:
+        if self._spill is not None and self._spill.handles:
+            # A playbook's tool subset replaces the active set outright, which
+            # would strand handles the context still quotes. Re-asserting here
+            # covers every path that narrows tools mid-run.
+            self._registry.activate(list(spill.TOOL_NAMES))
         system, messages = self._context.assemble()
         tools = self._registry.anthropic_payload()
         try:
@@ -382,63 +573,13 @@ class AgentLoop:
         tools: list[dict[str, Any]],
         phase: str,
     ) -> ModelResponse:
-        input_tokens = self._router.provider.count_tokens(
-            system=system, messages=messages, tools=tools
-        )
-        self._state.pending_cost_usd = self._router.provider.estimated_cost(
-            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
-            self._router.config.id,
-            self._router.config.provider,
-        )
-        halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
-        if halt is not None:
-            self._state.pending_cost_usd = 0.0
-            raise GuardrailHalt(halt)
-        if phase == "compaction":
-            # An out-of-band request: a one-off summarisation prompt that is
-            # not part of the conversation. It is recorded inline (it is small,
-            # and it has no context events of its own) and flagged so the
-            # journal fold skips it instead of mistaking it for history.
-            self._trace.emit(
-                "model_call",
-                turn=self._state.turns,
-                phase=phase,
-                num_messages=len(messages),
-                inline=True,
-                system=system,
-                messages=messages,
-            )
-        else:
-            # The conversation itself is already journalled message by message;
-            # the system prompt and tool payload are journalled only when they
-            # change. So a model_call records what it *consumed*, not a copy of
-            # it — see hiveloom.logging.journal for the fold that reads it back.
-            system_hash = self._trace.emit_context_system(system)
-            tools_hash = self._trace.emit_context_tools(tools)
-            self._trace.emit(
-                "model_call",
-                turn=self._state.turns,
-                phase=phase,
-                num_messages=len(messages),
-                context_head=self._trace.context_head,
-                system_hash=system_hash,
-                tools_hash=tools_hash,
-                # The context meter. Both numbers are already known here —
-                # `input_tokens` was just counted for the cost guardrail — and
-                # recording them is what lets a reader see how close a call ran
-                # to the budget without re-tokenizing the whole conversation.
-                input_tokens=input_tokens,
-                max_input_tokens=self._spec.context.max_input_tokens,
-                # A checksum of what actually went on the wire. The fold
-                # reconstructs the persisted conversation; a `context_assemble`
-                # hook patches one request without persisting it, so this is
-                # how a reader detects that the reconstruction is not the whole
-                # story rather than silently believing it.
-                messages_hash=payload_hash(messages),
-            )
+        # The last thing that happens before content leaves the machine. Every
+        # provider call goes through here — act turns, compaction, playbook
+        # gates — so there is one egress point rather than one per phase.
+        system, messages, tools = self._screen_egress(system, messages, tools, phase)
         self._events.emit("before_model_call", {"turn": self._state.turns, "phase": phase})
         # Request middleware: patches apply to this request only, and run
-        # after guardrails so a hook can never widen what a guardrail vetoed.
+        # before the final cost guardrail and wire journal are calculated.
         if self._events.has_handlers("before_provider_request"):
             for outcome in self._events.emit(
                 "before_provider_request",
@@ -467,6 +608,53 @@ class AgentLoop:
                         hook=outcome["_handler"],
                         action="patch_request",
                     )
+        # Hooks are trusted harness code, but they can patch the exact wire
+        # request after the first pass above. Screen again at the actual egress
+        # point so no provider request can bypass the frozen policy. The first
+        # pass remains intentional: it also keeps default credential matches
+        # out of the model-call journal payload.
+        system, messages, tools = self._screen_egress(system, messages, tools, phase)
+        input_tokens = self._router.provider.count_tokens(
+            system=system, messages=messages, tools=tools
+        )
+        self._state.pending_cost_usd = self._router.provider.estimated_cost(
+            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
+            self._router.config.id,
+            self._router.config.provider,
+        )
+        halt = self._guardrail_halt(lambda g: g.before_model_call(self._state))
+        if halt is not None:
+            self._state.pending_cost_usd = 0.0
+            raise GuardrailHalt(halt)
+        if phase == "compaction":
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                inline=True,
+                system=system,
+                messages=messages,
+            )
+        else:
+            system_hash = self._trace.emit_context_system(system)
+            tools_hash = self._trace.emit_context_tools(tools)
+            self._trace.emit(
+                "model_call",
+                turn=self._state.turns,
+                phase=phase,
+                num_messages=len(messages),
+                context_head=self._trace.context_head,
+                system_hash=system_hash,
+                tools_hash=tools_hash,
+                input_tokens=input_tokens,
+                max_input_tokens=self._spec.context.max_input_tokens,
+                # Checksums describe the post-hook, post-screen wire request.
+                messages_hash=payload_hash(messages),
+                request_hash=payload_hash(
+                    {"system": system, "messages": messages, "tools": tools}
+                ),
+            )
         response = self._router.provider.complete(
             system=system,
             messages=messages,
@@ -475,11 +663,27 @@ class AgentLoop:
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
-        cost = self._router.provider.estimated_cost(
+        self._usage = self._usage + response.usage
+        estimated_cost = self._router.provider.estimated_cost(
             response.usage, self._router.config.id, self._router.config.provider
         )
+        cost, cost_source = response.resolved_cost_usd(estimated_cost)
         self._state.cost_usd += cost
         self._state.pending_cost_usd = 0.0
+        provider_call = {
+            "turn": self._state.turns,
+            "phase": phase,
+            "provider": self._router.config.provider,
+            "requested_model": self._router.config.id,
+            "effective_model": response.model or None,
+            "provider_request_id": response.provider_request_id or None,
+            "usage": response.usage.model_dump(),
+            "cost_usd": cost,
+            "cost_source": cost_source,
+            "billed_cost": response.billed_cost,
+            "billed_currency": response.billed_currency or None,
+        }
+        self._provider_calls.append(provider_call)
         self._events.emit(
             "after_provider_response",
             {
@@ -488,6 +692,12 @@ class AgentLoop:
                 "stop_reason": response.stop_reason,
                 "usage": response.usage.model_dump(),
                 "cost_usd": cost,
+                "cost_source": cost_source,
+                "effective_model": response.model or None,
+                "provider_request_id": response.provider_request_id or None,
+                "billed_cost": response.billed_cost,
+                "billed_currency": response.billed_currency or None,
+                "provider_metadata": response.provider_metadata,
             },
         )
         self._trace.emit(
@@ -499,6 +709,13 @@ class AgentLoop:
             tool_calls=[c.name for c in response.tool_calls],
             usage=response.usage.model_dump(),
             cost_usd=cost,
+            cost_source=cost_source,
+            effective_model=response.model or None,
+            provider_request_id=response.provider_request_id or None,
+            billed_cost=response.billed_cost,
+            billed_currency=response.billed_currency or None,
+            billed_cost_usd=response.billed_cost_usd,
+            provider_metadata=response.provider_metadata,
         )
         self._events.emit(
             "after_model_response",
@@ -515,6 +732,43 @@ class AgentLoop:
         if halt is not None:
             raise GuardrailHalt(halt)
         return response
+
+    def _screen_egress(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        phase: str,
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+        """Apply the egress policy to one outgoing request.
+
+        Findings are journalled as pattern names and counts. The matched text
+        is never recorded anywhere — a safeguard that logged what it caught
+        would be the leak it exists to prevent.
+        """
+        if self._egress is None or not self._egress.enabled:
+            return system, messages, tools
+        verdict = self._egress.apply(system, messages, tools)
+        if verdict.clean:
+            return system, messages, tools
+        if verdict.blocked:
+            self._trace.emit(
+                "provider_egress_blocked",
+                phase=phase,
+                patterns=verdict.findings,
+                mode="block",
+            )
+            raise GuardrailHalt(
+                "the request was blocked before it left the machine: it matched "
+                f"{verdict.summary()} (egress.mode is 'block')"
+            )
+        self._trace.emit(
+            "provider_egress_redacted",
+            phase=phase,
+            patterns=verdict.findings,
+            mode="redact",
+        )
+        return verdict.system, verdict.messages, verdict.tools
 
     def _dispatch_tools(self, response: ModelResponse) -> tuple[str | None, str | None]:
         """Dispatch a turn's tool calls.
@@ -567,10 +821,12 @@ class AgentLoop:
             halt = self._finalize_call(call, result)
             if halt is not None:
                 return halt, None
-            dispatched.append(result)
-            results.append(
-                {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
+            self._policy.after_tool_call(
+                self, call.name, succeeded=not result.is_error
             )
+            self._record_tool_evidence(call, result)
+            dispatched.append(result)
+            results.append(self._result_block(call, result))
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
 
@@ -613,15 +869,47 @@ class AgentLoop:
             halt = self._finalize_call(call, result)
             if halt is not None:
                 return halt, None
-            dispatched.append(result)
-            results.append(
-                {"tool_use_id": call.id, "content": result.content, "is_error": result.is_error}
+            self._policy.after_tool_call(
+                self, call.name, succeeded=not result.is_error
             )
+            self._record_tool_evidence(call, result)
+            dispatched.append(result)
+            results.append(self._result_block(call, result))
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
 
+    def _result_block(self, call: Any, result: Any) -> dict[str, Any]:
+        """The context-facing form of a finalized result, spilled if oversized.
+
+        Called *after* hooks and after-guardrails, so what gets stored is the
+        accepted canonical result rather than a value something later rejected
+        or rewrote. The journal keeps the whole result either way; this only
+        decides how much of it the model carries.
+        """
+        content = result.content
+        if self._spill is not None and call.name not in spill.EXEMPT_TOOLS:
+            record = self._spill.spill(tool=call.name, content=content)
+            if record is not None:
+                content = record.preview
+                # Deferred until now: the readers cost payload on every turn,
+                # and until something is spilled there is nothing to read.
+                self._registry.activate(list(spill.TOOL_NAMES))
+                self._trace.emit(
+                    "tool_spilled",
+                    id=call.id,
+                    name=call.name,
+                    handle=record.handle,
+                    bytes=record.total_bytes,
+                    sha256=record.sha256,
+                    omitted_bytes=record.omitted_bytes,
+                )
+        return {"tool_use_id": call.id, "content": content, "is_error": result.is_error}
+
     def _preflight_call(self, call: Any) -> tuple[str, str] | None:
         """Guardrails then hooks for one call. ``("halt", r)``/``("block", r)``/None."""
+        policy_block = self._policy.before_tool_call(self, call.name)
+        if policy_block is not None:
+            return "block", policy_block
         for guardrail in self._guardrails:
             decision = guardrail.before_tool_call(self._state, call)
             if decision.kind in ("halt", "block"):
@@ -660,6 +948,55 @@ class AgentLoop:
                     event="before_tool_call",
                     hook=outcome["_handler"],
                     action="patch_input",
+                )
+        tool = self._registry.get(call.name)
+        if tool is not None and hasattr(tool, "network_destination"):
+            try:
+                hostname = tool.network_destination(call.input)
+            except Exception as exc:  # tool owns validation and its error text
+                return "block", str(exc)
+            if not tool.destination_allowed(hostname):
+                allowed = self._network_decisions.get(hostname)
+                if allowed is None:
+                    allowed = False
+                    if self._approve_network is not None:
+                        try:
+                            allowed = bool(self._approve_network(hostname))
+                        except Exception:
+                            allowed = False
+                    self._network_decisions[hostname] = allowed
+                    self._trace.emit(
+                        "network_access_decision",
+                        host=hostname,
+                        allowed=allowed,
+                        source="operator" if self._approve_network is not None else "fail_closed",
+                    )
+                if not allowed:
+                    return (
+                        "block",
+                        f"network destination '{hostname}' was not approved for this run",
+                    )
+                tool.approve_destination(hostname)
+        is_external = call.name.startswith("mcp__") or (
+            tool is not None and "network" in getattr(tool, "tags", [])
+        )
+        if is_external and self._egress.enabled:
+            # External tool arguments are an outbound boundary too. Redacting
+            # an action silently changes its meaning, so any match blocks the
+            # call regardless of whether provider requests use redact mode.
+            verdict = self._egress.apply(
+                "", [{"role": "tool", "content": call.input}], []
+            )
+            if not verdict.clean:
+                self._trace.emit(
+                    "tool_egress_blocked",
+                    name=call.name,
+                    patterns=verdict.findings,
+                )
+                return (
+                    "block",
+                    "outbound tool call blocked: its arguments matched "
+                    f"{verdict.summary()}",
                 )
         return None
 
@@ -739,6 +1076,35 @@ class AgentLoop:
             artifacts=collected,
         )
         return None
+
+    def _record_tool_evidence(self, call: Any, result: Any) -> None:
+        """Retain one redacted, bounded, allowed call for run-local verification."""
+        if len(self._tool_evidence) >= _EVIDENCE_RECORD_LIMIT:
+            self._tool_evidence_truncated = True
+            return
+        try:
+            raw_result = json.loads(result.content)
+        except (json.JSONDecodeError, TypeError):
+            raw_result = result.content
+        safe_input, input_truncated = _bound_evidence(self._trace.redact(call.input))
+        safe_result, result_truncated = _bound_evidence(
+            self._trace.redact(raw_result)
+        )
+        step = self._policy.current_step()
+        record = ToolEvidenceRecord(
+            id=call.id,
+            name=call.name,
+            input=safe_input,
+            result=safe_result,
+            is_error=result.is_error,
+            step_id=step[0] if step else None,
+            step_index=step[1] if step else None,
+            truncated=input_truncated or result_truncated,
+        )
+        self._tool_evidence.append(record)
+        self._tool_evidence_truncated = (
+            self._tool_evidence_truncated or record.truncated
+        )
 
     def _on_output(self, output: str) -> str | None:
         """Run on_output guardrails. Returns None (ok), a block reason, or 'HALT:<reason>'."""
@@ -933,6 +1299,14 @@ class AgentLoop:
             "input": self._run_input,
             "harness_dir": str(self._base),
             "run_id": self._run_id,
+            # Which harness, at which version, writing to which Hive. A tool
+            # that reads the harness's own history needs all three to scope the
+            # lookup, and taking them from here rather than from tool input is
+            # what keeps the scope out of the model's reach.
+            "harness_id": self._spec.id,
+            "harness_name": self._spec.name,
+            "harness_version_hash": self._trace.version_hash,
+            "hive_path": str(self._hive_path) if self._hive_path else None,
             "context": self._context_values,
             # A snapshot of what the run has produced so far. This is what
             # makes a playbook exit gate expressible ("you entered targeting
@@ -956,15 +1330,39 @@ class AgentLoop:
             return self._verifiers
         from hiveloom.verify.builtin import build_verifiers_from_refs
 
-        return [*self._verifiers, *build_verifiers_from_refs(refs, self._base)]
+        return [
+            *self._verifiers,
+            *build_verifiers_from_refs(
+                refs,
+                self._base,
+                confinement=self._spec.confinement,
+                trace_root=self._run_boundary.trace_dir,
+                private_paths=self._run_boundary.private_paths(),
+                run_boundary=self._run_boundary,
+            ),
+        ]
 
     def _verify(self, output: str) -> list[VerdictResult]:
-        run_context = self._run_context(
-            output=output, playbook=self._playbooks.current_name if self._playbooks else None
-        )
+        self._verification_attempts += 1
+        verification_context = self._verification_context()
         verdicts: list[VerdictResult] = []
         for verifier in self._active_verifiers():
-            verdict = verifier.validate(output, run_context)
+            # Each verifier receives its own deep copy through both APIs. The
+            # Pydantic envelope is frozen, but nested extension-owned values
+            # may still be mutable; one verifier must not taint another's
+            # evidence in the same attempt.
+            verifier_context = verification_context.model_copy(deep=True)
+            run_context = self._run_context(
+                output=output,
+                playbook=self._playbooks.current_name if self._playbooks else None,
+                verification_context=verifier_context,
+            )
+            verdict = invoke_verifier(
+                verifier,
+                output,
+                run_context,
+                verifier_context,
+            )
             verdict.verifier = verdict.verifier or verifier.name
             self._trace.emit(
                 "verification_result",
@@ -977,6 +1375,21 @@ class AgentLoop:
             "verification", {"verdicts": [v.model_dump() for v in verdicts]}
         )
         return verdicts
+
+    def _verification_context(self) -> VerificationContext:
+        step_values = self._trace.redact(
+            [record.model_dump(mode="json") for record in self._policy.execution_records()]
+        )
+        artifact_values, artifact_truncated = _bound_evidence(
+            self._trace.redact(self._state.artifacts)
+        )
+        return VerificationContext(
+            run_id=self._run_id,
+            tool_calls=tuple(record.model_copy(deep=True) for record in self._tool_evidence),
+            steps=tuple(StepExecutionRecord.model_validate(value) for value in step_values),
+            artifacts=tuple(artifact_values),
+            evidence_truncated=self._tool_evidence_truncated or artifact_truncated,
+        )
 
     def _guardrail_halt(self, hook) -> str | None:
         for guardrail in self._guardrails:
@@ -993,9 +1406,17 @@ class AgentLoop:
 
     @staticmethod
     def assistant_blocks(response: ModelResponse) -> list[dict[str, Any]]:
-        if response.content_blocks:
-            return response.content_blocks
-        return [{"type": "text", "text": response.text}]
+        blocks = (
+            list(response.content_blocks)
+            if response.content_blocks
+            else [{"type": "text", "text": response.text}]
+        )
+        if response.reasoning is not None:
+            # Provider-neutral storage, provider-owned decoding. The current
+            # adapter can replay its opaque JSON on the next tool turn; model
+            # swaps drop this non-portable block in models.router.
+            blocks.append({"type": "provider_reasoning", "data": response.reasoning})
+        return blocks
 
     def _finish(
         self,
@@ -1005,13 +1426,82 @@ class AgentLoop:
         reason: str = "",
         verdicts: list[VerdictResult] | None = None,
     ) -> RunResult:
+        duration_seconds = self._state.elapsed_seconds()
+        verification = self._verification_summary(status)
+        step_records = self._policy.execution_records()
+        models_used = [
+            {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
+            for s in self._router.path
+        ]
+        effective_models = list(
+            dict.fromkeys(
+                call["effective_model"]
+                for call in self._provider_calls
+                if call.get("effective_model")
+            )
+        )
+        cost_sources = {call["cost_source"] for call in self._provider_calls}
+        if not cost_sources:
+            cost_source = "none"
+        elif len(cost_sources) == 1:
+            cost_source = next(iter(cost_sources))
+        else:
+            cost_source = "mixed"
+        requested = self._runtime_config.get("requested") or {}
+        resolved = self._runtime_config.get("resolved") or {}
+        requested_provider = requested.get("provider") or resolved.get("provider") or ""
+        requested_model = requested.get("model") or resolved.get("model") or ""
+        execution = RunExecutionEnvelope(
+            run_id=self._run_id,
+            status=status,
+            harness_id=self._spec.id,
+            harness_name=self._spec.name,
+            schema_version=self._spec.schema_version,
+            behavior_hash=self._harness_version_hash,
+            execution_fingerprint=execution_fingerprint(
+                behavior_hash=self._harness_version_hash,
+                hiveloom_version=self._runtime_version,
+                schema_version=self._spec.schema_version,
+                runtime_config=self._runtime_config,
+                input_value=self._run_input,
+                models_used=models_used,
+                effective_models=effective_models,
+                lineage=self._lineage,
+            ),
+            hiveloom_version=self._runtime_version,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            resolved_provider=str(resolved.get("provider") or ""),
+            resolved_model=str(resolved.get("model") or ""),
+            effective_provider=(
+                self._provider_calls[-1]["provider"] if self._provider_calls else None
+            ),
+            effective_model=next(
+                (
+                    call["effective_model"]
+                    for call in reversed(self._provider_calls)
+                    if call.get("effective_model")
+                ),
+                None,
+            ),
+            models_used=models_used,
+            started_at=self._started_at,
+            finished_at=datetime.now(UTC).isoformat(),
+            duration_ms=round(duration_seconds * 1000),
+            usage=self._usage,
+            cost_usd=self._state.cost_usd,
+            cost_source=cost_source,
+            verification=verification,
+            trace_path=str(self._trace.path),
+        )
         self._trace.emit(
             "run_finished",
             status=status,
             reason=reason,
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
-            duration_seconds=self._state.elapsed_seconds(),
+            duration_seconds=duration_seconds,
+            execution=execution.model_dump(mode="json"),
             # The answer and the judgements on it. A journal that reports a
             # run's status but not what it produced is not a complete record
             # of the run it describes.
@@ -1023,10 +1513,9 @@ class AgentLoop:
             # Hive must be able to say so rather than blend it into a bucket
             # with runs that did not.
             model_path=self._router.path_key(),
-            models_used=[
-                {"turn": s.turn, "model": s.model, "provider": s.provider, "reason": s.reason}
-                for s in self._router.path
-            ],
+            models_used=models_used,
+            provider_calls=self._provider_calls,
+            steps=[record.model_dump(mode="json") for record in step_records],
         )
         self._events.emit(
             "run_finished",
@@ -1042,10 +1531,25 @@ class AgentLoop:
             output=output,
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
-            duration_seconds=self._state.elapsed_seconds(),
+            duration_seconds=duration_seconds,
             run_id=self._run_id,
             trace_path=str(self._trace.path),
             verdicts=verdicts or [],
             reason=reason,
             artifacts=list(self._state.artifacts),
+            provider_calls=list(self._provider_calls),
+            runtime_config=self._runtime_config,
+            execution=execution,
+            steps=step_records,
+        )
+
+    def _verification_summary(self, status: str) -> VerificationSummary:
+        if not self._spec.loop.require_verification or self._verification_attempts == 0:
+            return VerificationSummary()
+        return VerificationSummary(
+            attempts=self._verification_attempts,
+            first_pass_valid=status == "success" and self._state.verify_retries == 0,
+            recovery_attempted=self._state.verify_retries > 0,
+            recovered=status == "success" and self._state.verify_retries > 0,
+            final_status="passed" if status == "success" else "failed",
         )

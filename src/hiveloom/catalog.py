@@ -1,4 +1,4 @@
-"""Declarative catalog of builtin tools, guardrails, validators, and policies.
+"""Declarative catalog of builtin runtime and evaluation components.
 
 This module is the single source of truth for what builtins exist and what
 spec-time parameters they accept. It is consumed by:
@@ -13,6 +13,7 @@ metadata never drifts from behaviour.
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -110,8 +111,67 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
     ),
     CatalogEntry(
         name="http_get",
-        description="Perform an HTTP GET request and return the response body.",
+        description=(
+            "Perform an HTTP GET against explicitly declared public hosts and "
+            "return the response body."
+        ),
         tags=["network", "read"],
+        params=[
+            ParamSpec(
+                name="hosts",
+                type="list",
+                required=False,
+                default=[],
+                description=(
+                    "Hosts pre-approved by the harness. Undeclared hosts need "
+                    "an operator decision during the run. Use an exact host or "
+                    "*.example.com for subdomains."
+                ),
+            )
+        ],
+    ),
+    CatalogEntry(
+        name="recall_runs",
+        description=(
+            "Look up this harness's own prior runs in the Hive — successes as "
+            "worked examples, failures with the verifier feedback that rejected "
+            "them. Opt-in: a harness only sees its own history, and only if the "
+            "spec declares this tool."
+        ),
+        tags=["read", "memory"],
+        params=[
+            ParamSpec(
+                name="limit",
+                type="int",
+                required=False,
+                default=3,
+                description=(
+                    "Most runs one call may return (hard-capped at 10). Prior runs "
+                    "are context: a large recall crowds out the task."
+                ),
+            ),
+            ParamSpec(
+                name="include_output",
+                type="bool",
+                required=False,
+                default=True,
+                description=(
+                    "Include each recalled run's final output. Turn off when past "
+                    "outputs carry data a later run should not see."
+                ),
+            ),
+            ParamSpec(
+                name="scope",
+                type="str",
+                required=False,
+                default="harness",
+                description=(
+                    "'harness' recalls every version's runs; 'version' recalls only "
+                    "runs of the harness version now executing — evidence that "
+                    "cannot have come from different instructions."
+                ),
+            ),
+        ],
     ),
 )
 
@@ -211,6 +271,36 @@ BUILTIN_VALIDATORS: dict[str, CatalogEntry] = _entries(
         params=[
             ParamSpec(name="command", type="str", required=True,
                       description="Command to execute; exit code 0 means pass."),
+            ParamSpec(name="timeout", type="int", required=False, default=600,
+                      description="Seconds before the command is killed and the check fails."),
+        ],
+    ),
+    CatalogEntry(
+        name="grounded_references",
+        description=(
+            "Require every scalar selected from JSON output to occur in approved, "
+            "run-local tool evidence."
+        ),
+        tags=["grounding", "json", "evidence"],
+        params=[
+            ParamSpec(
+                name="output_path",
+                type="str",
+                required=True,
+                description="JSON path selecting references from the final output.",
+            ),
+            ParamSpec(
+                name="evidence_paths",
+                type="list",
+                required=True,
+                description="List of {tool, path} evidence selectors.",
+            ),
+            ParamSpec(
+                name="normalize",
+                type="str",
+                default="string",
+                description="Reference normalization mode; currently string.",
+            ),
         ],
     ),
 )
@@ -229,8 +319,8 @@ POLICIES: dict[str, CatalogEntry] = _entries(
     ),
     CatalogEntry(
         name="sequential_steps",
-        description="Walk a fixed, ordered list of objectives (loop.steps), refusing "
-        "completion until each is done in order.",
+        description="Walk fixed objectives in order; structured loop.steps can enforce "
+        "tool subsets, required successful calls, and per-step call limits.",
         tags=["loop"],
     ),
 )
@@ -265,6 +355,13 @@ BUILTIN_HOOKS: dict[str, CatalogEntry] = _entries(
 )
 
 
+# Dataset loaders and scorers are extension surfaces. Core intentionally ships
+# no domain dataset or scoring policy; installed packs and trusted eval-local
+# extensions widen these catalogs.
+DATASETS: dict[str, CatalogEntry] = {}
+SCORERS: dict[str, CatalogEntry] = {}
+
+
 CATALOGS: dict[str, dict[str, CatalogEntry]] = {
     "tools": BUILTIN_TOOLS,
     "guardrails": BUILTIN_GUARDRAILS,
@@ -272,7 +369,48 @@ CATALOGS: dict[str, dict[str, CatalogEntry]] = {
     "policies": POLICIES,
     "compaction": BUILTIN_COMPACTION,
     "hooks": BUILTIN_HOOKS,
+    "datasets": DATASETS,
+    "scorers": SCORERS,
 }
+
+
+#: Commands whose *extra* arguments the model may choose. Anything that
+#: executes code, or that a caller could point at an arbitrary path in a way
+#: the argument screen cannot reason about, stays off this list. Shared with
+#: :mod:`hiveloom.tools.builtin` so a rule the runtime would refuse to build
+#: cannot pass ``hiveloom validate`` first.
+EXTRA_ARGS_SAFE_BINARIES: frozenset[str] = frozenset(
+    {"diff", "echo", "grep", "head", "ls", "printf", "pwd", "sort", "tail", "uniq", "wc"}
+)
+
+
+def parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
+    """Normalize one ``shell`` allowlist rule, or raise ``ValueError``.
+
+    A strict string matches an exact argv; a mapping may set
+    ``allow_extra_args`` to let the model append its own arguments, which only
+    :data:`EXTRA_ARGS_SAFE_BINARIES` may do. Spec validation and the runtime
+    both call this, so ``validate`` refuses a rule the tool could not build.
+    """
+    if isinstance(rule, str):
+        argv: Any = shlex.split(rule)
+        allow_extra = False
+    elif isinstance(rule, dict):
+        argv = rule.get("argv")
+        allow_extra = rule.get("allow_extra_args", False)
+    else:
+        raise ValueError("shell command rules must be strings or mappings")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) and a for a in argv)):
+        raise ValueError("shell command rules need a non-empty argv list")
+    if not isinstance(allow_extra, bool):
+        raise ValueError("shell command rule allow_extra_args must be boolean")
+    if allow_extra and argv[0] not in EXTRA_ARGS_SAFE_BINARIES:
+        safe = ", ".join(sorted(EXTRA_ARGS_SAFE_BINARIES))
+        raise ValueError(
+            f"shell rule for '{argv[0]}' cannot allow arbitrary extra arguments "
+            f"(allow_extra_args is limited to: {safe}); declare the exact argv instead"
+        )
+    return argv, allow_extra
 
 
 def validate_builtin_params(entry: CatalogEntry, provided: dict[str, Any]) -> list[str]:
@@ -307,5 +445,12 @@ def validate_builtin_params(entry: CatalogEntry, provided: dict[str, Any]) -> li
                 f"'{entry.name}' parameter '{param.name}' must be {param.type}, "
                 f"got {type(value).__name__}"
             )
+
+    if entry.name == "shell" and isinstance(provided.get("commands"), list):
+        for index, rule in enumerate(provided["commands"]):
+            try:
+                parse_shell_rule(rule)
+            except ValueError as exc:
+                problems.append(f"shell commands[{index}]: {exc}")
 
     return problems

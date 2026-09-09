@@ -5,6 +5,349 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-09-09
+
+The containment and evidence release. Large tool results stay retrievable
+instead of being truncated away, a harness can read its own run history while
+it works, and provider egress and subprocess capabilities have inspectable
+boundaries. Alongside that, runs return a complete execution envelope,
+evaluation gains a resumable native runner with reports and paired
+comparisons, and evolution reasons over recorded friction and metric
+objectives rather than raw failure counts.
+
+### Added
+
+
+- **Opt-in model retrieval of prior runs.** A new `recall_runs` builtin tool
+  lets the executor look up this harness's own earlier runs while it works:
+  successes as worked examples, failures with the verifier feedback and
+  guardrail triggers that rejected them, optionally filtered by a query over
+  past tasks and outputs. The evolver already read that history between runs;
+  this makes it available during one. The harness key comes from the run
+  context rather than tool input, so no call can reach another harness's
+  evidence, and recall returns only what the journal already kept after
+  `logging.redact`. Runs per call and characters per field are capped
+  (`limit`, `include_output`, `scope: harness|version`). The Hive now stores
+  each run's final output (capped) alongside its task, and the run context
+  gained `harness_id`, `harness_name`, `harness_version_hash`, and `hive_path`.
+
+- **OS-level confinement for spawned processes.** The `shell` tool and the
+  `command_succeeds` validator no longer run with the full permissions,
+  environment, and lifetime of the hiveloom process. Every spawn now gets a
+  portable baseline — scrubbed environment (the runtime's API keys are not
+  inherited), closed stdin, its own session so a timeout kills the whole
+  process tree, POSIX resource limits, and output captured under a cap — plus
+  kernel-enforced filesystem and network isolation where the platform has a
+  sandbox (`bwrap` on Linux, `sandbox-exec` on macOS), which also masks the
+  user's home directory — SSH keys, cloud credentials, the Hive — and gives the
+  command a private `/tmp` and a scratch `HOME`. Configured by a new frozen
+  `confinement` spec section (`mode: auto|off|require`, `network`,
+  `writable`, `hide_home`, `env_passthrough`, `timeout_seconds`, `max_output_bytes`,
+  `max_memory_mb`, `max_processes`); `hiveloom confinement` reports what a
+  machine can actually enforce, and `run_started` records the backend that ran.
+  The harness's own `.hiveloom` and trace directory are masked from every spawn,
+  so a harness that allowlists `grep` cannot read back the journal or another
+  run's spilled results; the `shell` tool refuses arguments naming those paths
+  on every platform, and `max_output_bytes` is enforced while the command runs
+  rather than after it exits. `command_succeeds` also gained a `timeout`
+  (default 600s) — a validator that never returned used to hang the run with no
+  verdict at all.
+
+- **Retrievable tool-output spilling.** A tool result above
+  `context.tool_results.max_inline_bytes` (16 KB by default) is written whole
+  to run-private storage beside the journal and replaced in context by a
+  head/tail preview, an omitted-byte count, and an opaque handle. Two tools,
+  `read_tool_result` and `search_tool_result`, are added automatically and stay
+  inactive until the first spill, so a harness that never spills pays nothing
+  for them. Previously an oversized result was cut to its leading characters
+  and the model was pointed at the trace, which its file tools cannot read —
+  the omitted part, including the tail where totals and error messages live,
+  was unrecoverable for the rest of the run. Spilling runs after tool-result
+  hooks and guardrails (what is stored is the accepted result), applies
+  `logging.redact` before the write, keeps the full result in the journal, and
+  falls back to the unchanged result if storage fails. Handles resolve only in
+  the run that minted them; `hiveloom fork` carries the objects a fork's
+  context still quotes, so a resumed fork can read them too. Objects are stored
+  0600 in a 0700 directory, masked from spawned processes by confinement, and
+  searched in overlapping windows rather than loaded into memory.
+
+- **The product and reference documentation now ships as an agent-native guide
+  surface.** `hiveloom guide confinement` explains `agent = model + harness`,
+  the builder-agent and small-executor roles, the enforced task boundary, and
+  its security limits. `guide --list --json` also discovers the spec,
+  architecture, models, extension, journal, workbench, deployment,
+  control-plane, and sync references, all readable from an installed wheel
+  without a repository checkout.
+
+- **A single effective definition of runtime-private state, enforced
+  everywhere.** A per-run `RunBoundary`, resolved after SDK/CLI path overrides,
+  names `.hiveloom`, the actual trace and spill directories, the actual Hive
+  and its WAL sidecars, the trust store, `$HIVELOOM_HOME` and `.env` files; the
+  file tools, shell, validators, trace writer, spill store, sandbox and
+  diagnostics all use it instead of parallel interpretations of the spec.
+  Spawned processes get directories masked with empty mounts and files with
+  inaccessible ones, applied to resolved targets so a symlink into private
+  state leads to the mask rather than around it.
+- **A spill handle is no longer a capability.** Each run writes to its own
+  `spill/<run_id>/` directory (0700, objects created exclusively at 0600) and
+  resolves handles through a per-run authorization map. Quoting a handle in the
+  conversation no longer grants access to it — a resumed fork inherits a
+  size/hash-bound manifest written from the parent's verified chain, not from
+  the transcript. Unchained historical journals can still be forked as context
+  but grant no spill bytes, and objects are re-verified when read.
+- **Outbound safeguards.** A new frozen `egress` section screens the exact
+  post-hook request before it leaves for the model provider:
+  `logging.redact` keys, paths and patterns apply on the way out as well as to
+  the journal (including dictionary keys), well-known
+  credential shapes are detected by default, and matches are redacted
+  (`mode: redact`) or the request is refused (`mode: block`). Findings are
+  journalled as pattern names and counts as `provider_egress_redacted` /
+  `provider_egress_blocked` — never the matched text. HTTP/MCP tool arguments
+  pass through the same screen and block on a match. `http_get` destinations
+  are pre-approved with `hosts` or receive an interactive run-scoped operator
+  decision; non-interactive runs deny undeclared hosts, and redirects cannot
+  escape the approved set.
+- **An opinionated portable shell boundary.** OS isolation remains optional,
+  but its absence is not permission for model-controlled filesystem traversal:
+  variable arguments for file-reading commands run only behind a sandbox.
+  Without one, harmless `echo`/`printf` arguments and exact author-declared
+  argv remain available, except recursive walks across runtime-private state.
+  Subprocess deadlines now cover descendants that keep output pipes open after
+  their direct parent exits.
+- **`hiveloom confinement --json`** reports outcomes rather than intentions:
+  `filesystem_isolated`, `runtime_state_hidden`, `network_isolated`,
+  `home_hidden`, truthful egress activity, and an inspectable prompt-injection
+  blast-radius summary. The same resolved facts go into
+  `run_started`, with no absolute paths — a journal is shareable, and the
+  layout of the machine that produced it is not part of the run.
+
+- Provider responses can report the served model, provider request ID, billed
+  amount and currency, a USD conversion, opaque reasoning replay data, and
+  bounded JSON metadata. Each call exposes whether Hiveloom used a billed or
+  estimated USD cost, and the public run result keeps a receipt for every
+  provider call.
+- `normalize_openai_response`, `to_openai_messages`, and `to_openai_tool` are
+  supported public codecs for OpenAI-compatible extensions. The old private
+  names remain aliases for compatibility.
+- `hiveloom run` now separates literal and file input with `--input-text` and
+  `--input-file`, accepts run-only `--model` and `--provider` overrides, lets
+  batch callers allocate `--run-id`, and writes durable evidence under a
+  caller-selected `--trace-dir`. Runtime model selection is validated and
+  versioned without changing `harness.yaml`; JSON results expose requested and
+  resolved runtime config.
+- Completed runs now return one typed execution envelope with runtime and
+  harness identity, requested/resolved/provider-reported models, timestamps,
+  aggregate usage, billed-versus-estimated cost, verification recovery state,
+  a reproducible fingerprint, and the durable trace path. The same envelope
+  closes the run journal.
+- Harness documents now call their format field `schema_version`; legacy
+  `version` documents continue to load. `hiveloom migrate HARNESS --json`
+  performs a fully validated atomic rewrite with rollback. The spelling change
+  is behavior-hash neutral, so existing Hive buckets and journals remain
+  comparable.
+- The Hive now indexes recovered validation failures, tool errors and retries,
+  context recovery, operator steering, guardrail stops, provider failures, and
+  loop limits as bounded friction records. `hiveloom friction list` filters
+  them by category, component, recovery state, model, and time; `hiveloom
+  stats --include-friction` reports aggregate counts without reading traces.
+- Numeric evaluator signals can now be attached to indexed runs through the
+  public `RunMetric` SDK or `hiveloom metrics record|import`. Writes are
+  immutable and idempotent, NDJSON imports validate before one transaction,
+  and `hiveloom metrics list` filters by run provenance while reporting
+  scope-safe aggregates with sample and missing-value counts.
+- Versioned `eval.yaml` documents now select extension-registered dataset
+  loaders and post-verification scorers. The public scorer SDK keeps held-out
+  expected data out of model input by default, validates metrics before Hive
+  ingestion, reports scorer failures separately from run failures, and hashes
+  the spec, dataset, and scorer implementations into one eval identity.
+- `hiveloom models probe HARNESS` reports declared model capabilities without
+  provider I/O; `--live` explicitly runs a bounded, possibly billed tool and
+  reasoning-replay probe. Results retain requested/effective model identity,
+  distinguish declared from observed facts, enforce exact or alias policies,
+  and cache against provider, model, and adapter implementation.
+- `hiveloom eval run|status|resume` executes a deterministic case and
+  repetition matrix through the normal harness path. A live model probe gates
+  the batch, atomic manifests retain per-cell run, trace, scorer, and metric
+  state, and resume rejects changed content or execution identity while
+  skipping every completed cell.
+- `hiveloom eval report|compare` regenerates canonical JSON from Hive-indexed
+  cells and metrics without raw traces. Reports expose clean, recovered, and
+  final outcomes, latency, source-separated cost, custom metric aggregates,
+  and repetition stability; comparisons pair case and repetition identities
+  and keep unmatched cells visible.
+- Trace redaction can target dictionary keys, structured payload paths, and
+  regex patterns before persistence or streaming. Optional age, run-count,
+  and byte retention limits prune validated journal files under a marked trace
+  root while keeping Hive run evidence and clearing stale raw-trace paths.
+- `hiveloom traces prune` previews or applies the configured retention policy
+  with stable JSON receipts. Applying from the CLI requires `--yes`; harnesses
+  without an explicit policy never delete traces automatically.
+- Evolution can opt in to bounded incident packets selected from indexed
+  friction and failed runs. Structured redaction runs before deterministic
+  byte and token budgeting, missing or pruned journals fall back to indexed
+  summaries, and proposals retain an evidence receipt without copying event
+  payloads.
+- `evolution.objectives` supplies bounded numeric metric history to proposals.
+  Series stay separated by unit, source, scope, behavior, and model; matching
+  eval cases receive paired comparisons; sample and missing counts, execution
+  fingerprints, and evidence run IDs remain visible. Hard floors and ceilings
+  cannot be traded against another objective, and metric metadata never enters
+  the proposing request.
+- `sequential_steps` now accepts structured phases with stable IDs, effective
+  tool subsets, required successful tool calls, and per-step model/tool call
+  limits. Hidden tools are blocked before dispatch; step events reach traces,
+  `RunResult.steps`, CLI/HTTP JSON, and Hive run records. Legacy string steps
+  retain their instruction-only behavior.
+- Validators may request a typed `VerificationContext` with bounded, redacted
+  tool evidence, step receipts, and artifacts from the current run. The new
+  `grounded_references` builtin rejects selected scalar IDs absent from approved
+  successful tool results, even when the output otherwise passes its JSON
+  schema.
+- Generation now teaches structured tool phases, grounded-reference checks,
+  metric instrumentation, and when a deterministic composite tool is the right
+  boundary. It reads validator parameters from the live catalog instead of a
+  fixed parameter list. Evolution guidance diagnoses prompt, grounding,
+  step-policy, provider, and instrumentation failures before choosing a
+  mutation.
+- The offline `ranked-retrieval` harness demonstrates a search-and-verify tool,
+  enforced retrieval and answer phases, grounded synthetic IDs, and a local
+  eval with Recall@3, nDCG@3, and hallucination-rate objectives.
+
+- **A seventh demo harness, `harnesses/log-forensics`,** covers the release:
+  an allowlisted `shell` under an explicit `confinement` section, a 77 KB
+  `cat` spilled to a handle and read back with `search_tool_result` /
+  `read_tool_result` (the answer to one of its three questions is in the tail
+  the old truncation discarded), `recall_runs` scoped to one harness version,
+  and `egress` screening the request that carries it all. Verified end to end:
+  exit 0, first-pass verification, ~7 turns.
+
+- **`hiveloom add tool --param name=value`** (and `params` on the SDK's
+  `add_tool` / the served `POST /add/tool`) declares a builtin's catalog
+  parameters when the tool is added, validated and rolled back like every
+  other construction step. Before this, `shell`'s `commands` allowlist had no
+  supported spelling at all: `add tool` accepted only `--host`, and
+  `set 'tools[0].commands'` cannot address a list element — `set` splits on
+  `.` alone, so it wrote a top-level key named `tools[0]` and failed with
+  `tools[0]: Extra inputs are not permitted`. Declaring the allowlist meant
+  hand-editing `harness.yaml`, against the first rule in `AGENTS.md`.
+
+
+### Changed
+
+- **OS isolation is optional.** The default `auto` uses a sandbox when one is
+  available and otherwise continues with portable controls; only an explicit
+  `confinement.mode: require` refuses to run without a backend. This keeps the
+  prompt-safety layer cross-platform without misreporting a scrubbed environment
+  or argument checks as filesystem isolation. Shell remains an explicit escape
+  hatch: use `require` when untrusted input and runtime-state confidentiality
+  meet in the same harness.
+- **Subprocess output is streamed through bounded collectors** instead of
+  captured to temporary files: a command that writes a gigabyte now costs
+  neither memory nor disk, keeps a bounded head *and* tail, and reports how
+  many bytes were dropped. `search_tool_result` likewise scans a spilled object
+  in overlapping windows rather than loading it.
+- **Spawned processes no longer inherit the runtime's environment, network, or
+  home directory.** This is a behavior change for existing harnesses that use
+  `shell` or `command_succeeds`, and each part has a knob:
+  a command needing credentials or `PYTHONPATH` lists them in
+  `confinement.env_passthrough`; one that installs dependencies or calls a
+  service needs `confinement.network: true`; one that uses a toolchain cache
+  under `$HOME` (cargo, npm, pip, pyenv) needs `confinement.hide_home: false`;
+  and `confinement.mode: off` skips the OS sandbox. Environment scrubbing,
+  bounded output, resource limits and timeout always apply. Only the network
+  and filesystem parts are kernel-enforced, and only where a sandbox backend
+  exists — `hiveloom confinement` says which apply on a given machine.
+- `command_succeeds` now runs under a timeout (default 600s, configurable with
+  `timeout`) and through the platform's shell rather than a hardcoded
+  `/bin/sh`, so it works on Windows.
+- The journal directory and its files, and the spill store beside them, are
+  created 0700/0600 rather than world-readable.
+- Spawned processes can no longer reach the harness's `.hiveloom` or trace
+  directory. This also applies to `command_succeeds`: a validator that read the
+  journal (rare, and better served by a code validator, which runs in-process)
+  needs `confinement.mode: off`.
+- The distribution version is derived from `hiveloom.__version__` instead of
+  being repeated in `pyproject.toml`, so a wheel cannot be published under a
+  version the module does not report.
+
+### Fixed
+
+- **Any harness setting `model.temperature` died at turn 0.** `anthropic` 1.0
+  removed `temperature` from `messages.create()`, so the provider's call raised
+  `TypeError: Messages.create() got an unexpected keyword argument
+  'temperature'` before the first request left the process — four of the seven
+  demo harnesses, `quickstart` and the README's own first run included. The
+  setting now travels in `extra_body`, which is the SDK's escape hatch for a
+  wire field it no longer names; which model ids accept it is unchanged. The
+  regression was invisible to the test suite because the faked SDK accepted
+  `**kwargs`; its `create` now has the real 1.x signature.
+- Legacy `--input` no longer raises `ENAMETOOLONG` when a large literal is
+  checked as a possible filename. It remains available for one deprecation
+  cycle; scripts should move to the explicit flags.
+- Managed trace roots publish their marker atomically, so concurrent eval cells
+  cannot observe a valid marker between file creation and its content write.
+- **Shell allowlist rules are validated with the rest of the spec.** A rule
+  such as `{argv: [cat], allow_extra_args: true}` — `allow_extra_args` on a
+  command outside the small safe set — passed `hiveloom validate` ("harness is
+  valid") and was reported by `hiveloom confinement` as an available dynamic
+  reader, then failed at run time with exit 4 when the tool was constructed.
+  `hiveloom.catalog` now owns the rule parser and the safe-binary set that the
+  runtime uses, so validation refuses exactly what the runtime would, before a
+  run is paid for. The refusal also names the commands `allow_extra_args` is
+  limited to.
+- **An eval identity mismatch says which policy rejected it and how to accept
+  it.** `model_identity` defaults to `exact`, which no provider that resolves
+  an alias to a dated snapshot can satisfy — asking for `claude-haiku-4-5`
+  returns `claude-haiku-4-5-20251001` — so a first `eval run` stopped on
+  `provider served claude-haiku-4-5-20251001 for requested model
+  claude-haiku-4-5`, a sentence written as a `warn`-mode note and reused as a
+  hard error. It now names the policy, points at `model_aliases`/`warn`, and
+  says aliases are bare model ids.
+- **Compaction could orphan a `tool_result` and kill the run with a provider
+  400.** Both builtin methods reclaim space by removing whole messages, and
+  the boundary can fall between an assistant's `tool_use` and the
+  `tool_result` answering it — `summarize` keeps the newest message
+  unconditionally, and `truncate_oldest` deletes from the front. The provider
+  then rejects the transcript (`unexpected tool_use_id found in tool_result
+  blocks`) and the run ends in `error` instead of continuing shorter. Any
+  conversation that crosses the compaction threshold mid-tool-cycle hit this,
+  which is exactly what a harness reading large tool results does. Orphaned
+  results are now repaired once in `_compact_now`, so hook summaries and
+  extension-registered methods are covered too.
+- **A `sequential_steps` step could not name the spill readers.** Listing
+  `read_tool_result` or `search_tool_result` in a step's `tools` failed
+  validation as an unknown tool, because they are auto-added at the first
+  spill rather than declared. The playbook subset validator already allowed
+  them for the same reason; the step validator now matches, so
+  `context.tool_results` spilling and `sequential_steps` can be used together.
+- **`docs/evaluating.md` documented `model_aliases` as
+  `[provider/canonical-model]`.** Aliases match the bare model id the provider
+  reports, so the documented form never matched and `model_identity: alias`
+  failed the same way `exact` did.
+- **The demo harnesses pin this release.** All seven moved from
+  `hiveloom==1.0.0` to `hiveloom==1.1.0`, and
+  `harnesses/ranked-retrieval/eval.yaml` no longer ships `model_identity: exact`
+  — the shipped demo eval could not get past its own provider probe, so the
+  `hiveloom eval run eval.yaml` in its README failed for everyone who tried it.
+- **The `ranked-retrieval` demo eval scored 0.0 for a second reason.** With the
+  identity probe passing, all six cells then ended in `max_turns`: the harness
+  emits strict JSON but never declared the `strip_json_fence` hook the other
+  JSON demos use, so a fenced answer failed `output_schema` and
+  `grounded_references`, burned both retries and the three-turn budget, and
+  reported nothing. With the hook it is 6/6 first-pass valid — Recall@3 1.0,
+  nDCG@3 0.95, hallucination rate 0.0 — which is what its README describes.
+- **The version gates still read `pyproject.toml`'s `project.version`.**
+  Deriving the distribution version from `hiveloom.__version__` removed that
+  key, so both steps that read it raise `KeyError`: CI's consistency check and
+  — the one that matters — the release workflow's tag check, which means
+  `v1.1.0` could not have been verified at all. Both read `__version__`
+  directly now, CI additionally asserts the built artifacts carry it, and the
+  sdist scope gate compares what it ships under `docs/` against the files the
+  wheel force-includes as `hiveloom guide` topics instead of rejecting the
+  prefix outright.
+
 ## [1.0.0] - 2026-08-28
 
 The observability release. A run now leaves behind a progressive,

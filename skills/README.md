@@ -1,13 +1,15 @@
 # hiveloom agent skills
 
 A series of focused [Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)
-for driving hiveloom. Each is a self-contained `SKILL.md` an agent loads on
-demand; together they cover the full lifecycle:
+for driving hiveloom. The coding agent is the harness builder; a smaller model
+executes the resulting task boundary. Each skill is a self-contained `SKILL.md`
+an agent loads on demand; together they cover the full lifecycle:
 
 | Skill | Use when |
 |---|---|
 | [`hiveloom-build`](hiveloom-build/SKILL.md) | Creating a new harness (explore → construct → validate → dry-run, or `generate`) |
 | [`hiveloom-run`](hiveloom-run/SKILL.md) | Running a harness, interpreting results, reading traces and stats |
+| [`hiveloom-eval`](hiveloom-eval/SKILL.md) | Defining local datasets and scorers, validating eval identity, and recording metrics |
 | [`hiveloom-evolve`](hiveloom-evolve/SKILL.md) | A harness keeps failing and should be improved via the gated evolve flow |
 | [`hiveloom-extend`](hiveloom-extend/SKILL.md) | Adding tools/guardrails/validators/providers via extension packs |
 | [`hiveloom-ship`](hiveloom-ship/SKILL.md) | Packaging, trusting foreign folders, and the deploy-and-evolve loop |
@@ -33,8 +35,9 @@ etc.) can reference or copy these files into whatever location that
 convention expects.
 These files also ship inside the package, so an agent with hiveloom installed
 and no checkout can read them directly: `hiveloom guide --list`, then
-`hiveloom guide build` (or `run`/`evolve`/`extend`/`ship`, `all` for the
-compact variant).
+`hiveloom guide build` (or `run`/`eval`/`evolve`/`extend`/`ship`, `all` for the
+compact variant). `hiveloom guide confinement` explains the product boundary
+and its security limits.
 
 > Not to be confused with a *harness's own* `skills/` folder
 > (`hiveloom add skill …`), which holds progressive-disclosure instructions for

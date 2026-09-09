@@ -8,7 +8,7 @@ import pytest
 from typing_extensions import TypedDict
 
 from hiveloom.models.provider import ToolCall
-from hiveloom.spec.schema import BuiltinToolRef, HarnessSpec
+from hiveloom.spec.schema import BuiltinToolRef, ConfinementConfig, HarnessSpec
 from hiveloom.tools.builtin import (
     FileReadTool,
     FileWriteTool,
@@ -116,6 +116,29 @@ def test_file_write_refuses_configured_trace_dir(tmp_path: Path):
         tool.run(path="run_logs/run_x.jsonl", content="forged trace entry")
 
 
+def test_file_tools_consume_the_runtime_private_path_resolver(
+    tmp_path: Path, monkeypatch
+):
+    runtime_home = tmp_path / "nonstandard-runtime-home"
+    runtime_home.mkdir()
+    (runtime_home / "models.yaml").write_text("private", encoding="utf-8")
+    monkeypatch.setenv("HIVELOOM_HOME", str(runtime_home))
+    spec = HarnessSpec(
+        name="private-paths",
+        description="test",
+        system_prompt="test",
+        tools=[BuiltinToolRef(builtin="file_read"), BuiltinToolRef(builtin="file_write")],
+    )
+    registry = build_registry(spec, tmp_path)
+
+    with pytest.raises(ToolError, match="protected harness state"):
+        registry.get("file_read").run(path="nonstandard-runtime-home/models.yaml")
+    with pytest.raises(ToolError, match="protected harness state"):
+        registry.get("file_write").run(
+            path="nonstandard-runtime-home/new-secret", content="private"
+        )
+
+
 def test_safe_path_refuses_configured_trace_dir_case_insensitively(tmp_path: Path):
     """`trace_dir` is opt-in (only the HTTP control plane currently has a
     spec loaded to supply it — file_read/file_write don't pass one, so they
@@ -168,6 +191,34 @@ def test_shell_legacy_rules_are_exact_and_wildcards_are_limited(tmp_path: Path):
         exact.run(command="git status --short")
     with pytest.raises(ToolError, match="cannot allow arbitrary"):
         ShellTool(tmp_path, allowed=[{"argv": ["git", "status"], "allow_extra_args": True}])
+
+
+def test_exact_shell_argv_remains_usable_without_os_isolation(tmp_path: Path):
+    (tmp_path / "visible.txt").write_text("ok", encoding="utf-8")
+    exact = ShellTool(
+        tmp_path,
+        allowed=["ls -1 ."],
+        confinement=ConfinementConfig(mode="off"),
+    )
+
+    assert "visible.txt" in exact.run(command="ls -1 .")
+
+
+def test_exact_recursive_shell_argv_cannot_walk_runtime_state_without_isolation(
+    tmp_path: Path,
+):
+    private = tmp_path / ".hiveloom"
+    private.mkdir()
+    (private / "secret.txt").write_text("needle", encoding="utf-8")
+    shell = ShellTool(
+        tmp_path,
+        allowed=["grep -r needle ."],
+        confinement=ConfinementConfig(mode="off"),
+        private_paths=[private],
+    )
+
+    with pytest.raises(ToolError, match="recursively traverse"):
+        shell.run(command="grep -r needle .")
 
 
 def test_http_get_rejects_private_addresses(tmp_path: Path):
@@ -239,7 +290,15 @@ def test_build_registry_from_spec(tmp_path: Path):
         }
     )
     registry = build_registry(spec, tmp_path)
-    assert set(registry.names()) == {"file_read", "http_get"}
+    assert set(registry.active_names()) == {"file_read", "http_get"}
+    # The spill readers are registered but inactive: they cost nothing in the
+    # tool payload until a result actually spills.
+    assert set(registry.names()) == {
+        "file_read",
+        "http_get",
+        "read_tool_result",
+        "search_tool_result",
+    }
     payload = registry.anthropic_payload()
     assert all("input_schema" in t for t in payload)
 

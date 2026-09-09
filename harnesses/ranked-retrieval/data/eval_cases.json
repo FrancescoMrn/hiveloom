@@ -1,0 +1,52 @@
+[
+  {
+    "id": "database-performance",
+    "input": "Rank up to three records about optimizing PostgreSQL query performance.",
+    "expected": {
+      "relevance": {
+        "record-postgres-indexes": 3,
+        "record-query-plans": 2,
+        "record-cache-basics": 1
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts"
+      ]
+    }
+  },
+  {
+    "id": "incident-response",
+    "input": "Rank up to three records about incident response and service reliability.",
+    "expected": {
+      "relevance": {
+        "record-incident-checklist": 3
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts"
+      ]
+    }
+  },
+  {
+    "id": "api-contract-testing",
+    "input": "Rank up to three records about testing API request and response contracts.",
+    "expected": {
+      "relevance": {
+        "record-api-contracts": 3
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts"
+      ]
+    }
+  }
+]

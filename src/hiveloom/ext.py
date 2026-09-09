@@ -29,6 +29,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import inspect
+import json
 import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -59,6 +61,25 @@ class BuildContext:
     # Skill names the spec declares, for `load_skill` — same arrangement as
     # `trace_dir`: populated by `build_registry`, defaulted everywhere else.
     skills: list[str] = field(default_factory=list)
+    # The spec's `confinement` policy, for factories that spawn a process
+    # (`shell`, `command_succeeds`). None means "the schema default", so a
+    # factory built outside a spec is confined rather than unconfined.
+    confinement: Any = None
+    # The absolute trace directory, which those same factories mask from the
+    # processes they spawn. Distinct from `trace_dir` above, which is the
+    # harness-relative path the file tools refuse and is None when the trace
+    # directory lives outside the harness — masking still applies there.
+    trace_root: Path | None = None
+    # Every absolute path holding runtime-private state, from
+    # `hiveloom.private.runtime_private_paths`. File-tool factories refuse this
+    # set and process-spawning factories mask it rather than each keeping their
+    # own idea of private state.
+    private_paths: list[Path] = field(default_factory=list)
+    # The fully resolved per-run boundary. Unlike ``private_paths`` this can
+    # refresh dynamic entries such as .env files immediately before a spawn.
+    # Kept optional for extension compatibility and factories built outside a
+    # running harness.
+    run_boundary: Any = None
 
 
 class ModelInfo(BaseModel):
@@ -69,6 +90,9 @@ class ModelInfo(BaseModel):
     input_cost_per_mtok: float = 0.0
     output_cost_per_mtok: float = 0.0
     context_window: int | None = None
+    supports_tool_calling: bool | None = None
+    supports_structured_output: bool | None = None
+    supports_reasoning_replay: bool | None = None
 
 
 class ProviderInfo(BaseModel):
@@ -243,6 +267,30 @@ class ExtensionAPI:
         section. ``factory(params, ctx)`` must return a ``handler(event) -> result``."""
         self._register("hooks", name, factory, description, tags, params)
 
+    def register_dataset(
+        self,
+        name: str,
+        factory: Factory,
+        *,
+        description: str,
+        tags: Sequence[str] = (),
+        params: Sequence[Any] = (),
+    ) -> None:
+        """Register an eval dataset loader factory."""
+        self._register("datasets", name, factory, description, tags, params)
+
+    def register_scorer(
+        self,
+        name: str,
+        factory: Factory,
+        *,
+        description: str,
+        tags: Sequence[str] = (),
+        params: Sequence[Any] = (),
+    ) -> None:
+        """Register an eval scorer factory."""
+        self._register("scorers", name, factory, description, tags, params)
+
     def on(self, event: str) -> Callable[[Callable], Callable]:
         """Decorator: subscribe an ambient handler to a lifecycle event.
 
@@ -374,6 +422,38 @@ def build(kind: str, name: str, params: dict[str, Any], ctx: BuildContext) -> An
             "is the extension pack that provides it installed? (see `hiveloom extensions`)"
         )
     return factory(params, ctx)
+
+
+def component_digest(kind: str, name: str) -> str:
+    """Stable implementation receipt for a registered catalog component."""
+    ensure_environment_loaded()
+    entry = catalog.CATALOGS.get(kind, {}).get(name)
+    factory = _registry.factories.get(kind, {}).get(name)
+    if entry is None or factory is None:
+        raise CatalogError(
+            f"no {kind[:-1] if kind.endswith('s') else kind} named '{name}' is registered"
+        )
+    try:
+        source_file = inspect.getsourcefile(factory)
+    except TypeError:
+        source_file = None
+    implementation = b""
+    if source_file is not None:
+        path = Path(source_file)
+        if path.is_file():
+            implementation = path.read_bytes()
+    if not implementation:
+        try:
+            implementation = inspect.getsource(factory).encode("utf-8")
+        except (OSError, TypeError):
+            implementation = (
+                f"{getattr(factory, '__module__', '')}:"
+                f"{getattr(factory, '__qualname__', type(factory).__qualname__)}"
+            ).encode()
+    metadata = json.dumps(
+        entry.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(metadata + b"\0" + implementation).hexdigest()
 
 
 def provider_names() -> list[str]:
@@ -624,11 +704,11 @@ def _iter_entry_points():
 # rather than inherit these.
 _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5": (1.00, 5.00),
-    # Sonnet 5 has promotional introductory pricing of (2.00, 10.00) through
-    # 2026-08-31. The standard rate is deliberately used here: a harness folder
-    # outlives the promotion, and over-estimating cost only makes the cost
-    # guardrail halt sooner, which is the safe direction to be wrong in.
-    "claude-sonnet-5": (3.00, 15.00),
+    # Sonnet 5 launched at introductory (2.00, 10.00) pricing; Anthropic later
+    # made that the standard rate and cancelled the scheduled 2026-09-01
+    # increase to (3.00, 15.00) — see the note on
+    # https://platform.claude.com/docs/en/about-claude/pricing.
+    "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-5": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),
@@ -809,6 +889,9 @@ class _YamlModelEntry(BaseModel):
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
     context_window: int | None = None
+    supports_tool_calling: bool | None = None
+    supports_structured_output: bool | None = None
+    supports_reasoning_replay: bool | None = None
 
 
 class _YamlProviderEntry(BaseModel):
@@ -915,6 +998,9 @@ def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) ->
             else fallback_output
         ),
         context_window=entry.context_window,
+        supports_tool_calling=entry.supports_tool_calling,
+        supports_structured_output=entry.supports_structured_output,
+        supports_reasoning_replay=entry.supports_reasoning_replay,
     )
 
 

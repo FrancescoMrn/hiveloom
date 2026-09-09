@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field, create_model, field_validator
 
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
-from hiveloom.package import trace_dir_relative_to
+from hiveloom.package import resolve_trace_dir, trace_dir_relative_to
+from hiveloom.private import RunBoundary, runtime_private_paths
 from hiveloom.spec.loader import import_hook
 from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
@@ -365,14 +366,21 @@ class SearchToolsTool(Tool):
 
     def run(self, query: str = "", **_: Any) -> str:
         words = [w for w in query.lower().split() if w]
+        # Runtime machinery (the spill readers) is inactive but not deferred:
+        # the loop activates it when it has something to read. Offering it here
+        # would promise a capability with nothing to point it at.
+        candidates = [
+            tool
+            for tool in (self._registry.get(n) for n in self._registry.inactive_names())
+            if "meta" not in tool.tags
+        ]
         matches: list[Tool] = []
-        for name in self._registry.inactive_names():
-            tool = self._registry.get(name)
+        for tool in candidates:
             haystack = " ".join([tool.name, tool.description, " ".join(tool.tags)]).lower()
             if not words or any(w in haystack for w in words):
                 matches.append(tool)
         if not matches:
-            available = ", ".join(self._registry.inactive_names()) or "none"
+            available = ", ".join(t.name for t in candidates) or "none"
             return f"no deferred tools matched '{query}' (still inactive: {available})"
         self._registry.activate([t.name for t in matches])
         lines = [f"activated {len(matches)} tool(s):"]
@@ -380,7 +388,12 @@ class SearchToolsTool(Tool):
         return "\n".join(lines)
 
 
-def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
+def build_registry(
+    spec: HarnessSpec,
+    base_dir: str | Path,
+    *,
+    run_boundary: RunBoundary | None = None,
+) -> ToolRegistry:
     """Instantiate catalog tools and import code-hook tools from a spec."""
     from hiveloom.tools import builtin  # local import to avoid cycles
 
@@ -391,7 +404,24 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
     # not just the .hiveloom/.env* coverage they get regardless — the same
     # protection the HTTP control plane's input_file and the evolver's
     # code-change containment get when they have a spec loaded.
-    trace_dir = trace_dir_relative_to(base, spec.logging.trace_dir)
+    trace_dir = (
+        run_boundary.trace_dir_relative
+        if run_boundary is not None
+        else trace_dir_relative_to(base, spec.logging.trace_dir)
+    )
+    # The absolute form too: `shell` masks it from the processes it spawns,
+    # and a trace directory outside the harness still has to be masked even
+    # though it has no harness-relative path to refuse.
+    trace_root = (
+        run_boundary.trace_dir
+        if run_boundary is not None
+        else resolve_trace_dir(base, spec.logging.trace_dir)
+    )
+    private_paths = (
+        run_boundary.private_paths()
+        if run_boundary is not None
+        else runtime_private_paths(base, spec)
+    )
 
     registry = ToolRegistry()
     has_deferred = False
@@ -400,7 +430,14 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
         has_deferred = has_deferred or not active
         if isinstance(tool_ref, BuiltinToolRef):
             tool = builtin.make_builtin_tool(
-                tool_ref, base, trace_dir=trace_dir, skills=spec.skills
+                tool_ref,
+                base,
+                trace_dir=trace_dir,
+                skills=spec.skills,
+                confinement=spec.confinement,
+                trace_root=trace_root,
+                private_paths=private_paths,
+                run_boundary=run_boundary,
             )
             registry.register(tool, active=active)
         elif isinstance(tool_ref, CodeToolRef):
@@ -436,6 +473,16 @@ def build_registry(spec: HarnessSpec, base_dir: str | Path) -> ToolRegistry:
 
     if has_deferred:
         registry.register(SearchToolsTool(registry))
+    if spec.context.tool_results.max_inline_bytes:
+        # Registered *after* the deferred check and inactive: these are runtime
+        # machinery, not spec-deferred tools, so they must neither pull in
+        # search_tools nor be findable by it. The agent loop binds them to the
+        # run's store and activates them on the first spill — a harness that
+        # never spills never pays for them in its tool payload.
+        from hiveloom.context.spill import spill_tools  # local import to avoid cycles
+
+        for tool in spill_tools():
+            registry.register(tool, active=False)
     if spec.playbooks:
         registry.register(
             SwitchPlaybookTool([(p.name, p.description) for p in spec.playbooks])

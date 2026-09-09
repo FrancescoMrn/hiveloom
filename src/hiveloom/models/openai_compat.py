@@ -78,12 +78,12 @@ class OpenAICompatProvider(ModelProvider):
             "model": config.id,
             "max_tokens": config.max_tokens,
             **({} if config.temperature is None else {"temperature": config.temperature}),
-            "messages": _to_openai_messages(system, messages),
+            "messages": to_openai_messages(system, messages),
         }
         if tools:
-            payload["tools"] = [_to_openai_tool(t) for t in tools]
+            payload["tools"] = [to_openai_tool(t) for t in tools]
         data = self._post("/chat/completions", payload)
-        return _normalize(
+        return normalize_openai_response(
             data,
             estimated_input_tokens=self.count_tokens(system=system, messages=messages, tools=tools),
         )
@@ -119,7 +119,7 @@ class OpenAICompatProvider(ModelProvider):
         raise RuntimeError(f"model call failed on attempt {attempt + 1}: {last_exc}") from last_exc
 
 
-def _to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
+def to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
     """Anthropic-style ``{name, description, input_schema}`` → OpenAI function."""
     return {
         "type": "function",
@@ -131,7 +131,7 @@ def _to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, Any]]:
+def to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, Any]]:
     """Convert hiveloom's content-block history into OpenAI chat messages."""
     out: list[dict[str, Any]] = []
     if system:
@@ -145,6 +145,7 @@ def _to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, 
         texts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         tool_results: list[dict[str, Any]] = []
+        provider_fields: dict[str, Any] = {}
         for block in content:
             kind = block.get("type")
             if kind == "text":
@@ -171,12 +172,21 @@ def _to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, 
                         "content": text,
                     }
                 )
+            elif kind == "provider_data" and block.get("provider") == "openai_compat":
+                data = block.get("data")
+                if isinstance(data, dict):
+                    provider_fields.update(data)
+            elif kind == "provider_reasoning":
+                data = block.get("data")
+                if isinstance(data, dict):
+                    provider_fields.update(data)
         if role == "assistant":
             # An assistant turn with no text is legal as "", never as null:
             # strict servers (e.g. Ollama) reject content:null with HTTP 400.
             entry: dict[str, Any] = {"role": "assistant", "content": "\n".join(texts) or ""}
             if tool_calls:
                 entry["tool_calls"] = tool_calls
+            entry.update(provider_fields)
             out.append(entry)
         else:
             # Tool results become individual role:"tool" messages in OpenAI land.
@@ -186,7 +196,9 @@ def _to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, 
     return out
 
 
-def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> ModelResponse:
+def normalize_openai_response(
+    data: dict[str, Any], *, estimated_input_tokens: int = 0
+) -> ModelResponse:
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError(f"provider returned no choices: {json.dumps(data)[:300]}")
@@ -206,6 +218,11 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
     content_blocks: list[dict[str, Any]] = []
     if text:
         content_blocks.append({"type": "text", "text": text})
+    replay_fields = {
+        key: message[key]
+        for key in ("reasoning", "reasoning_content", "reasoning_details")
+        if message.get(key) is not None
+    }
     for raw_call in message.get("tool_calls") or []:
         function = raw_call.get("function") or {}
         raw_arguments = function.get("arguments")
@@ -258,10 +275,45 @@ def _normalize(data: dict[str, Any], *, estimated_input_tokens: int = 0) -> Mode
         cache_read_tokens=cache_read,
     )
     finish = choice.get("finish_reason") or "stop"
+    raw_cost = raw_usage.get("cost")
+    billed_cost = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
+    billed_currency = ""
+    billed_cost_usd = None
+    if billed_cost is not None:
+        raw_currency = raw_usage.get("currency") or data.get("currency") or "USD"
+        billed_currency = str(raw_currency).upper()
+        if billed_currency == "USD":
+            billed_cost_usd = billed_cost
+    provider_metadata = {
+        key: data[key]
+        for key in ("provider", "service_tier", "system_fingerprint")
+        if data.get(key) is not None
+    }
     return ModelResponse(
         text=text,
         tool_calls=tool_calls,
         stop_reason=_STOP_REASONS.get(finish, finish),
         usage=usage,
         content_blocks=content_blocks,
+        model=str(data.get("model") or ""),
+        provider_request_id=str(data.get("id") or ""),
+        billed_cost=billed_cost,
+        billed_currency=billed_currency,
+        billed_cost_usd=billed_cost_usd,
+        reasoning=replay_fields or None,
+        provider_metadata=provider_metadata,
     )
+
+
+# Compatibility aliases for extensions written against the pre-1.1 private
+# helpers. New extension code should import the public names above.
+_to_openai_tool = to_openai_tool
+_to_openai_messages = to_openai_messages
+_normalize = normalize_openai_response
+
+__all__ = [
+    "OpenAICompatProvider",
+    "normalize_openai_response",
+    "to_openai_messages",
+    "to_openai_tool",
+]

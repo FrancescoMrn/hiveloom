@@ -44,6 +44,36 @@ name:
 5. Prefer builtin tools/guardrails/validators. Use a `code:` hook only when the
    task needs company-specific logic; hiveloom scaffolds a correctly-signed stub
    with a TODO for you to fill in later.
+6. Use only entries present in the catalog above. Do not invent a tool,
+   validator, guardrail, policy, hook, dataset loader, or scorer. Eval datasets
+   and scorers belong in a separate versioned eval document, not in
+   `harness.yaml`.
+
+## Workflow design patterns
+
+- If the workflow has fixed phases with different tool access, use structured
+  `sequential_steps`. Set `loop.steps` before setting `loop.policy` because
+  every construction step validates immediately. Give each phase a stable ID,
+  list its visible tools, require calls that must succeed, and bound model or
+  tool calls where the task has a deterministic limit. Make the final answer
+  phase tool-free when no more evidence may be gathered. Do not rely on a
+  provider adapter to filter tools by phase.
+- Prefer one deterministic composite code tool when several upstream calls are
+  one domain operation and an invariant must hold between them, such as search
+  followed by eligibility checks before any candidate is exposed. Keep calls
+  separate when they are independently useful, need different permissions,
+  should run in parallel, or must remain separately visible for audit or human
+  review.
+- An output schema proves shape, not provenance. When JSON output selects IDs
+  or other references, add `grounded_references` with an `output_path` and one
+  or more approved `{tool, path}` evidence selectors. Keep the output schema as
+  a separate validator.
+- Use `evolution.objectives` only for metrics an external scorer will actually
+  record. Include direction, unit/source/scope when known, and hard floors or
+  ceilings only for real requirements. Missing instrumentation is not a zero
+  score.
+- Provider identity, capabilities, routing, and credentials are runtime or eval
+  concerns. Do not hide provider-specific phase logic inside generated hooks.
 
 ## Output format
 
@@ -61,6 +91,7 @@ Return **only** a JSON object (no prose, no markdown fences) of this shape:
     {"op": "add_tool", "builtin": "file_read", "rationale": "..."},
     {"op": "add_tool", "code": "tools/fetch.py:fetch", "description": "...", "rationale": "..."},
     {"op": "add_validator", "builtin": "output_schema", "schema_file": "./schemas/output.json"},
+    {"op": "add_validator", "builtin": "grounded_references", "output_path": "$.selected[*].id", "evidence_paths": [{"tool": "search", "path": "$.items[*].id"}], "normalize": "string"},
     {"op": "add_validator", "code": "validators/check.py:validate", "rationale": "..."},
     {"op": "add_guardrail", "builtin": "max_cost_usd", "value": 0.50, "rationale": "..."}
   ]
@@ -69,9 +100,11 @@ Return **only** a JSON object (no prose, no markdown fences) of this shape:
 
 Step ops: `set` (path + value), `add_tool` / `add_validator` (one of `builtin`
 or `code`; `code` also needs `description`; builtin validators take their param,
-e.g. `schema_file`/`pattern`/`path`/`command`), and `add_guardrail` (`builtin`
-plus its param, e.g. `value`/`pattern`). The harness is created with `init`
-using `name` and `task`, and a cost guardrail is always present by default.
+exactly as listed in the live catalog, e.g.
+`schema_file`/`pattern`/`path`/`command`/`output_path`/`evidence_paths`), and
+`add_guardrail` (`builtin` plus its param, e.g. `value`/`pattern`). The harness
+is created with `init` using `name` and `task`, and a cost guardrail is always
+present by default.
 Emit at most one `add_guardrail` per guardrail name — a second one replaces the
 first rather than adding to it (`regex_output_filter` is the exception: one op
 per pattern, since those compose as a list).

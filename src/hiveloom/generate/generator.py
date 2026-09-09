@@ -40,7 +40,10 @@ def build_builtin_catalog() -> str:
 
     ext.ensure_environment_loaded()
     lines: list[str] = []
-    for kind, entries in CATALOGS.items():
+    # Eval loaders and scorers have their own document; they are visible via
+    # `hiveloom catalog` but are not harness construction entries.
+    for kind in ("tools", "guardrails", "validators", "policies", "compaction", "hooks"):
+        entries = CATALOGS[kind]
         lines.append(f"### {kind}")
         for entry in entries.values():
             params = ", ".join(
@@ -125,24 +128,36 @@ def _apply_step(directory: Path, step: dict[str, Any]) -> None:
     if op == "set":
         construct.set_value(directory, step["path"], step["value"])
     elif op == "add_tool":
+        builtin = step.get("builtin")
+        catalog_entry = CATALOGS["tools"].get(builtin) if builtin else None
+        params = {
+            param.name: step[param.name]
+            for param in (catalog_entry.params if catalog_entry else [])
+            if param.name in step
+        }
         construct.add_tool(
             directory,
-            builtin=step.get("builtin"),
+            builtin=builtin,
             code=step.get("code"),
             description=step.get("description"),
+            **params,
         )
     elif op == "add_validator":
         if step.get("builtin") == "output_schema":
             _ensure_schema(directory, step.get("schema_file", "./schemas/output.json"))
+        builtin = step.get("builtin")
+        catalog_entry = CATALOGS["validators"].get(builtin) if builtin else None
+        params = {
+            param.name: step[param.name]
+            for param in (catalog_entry.params if catalog_entry else [])
+            if param.name in step
+        }
         construct.add_validator(
             directory,
-            builtin=step.get("builtin"),
+            builtin=builtin,
             code=step.get("code"),
             description=step.get("description"),
-            schema_file=step.get("schema_file"),
-            pattern=step.get("pattern"),
-            path=step.get("path"),
-            command=step.get("command"),
+            **params,
         )
     elif op == "add_guardrail":
         construct.add_guardrail(

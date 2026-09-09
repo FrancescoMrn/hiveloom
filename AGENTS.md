@@ -1,18 +1,20 @@
 # hiveloom for agents
 
-hiveloom turns a task into a **harness**: a self-contained folder
-(`harness.yaml` + code hooks) that scaffolds tools, loop policy, context
-strategy, guardrails, and verification around a small executor model. The CLI
-is agent-native: every command has `--json`, every mutating command validates
-the whole spec and rolls back on error, and the contract is machine-emittable
+hiveloom starts from **agent = model + harness**. It turns the harness for one
+repeatable task into a self-contained folder (`harness.yaml` + code hooks) that
+confines the task, tools, loop policy, context, budgets, guardrails, and
+verification around a small executor model. A capable builder agent can declare
+that boundary; the executor then runs inside it repeatedly. The CLI is
+agent-native: every command has `--json`, every mutating command validates the
+whole spec and rolls back on error, and the contract is machine-emittable
 (`hiveloom schema --json`). This file is the entry point for an agent driving
 the library; humans should start at [README.md](README.md).
 
 ## Ground rules
 
 1. **Never hand-edit `harness.yaml`.** Construct via `init`/`add`/`set`/
-   `remove`; improve via `evolve`. Both validate and roll back — hand edits
-   bypass that.
+   `remove`; improve via `evolve`; rename a legacy document field via
+   `migrate`. These paths validate and roll back — hand edits bypass that.
 2. **Always pass `--json`** and branch on the result and the exit code:
    `0` success · `1` verify failed · `2` guardrail halt · `3` spec/validation
    error · `4` runtime error.
@@ -21,11 +23,16 @@ the library; humans should start at [README.md](README.md).
    `hiveloom extensions` — installed packs may have widened the catalog. MCP
    tools are the named exception: servers expose them dynamically at run time,
    so inspect them with `hiveloom mcp list-tools`.
+   `http_get` destinations are capabilities too: declare repeatable hosts in
+   the tool's `hosts` parameter. An undeclared host needs an interactive
+   operator decision and is denied in non-interactive/`--json` runs.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
-   `extensions`, `hooks`, `mcp_servers`, and `evolution.auto_propose` are
-   frozen from evolution; the cost guardrail defaults on; `shell` is
-   allowlist-only; foreign harness folders are trust-gated before their code
-   loads. Don't route around any of this on a user's behalf.
+   `egress`, `confinement`, `extensions`, `hooks`, `mcp_servers`,
+   `evolution.auto_propose`, `evolution.trace_excerpts`, and
+   `evolution.objectives` are frozen from evolution; the cost guardrail
+   defaults on; `shell` is allowlist-only; foreign harness folders are
+   trust-gated before their code loads. Don't route around any of this on a
+   user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
    `extensions`, `guide`, and `run --dry-run` never call the model API. A
    harness with `mcp_servers` is the one exception to "free": its tools are
@@ -39,15 +46,19 @@ the library; humans should start at [README.md](README.md).
 Focused skills live in [`skills/`](skills/README.md); the compact all-in-one
 variant is the root [`SKILL.md`](SKILL.md). Both ship inside the package, so
 without a checkout of this repository read them with `hiveloom guide --list`,
-then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file).
+then `hiveloom guide <topic>` (`hiveloom guide` alone prints this file). The
+reference documents below also ship as guide topics: for example,
+`hiveloom guide confinement`, `hiveloom guide spec`, or
+`hiveloom guide architecture`.
 
 | You are asked to… | Load | Core commands |
 |---|---|---|
 | Create a harness for a task | [`skills/hiveloom-build`](skills/hiveloom-build/SKILL.md) | `schema --annotated`, `catalog`, `init`, `add`, `set`, `validate`, `run --dry-run`, `generate` |
-| Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run\|--resume]`, `trace [--materialize\|--verify]`, `stats` |
+| Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run\|--resume]`, `trace [--materialize\|--verify]`, `stats`, `metrics` |
+| Define, run, report, or compare an eval | [`skills/hiveloom-eval`](skills/hiveloom-eval/SKILL.md) | `eval schema`, `catalog datasets\|scorers`, `eval validate`, `eval run\|status\|resume`, `eval report\|compare`, `metrics` |
 | Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
 | Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `stats` |
-| Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
+| Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `models probe`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
 A harness with `evolution.auto_propose.enabled: true` may already have queued a
@@ -57,6 +68,8 @@ applying still needs an explicit `proposals apply`.
 
 ## Reference docs
 
+- [docs/task-confinement.md](docs/task-confinement.md) — the product boundary:
+  builder agent, executor model, runtime guarantees, and security limits.
 - [docs/spec.md](docs/spec.md) — the spec contract and builtins (the live
   source is `hiveloom schema`/`explain`).
 - [docs/architecture.md](docs/architecture.md) — components, data flow,
@@ -65,15 +78,20 @@ applying still needs an explicit `proposals apply`.
   SDK embedding.
 - [docs/deploying-and-evolving.md](docs/deploying-and-evolving.md) — portable
   artifacts and the production feedback loop.
+- [docs/evaluating.md](docs/evaluating.md) — versioned local eval documents,
+  dataset/scorer extensions, identity, metrics, and privacy.
 - [docs/journal.md](docs/journal.md) — the run journal, `trace --verify`,
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — five worked examples to imitate: `quickstart`
+- [harnesses/](harnesses/) — seven worked examples to imitate: `quickstart`
   (no tools), `example-summarizer` (tools + verification),
   `article-extractor` (a custom tool + anti-hallucination validator),
-  `routing-lab` (playbooks, forking, evolution — offline, no API key), and
-  `ticket-triage` (an MCP server as the harness's only data source).
+  `routing-lab` (playbooks, forking, evolution — offline, no API key),
+  `ticket-triage` (an MCP server as the harness's only data source),
+  `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
+  synthetic data), and `log-forensics` (confinement around an allowlisted
+  shell, an oversized tool result spilled and read back by handle).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 

@@ -12,12 +12,17 @@ description: >-
 
 # hiveloom
 
-hiveloom turns a task into a **harness**: a self-contained folder (`harness.yaml`
-+ code hooks) that scaffolds tools, loop policy, context strategy, guardrails,
-and verification around a small executor model (default `claude-haiku-4-5`). The
-harness — not the conversation — is the durable, versionable, improvable
-artifact. Run traces are memory (the *Hive*), and an evolve loop improves the
-harness after failures.
+hiveloom starts from **agent = model + harness**. It turns the harness for one
+repeatable task into a self-contained folder (`harness.yaml` + code hooks) that
+declares tools, loop policy, context, budgets, guardrails, and verification
+around a small executor model (default `claude-haiku-4-5`). A capable builder
+agent can construct that boundary through the machine-readable CLI; the small
+model then executes inside it repeatedly. The harness — not the conversation —
+is the durable, versionable, improvable artifact. Run traces are memory (the
+*Hive*), and an evolve loop improves the harness after failures.
+
+Read `hiveloom guide confinement` when the task requires the precise product
+boundary, including what task confinement does and does not guarantee.
 
 This is the compact all-in-one skill. Focused per-stage skills (build / run /
 evolve / extend / ship) live in [`skills/`](skills/README.md), and
@@ -50,7 +55,11 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    hiveloom set system_prompt --file prompt.txt --dir ./h
    hiveloom set loop.max_turns 15 --dir ./h
    hiveloom add tool --builtin file_read --dir ./h
+   # builtin parameters go on the same command; the value is parsed as YAML:
+   hiveloom add tool --builtin shell --param 'commands=["wc -l app.log"]' --dir ./h
    hiveloom add validator --builtin output_schema --schema-file ./schemas/output.json --dir ./h
+   # For selected IDs, also require evidence from an allowed current-run tool:
+   hiveloom add validator --builtin grounded_references --output-path '$.selected[*].id' --evidence-path 'file_read=$.items[*].id' --dir ./h --json
    hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
    ```
    For task-specific logic use a code hook — `add tool --code tools/x.py:fn
@@ -59,6 +68,15 @@ Never hand-edit `harness.yaml`. Drive the CLI and check each `--json` result.
    middleware: block/patch tool calls, transform context) and
    `add skill <name> --description "..."` (progressive-disclosure SKILL.md the
    executor reads on demand — pair with the `file_read` tool).
+   For enforced phases, set structured `loop.steps` objects before selecting
+   `sequential_steps`; each object can declare `tools`, `require_tool_calls`,
+   `max_model_calls`, and `max_tool_calls`. Inspect the effective plan with
+   `run --dry-run --json`.
+   Combine multiple upstream calls into one deterministic tool only when they
+   form one domain operation with an invariant between them, such as search
+   followed by eligibility checks before results are exposed. Keep calls
+   separate when they need different permissions, can run independently, or
+   must remain separately auditable.
 3. **Finish**: `hiveloom validate ./h` then `hiveloom run ./h --input FILE --dry-run`
    (assembles the first model call without calling the model API; declared MCP
    servers are still contacted for eager tool discovery).
@@ -76,15 +94,58 @@ Interpret the **exit code**: `0` success, `1` verify failed, `2` guardrail halt,
 `3` spec/validation error, `4` runtime error. Traces land in
 `./h/.hiveloom/traces/<run_id>.jsonl`; inspect with `hiveloom trace <run_id>` and
 aggregate with `hiveloom stats ./h` (success rate / cost / turns **per version
-hash**). Running needs credentials for the configured provider when required
+hash**). Use `hiveloom stats ./h --include-friction --json` or `hiveloom
+friction list ./h --recovered true --json` to distinguish clean runs from
+successful runs that recovered after retries or validation failures. Running
+needs credentials for the configured provider when required
 (for example, `ANTHROPIC_API_KEY` for the default provider, loaded from the
 harness `.env`).
+
+External evaluators can attach finite numeric signals with `hiveloom metrics
+record`, import validated NDJSON batches with `hiveloom metrics import`, and
+query scope-safe aggregates with `hiveloom metrics list --json`. Inspect the
+machine-readable ingestion contract first with `hiveloom metrics schema
+--json`; aggregate sample and missing-value counts must be read together.
+Configure `evolution.objectives` through `hiveloom set` when those metrics
+should guide proposals. Objective history stays split by unit, source, scope,
+and behavior/model cohort; hard floors and ceilings cannot be traded for cost.
+
+For held-out datasets and post-verification scorers, inspect `hiveloom eval
+schema --json`, then `hiveloom catalog datasets` and `catalog scorers`. Validate
+the versioned document with `hiveloom eval validate eval.yaml --json`. Expected
+data stays out of model input unless the eval explicitly opts in; local eval
+extensions are trust-gated like harness code.
+
+Run the validated matrix with `hiveloom eval run eval.yaml --json`. This starts
+with a live, possibly billed identity/capability probe, writes durable traces
+and an atomic manifest, and uses exact model identity by default. Inspect or
+continue it with `eval status <eval_run_id> --json` and `eval resume
+<eval_run_id> --json`. Resume revalidates content and execution identities and
+never reruns completed cells.
+
+Regenerate aggregate receipts without raw traces through `hiveloom eval report
+<eval_run_id> --format json`. Compare only paired case/repetition cells with
+`eval compare BASELINE CANDIDATE --format json`; inspect the unmatched counts,
+sample counts, and missing counts before interpreting deltas. Billed and
+estimated costs remain separate.
+
+Before a model batch, run `hiveloom models probe ./h --provider PROVIDER
+--model MODEL --json` for free declared capabilities. Add `--live --identity
+exact` only when up to two possibly billed calls are intended. The result keeps
+requested and effective identity separate; use explicit aliases rather than
+relabelling a served model.
+
+Structured sequential runs return `steps` receipts in JSON and emit indexed
+step events. A hidden tool never reaches dispatch; missing required calls are
+retried within the step; exhausted step limits return exit 4.
 
 ## Improving a harness — use evolve, not the editor
 
 When asked to improve a failing harness, **do not** hand-edit it — and never
 touch `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-`mcp_servers`, or `evolution.auto_propose` through evolution. Run:
+`mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, or
+`evolution.objectives` through
+evolution. Run:
 ```bash
 hiveloom evolve ./h            # analyze Hive failures → propose a gated mutation
 ```

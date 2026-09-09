@@ -965,6 +965,8 @@ function eventTitle(event: TraceEvent): string {
     case 'tool_result': return `${String(p.name ?? 'Tool')} result`
     case 'tool_update': return `${String(p.name ?? 'Tool')} update`
     case 'tool_retry': return `${String(p.name ?? 'Tool')} retry`
+    case 'tool_spilled': return `${String(p.name ?? 'Tool')} result spilled`
+    case 'spill_inherited': return 'Spilled results inherited'
     case 'verification_result': return String(p.verifier ?? 'Verification')
     case 'guardrail_triggered': return String(p.guardrail ?? 'Guardrail triggered')
     case 'context_append': {
@@ -993,6 +995,9 @@ function eventSummary(event: TraceEvent): string {
   if (event.type === 'tool_call') return preview(p.input, 180)
   if (event.type === 'model_call') {
     return `${String(p.phase ?? 'act')} phase · ${String(p.num_messages ?? '?')} messages`
+  }
+  if (event.type === 'tool_spilled') {
+    return `${String(p.omitted_bytes ?? '?')} of ${String(p.bytes ?? '?')} bytes kept out of context as ${String(p.handle ?? '?')}`
   }
   if (event.type === 'context_tools') {
     return `${Array.isArray(p.tools) ? p.tools.length : '?'} active tool definitions`

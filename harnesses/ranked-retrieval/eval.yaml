@@ -1,0 +1,16 @@
+schema_version: 1
+harness: .
+extensions:
+  - eval_extension.py
+dataset:
+  loader: synthetic_retrieval_cases
+  include_expected_in_input: false
+scorers:
+  - ranked_retrieval_metrics
+repetitions: 2
+# `exact` cannot pass here: asking Anthropic for the alias `claude-haiku-4-5`
+# gets the dated snapshot back, and the probe rejects that before case one.
+# Pin the id the provider actually serves — bare model id, not provider/model.
+model_identity: alias
+model_aliases:
+  - claude-haiku-4-5-20251001

@@ -7,13 +7,14 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/FrancescoMrn/hiveloom/blob/main/pyproject.toml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/FrancescoMrn/hiveloom/blob/main/LICENSE)
 
-**Build durable agent harnesses so smaller models can perform repeatable,
-verifiable tasks.**
+**Confine an agent to one job — and make success provable.**
 
-A model is only one part of an agent. Tools, context, loop policy, guardrails,
-and verification often decide whether the same model succeeds or fails.
-hiveloom makes that surrounding system a self-contained folder that can be
-validated, versioned, run anywhere, measured, and deliberately improved.
+**An agent is a model plus its harness.** hiveloom turns the harness for a
+repeatable task into a self-contained folder: the task, tools, context, budgets,
+stopping rules, and validators that decide whether the result may be returned
+as a success. A human or a capable coding agent can declare that boundary; a
+smaller model can then execute inside it repeatedly. The runtime enforces what
+the prompt alone cannot.
 
 ![Task success by model, raw versus the same model inside a hiveloom harness](https://raw.githubusercontent.com/FrancescoMrn/hiveloom/main/docs/assets/01-task-success.png)
 
@@ -23,24 +24,53 @@ at this sample size, and one is slightly worse. Which is the point:
 [the evidence is measured per task and model](#measured-performance), not
 assumed.
 
-> **Status:** `1.0.0`. The spec, CLI, Python SDK, runtime, journal/Hive
+> **Status:** `1.1.0`. The spec, CLI, Python SDK, runtime, journal/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
 > serving surfaces are implemented, along with playbooks, structured artifacts,
 > run control, and a tamper-evident run journal you can fork from, replay, and
 > read in [the workbench](#the-workbench).
 
-## The moat: Your harness is the product
+## Why hiveloom: task confinement
 
-- **A durable artifact:** `harness.yaml` and its code hooks replace fragile,
-  conversation-only setup.
-- **One validated construction path:** CLI edits and model-generated plans use
-  the same transactional API; invalid changes roll back.
-- **Closed-loop evidence:** every run produces a version-hashed trace, so
-  `stats` can show whether a harness change improved success, cost, or turns.
-- **Safety outside the model:** cost limits, tool allowlists, redaction,
-  verification, and frozen evolution fields are enforced in code.
-- **Open and portable:** builtins, extension packs, custom providers, and MCP
-  tools share one runtime contract; a harness remains a normal folder.
+A general agent starts with broad capabilities and works out how to use them. A
+hiveloom harness starts with one job and declares its operating boundary:
+
+| The harness confines | How |
+|---|---|
+| **Purpose** | One task and one system prompt travel with the harness. |
+| **Capabilities** | Only declared tools, skills, playbooks, and MCP servers enter the loop. |
+| **Autonomy** | Turn, time, cost, context, and tool policies stop unbounded execution. |
+| **Acceptance** | Deterministic validators — not the model — decide whether an answer counts as success. |
+| **Change** | Evolution is limited to declared mutable fields; safety-critical fields stay frozen. |
+| **Evidence** | Every run is tied to the exact harness version and written to a checkable journal. |
+
+The result is more reliable than a prompt and narrower than a general-purpose
+agent: a portable, versioned agent program for a task you can define and check.
+CLI edits and model-generated plans use the same transactional construction API,
+so invalid changes roll back instead of leaving a half-valid harness.
+
+The interface is agent-native on both sides. A builder agent can inspect the
+machine-readable schema and catalog, then create or change the harness through
+commands that all support `--json`. Once deployed, another agent can call that
+harness as an MCP tool and receive a structured, validator-checked result. The
+harness turns broad intelligence at build time into bounded, economical
+execution at run time.
+
+This is **task confinement**, not a claim that arbitrary hook code runs in a
+virtual machine. Builtin file access is rooted, shell commands are allowlisted,
+foreign harnesses are trust-gated, and containers can provide a stronger
+deployment boundary. Read [what a harness confines](docs/task-confinement.md)
+for the exact boundary.
+
+For prompt injection, the design confines consequences rather than claiming to
+recognize every malicious instruction: injected text cannot add capabilities,
+authorize spilled data, change frozen policy, or mark its own result successful,
+and every outbound boundary screens credentials and configured sensitive data.
+The runtime assumes input is untrusted: variable file-reading shell arguments
+run only behind an available OS sandbox, while a new HTTP destination needs an
+operator allow/deny decision. Repeated automation can pre-approve its hosts in
+the `http_get` declaration. These are runtime defaults, not another security
+profile a harness author has to assemble correctly.
 
 The *hive* is the collective memory of runs. The *loom* turns task intent and
 that evidence into an improvable harness.
@@ -172,11 +202,15 @@ hiveloom add validator --builtin regex_match --pattern '"summary"' \
 hiveloom validate ./summarizer --json
 
 # Assemble the first call without contacting the model
-hiveloom run ./summarizer --input notes.txt --dry-run --json
+hiveloom run ./summarizer --input-file notes.txt --dry-run --json
+
+# Enforced phases can narrow tools and require successful calls
+hiveloom set loop.steps '[{"id":"read","instruction":"Read notes.","tools":["file_read"],"require_tool_calls":["file_read"]},{"id":"answer","instruction":"Write the summary.","tools":[]}]' --dir ./summarizer
+hiveloom set loop.policy sequential_steps --dir ./summarizer
 
 # Run for real (the default provider uses Anthropic)
 export ANTHROPIC_API_KEY=sk-...
-hiveloom run ./summarizer --input notes.txt --json
+hiveloom run ./summarizer --input-file notes.txt --json
 
 # …or any other lab. `hiveloom models` lists every provider and its key
 # variable; OpenAI, Gemini, Mistral, DeepSeek, xAI, Groq, OpenRouter,
@@ -184,8 +218,19 @@ hiveloom run ./summarizer --input notes.txt --json
 hiveloom models
 hiveloom set model openai/gpt-4.1-mini --dir ./summarizer
 
+# A run-only override leaves harness.yaml unchanged, useful for eval matrices
+hiveloom run ./summarizer --input-file notes.txt \
+  --provider openai --model gpt-4.1-mini --run-id eval-case-01 --json
+
 # Inspect evidence and propose a gated improvement after failures
-hiveloom stats ./summarizer --json
+hiveloom stats ./summarizer --include-friction --json
+hiveloom friction list ./summarizer --recovered true --json
+hiveloom metrics record ./summarizer --run-id eval-case-01 \
+  --name recall_at_5 --value 0.4 --direction maximize \
+  --unit ratio --source matching_eval_v1 --json
+hiveloom metrics list ./summarizer --name recall_at_5 --json
+hiveloom eval run eval.yaml --provider openai --model gpt-4.1-mini \
+  --repetitions 3 --concurrency 2 --json
 hiveloom evolve ./summarizer --propose --json
 ```
 
@@ -242,7 +287,7 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Five worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
+Seven worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
 each the smallest thing that shows one layer of the runtime:
 
 | harness | what it shows |
@@ -252,6 +297,8 @@ each the smallest thing that shows one layer of the runtime:
 | [`article-extractor`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/article-extractor) | a custom `@tool`, an output hook, a validator that re-fetches to catch invention |
 | [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run — offline, so forking and evolution need no API key |
 | [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*` |
+| [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | structured tool phases, a deterministic search-and-verify tool, grounded IDs, and local ranked metrics over synthetic data |
+| [`log-forensics`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/log-forensics) | OS confinement around an allowlisted shell, a 77 KB tool result spilled and read back by handle, and `recall_runs` scoped to one harness version |
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone
@@ -341,6 +388,7 @@ request, and `4` runtime failure.
 ```bash
 # Explore and construct
 hiveloom schema --json
+hiveloom migrate ./legacy-harness --json
 hiveloom explain context.compaction --json
 hiveloom catalog validators --json
 hiveloom set loop.max_turns 20 --dir ./my-harness --json
@@ -351,6 +399,19 @@ hiveloom run ./my-harness --input input.txt --stream
 hiveloom trace <run-id> --json
 hiveloom trace <run-id> --verify
 hiveloom stats ./my-harness --json
+hiveloom metrics schema --json
+hiveloom metrics import ./my-harness metrics.ndjson --json
+hiveloom metrics list ./my-harness --source matching_eval_v1 --json
+hiveloom eval schema --json
+hiveloom eval validate eval.yaml --json
+hiveloom eval run eval.yaml --model qwen3.5-9b --repetitions 3 --json
+hiveloom eval status <eval-run-id> --json
+hiveloom eval resume <eval-run-id> --json
+hiveloom eval report <eval-run-id> --format json
+hiveloom eval compare <baseline-id> <candidate-id> --format markdown
+hiveloom models probe ./my-harness --provider openrouter \
+  --model qwen3.5-9b --identity exact --live --json
+hiveloom traces prune ./my-harness --dry-run --json
 
 # Debug a failure where it happened
 hiveloom fork <run-id> --at <seq> --name probe
@@ -392,11 +453,15 @@ The root package exposes the small semver-stable embedding surface:
 
 ```python
 from hiveloom import (
+    EvalCase,
     Hive,
+    RunMetric,
+    ScorerOutput,
     dry_run,
     generate_harness,
     load_spec,
     run_harness,
+    run_scorers,
     validate_harness,
 )
 
@@ -409,6 +474,10 @@ result = run_harness(
 spec = generate_harness("Reconcile invoices", "./invoice-reconciler")
 ```
 
+`schema_version` names the harness document format. Legacy `version` files
+still load; migrate them through the command or `migrate_harness()` SDK rather
+than editing YAML. Migration is atomic and does not change the behavior hash.
+
 Inject a `ModelProvider` into `run_harness` or a `StrongModel` into
 `generate_harness` for custom embedding and deterministic tests. For
 language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
@@ -416,17 +485,23 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Safety invariants
 
 - Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, or `evolution.auto_propose`.
+  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
+  `evolution.trace_excerpts`, or `evolution.objectives`. Opt-in excerpts are
+  re-redacted and bounded
+  before they reach the proposing model.
 - The cost guardrail defaults on at `$1.00`.
 - The shell tool is disabled unless explicitly configured and remains
   allowlist-only.
 - Redaction runs before trace persistence.
+- Provider egress screens the final request after request hooks.
 - Foreign harness code is trust-gated before loading.
 
 ## Documentation
 
+- [Task confinement: the product boundary](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/task-confinement.md)
 - [Agent entry point](https://github.com/FrancescoMrn/hiveloom/blob/main/AGENTS.md) and [lifecycle skills](https://github.com/FrancescoMrn/hiveloom/blob/main/skills/README.md)
 - [Evaluations](https://github.com/FrancescoMrn/hiveloom/blob/main/evals/README.md)
+- [Local eval SDK and spec](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/evaluating.md)
 - [Harness spec](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/spec.md)
 - [Architecture](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/architecture.md)
 - [The workbench](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/workbench.md)
@@ -434,7 +509,6 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Models and providers](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/models.md)
 - [Extensions](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/extending.md)
 - [Deployment and evolution](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/deploying-and-evolving.md)
-- [One-click OpenShell deployment](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/openshell-one-click-deployment.md)
 - [Control plane](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/control-plane.md)
 - [Link/sync protocol](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/sync-protocol.md)
 - [Contributing and QA](https://github.com/FrancescoMrn/hiveloom/blob/main/CONTRIBUTING.md)

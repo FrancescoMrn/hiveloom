@@ -1,4 +1,4 @@
-version: 0.2.0
+schema_version: 0.2.0
 name: quickstart
 id: hl-e6652cd26abe
 description: Answer the question you are given, in three sentences or fewer.

@@ -76,6 +76,12 @@ _EXCLUDE_DIRS_CF = {name.casefold() for name in _EXCLUDE_DIRS}
 _ENV_TEMPLATES_CF = {name.casefold() for name in _ENV_TEMPLATES}
 
 
+def resolve_trace_dir(base: Path, trace_dir: str) -> Path:
+    """The absolute directory a spec's ``logging.trace_dir`` names."""
+    configured = Path(trace_dir)
+    return configured.resolve() if configured.is_absolute() else (base / trace_dir).resolve()
+
+
 def trace_dir_relative_to(base: Path, trace_dir: str) -> Path | None:
     """Return the configured trace directory when it lives inside ``base``."""
     configured = Path(trace_dir)

@@ -1,0 +1,139 @@
+schema_version: 0.2.0
+name: log-forensics
+id: hl-11f8ded948b4
+description: Answer a question about a large service log by inspecting it with an allowlisted shell.
+model:
+  provider: claude
+  id: claude-haiku-4-5
+  max_tokens: 4096
+system_prompt: |
+  You investigate one service log and report three facts about it as JSON.
+
+  The log is `data/service.log`, roughly 77 KB — far more than this conversation
+  can hold. Read it with the shell tool. Your allowlist is exactly:
+
+    cat data/service.log     (verbatim; no pipes, no redirection, no other path)
+    grep <args>
+    wc <args>
+
+  `cat data/service.log` will not come back inline. You get its head, its tail,
+  an omitted-byte count, and a handle. Use `search_tool_result` on that handle to
+  count and locate matches, and `read_tool_result` to read a byte range around
+  one. Both are cheaper than re-reading the file. Do not report a number or a
+  value you have not actually seen in output.
+
+  Report exactly:
+    dominant_failure_code — the code=... value appearing on the most ERROR lines
+    error_count           — how many ERROR lines the log contains, in total
+    build_digest          — the digest= value on the final SUMMARY line
+
+  Your final message must be the JSON object alone: it starts with { and ends
+  with }, with no sentence before it and no code fence around it.
+tools:
+- builtin: shell
+  commands:
+  - cat data/service.log
+  - argv:
+    - grep
+    allow_extra_args: true
+  - argv:
+    - wc
+    allow_extra_args: true
+- builtin: recall_runs
+  limit: 2
+  scope: version
+mcp_servers: []
+playbooks: []
+hooks:
+- builtin: strip_json_fence
+  event: before_verification
+context:
+  max_input_tokens: 20000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+guardrails:
+- builtin: max_cost_usd
+  value: 0.25
+- builtin: max_wall_clock_seconds
+  value: 120
+loop:
+  policy: sequential_steps
+  steps:
+  - id: read
+    instruction: 'Run `cat data/service.log` once. It is too large to inline: keep the handle you get
+      back.'
+    tools:
+    - shell
+    require_tool_calls:
+    - shell
+    max_model_calls: 2
+    max_tool_calls: 2
+  - id: investigate
+    instruction: 'Establish all three facts from the spilled result: search it for ERROR and for each
+      code= value, and read the tail for the SUMMARY digest. Do not re-read the file.'
+    tools:
+    - search_tool_result
+    - read_tool_result
+    - shell
+    require_tool_calls: []
+    max_model_calls: 6
+    max_tool_calls: 10
+  - id: answer
+    instruction: Emit the JSON object alone. No tools, no prose, no fence.
+    tools: []
+    require_tool_calls: []
+    max_model_calls: 3
+  max_turns: 12
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - builtin: output_schema
+    schema_file: ./schemas/output.json
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: false
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 20
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0

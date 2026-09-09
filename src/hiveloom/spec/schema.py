@@ -12,6 +12,7 @@ carry company-specific logic.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -21,6 +22,7 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -469,6 +471,56 @@ class CompactionConfig(BaseModel):
         return value
 
 
+class ToolResultsConfig(BaseModel):
+    """How oversized tool results are kept out of context without being lost.
+
+    Above ``max_inline_bytes`` a result is written whole to run-private storage
+    and replaced in context by a head/tail preview plus an opaque handle; the
+    ``read_tool_result``/``search_tool_result`` tools appear automatically at
+    the first spill and read it back. See :mod:`hiveloom.context.spill`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_inline_bytes: int = Field(
+        default=16384,
+        ge=0,
+        le=10_000_000,
+        description=(
+            "Largest tool result shown inline, in UTF-8 bytes. Bigger results "
+            "are spilled to retrievable storage. 0 disables spilling (results "
+            "are then truncated in place, and the omitted part is unreadable "
+            "for the rest of the run)."
+        ),
+    )
+    preview_head_bytes: int = Field(
+        default=2048,
+        ge=0,
+        description="Leading bytes of a spilled result kept in context.",
+    )
+    preview_tail_bytes: int = Field(
+        default=1024,
+        ge=0,
+        description=(
+            "Trailing bytes of a spilled result kept in context. Worth keeping: "
+            "summary lines, totals, and error tails live at the end."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _preview_fits(self) -> ToolResultsConfig:
+        """A preview at least as large as the budget would spill nothing usefully."""
+        if self.max_inline_bytes:
+            preview = self.preview_head_bytes + self.preview_tail_bytes
+            if preview >= self.max_inline_bytes:
+                raise ValueError(
+                    f"preview_head_bytes + preview_tail_bytes ({preview}) must be "
+                    f"below max_inline_bytes ({self.max_inline_bytes}); a preview "
+                    "that big would replace a large result with something just as large"
+                )
+        return self
+
+
 class ContextConfig(BaseModel):
     """Context assembly, budgeting, and compaction policy."""
 
@@ -487,6 +539,76 @@ class ContextConfig(BaseModel):
         default_factory=lambda: ["system_prompt", "task_statement"],
         description="Context items always kept, never compacted.",
     )
+    tool_results: ToolResultsConfig = Field(
+        default_factory=ToolResultsConfig,
+        description="Inline budget for tool results, and where the rest goes.",
+    )
+
+
+class SequentialStep(BaseModel):
+    """One enforceable phase in the builtin sequential-steps policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        description="Stable step identifier used in traces and Hive records.",
+    )
+    instruction: str = Field(
+        min_length=1,
+        max_length=5_000,
+        description="Objective pinned into context while this step is active.",
+    )
+    tools: list[str] | None = Field(
+        default=None,
+        max_length=1_000,
+        description=(
+            "Tools exposed during this step. Omit to preserve the current active set; "
+            "use an empty list for a tool-free phase."
+        ),
+    )
+    require_tool_calls: list[str] = Field(
+        default_factory=list,
+        max_length=1_000,
+        description="Tool names that must succeed before the step can complete.",
+    )
+    max_model_calls: int | None = Field(
+        default=None, ge=1, le=1_000, description="Optional model-call cap for this step."
+    )
+    max_tool_calls: int | None = Field(
+        default=None, ge=1, le=10_000, description="Optional tool-call cap for this step."
+    )
+
+    @field_validator("instruction")
+    @classmethod
+    def _instruction_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("step instruction must not be blank")
+        return value
+
+    @field_validator("tools", "require_tool_calls")
+    @classmethod
+    def _unique_tool_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        if any(not name.strip() for name in value):
+            raise ValueError("step tool names must not be blank")
+        if len(value) != len(set(value)):
+            raise ValueError("step tool names must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def _required_tools_are_exposed(self) -> SequentialStep:
+        if self.tools is not None:
+            hidden = sorted(set(self.require_tool_calls) - set(self.tools))
+            if hidden:
+                raise ValueError(
+                    "required tool calls must also appear in step.tools: "
+                    + ", ".join(hidden)
+                )
+        return self
 
 
 class LoopConfig(BaseModel):
@@ -513,11 +635,13 @@ class LoopConfig(BaseModel):
             raise ValueError(f"unknown loop policy '{value}' (valid: {valid})")
         return value
 
-    steps: list[str] = Field(
+    steps: list[str | SequentialStep] = Field(
         default_factory=list,
-        description="Ordered objectives for the sequential_steps policy; each is injected "
-        "as the current objective in turn and the loop refuses completion "
-        "until every step is consumed. Ignored by other policies.",
+        description=(
+            "Ordered objectives for sequential_steps. Legacy strings keep their current "
+            "instruction-only behavior. Objects can constrain tools, required successful "
+            "calls, and per-step model/tool call limits. Ignored by other policies."
+        ),
     )
 
     @model_validator(mode="after")
@@ -530,6 +654,9 @@ class LoopConfig(BaseModel):
         # first command. Non-empty steps with any other policy are allowed.
         if self.policy == "sequential_steps" and not self.steps:
             raise ValueError("loop.policy 'sequential_steps' requires a non-empty loop.steps")
+        ids = [step.id for step in self.steps if isinstance(step, SequentialStep)]
+        if len(ids) != len(set(ids)):
+            raise ValueError("structured sequential step ids must be unique")
         return self
 
     max_turns: int = Field(
@@ -685,6 +812,219 @@ class PlaybookRef(BaseModel):
         return value
 
 
+_REDACTION_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?)*$"
+)
+
+
+class RedactionConfig(BaseModel):
+    """Structured values removed before a trace event leaves the process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[str] = Field(
+        default_factory=list,
+        description="Dictionary keys whose values are replaced recursively (case-insensitive).",
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Payload paths whose values are replaced. Dot segments and [*] list wildcards "
+            "are supported, for example tool.result.candidates[*].cv_text."
+        ),
+    )
+    patterns: list[str] = Field(
+        default_factory=list,
+        description="Regexes replaced inside every string value.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_pattern_list(cls, value: Any) -> Any:
+        # The 0.x/1.0 contract was a bare list of regexes. Keep loading it and
+        # preserve that compact shape when no structured rules are present.
+        if isinstance(value, list):
+            return {"patterns": value}
+        return value
+
+    @field_validator("keys")
+    @classmethod
+    def _check_keys(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("redaction keys cannot be empty")
+        if len({value.casefold() for value in cleaned}) != len(cleaned):
+            raise ValueError("redaction keys must be unique (case-insensitive)")
+        return cleaned
+
+    @field_validator("paths")
+    @classmethod
+    def _check_paths(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not _REDACTION_PATH_RE.fullmatch(value):
+                raise ValueError(
+                    f"invalid redaction path {value!r}; use dot-separated keys and [*]"
+                )
+        if len(set(values)) != len(values):
+            raise ValueError("redaction paths must be unique")
+        return values
+
+    @field_validator("patterns")
+    @classmethod
+    def _check_patterns(cls, values: list[str]) -> list[str]:
+        for value in values:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"invalid redaction regex {value!r}: {exc}") from exc
+        return values
+
+
+class RetentionConfig(BaseModel):
+    """Explicit limits for raw journal files under one managed trace root."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: int | None = Field(default=None, gt=0, description="Delete traces older than N days.")
+    max_runs: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw run traces."
+    )
+    max_bytes: int | None = Field(
+        default=None, gt=0, description="Keep at most this many raw trace bytes."
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one_limit(self) -> RetentionConfig:
+        if self.days is None and self.max_runs is None and self.max_bytes is None:
+            raise ValueError("retention must set days, max_runs, or max_bytes")
+        return self
+
+
+class ConfinementConfig(BaseModel):
+    """How the runtime confines the processes it spawns.
+
+    Applies to the ``shell`` tool and the ``command_succeeds`` validator — the
+    two builtins that start a subprocess. Frozen from evolution: a harness may
+    not loosen its own containment. See :mod:`hiveloom.confine`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["auto", "off", "require"] = Field(
+        default="auto",
+        description=(
+            "'auto' uses an OS sandbox when the machine has one and the "
+            "portable baseline (scrubbed environment, resource limits, timeout) "
+            "when it does not; 'require' refuses to spawn without a sandbox; "
+            "'off' keeps the baseline but skips the sandbox."
+        ),
+    )
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _accept_yaml_off(cls, value: Any) -> Any:
+        """`mode: off` is a YAML 1.1 boolean, and unquoted it arrives as False.
+
+        Rejecting it would mean documenting a value that only works in quotes,
+        which is a worse contract than accepting the thing the author plainly
+        meant.
+        """
+        return "off" if value is False else value
+
+    network: bool = Field(
+        default=False,
+        description=(
+            "Let spawned processes reach the network. Only enforceable where a "
+            "sandbox backend is available. Turn on for validators that install "
+            "dependencies or call a service."
+        ),
+    )
+    writable: bool = Field(
+        default=True,
+        description=(
+            "Let spawned processes write inside the harness directory. Off "
+            "makes the whole filesystem read-only except a private /tmp."
+        ),
+    )
+    hide_home: bool = Field(
+        default=True,
+        description=(
+            "Hide the user's home directory from spawned processes — where SSH "
+            "keys, cloud credentials and the Hive itself live. HOME points at a "
+            "private scratch directory instead, and a harness that lives inside "
+            "home stays reachable. Turn off for a build that needs a toolchain "
+            "cache under home."
+        ),
+    )
+    env_passthrough: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Environment variable names forwarded to spawned processes. The "
+            "default environment carries only PATH/HOME/locale, so the runtime's "
+            "own API keys are never inherited by an allowlisted command."
+        ),
+    )
+    timeout_seconds: int = Field(
+        default=30, gt=0, description="Wall-clock ceiling for a `shell` tool call."
+    )
+    max_output_bytes: int = Field(
+        default=1_048_576,
+        gt=0,
+        description=(
+            "Most bytes retained from each of stdout and stderr for one spawn. "
+            "Output is drained "
+            "through bounded head/tail collectors, so a command that writes "
+            "without bound cannot grow the runtime's memory or disk usage."
+        ),
+    )
+    max_memory_mb: int = Field(
+        default=2048, ge=0, description="Address-space limit per spawned process (0 = unlimited)."
+    )
+    max_processes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "RLIMIT_NPROC for spawned processes (0 = unlimited). The limit is "
+            "per-user, not per-command, so set it only where hiveloom owns the uid."
+        ),
+    )
+
+
+class EgressConfig(BaseModel):
+    """What may leave this machine in a model request. Frozen from evolution.
+
+    Defence in depth behind capability and destination scoping: pattern matching
+    cannot recognise arbitrary sensitive text, so this catches credentials and
+    explicitly configured data, not secrets in general. See :mod:`hiveloom.egress`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["redact", "block", "off"] = Field(
+        default="redact",
+        description=(
+            "'redact' replaces matches in the outgoing request (history keeps "
+            "what happened); 'block' refuses the request and halts the run; "
+            "'off' disables the check."
+        ),
+    )
+    detect_credentials: bool = Field(
+        default=True,
+        description=(
+            "Match well-known credential shapes (private keys, cloud keys, API "
+            "tokens, JWTs) in addition to the harness's own patterns."
+        ),
+    )
+    patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra regexes checked on the way out. `logging.redact` is applied "
+            "here too, so a pattern scrubbed from the journal is also scrubbed "
+            "from the provider request."
+        ),
+    )
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -713,9 +1053,18 @@ class LoggingConfig(BaseModel):
         failing validation on a rename.
         """
         return {"full": "journal", "tool_calls_only": "summary"}.get(value, value)
-    redact: list[str] = Field(
-        default_factory=list,
-        description="Regexes scrubbed from persisted traces (frozen from evolution).",
+    redact: RedactionConfig = Field(
+        default_factory=RedactionConfig,
+        description=(
+            "Keys, payload paths, and regexes scrubbed before trace persistence or stream "
+            "delivery. A legacy list is read as patterns. Frozen from evolution."
+        ),
+    )
+    retention: RetentionConfig | None = Field(
+        default=None,
+        description=(
+            "Optional raw-trace age, count, and byte limits. No files are removed when absent."
+        ),
     )
     snapshot_files: bool = Field(
         default=False,
@@ -726,6 +1075,14 @@ class LoggingConfig(BaseModel):
             "size. The manifest of hashes is always recorded either way."
         ),
     )
+
+    @model_validator(mode="after")
+    def _retention_needs_dedicated_root(self) -> LoggingConfig:
+        if self.retention is not None and self.trace_dir.strip() in {"", ".", "./"}:
+            raise ValueError(
+                "logging.retention requires a dedicated trace_dir, not the harness root"
+            )
+        return self
 
 
 def _default_mutable() -> list[str]:
@@ -782,6 +1139,108 @@ class AutoProposeConfig(BaseModel):
     )
 
 
+class TraceExcerptConfig(BaseModel):
+    """Bounded, redacted incident evidence supplied to the proposing model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Include incident packets in evolution analysis. Opt-in by default.",
+    )
+    max_incidents: int = Field(
+        default=5, ge=1, le=20, description="Newest incidents considered per analysis."
+    )
+    before_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained before each incident."
+    )
+    after_events: int = Field(
+        default=2, ge=0, le=10, description="Events retained after each incident."
+    )
+    max_event_bytes: int = Field(
+        default=2048,
+        ge=128,
+        le=16_384,
+        description="Maximum redacted payload bytes retained for one event.",
+    )
+    max_bytes: int = Field(
+        default=32_768,
+        ge=1024,
+        le=262_144,
+        description="Hard serialized-byte budget across all incident packets.",
+    )
+    max_tokens: int = Field(
+        default=8192,
+        ge=256,
+        le=65_536,
+        description=(
+            "Hard budget using the deterministic estimate ceil(serialized UTF-8 bytes / 4)."
+        ),
+    )
+
+
+_METRIC_OBJECTIVE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
+
+
+class MetricObjective(BaseModel):
+    """One independently reported numeric goal for evolution analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str = Field(description="User-defined RunMetric name to optimize.")
+    direction: Literal["maximize", "minimize"] = Field(
+        description="Whether larger or smaller values are preferred."
+    )
+    source: str | None = Field(
+        default=None, description="Optional metric-source filter."
+    )
+    scope: Literal["case", "run", "eval"] | None = Field(
+        default=None, description="Optional metric-scope filter."
+    )
+    unit: str | None = Field(
+        default=None, description="Optional unit filter; different units are never mixed."
+    )
+    floor: float | None = Field(
+        default=None, description="Hard lower bound that every observed value must meet."
+    )
+    ceiling: float | None = Field(
+        default=None, description="Hard upper bound that every observed value must meet."
+    )
+
+    @field_validator("metric")
+    @classmethod
+    def _valid_metric_name(cls, value: str) -> str:
+        if not _METRIC_OBJECTIVE_RE.fullmatch(value):
+            raise ValueError("objective metric must match [A-Za-z][A-Za-z0-9_.-]{0,127}")
+        return value
+
+    @field_validator("source", "unit")
+    @classmethod
+    def _bounded_optional_label(
+        cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("objective source and unit cannot be blank")
+        limit = 64 if info.field_name == "unit" else 128
+        if len(normalized) > limit:
+            raise ValueError(
+                f"objective {info.field_name} cannot exceed {limit} characters"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _valid_bounds(self) -> MetricObjective:
+        for label, value in (("floor", self.floor), ("ceiling", self.ceiling)):
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"objective {label} must be finite")
+        if self.floor is not None and self.ceiling is not None and self.floor > self.ceiling:
+            raise ValueError("objective floor cannot exceed ceiling")
+        return self
+
+
 class EvolutionConfig(BaseModel):
     """What the evolver may and may not change."""
 
@@ -800,6 +1259,31 @@ class EvolutionConfig(BaseModel):
         default_factory=AutoProposeConfig,
         description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
+    trace_excerpts: TraceExcerptConfig = Field(
+        default_factory=TraceExcerptConfig,
+        description=(
+            "Opt-in redacted incident packets for evolution. Configuration is frozen from "
+            "evolution because it controls private evidence sent to the proposing model."
+        ),
+    )
+    objectives: list[MetricObjective] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "Numeric RunMetric objectives supplied as grouped aggregate and paired history "
+            "to evolution. Objective policy is frozen from evolution."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unique_objective_metrics(self) -> EvolutionConfig:
+        names = [objective.metric for objective in self.objectives]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                "evolution objective metric names must be unique: " + ", ".join(duplicates)
+            )
+        return self
 
 
 # Paths the evolver must never touch, regardless of a spec's declared `frozen`
@@ -812,8 +1296,14 @@ class EvolutionConfig(BaseModel):
 # `evolution.auto_propose` is its own paid, post-run trigger — a harness must
 # never be able to enable that trigger via evolution itself (docs/spec.md
 # documents it as never mutable; this is what makes that claim true).
+# `evolution.trace_excerpts` controls which private journal evidence can reach
+# the proposing model, so evolution cannot widen its own evidence boundary.
+# `evolution.objectives` is evaluator-owned policy. Letting the proposer rewrite
+# its own scorecard would make an apparent improvement meaningless.
 # `id` is identity, not behaviour: letting evolution (or a remote caller)
 # rewrite it would detach a harness from its own accumulated evidence.
+# `confinement` bounds what a spawned process may do; a harness that could
+# widen its own containment does not have one.
 ALWAYS_FROZEN: tuple[str, ...] = (
     "id",
     "guardrails",
@@ -823,6 +1313,10 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "hooks",
     "mcp_servers",
     "evolution.auto_propose",
+    "evolution.trace_excerpts",
+    "evolution.objectives",
+    "confinement",
+    "egress",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They
@@ -852,7 +1346,13 @@ class HarnessSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: str = Field(default="0.2.0", description="Spec format version.")
+    schema_version: str = Field(
+        default="0.2.0",
+        description=(
+            "Harness document format version. Legacy `version` loads as this field; "
+            "use `hiveloom migrate` to rewrite it canonically."
+        ),
+    )
     name: str = Field(description="Harness name (used for display and packaging).")
     id: str = Field(
         default="",
@@ -925,9 +1425,37 @@ class HarnessSpec(BaseModel):
     logging: LoggingConfig = Field(
         default_factory=LoggingConfig, description="Trace/logging policy."
     )
+    confinement: ConfinementConfig = Field(
+        default_factory=ConfinementConfig,
+        description="OS confinement for spawned processes (frozen from evolution).",
+    )
+    egress: EgressConfig = Field(
+        default_factory=EgressConfig,
+        description="What may leave in a model request (frozen from evolution).",
+    )
     evolution: EvolutionConfig = Field(
         default_factory=EvolutionConfig, description="Evolution policy."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_version_field(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "version" not in value:
+            return value
+        data = dict(value)
+        legacy = data.pop("version")
+        if "schema_version" in data and data["schema_version"] != legacy:
+            raise ValueError(
+                "conflicting version and schema_version values; migrate from a "
+                "document with one unambiguous format version"
+            )
+        data.setdefault("schema_version", legacy)
+        return data
+
+    @property
+    def version(self) -> str:
+        """Compatibility alias for SDK callers; serialize ``schema_version``."""
+        return self.schema_version
 
     @property
     def identity(self) -> str:
@@ -998,6 +1526,101 @@ class HarnessSpec(BaseModel):
         return names
 
     @model_validator(mode="after")
+    def _check_structured_steps(self) -> HarnessSpec:
+        deferred: set[str] = set()
+        for ref in self.tools:
+            if not ref.deferred:
+                continue
+            deferred.add(
+                ref.builtin
+                if isinstance(ref, BuiltinToolRef)
+                else ref.code.split(":", 1)[1]
+            )
+        deferred_mcp_prefixes = {
+            f"mcp__{server.name}__" for server in self.mcp_servers if server.deferred
+        }
+        available = self.tool_names()
+        if deferred or deferred_mcp_prefixes:
+            available.add("search_tools")
+        if self.playbooks:
+            available.add("switch_playbook")
+        # The spill readers are auto-added and re-asserted by the loop while a
+        # handle is live, exactly as the playbook subset validator below already
+        # allows. A step that reads back an oversized result has to be able to
+        # say so: without these, `tool_results` spilling and `sequential_steps`
+        # cannot be used together at all.
+        available |= {"read_tool_result", "search_tool_result"}
+        for step in self.loop.steps:
+            if not isinstance(step, SequentialStep):
+                continue
+            declared = set(step.tools or []) | set(step.require_tool_calls)
+            known = {name for name in declared if not name.startswith("mcp__")}
+            unknown = sorted(known - available)
+            if unknown:
+                raise ValueError(
+                    f"sequential step '{step.id}' lists unknown tool(s): "
+                    f"{', '.join(unknown)}. Declared tools: "
+                    f"{', '.join(sorted(available)) or '(none)'}"
+                )
+            deferred_required = sorted(
+                name
+                for name in step.require_tool_calls
+                if name in deferred
+                or any(name.startswith(prefix) for prefix in deferred_mcp_prefixes)
+            )
+            if deferred_required:
+                raise ValueError(
+                    f"sequential step '{step.id}' requires deferred tool(s): "
+                    f"{', '.join(deferred_required)}"
+                )
+            if self.playbooks and (step.tools is not None or step.require_tool_calls):
+                raise ValueError(
+                    "structured step tool constraints cannot be combined with playbooks; "
+                    f"step '{step.id}' must omit tools and require_tool_calls"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _check_grounded_reference_validators(self) -> HarnessSpec:
+        from hiveloom.json_path import parse_json_path
+
+        refs = [*self.verify.validators]
+        for playbook in self.playbooks:
+            refs.extend(playbook.validators)
+        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        for ref in refs:
+            if not (
+                isinstance(ref, BuiltinValidatorRef)
+                and ref.builtin == "grounded_references"
+            ):
+                continue
+            params = ref.params()
+            parse_json_path(params["output_path"])
+            evidence_paths = params["evidence_paths"]
+            if not evidence_paths:
+                raise ValueError("grounded_references evidence_paths must not be empty")
+            for index, evidence in enumerate(evidence_paths):
+                if not isinstance(evidence, dict) or set(evidence) != {"tool", "path"}:
+                    raise ValueError(
+                        "grounded_references evidence_paths entries must contain only "
+                        f"tool and path (entry {index})"
+                    )
+                tool = evidence["tool"]
+                path = evidence["path"]
+                if not isinstance(tool, str) or not tool.strip():
+                    raise ValueError("grounded_references evidence tool must be a name")
+                if not isinstance(path, str):
+                    raise ValueError("grounded_references evidence path must be a string")
+                parse_json_path(path)
+                if not tool.startswith("mcp__") and tool not in available:
+                    raise ValueError(
+                        f"grounded_references lists unknown evidence tool '{tool}'"
+                    )
+            if params.get("normalize", "string") != "string":
+                raise ValueError("grounded_references normalize must be 'string'")
+        return self
+
+    @model_validator(mode="after")
     def _check_playbooks(self) -> HarnessSpec:
         seen: set[str] = set()
         entries: list[str] = []
@@ -1021,7 +1644,16 @@ class HarnessSpec(BaseModel):
         # registry is built, so their names cannot be known here. Validating
         # them would mean either refusing valid specs or requiring every
         # declared server to be reachable just to parse the YAML.
-        available = self.tool_names() | {"switch_playbook", "search_tools"}
+        # The runtime-managed tools count as available: `switch_playbook` and
+        # `search_tools` are auto-added by the registry, and the spill readers
+        # are re-asserted by the loop while any handle is live, so naming them
+        # in a subset is redundant rather than wrong.
+        available = self.tool_names() | {
+            "switch_playbook",
+            "search_tools",
+            "read_tool_result",
+            "search_tool_result",
+        }
         for playbook in self.playbooks:
             declared = {t for t in (playbook.tools or []) if not t.startswith("mcp__")}
             unknown = sorted(declared - available)

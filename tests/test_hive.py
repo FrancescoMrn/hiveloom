@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from hiveloom.logging.hive import Hive, default_db_path
 
@@ -64,6 +67,16 @@ def _write_trace(
 def test_default_db_path_uses_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVELOOM_DB", str(tmp_path / "custom.db"))
     assert default_db_path() == tmp_path / "custom.db"
+
+
+def test_migration_tolerates_a_concurrent_connection_winning_the_alter(tmp_path):
+    """Two connections race the inspect-then-alter migration; the loser's
+    already-applied ALTER must be swallowed, anything else must propagate."""
+    with Hive(tmp_path / "hive.db") as hive:
+        # `task` already exists, so this is the losing side of the race.
+        hive._alter_runs("ADD COLUMN task TEXT", benign_error="duplicate column name")
+        with pytest.raises(sqlite3.OperationalError):
+            hive._alter_runs("ADD COLUMN", benign_error="duplicate column name")
 
 
 def test_ingest_and_get_run(tmp_path: Path):

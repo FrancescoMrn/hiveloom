@@ -25,6 +25,7 @@ from hiveloom.spec.schema import (
     CodeToolRef,
     CodeValidatorRef,
     HarnessSpec,
+    TraceExcerptConfig,
 )
 
 HARNESS_FILENAME = "harness.yaml"
@@ -54,13 +55,41 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     for optional_list in ("extensions", "hooks", "skills"):
         if not data.get(optional_list):
             data.pop(optional_list, None)
+    # Preserve the pre-structured representation when regexes are the only
+    # policy. Loading an existing harness must not change its behavior hash or
+    # rewrite its YAML merely because the runtime learned keys and paths.
+    redaction = data.get("logging", {}).get("redact")
+    if isinstance(redaction, dict) and not redaction.get("keys") and not redaction.get("paths"):
+        data["logging"]["redact"] = redaction.get("patterns", [])
+    trace_excerpts = data.get("evolution", {}).get("trace_excerpts")
+    if trace_excerpts == TraceExcerptConfig().model_dump(mode="json"):
+        data["evolution"].pop("trace_excerpts", None)
+    if not data.get("evolution", {}).get("objectives"):
+        data["evolution"].pop("objectives", None)
     return data
 
 
 def dump_spec(spec: HarnessSpec) -> str:
     """Serialize a spec to YAML. ``load_spec(dump_spec(s))`` is stable."""
+    return _dump_mapping(spec_to_dict(spec))
+
+
+def dump_spec_for_behavior_hash(spec: HarnessSpec) -> str:
+    """Canonical behavior input, stable across the format-field rename.
+
+    ``schema_version`` names document identity more clearly, but renaming that
+    key does not change harness behavior. Keep the pre-migration spelling only
+    inside the behavior hash input so existing version buckets remain valid.
+    """
+    data = spec_to_dict(spec)
+    schema_version = data.pop("schema_version")
+    return _dump_mapping({"version": schema_version, **data})
+
+
+def _dump_mapping(data: dict[str, Any]) -> str:
+    """Stable YAML serialization shared by public and behavior-hash dumps."""
     return yaml.dump(
-        spec_to_dict(spec),
+        data,
         Dumper=_SpecDumper,
         sort_keys=False,
         default_flow_style=False,

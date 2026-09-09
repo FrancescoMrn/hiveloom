@@ -1,9 +1,16 @@
 # hiveloom architecture
 
-hiveloom's bet: the **harness** (tools, loop policy, context strategy,
-guardrails, verification) governs agentic performance as much as the model. A
-strong model or a human *generates* a harness; a small, cheap model *executes*
-inside it; run traces are *memory* that feed an *evolution* loop.
+hiveloom starts from a simple definition: **agent = model + harness**. It
+confines that agent to one job and makes its success provable. The harness
+declares the task, tools, context, loop policy, budgets, guardrails, and
+verification as one versioned execution boundary. A capable builder agent or a
+human *generates* that boundary; a small, cheap model *executes* inside it; the
+runtime decides whether the result satisfies the contract; and run traces
+become *memory* for a gated evolution loop.
+
+This is behavioral task confinement rather than a virtual-machine security
+boundary. The exact guarantees and limits are described in
+[`task-confinement.md`](task-confinement.md).
 
 ## The pieces
 
@@ -17,7 +24,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                   import + signature checks                        │
   │    annotate.py    JSON schema, annotated template, `explain`       │
   │  catalog.py       catalog entries: tools/guardrails/validators/    │
-  │                   policies/compaction/hooks (builtin + registered)  │
+  │                   policies/compaction/hooks/eval components         │
   │  ext.py           the open catalog: ExtensionAPI, pack/user/harness │
   │                   extension discovery, provider registry, model     │
   │                   pricing, blueprints — see docs/extending.md       │
@@ -29,12 +36,17 @@ inside it; run traces are *memory* that feed an *evolution* loop.
   │                                                                     │
   │  runtime:                                                           │
   │    models/        ModelProvider ABC → Claude | OpenAI-compat | Fake │
+  │      capabilities declared/live probes, identity policy, cache      │
   │      router.py    which model is current, and which provider serves │
   │                   it — mid-run hot-swap at a turn boundary          │
   │    tools/         registry (active/deferred) + sandboxed builtins; │
   │                   ToolRegistry owns the MCP sync/async bridge       │
-  │    context/       assembly, budgeting, pluggable compaction, skills │
+  │    context/       assembly, budgeting, compaction, spill, skills   │
   │    guardrails/    Allow/Block/Halt hooks (frozen from evolution)    │
+  │  private.py       effective RunBoundary: one private-state view      │
+  │  confine.py       OS confinement for spawned processes: bwrap /     │
+  │                   sandbox-exec + rlimits, scrubbed env, timeouts    │
+  │  egress.py        provider + external-tool outbound screening       │
   │    events.py      lifecycle event bus (spec `hooks:` + ambient)     │
   │    verify/        validators = the reward signal                    │
   │    loop/          engine + pluggable policies (react | plan | …)    │
@@ -76,6 +88,7 @@ inside it; run traces are *memory* that feed an *evolution* loop.
 hiveloom run ./h --input notes.txt
   │
   ├─ load spec, resolve code hooks (fail fast)
+  ├─ resolve effective RunBoundary (including per-run path overrides)
   ├─ build: tool registry · guardrails · verifiers · context manager · trace
   │
   ├─ AgentLoop (react):
@@ -93,6 +106,21 @@ hiveloom run ./h --input notes.txt
   └─ auto-ingest the journal into the Hive
 ```
 
+With `sequential_steps`, object steps sit above the same loop rather than
+creating another execution path. The policy filters the registry before each
+phase, blocks hidden calls again at dispatch, tracks required successful calls,
+and applies per-step model/tool limits. `step_started`, `step_violation`,
+`step_completed`, and `step_failed` events enter the journal; final bounded
+receipts are returned on `RunResult.steps` and indexed as Hive `run_steps`.
+
+Verification receives a separate, run-local evidence view. The loop records
+only allowed calls after dispatch and builds a bounded `VerificationContext`
+from redacted tool inputs/results, step receipts, and declared artifacts.
+Each verifier gets its own deep copy, so extension code cannot change the
+evidence seen by another verifier. The context is not rebuilt from a trace and
+never includes a prior run. `grounded_references` uses this view to compare
+selected scalar output references with configured tool-result paths.
+
 A run's identity is the `run_id`, and it is the *only* execution identity across
 the CLI, the API, the Hive, the journal, and the workbench. Branching a run
 always produces a derived run rather than a grouping above it.
@@ -109,8 +137,11 @@ Every run is an append-only JSONL **journal** with a common envelope (`run_id`,
 `harness_name`, `harness_version_hash`, `seq`, `timestamp`, `prev`) and typed
 events (`run_started`, `context_append`, `context_system`, `context_tools`,
 `model_call`, `model_response`, `tool_call`, `tool_update`, `tool_result`,
-`guardrail_triggered`, `hook_triggered`, `hook_error`, `context_compaction`,
-`playbook_switch`, `model_swap`, `verification_result`, `run_finished`).
+`tool_spilled`, `guardrail_triggered`, `hook_triggered`, `hook_error`,
+`context_compaction`, `playbook_switch`, `model_swap`,
+`provider_egress_redacted`, `provider_egress_blocked`, `tool_egress_blocked`,
+`network_access_decision`, `verification_result`,
+`run_finished`).
 
 Three properties make it more than a log, and each buys something concrete:
 
@@ -142,13 +173,75 @@ recent failed traces with their verifier feedback. It also carries lineage
 per-version fitness bucket and reported separately, because they did not
 execute the harness as declared.
 
+Identity is deliberately split before evidence reaches evolution:
+
+- `schema_version` says which harness document contract was parsed;
+- the behavior hash covers the validated spec and every referenced behavior
+  file, including playbook prompts;
+- the execution fingerprint adds the runtime, requested and effective models,
+  run-only overrides, input digest, model path, and lineage.
+
+Renaming legacy `version` to `schema_version` is a document migration, not a
+behavior change. The behavior hash normalizes that one spelling transition so
+old Hive buckets stay usable.
+
+The Hive also derives a normalized friction index from redacted journal
+events. A recovered output validation failure or tool retry remains separate
+from final success and can be queried by category, component, model, time, and
+recovery state. The index stores bounded summaries and fingerprints, not raw
+tool or model payloads.
+
+External scorers can attach immutable numeric observations to an indexed run.
+These `RunMetric` records remain separate from binary deferred outcomes and
+join to execution provenance through `run_id`. Aggregation groups by metric
+name, source, scope, unit, and direction, so a case score cannot silently mix
+with a run or eval score. Every group reports its sample and missing-value
+counts; raw traces are not needed to regenerate the aggregate.
+
+An eval document resolves outside the runtime loop. Its dataset loader creates
+held-out `EvalCase` values; the normal harness path produces a public
+`RunResult`; only then do scorers receive the case, result, verification
+context, and artifacts. Scorer failures have their own receipts and cannot
+rewrite the run status. Content digests cover the eval document, loaded
+dataset, and scorer implementations before a batch starts.
+
+The native eval runner expands that resolved contract into deterministic case
+and repetition cells. It checkpoints an atomic manifest below
+`HIVELOOM_HOME/evals`, keeps traces in the same durable managed tree, and
+revalidates eval, harness, adapter, effective-model, and case identities before
+resume. Infrastructure attempts have distinct run IDs; completed harness
+outcomes and scorer receipts are never retried or conflated.
+
+Every manifest checkpoint also replaces its eval-cell snapshot in the Hive in
+one transaction. Reporting joins those cells to immutable `run_metrics`, so
+aggregate JSON and paired comparisons are reproducible after trace retention
+prunes the journals. Pairing uses hashed case identity plus repetition; cost
+sources remain separate and unmatched cells stay visible.
+
+Configured evolution objectives select bounded numeric history by metric name,
+source, scope, and unit. Aggregation never mixes units or recorded directions.
+Runs are grouped into explicit cohorts by behavior hash and requested/effective
+provider and model; individual execution fingerprints and bounded evidence run
+IDs remain in the receipt. When eval case and repetition keys exist, the same
+evidence also carries paired cohort comparisons. Metric metadata and raw traces
+do not enter this path. Missing values remain missing, and floors or ceilings
+are reported as hard violations rather than folded into a weighted score.
+
+When explicitly enabled, evolution uses those rows as incident anchors and
+selects a bounded window from each validated journal. It re-applies structured
+redaction before truncation and budgeting; a missing or retention-pruned
+journal falls back to its indexed summary. Proposals store an evidence digest
+and selection receipt, never a second copy of the selected payloads.
+
 ## Evolution and the safety boundary
 
 `hiveloom evolve` reads the Hive's clustered failures, asks a strong model for a
 minimal mutation, then **gates it in code**:
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, and `evolution.auto_propose` (`schema.ALWAYS_FROZEN`) — plus
+  `mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, and
+  `evolution.objectives`
+  (`schema.ALWAYS_FROZEN`) — plus
   any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;
 - regenerated code hooks always require explicit human approval.

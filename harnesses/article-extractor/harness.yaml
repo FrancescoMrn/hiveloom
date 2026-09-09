@@ -1,4 +1,4 @@
-version: 0.2.0
+schema_version: 0.2.0
 name: article-extractor
 id: hl-25a05bbc0bb9
 description: Fetch a single article or blog page by URL and extract structured metadata into strict JSON.

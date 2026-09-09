@@ -16,12 +16,28 @@ provider SDK type escapes this package.
 
 from __future__ import annotations
 
+import json
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Message = dict[str, Any]
+
+PROVIDER_METADATA_MAX_BYTES = 16 * 1024
+PROVIDER_REASONING_MAX_BYTES = 256 * 1024
+
+
+def _bounded_json(value: Any, *, field: str, max_bytes: int) -> Any:
+    """Validate a provider-owned payload before it can enter public records."""
+    try:
+        encoded = json.dumps(value, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must contain only JSON-safe values") from exc
+    if len(encoded) > max_bytes:
+        raise ValueError(f"{field} exceeds the {max_bytes}-byte limit")
+    return value
 
 
 class Usage(BaseModel):
@@ -38,6 +54,15 @@ class Usage(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+
+    def __add__(self, other: Usage) -> Usage:
+        """Add provider-call usage without losing cache accounting."""
+        return Usage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+        )
 
 
 class ContextOverflowError(RuntimeError):
@@ -65,6 +90,79 @@ class ModelResponse(BaseModel):
         default_factory=list,
         description="Assistant content blocks to append to history verbatim.",
     )
+    model: str = Field(
+        default="",
+        description="Effective model identity reported by the provider, when available.",
+    )
+    provider_request_id: str = Field(
+        default="", description="Provider request/response identifier, when available."
+    )
+    billed_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description="Provider-reported charge for this call in billed_currency.",
+    )
+    billed_currency: str = Field(
+        default="", description="Currency code for billed_cost, normally ISO 4217."
+    )
+    billed_cost_usd: float | None = Field(
+        default=None,
+        ge=0,
+        description="Optional provider/extension conversion of billed_cost to USD.",
+    )
+    reasoning: Any | None = Field(
+        default=None,
+        description="Opaque JSON replay data required by the same provider on later turns.",
+    )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Bounded JSON-safe routing/provenance metadata owned by the provider.",
+    )
+
+    @field_validator("billed_cost", "billed_cost_usd")
+    @classmethod
+    def _finite_cost(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("provider cost must be finite")
+        return value
+
+    @field_validator("billed_currency")
+    @classmethod
+    def _currency_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized and (not normalized.isalpha() or not 3 <= len(normalized) <= 8):
+            raise ValueError("billed_currency must be a 3-8 letter currency code")
+        return normalized
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def _bounded_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _bounded_json(
+            value, field="provider_metadata", max_bytes=PROVIDER_METADATA_MAX_BYTES
+        )
+
+    @field_validator("reasoning")
+    @classmethod
+    def _bounded_reasoning(cls, value: Any | None) -> Any | None:
+        if value is None:
+            return None
+        return _bounded_json(value, field="reasoning", max_bytes=PROVIDER_REASONING_MAX_BYTES)
+
+    @model_validator(mode="after")
+    def _cost_has_currency(self) -> ModelResponse:
+        if self.billed_cost is not None and not self.billed_currency:
+            raise ValueError("billed_currency is required when billed_cost is set")
+        if self.billed_cost_usd is not None and self.billed_cost is None:
+            raise ValueError("billed_cost is required when billed_cost_usd is set")
+        return self
+
+    def resolved_cost_usd(self, estimated_cost_usd: float) -> tuple[float, str]:
+        """Return the charge usable by USD guardrails and how it was obtained."""
+        if self.billed_cost_usd is not None:
+            return self.billed_cost_usd, "billed"
+        if self.billed_cost is not None and self.billed_currency == "USD":
+            return self.billed_cost, "billed"
+        return estimated_cost_usd, "estimated"
 
 
 class ModelConfig(BaseModel):
@@ -79,6 +177,26 @@ class ModelConfig(BaseModel):
     # unregistered id costs (a local Ollama model is free; an unknown hosted
     # one is not). Defaulted so existing callers keep working.
     provider: str = ""
+
+
+class ModelCapabilities(BaseModel):
+    """Provider-neutral capability declarations or live observations."""
+
+    tool_calling: bool | None = None
+    structured_output: bool | None = None
+    reasoning_replay: bool | None = None
+
+
+class ProviderCapabilityObservation(BaseModel):
+    """Bounded evidence returned by a provider's live capability probe."""
+
+    effective_models: list[str] = Field(default_factory=list)
+    provider_request_ids: list[str] = Field(default_factory=list)
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    usage: Usage = Field(default_factory=Usage)
+    cost_usd: float = 0.0
+    cost_source: str = "none"
+    calls: int = 0
 
 
 # Fallback per-1M-token pricing (input, output) in USD when a model id is not
@@ -145,6 +263,130 @@ class ModelProvider(ABC):
         real token-counting API.
         """
         return _estimate_messages_tokens(system, messages)
+
+    def declared_capabilities(self, model_id: str) -> ModelCapabilities:
+        """Return registry declarations without contacting the provider."""
+        from hiveloom import ext
+
+        info = ext.model_info(model_id)
+        if info is None:
+            return ModelCapabilities()
+        return ModelCapabilities(
+            tool_calling=info.supports_tool_calling,
+            structured_output=info.supports_structured_output,
+            reasoning_replay=info.supports_reasoning_replay,
+        )
+
+    def probe_capabilities(self, config: ModelConfig) -> ProviderCapabilityObservation:
+        """Perform a generic tool/reasoning probe; adapters may override it."""
+        tool = {
+            "name": "hiveloom_capability_probe",
+            "description": "Return the fixed capability probe token.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"token": {"type": "string", "const": "ok"}},
+                "required": ["token"],
+                "additionalProperties": False,
+            },
+        }
+        messages: list[Message] = [
+            {
+                "role": "user",
+                "content": (
+                    "Call hiveloom_capability_probe once with token set to ok. "
+                    "Do not answer in text."
+                ),
+            }
+        ]
+        probe_config = config.model_copy(update={"max_tokens": min(config.max_tokens, 128)})
+        first = self.complete(
+            system="This is a framework capability probe.",
+            messages=messages,
+            tools=[tool],
+            config=probe_config,
+        )
+        calls = [first]
+        tool_supported = any(
+            call.name == "hiveloom_capability_probe" for call in first.tool_calls
+        )
+        has_reasoning = first.reasoning is not None or any(
+            block.get("type") in {"thinking", "redacted_thinking", "provider_reasoning"}
+            for block in first.content_blocks
+        )
+        reasoning_replay: bool | None = None
+        if tool_supported and has_reasoning:
+            assistant_blocks = list(first.content_blocks)
+            if first.reasoning is not None:
+                assistant_blocks.append(
+                    {"type": "provider_reasoning", "data": first.reasoning}
+                )
+            call = next(
+                call
+                for call in first.tool_calls
+                if call.name == "hiveloom_capability_probe"
+            )
+            replay_messages = [
+                *messages,
+                {"role": "assistant", "content": assistant_blocks},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call.id,
+                            "content": '{"ok":true}',
+                            "is_error": False,
+                        }
+                    ],
+                },
+            ]
+            try:
+                second = self.complete(
+                    system="This is a framework capability probe.",
+                    messages=replay_messages,
+                    tools=[],
+                    config=probe_config,
+                )
+                calls.append(second)
+                reasoning_replay = True
+            except Exception:  # noqa: BLE001 - failure is the observed capability
+                reasoning_replay = False
+
+        usage = Usage()
+        effective_models: list[str] = []
+        request_ids: list[str] = []
+        costs: list[tuple[float, str]] = []
+        for response in calls:
+            usage += response.usage
+            if response.model and response.model not in effective_models:
+                effective_models.append(response.model)
+            if response.provider_request_id:
+                request_ids.append(response.provider_request_id)
+            estimate = self.estimated_cost(response.usage, config.id, config.provider)
+            costs.append(response.resolved_cost_usd(estimate))
+        cost_sources = {source for _, source in costs}
+        cost_source = (
+            "none"
+            if not costs
+            else next(iter(cost_sources))
+            if len(cost_sources) == 1
+            else "mixed"
+        )
+        return ProviderCapabilityObservation(
+            effective_models=effective_models,
+            provider_request_ids=request_ids,
+            capabilities=ModelCapabilities(
+                tool_calling=tool_supported,
+                # The generic complete() contract has no response-format
+                # parameter, so only a provider override can observe this.
+                structured_output=None,
+                reasoning_replay=reasoning_replay,
+            ),
+            usage=usage,
+            cost_usd=sum(cost for cost, _ in costs),
+            cost_source=cost_source,
+            calls=len(calls),
+        )
 
     def estimated_cost(self, usage: Usage, model_id: str, provider: str = "") -> float:
         """Return the USD cost of ``usage`` for ``model_id`` (registry-priced).

@@ -1,5 +1,6 @@
-version: 0.2.0
+schema_version: 0.2.0
 name: hiveloom-copilot
+id: ''
 description: Help a user create, understand, test, diagnose, improve, and present Hiveloom harnesses without
   requiring framework-specific knowledge.
 model:

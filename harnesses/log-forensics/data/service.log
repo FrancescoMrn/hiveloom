@@ -1,0 +1,1101 @@
+2026-08-14T06:07:13Z INFO  billing-2 /v1/session rq-40001 ok 1206ms
+2026-08-14T06:14:26Z INFO  search-1 /v1/media/upload rq-40002 ok 557ms
+2026-08-14T06:21:39Z INFO  media-1 /v1/search rq-40003 ok 175ms
+2026-08-14T06:28:52Z INFO  billing-1 /v1/invoice rq-40004 ok 1472ms
+2026-08-14T06:35:05Z INFO  billing-2 /v1/session rq-40005 ok 1191ms
+2026-08-14T06:42:18Z INFO  search-1 /v1/media/upload rq-40006 ok 1054ms
+2026-08-14T06:49:31Z INFO  media-1 /v1/search rq-40007 ok 648ms
+2026-08-14T06:56:44Z WARN  billing-1 /v1/invoice rq-40008 slow response 1842ms
+2026-08-14T06:03:57Z INFO  billing-2 /v1/session rq-40009 ok 978ms
+2026-08-14T06:10:10Z INFO  search-1 /v1/media/upload rq-40010 ok 219ms
+2026-08-14T06:17:23Z WARN  media-1 /v1/search rq-40011 slow response 1604ms
+2026-08-14T06:24:36Z INFO  billing-1 /v1/invoice rq-40012 ok 1506ms
+2026-08-14T06:31:49Z ERROR billing-2 /v1/session rq-40013 failed after 1338ms code=POOL_EXHAUSTED
+2026-08-14T06:38:02Z INFO  search-1 /v1/media/upload rq-40014 ok 471ms
+2026-08-14T06:45:15Z INFO  media-1 /v1/search rq-40015 ok 88ms
+2026-08-14T06:52:28Z INFO  billing-1 /v1/invoice rq-40016 ok 614ms
+2026-08-14T06:59:41Z WARN  billing-2 /v1/session rq-40017 slow response 1891ms
+2026-08-14T06:06:54Z INFO  search-1 /v1/media/upload rq-40018 ok 428ms
+2026-08-14T06:13:07Z INFO  media-1 /v1/search rq-40019 ok 264ms
+2026-08-14T06:20:20Z INFO  billing-1 /v1/invoice rq-40020 ok 120ms
+2026-08-14T06:27:33Z INFO  billing-2 /v1/session rq-40021 ok 1158ms
+2026-08-14T06:34:46Z INFO  search-1 /v1/media/upload rq-40022 ok 463ms
+2026-08-14T06:41:59Z INFO  media-1 /v1/search rq-40023 ok 83ms
+2026-08-14T06:48:12Z INFO  billing-1 /v1/invoice rq-40024 ok 1398ms
+2026-08-14T06:55:25Z INFO  billing-2 /v1/session rq-40025 ok 16ms
+2026-08-14T06:02:38Z ERROR search-1 /v1/media/upload rq-40026 failed after 1849ms code=POOL_EXHAUSTED
+2026-08-14T06:09:51Z WARN  media-1 /v1/search rq-40027 slow response 1860ms
+2026-08-14T06:16:04Z WARN  billing-1 /v1/invoice rq-40028 slow response 1779ms
+2026-08-14T06:23:17Z INFO  billing-2 /v1/session rq-40029 ok 450ms
+2026-08-14T06:30:30Z INFO  search-1 /v1/media/upload rq-40030 ok 1213ms
+2026-08-14T06:37:43Z INFO  media-1 /v1/search rq-40031 ok 1411ms
+2026-08-14T06:44:56Z INFO  billing-1 /v1/invoice rq-40032 ok 1195ms
+2026-08-14T06:51:09Z INFO  billing-2 /v1/session rq-40033 ok 341ms
+2026-08-14T06:58:22Z WARN  search-1 /v1/media/upload rq-40034 slow response 1621ms
+2026-08-14T06:05:35Z INFO  media-1 /v1/search rq-40035 ok 437ms
+2026-08-14T06:12:48Z INFO  billing-1 /v1/invoice rq-40036 ok 1317ms
+2026-08-14T06:19:01Z INFO  billing-2 /v1/session rq-40037 ok 682ms
+2026-08-14T06:26:14Z WARN  search-1 /v1/media/upload rq-40038 slow response 1735ms
+2026-08-14T06:33:27Z ERROR media-1 /v1/search rq-40039 failed after 1358ms code=POOL_EXHAUSTED
+2026-08-14T06:40:40Z WARN  billing-1 /v1/invoice rq-40040 slow response 1632ms
+2026-08-14T06:47:53Z INFO  billing-2 /v1/session rq-40041 ok 1189ms
+2026-08-14T06:54:06Z INFO  search-1 /v1/media/upload rq-40042 ok 91ms
+2026-08-14T06:01:19Z INFO  media-1 /v1/search rq-40043 ok 203ms
+2026-08-14T06:08:32Z INFO  billing-1 /v1/invoice rq-40044 ok 1548ms
+2026-08-14T06:15:45Z INFO  billing-2 /v1/session rq-40045 ok 814ms
+2026-08-14T06:22:58Z WARN  search-1 /v1/media/upload rq-40046 slow response 1681ms
+2026-08-14T06:29:11Z INFO  media-1 /v1/search rq-40047 ok 1284ms
+2026-08-14T06:36:24Z INFO  billing-1 /v1/invoice rq-40048 ok 103ms
+2026-08-14T06:43:37Z INFO  billing-2 /v1/session rq-40049 ok 1494ms
+2026-08-14T06:50:50Z WARN  search-1 /v1/media/upload rq-40050 slow response 1637ms
+2026-08-14T06:57:03Z INFO  media-1 /v1/search rq-40051 ok 1366ms
+2026-08-14T06:04:16Z ERROR billing-1 /v1/invoice rq-40052 failed after 602ms code=POOL_EXHAUSTED
+2026-08-14T06:11:29Z INFO  billing-2 /v1/session rq-40053 ok 256ms
+2026-08-14T06:18:42Z INFO  search-1 /v1/media/upload rq-40054 ok 868ms
+2026-08-14T06:25:55Z INFO  media-1 /v1/search rq-40055 ok 1208ms
+2026-08-14T06:32:08Z INFO  billing-1 /v1/invoice rq-40056 ok 67ms
+2026-08-14T06:39:21Z INFO  billing-2 /v1/session rq-40057 ok 1162ms
+2026-08-14T06:46:34Z INFO  search-1 /v1/media/upload rq-40058 ok 81ms
+2026-08-14T06:53:47Z INFO  media-1 /v1/search rq-40059 ok 102ms
+2026-08-14T06:00:00Z INFO  billing-1 /v1/invoice rq-40060 ok 1089ms
+2026-08-14T06:07:13Z INFO  billing-2 /v1/session rq-40061 ok 800ms
+2026-08-14T06:14:26Z INFO  search-1 /v1/media/upload rq-40062 ok 218ms
+2026-08-14T06:21:39Z INFO  media-1 /v1/search rq-40063 ok 1484ms
+2026-08-14T06:28:52Z INFO  billing-1 /v1/invoice rq-40064 ok 113ms
+2026-08-14T06:35:05Z ERROR billing-2 /v1/session rq-40065 failed after 375ms code=POOL_EXHAUSTED
+2026-08-14T06:42:18Z INFO  search-1 /v1/media/upload rq-40066 ok 1054ms
+2026-08-14T06:49:31Z INFO  media-1 /v1/search rq-40067 ok 417ms
+2026-08-14T06:56:44Z INFO  billing-1 /v1/invoice rq-40068 ok 1212ms
+2026-08-14T06:03:57Z INFO  billing-2 /v1/session rq-40069 ok 1141ms
+2026-08-14T06:10:10Z INFO  search-1 /v1/media/upload rq-40070 ok 195ms
+2026-08-14T06:17:23Z INFO  media-1 /v1/search rq-40071 ok 558ms
+2026-08-14T06:24:36Z INFO  billing-1 /v1/invoice rq-40072 ok 875ms
+2026-08-14T06:31:49Z INFO  billing-2 /v1/session rq-40073 ok 1137ms
+2026-08-14T06:38:02Z INFO  search-1 /v1/media/upload rq-40074 ok 420ms
+2026-08-14T06:45:15Z INFO  media-1 /v1/search rq-40075 ok 1055ms
+2026-08-14T06:52:28Z INFO  billing-1 /v1/invoice rq-40076 ok 138ms
+2026-08-14T06:59:41Z INFO  billing-2 /v1/session rq-40077 ok 84ms
+2026-08-14T06:06:54Z ERROR search-1 /v1/media/upload rq-40078 failed after 474ms code=TIMEOUT_UPSTREAM
+2026-08-14T06:13:07Z INFO  media-1 /v1/search rq-40079 ok 835ms
+2026-08-14T06:20:20Z WARN  billing-1 /v1/invoice rq-40080 slow response 1788ms
+2026-08-14T06:27:33Z INFO  billing-2 /v1/session rq-40081 ok 1134ms
+2026-08-14T06:34:46Z INFO  search-1 /v1/media/upload rq-40082 ok 1587ms
+2026-08-14T06:41:59Z INFO  media-1 /v1/search rq-40083 ok 651ms
+2026-08-14T06:48:12Z WARN  billing-1 /v1/invoice rq-40084 slow response 1773ms
+2026-08-14T06:55:25Z INFO  billing-2 /v1/session rq-40085 ok 664ms
+2026-08-14T06:02:38Z INFO  search-1 /v1/media/upload rq-40086 ok 1525ms
+2026-08-14T06:09:51Z INFO  media-1 /v1/search rq-40087 ok 1507ms
+2026-08-14T06:16:04Z INFO  billing-1 /v1/invoice rq-40088 ok 1052ms
+2026-08-14T06:23:17Z INFO  billing-2 /v1/session rq-40089 ok 817ms
+2026-08-14T06:30:30Z INFO  search-1 /v1/media/upload rq-40090 ok 78ms
+2026-08-14T06:37:43Z ERROR media-1 /v1/search rq-40091 failed after 360ms code=TIMEOUT_UPSTREAM
+2026-08-14T06:44:56Z INFO  billing-1 /v1/invoice rq-40092 ok 197ms
+2026-08-14T06:51:09Z INFO  billing-2 /v1/session rq-40093 ok 535ms
+2026-08-14T06:58:22Z INFO  search-1 /v1/media/upload rq-40094 ok 1327ms
+2026-08-14T06:05:35Z INFO  media-1 /v1/search rq-40095 ok 1445ms
+2026-08-14T06:12:48Z INFO  billing-1 /v1/invoice rq-40096 ok 1071ms
+2026-08-14T06:19:01Z INFO  billing-2 /v1/session rq-40097 ok 423ms
+2026-08-14T06:26:14Z INFO  search-1 /v1/media/upload rq-40098 ok 1080ms
+2026-08-14T06:33:27Z WARN  media-1 /v1/search rq-40099 slow response 1678ms
+2026-08-14T06:40:40Z INFO  billing-1 /v1/invoice rq-40100 ok 1031ms
+2026-08-14T06:47:53Z WARN  billing-2 /v1/session rq-40101 slow response 1774ms
+2026-08-14T06:54:06Z INFO  search-1 /v1/media/upload rq-40102 ok 578ms
+2026-08-14T06:01:19Z INFO  media-1 /v1/search rq-40103 ok 1020ms
+2026-08-14T06:08:32Z ERROR billing-1 /v1/invoice rq-40104 failed after 333ms code=DECODE_FAILED
+2026-08-14T06:15:45Z INFO  billing-2 /v1/session rq-40105 ok 985ms
+2026-08-14T06:22:58Z WARN  search-1 /v1/media/upload rq-40106 slow response 1722ms
+2026-08-14T06:29:11Z INFO  media-1 /v1/search rq-40107 ok 900ms
+2026-08-14T06:36:24Z INFO  billing-1 /v1/invoice rq-40108 ok 1225ms
+2026-08-14T06:43:37Z WARN  billing-2 /v1/session rq-40109 slow response 1726ms
+2026-08-14T06:50:50Z INFO  search-1 /v1/media/upload rq-40110 ok 1002ms
+2026-08-14T06:57:03Z WARN  media-1 /v1/search rq-40111 slow response 1704ms
+2026-08-14T06:04:16Z WARN  billing-1 /v1/invoice rq-40112 slow response 1864ms
+2026-08-14T06:11:29Z INFO  billing-2 /v1/session rq-40113 ok 813ms
+2026-08-14T06:18:42Z INFO  search-1 /v1/media/upload rq-40114 ok 785ms
+2026-08-14T06:25:55Z INFO  media-1 /v1/search rq-40115 ok 59ms
+2026-08-14T06:32:08Z INFO  billing-1 /v1/invoice rq-40116 ok 167ms
+2026-08-14T06:39:21Z ERROR billing-2 /v1/session rq-40117 failed after 1699ms code=RATE_LIMITED
+2026-08-14T06:46:34Z INFO  search-1 /v1/media/upload rq-40118 ok 46ms
+2026-08-14T06:53:47Z INFO  media-1 /v1/search rq-40119 ok 1140ms
+2026-08-14T06:00:00Z INFO  billing-1 /v1/invoice rq-40120 ok 1197ms
+2026-08-14T06:07:13Z INFO  billing-2 /v1/session rq-40121 ok 790ms
+2026-08-14T06:14:26Z WARN  search-1 /v1/media/upload rq-40122 slow response 1620ms
+2026-08-14T06:21:39Z WARN  media-1 /v1/search rq-40123 slow response 1762ms
+2026-08-14T06:28:52Z INFO  billing-1 /v1/invoice rq-40124 ok 783ms
+2026-08-14T06:35:05Z INFO  billing-2 /v1/session rq-40125 ok 1576ms
+2026-08-14T06:42:18Z INFO  search-1 /v1/media/upload rq-40126 ok 191ms
+2026-08-14T06:49:31Z INFO  media-1 /v1/search rq-40127 ok 1141ms
+2026-08-14T06:56:44Z INFO  billing-1 /v1/invoice rq-40128 ok 1371ms
+2026-08-14T06:03:57Z INFO  billing-2 /v1/session rq-40129 ok 816ms
+2026-08-14T06:10:10Z ERROR search-1 /v1/media/upload rq-40130 failed after 955ms code=POOL_EXHAUSTED
+2026-08-14T06:17:23Z INFO  media-1 /v1/search rq-40131 ok 1168ms
+2026-08-14T06:24:36Z INFO  billing-1 /v1/invoice rq-40132 ok 1327ms
+2026-08-14T06:31:49Z WARN  billing-2 /v1/session rq-40133 slow response 1845ms
+2026-08-14T06:38:02Z INFO  search-1 /v1/media/upload rq-40134 ok 598ms
+2026-08-14T06:45:15Z WARN  media-1 /v1/search rq-40135 slow response 1788ms
+2026-08-14T06:52:28Z INFO  billing-1 /v1/invoice rq-40136 ok 1356ms
+2026-08-14T06:59:41Z INFO  billing-2 /v1/session rq-40137 ok 1178ms
+2026-08-14T06:06:54Z INFO  search-1 /v1/media/upload rq-40138 ok 836ms
+2026-08-14T06:13:07Z WARN  media-1 /v1/search rq-40139 slow response 1818ms
+2026-08-14T07:20:20Z INFO  billing-1 /v1/invoice rq-40140 ok 390ms
+2026-08-14T07:27:33Z INFO  billing-2 /v1/session rq-40141 ok 641ms
+2026-08-14T07:34:46Z INFO  search-1 /v1/media/upload rq-40142 ok 1307ms
+2026-08-14T07:41:59Z ERROR media-1 /v1/search rq-40143 failed after 1851ms code=POOL_EXHAUSTED
+2026-08-14T07:48:12Z INFO  billing-1 /v1/invoice rq-40144 ok 867ms
+2026-08-14T07:55:25Z INFO  billing-2 /v1/session rq-40145 ok 98ms
+2026-08-14T07:02:38Z INFO  search-1 /v1/media/upload rq-40146 ok 1119ms
+2026-08-14T07:09:51Z INFO  media-1 /v1/search rq-40147 ok 294ms
+2026-08-14T07:16:04Z WARN  billing-1 /v1/invoice rq-40148 slow response 1713ms
+2026-08-14T07:23:17Z INFO  billing-2 /v1/session rq-40149 ok 472ms
+2026-08-14T07:30:30Z INFO  search-1 /v1/media/upload rq-40150 ok 424ms
+2026-08-14T07:37:43Z INFO  media-1 /v1/search rq-40151 ok 138ms
+2026-08-14T07:44:56Z INFO  billing-1 /v1/invoice rq-40152 ok 231ms
+2026-08-14T07:51:09Z INFO  billing-2 /v1/session rq-40153 ok 110ms
+2026-08-14T07:58:22Z WARN  search-1 /v1/media/upload rq-40154 slow response 1759ms
+2026-08-14T07:05:35Z INFO  media-1 /v1/search rq-40155 ok 1479ms
+2026-08-14T07:12:48Z ERROR billing-1 /v1/invoice rq-40156 failed after 110ms code=POOL_EXHAUSTED
+2026-08-14T07:19:01Z INFO  billing-2 /v1/session rq-40157 ok 194ms
+2026-08-14T07:26:14Z WARN  search-1 /v1/media/upload rq-40158 slow response 1679ms
+2026-08-14T07:33:27Z INFO  media-1 /v1/search rq-40159 ok 37ms
+2026-08-14T07:40:40Z INFO  billing-1 /v1/invoice rq-40160 ok 582ms
+2026-08-14T07:47:53Z WARN  billing-2 /v1/session rq-40161 slow response 1876ms
+2026-08-14T07:54:06Z INFO  search-1 /v1/media/upload rq-40162 ok 254ms
+2026-08-14T07:01:19Z INFO  media-1 /v1/search rq-40163 ok 238ms
+2026-08-14T07:08:32Z INFO  billing-1 /v1/invoice rq-40164 ok 1323ms
+2026-08-14T07:15:45Z INFO  billing-2 /v1/session rq-40165 ok 1121ms
+2026-08-14T07:22:58Z WARN  search-1 /v1/media/upload rq-40166 slow response 1766ms
+2026-08-14T07:29:11Z INFO  media-1 /v1/search rq-40167 ok 614ms
+2026-08-14T07:36:24Z INFO  billing-1 /v1/invoice rq-40168 ok 647ms
+2026-08-14T07:43:37Z ERROR billing-2 /v1/session rq-40169 failed after 1066ms code=POOL_EXHAUSTED
+2026-08-14T07:50:50Z INFO  search-1 /v1/media/upload rq-40170 ok 224ms
+2026-08-14T07:57:03Z INFO  media-1 /v1/search rq-40171 ok 523ms
+2026-08-14T07:04:16Z INFO  billing-1 /v1/invoice rq-40172 ok 1078ms
+2026-08-14T07:11:29Z INFO  billing-2 /v1/session rq-40173 ok 1178ms
+2026-08-14T07:18:42Z WARN  search-1 /v1/media/upload rq-40174 slow response 1777ms
+2026-08-14T07:25:55Z INFO  media-1 /v1/search rq-40175 ok 192ms
+2026-08-14T07:32:08Z INFO  billing-1 /v1/invoice rq-40176 ok 585ms
+2026-08-14T07:39:21Z INFO  billing-2 /v1/session rq-40177 ok 827ms
+2026-08-14T07:46:34Z INFO  search-1 /v1/media/upload rq-40178 ok 1283ms
+2026-08-14T07:53:47Z INFO  media-1 /v1/search rq-40179 ok 1471ms
+2026-08-14T07:00:00Z WARN  billing-1 /v1/invoice rq-40180 slow response 1674ms
+2026-08-14T07:07:13Z WARN  billing-2 /v1/session rq-40181 slow response 1714ms
+2026-08-14T07:14:26Z ERROR search-1 /v1/media/upload rq-40182 failed after 1114ms code=POOL_EXHAUSTED
+2026-08-14T07:21:39Z INFO  media-1 /v1/search rq-40183 ok 1564ms
+2026-08-14T07:28:52Z INFO  billing-1 /v1/invoice rq-40184 ok 1112ms
+2026-08-14T07:35:05Z INFO  billing-2 /v1/session rq-40185 ok 895ms
+2026-08-14T07:42:18Z INFO  search-1 /v1/media/upload rq-40186 ok 305ms
+2026-08-14T07:49:31Z INFO  media-1 /v1/search rq-40187 ok 1406ms
+2026-08-14T07:56:44Z INFO  billing-1 /v1/invoice rq-40188 ok 1045ms
+2026-08-14T07:03:57Z INFO  billing-2 /v1/session rq-40189 ok 556ms
+2026-08-14T07:10:10Z INFO  search-1 /v1/media/upload rq-40190 ok 189ms
+2026-08-14T07:17:23Z INFO  media-1 /v1/search rq-40191 ok 587ms
+2026-08-14T07:24:36Z INFO  billing-1 /v1/invoice rq-40192 ok 686ms
+2026-08-14T07:31:49Z INFO  billing-2 /v1/session rq-40193 ok 485ms
+2026-08-14T07:38:02Z INFO  search-1 /v1/media/upload rq-40194 ok 229ms
+2026-08-14T07:45:15Z ERROR media-1 /v1/search rq-40195 failed after 1808ms code=POOL_EXHAUSTED
+2026-08-14T07:52:28Z INFO  billing-1 /v1/invoice rq-40196 ok 458ms
+2026-08-14T07:59:41Z INFO  billing-2 /v1/session rq-40197 ok 357ms
+2026-08-14T07:06:54Z INFO  search-1 /v1/media/upload rq-40198 ok 1084ms
+2026-08-14T07:13:07Z INFO  media-1 /v1/search rq-40199 ok 1510ms
+2026-08-14T07:20:20Z INFO  billing-1 /v1/invoice rq-40200 ok 1573ms
+2026-08-14T07:27:33Z WARN  billing-2 /v1/session rq-40201 slow response 1723ms
+2026-08-14T07:34:46Z INFO  search-1 /v1/media/upload rq-40202 ok 54ms
+2026-08-14T07:41:59Z INFO  media-1 /v1/search rq-40203 ok 816ms
+2026-08-14T07:48:12Z INFO  billing-1 /v1/invoice rq-40204 ok 923ms
+2026-08-14T07:55:25Z INFO  billing-2 /v1/session rq-40205 ok 1579ms
+2026-08-14T07:02:38Z INFO  search-1 /v1/media/upload rq-40206 ok 200ms
+2026-08-14T07:09:51Z INFO  media-1 /v1/search rq-40207 ok 104ms
+2026-08-14T07:16:04Z ERROR billing-1 /v1/invoice rq-40208 failed after 354ms code=TIMEOUT_UPSTREAM
+2026-08-14T07:23:17Z INFO  billing-2 /v1/session rq-40209 ok 739ms
+2026-08-14T07:30:30Z INFO  search-1 /v1/media/upload rq-40210 ok 1503ms
+2026-08-14T07:37:43Z INFO  media-1 /v1/search rq-40211 ok 133ms
+2026-08-14T07:44:56Z INFO  billing-1 /v1/invoice rq-40212 ok 1169ms
+2026-08-14T07:51:09Z INFO  billing-2 /v1/session rq-40213 ok 272ms
+2026-08-14T07:58:22Z WARN  search-1 /v1/media/upload rq-40214 slow response 1715ms
+2026-08-14T07:05:35Z INFO  media-1 /v1/search rq-40215 ok 1078ms
+2026-08-14T07:12:48Z WARN  billing-1 /v1/invoice rq-40216 slow response 1860ms
+2026-08-14T07:19:01Z INFO  billing-2 /v1/session rq-40217 ok 1264ms
+2026-08-14T07:26:14Z INFO  search-1 /v1/media/upload rq-40218 ok 831ms
+2026-08-14T07:33:27Z WARN  media-1 /v1/search rq-40219 slow response 1888ms
+2026-08-14T07:40:40Z INFO  billing-1 /v1/invoice rq-40220 ok 989ms
+2026-08-14T07:47:53Z ERROR billing-2 /v1/session rq-40221 failed after 1361ms code=TIMEOUT_UPSTREAM
+2026-08-14T07:54:06Z INFO  search-1 /v1/media/upload rq-40222 ok 430ms
+2026-08-14T07:01:19Z INFO  media-1 /v1/search rq-40223 ok 24ms
+2026-08-14T07:08:32Z INFO  billing-1 /v1/invoice rq-40224 ok 1492ms
+2026-08-14T07:15:45Z INFO  billing-2 /v1/session rq-40225 ok 229ms
+2026-08-14T07:22:58Z INFO  search-1 /v1/media/upload rq-40226 ok 1119ms
+2026-08-14T07:29:11Z WARN  media-1 /v1/search rq-40227 slow response 1608ms
+2026-08-14T07:36:24Z INFO  billing-1 /v1/invoice rq-40228 ok 65ms
+2026-08-14T07:43:37Z WARN  billing-2 /v1/session rq-40229 slow response 1801ms
+2026-08-14T07:50:50Z INFO  search-1 /v1/media/upload rq-40230 ok 1231ms
+2026-08-14T07:57:03Z INFO  media-1 /v1/search rq-40231 ok 492ms
+2026-08-14T07:04:16Z INFO  billing-1 /v1/invoice rq-40232 ok 1373ms
+2026-08-14T07:11:29Z INFO  billing-2 /v1/session rq-40233 ok 1390ms
+2026-08-14T07:18:42Z ERROR search-1 /v1/media/upload rq-40234 failed after 1818ms code=DECODE_FAILED
+2026-08-14T07:25:55Z INFO  media-1 /v1/search rq-40235 ok 1473ms
+2026-08-14T07:32:08Z INFO  billing-1 /v1/invoice rq-40236 ok 889ms
+2026-08-14T07:39:21Z INFO  billing-2 /v1/session rq-40237 ok 975ms
+2026-08-14T07:46:34Z INFO  search-1 /v1/media/upload rq-40238 ok 817ms
+2026-08-14T07:53:47Z INFO  media-1 /v1/search rq-40239 ok 209ms
+2026-08-14T07:00:00Z INFO  billing-1 /v1/invoice rq-40240 ok 730ms
+2026-08-14T07:07:13Z WARN  billing-2 /v1/session rq-40241 slow response 1865ms
+2026-08-14T07:14:26Z INFO  search-1 /v1/media/upload rq-40242 ok 704ms
+2026-08-14T07:21:39Z INFO  media-1 /v1/search rq-40243 ok 1187ms
+2026-08-14T07:28:52Z INFO  billing-1 /v1/invoice rq-40244 ok 1355ms
+2026-08-14T07:35:05Z INFO  billing-2 /v1/session rq-40245 ok 1160ms
+2026-08-14T07:42:18Z INFO  search-1 /v1/media/upload rq-40246 ok 566ms
+2026-08-14T07:49:31Z ERROR media-1 /v1/search rq-40247 failed after 1756ms code=RATE_LIMITED
+2026-08-14T07:56:44Z INFO  billing-1 /v1/invoice rq-40248 ok 1281ms
+2026-08-14T07:03:57Z INFO  billing-2 /v1/session rq-40249 ok 253ms
+2026-08-14T07:10:10Z INFO  search-1 /v1/media/upload rq-40250 ok 495ms
+2026-08-14T07:17:23Z INFO  media-1 /v1/search rq-40251 ok 800ms
+2026-08-14T07:24:36Z INFO  billing-1 /v1/invoice rq-40252 ok 317ms
+2026-08-14T07:31:49Z INFO  billing-2 /v1/session rq-40253 ok 1172ms
+2026-08-14T07:38:02Z INFO  search-1 /v1/media/upload rq-40254 ok 557ms
+2026-08-14T07:45:15Z INFO  media-1 /v1/search rq-40255 ok 303ms
+2026-08-14T07:52:28Z INFO  billing-1 /v1/invoice rq-40256 ok 1347ms
+2026-08-14T07:59:41Z INFO  billing-2 /v1/session rq-40257 ok 1004ms
+2026-08-14T07:06:54Z INFO  search-1 /v1/media/upload rq-40258 ok 1514ms
+2026-08-14T07:13:07Z INFO  media-1 /v1/search rq-40259 ok 1511ms
+2026-08-14T07:20:20Z ERROR billing-1 /v1/invoice rq-40260 failed after 1273ms code=POOL_EXHAUSTED
+2026-08-14T07:27:33Z INFO  billing-2 /v1/session rq-40261 ok 882ms
+2026-08-14T07:34:46Z WARN  search-1 /v1/media/upload rq-40262 slow response 1786ms
+2026-08-14T07:41:59Z INFO  media-1 /v1/search rq-40263 ok 882ms
+2026-08-14T07:48:12Z INFO  billing-1 /v1/invoice rq-40264 ok 31ms
+2026-08-14T07:55:25Z INFO  billing-2 /v1/session rq-40265 ok 1058ms
+2026-08-14T07:02:38Z INFO  search-1 /v1/media/upload rq-40266 ok 833ms
+2026-08-14T07:09:51Z WARN  media-1 /v1/search rq-40267 slow response 1602ms
+2026-08-14T07:16:04Z INFO  billing-1 /v1/invoice rq-40268 ok 1058ms
+2026-08-14T07:23:17Z INFO  billing-2 /v1/session rq-40269 ok 478ms
+2026-08-14T07:30:30Z INFO  search-1 /v1/media/upload rq-40270 ok 1557ms
+2026-08-14T07:37:43Z INFO  media-1 /v1/search rq-40271 ok 64ms
+2026-08-14T07:44:56Z INFO  billing-1 /v1/invoice rq-40272 ok 1531ms
+2026-08-14T07:51:09Z ERROR billing-2 /v1/session rq-40273 failed after 318ms code=POOL_EXHAUSTED
+2026-08-14T07:58:22Z INFO  search-1 /v1/media/upload rq-40274 ok 457ms
+2026-08-14T07:05:35Z INFO  media-1 /v1/search rq-40275 ok 775ms
+2026-08-14T07:12:48Z WARN  billing-1 /v1/invoice rq-40276 slow response 1883ms
+2026-08-14T07:19:01Z INFO  billing-2 /v1/session rq-40277 ok 369ms
+2026-08-14T07:26:14Z INFO  search-1 /v1/media/upload rq-40278 ok 1543ms
+2026-08-14T07:33:27Z INFO  media-1 /v1/search rq-40279 ok 1030ms
+2026-08-14T08:40:40Z INFO  billing-1 /v1/invoice rq-40280 ok 307ms
+2026-08-14T08:47:53Z INFO  billing-2 /v1/session rq-40281 ok 616ms
+2026-08-14T08:54:06Z WARN  search-1 /v1/media/upload rq-40282 slow response 1774ms
+2026-08-14T08:01:19Z INFO  media-1 /v1/search rq-40283 ok 1174ms
+2026-08-14T08:08:32Z INFO  billing-1 /v1/invoice rq-40284 ok 1255ms
+2026-08-14T08:15:45Z INFO  billing-2 /v1/session rq-40285 ok 1309ms
+2026-08-14T08:22:58Z ERROR search-1 /v1/media/upload rq-40286 failed after 1244ms code=POOL_EXHAUSTED
+2026-08-14T08:29:11Z INFO  media-1 /v1/search rq-40287 ok 1003ms
+2026-08-14T08:36:24Z INFO  billing-1 /v1/invoice rq-40288 ok 1553ms
+2026-08-14T08:43:37Z INFO  billing-2 /v1/session rq-40289 ok 190ms
+2026-08-14T08:50:50Z INFO  search-1 /v1/media/upload rq-40290 ok 1385ms
+2026-08-14T08:57:03Z INFO  media-1 /v1/search rq-40291 ok 1403ms
+2026-08-14T08:04:16Z INFO  billing-1 /v1/invoice rq-40292 ok 805ms
+2026-08-14T08:11:29Z INFO  billing-2 /v1/session rq-40293 ok 85ms
+2026-08-14T08:18:42Z WARN  search-1 /v1/media/upload rq-40294 slow response 1627ms
+2026-08-14T08:25:55Z WARN  media-1 /v1/search rq-40295 slow response 1831ms
+2026-08-14T08:32:08Z INFO  billing-1 /v1/invoice rq-40296 ok 1332ms
+2026-08-14T08:39:21Z INFO  billing-2 /v1/session rq-40297 ok 649ms
+2026-08-14T08:46:34Z INFO  search-1 /v1/media/upload rq-40298 ok 1038ms
+2026-08-14T08:53:47Z ERROR media-1 /v1/search rq-40299 failed after 1589ms code=POOL_EXHAUSTED
+2026-08-14T08:00:00Z INFO  billing-1 /v1/invoice rq-40300 ok 929ms
+2026-08-14T08:07:13Z INFO  billing-2 /v1/session rq-40301 ok 994ms
+2026-08-14T08:14:26Z INFO  search-1 /v1/media/upload rq-40302 ok 941ms
+2026-08-14T08:21:39Z INFO  media-1 /v1/search rq-40303 ok 188ms
+2026-08-14T08:28:52Z INFO  billing-1 /v1/invoice rq-40304 ok 218ms
+2026-08-14T08:35:05Z INFO  billing-2 /v1/session rq-40305 ok 188ms
+2026-08-14T08:42:18Z INFO  search-1 /v1/media/upload rq-40306 ok 1384ms
+2026-08-14T08:49:31Z INFO  media-1 /v1/search rq-40307 ok 204ms
+2026-08-14T08:56:44Z WARN  billing-1 /v1/invoice rq-40308 slow response 1622ms
+2026-08-14T08:03:57Z INFO  billing-2 /v1/session rq-40309 ok 541ms
+2026-08-14T08:10:10Z INFO  search-1 /v1/media/upload rq-40310 ok 47ms
+2026-08-14T08:17:23Z INFO  media-1 /v1/search rq-40311 ok 1037ms
+2026-08-14T08:24:36Z ERROR billing-1 /v1/invoice rq-40312 failed after 1582ms code=POOL_EXHAUSTED
+2026-08-14T08:31:49Z INFO  billing-2 /v1/session rq-40313 ok 1124ms
+2026-08-14T08:38:02Z INFO  search-1 /v1/media/upload rq-40314 ok 1162ms
+2026-08-14T08:45:15Z INFO  media-1 /v1/search rq-40315 ok 92ms
+2026-08-14T08:52:28Z INFO  billing-1 /v1/invoice rq-40316 ok 991ms
+2026-08-14T08:59:41Z INFO  billing-2 /v1/session rq-40317 ok 1265ms
+2026-08-14T08:06:54Z INFO  search-1 /v1/media/upload rq-40318 ok 1099ms
+2026-08-14T08:13:07Z INFO  media-1 /v1/search rq-40319 ok 370ms
+2026-08-14T08:20:20Z INFO  billing-1 /v1/invoice rq-40320 ok 1438ms
+2026-08-14T08:27:33Z INFO  billing-2 /v1/session rq-40321 ok 717ms
+2026-08-14T08:34:46Z INFO  search-1 /v1/media/upload rq-40322 ok 1132ms
+2026-08-14T08:41:59Z WARN  media-1 /v1/search rq-40323 slow response 1793ms
+2026-08-14T08:48:12Z INFO  billing-1 /v1/invoice rq-40324 ok 292ms
+2026-08-14T08:55:25Z ERROR billing-2 /v1/session rq-40325 failed after 1465ms code=POOL_EXHAUSTED
+2026-08-14T08:02:38Z INFO  search-1 /v1/media/upload rq-40326 ok 1175ms
+2026-08-14T08:09:51Z INFO  media-1 /v1/search rq-40327 ok 1138ms
+2026-08-14T08:16:04Z INFO  billing-1 /v1/invoice rq-40328 ok 1558ms
+2026-08-14T08:23:17Z INFO  billing-2 /v1/session rq-40329 ok 586ms
+2026-08-14T08:30:30Z INFO  search-1 /v1/media/upload rq-40330 ok 668ms
+2026-08-14T08:37:43Z INFO  media-1 /v1/search rq-40331 ok 601ms
+2026-08-14T08:44:56Z INFO  billing-1 /v1/invoice rq-40332 ok 1251ms
+2026-08-14T08:51:09Z INFO  billing-2 /v1/session rq-40333 ok 25ms
+2026-08-14T08:58:22Z WARN  search-1 /v1/media/upload rq-40334 slow response 1785ms
+2026-08-14T08:05:35Z INFO  media-1 /v1/search rq-40335 ok 170ms
+2026-08-14T08:12:48Z INFO  billing-1 /v1/invoice rq-40336 ok 662ms
+2026-08-14T08:19:01Z INFO  billing-2 /v1/session rq-40337 ok 963ms
+2026-08-14T08:26:14Z ERROR search-1 /v1/media/upload rq-40338 failed after 1034ms code=TIMEOUT_UPSTREAM
+2026-08-14T08:33:27Z INFO  media-1 /v1/search rq-40339 ok 793ms
+2026-08-14T08:40:40Z INFO  billing-1 /v1/invoice rq-40340 ok 1471ms
+2026-08-14T08:47:53Z INFO  billing-2 /v1/session rq-40341 ok 916ms
+2026-08-14T08:54:06Z INFO  search-1 /v1/media/upload rq-40342 ok 736ms
+2026-08-14T08:01:19Z INFO  media-1 /v1/search rq-40343 ok 104ms
+2026-08-14T08:08:32Z INFO  billing-1 /v1/invoice rq-40344 ok 1368ms
+2026-08-14T08:15:45Z INFO  billing-2 /v1/session rq-40345 ok 51ms
+2026-08-14T08:22:58Z INFO  search-1 /v1/media/upload rq-40346 ok 952ms
+2026-08-14T08:29:11Z INFO  media-1 /v1/search rq-40347 ok 1271ms
+2026-08-14T08:36:24Z INFO  billing-1 /v1/invoice rq-40348 ok 1213ms
+2026-08-14T08:43:37Z INFO  billing-2 /v1/session rq-40349 ok 264ms
+2026-08-14T08:50:50Z INFO  search-1 /v1/media/upload rq-40350 ok 654ms
+2026-08-14T08:57:03Z ERROR media-1 /v1/search rq-40351 failed after 646ms code=TIMEOUT_UPSTREAM
+2026-08-14T08:04:16Z INFO  billing-1 /v1/invoice rq-40352 ok 261ms
+2026-08-14T08:11:29Z INFO  billing-2 /v1/session rq-40353 ok 95ms
+2026-08-14T08:18:42Z INFO  search-1 /v1/media/upload rq-40354 ok 729ms
+2026-08-14T08:25:55Z INFO  media-1 /v1/search rq-40355 ok 1237ms
+2026-08-14T08:32:08Z INFO  billing-1 /v1/invoice rq-40356 ok 177ms
+2026-08-14T08:39:21Z WARN  billing-2 /v1/session rq-40357 slow response 1645ms
+2026-08-14T08:46:34Z INFO  search-1 /v1/media/upload rq-40358 ok 794ms
+2026-08-14T08:53:47Z INFO  media-1 /v1/search rq-40359 ok 718ms
+2026-08-14T08:00:00Z INFO  billing-1 /v1/invoice rq-40360 ok 606ms
+2026-08-14T08:07:13Z INFO  billing-2 /v1/session rq-40361 ok 1352ms
+2026-08-14T08:14:26Z INFO  search-1 /v1/media/upload rq-40362 ok 806ms
+2026-08-14T08:21:39Z INFO  media-1 /v1/search rq-40363 ok 245ms
+2026-08-14T08:28:52Z ERROR billing-1 /v1/invoice rq-40364 failed after 1561ms code=DECODE_FAILED
+2026-08-14T08:35:05Z INFO  billing-2 /v1/session rq-40365 ok 1144ms
+2026-08-14T08:42:18Z INFO  search-1 /v1/media/upload rq-40366 ok 387ms
+2026-08-14T08:49:31Z INFO  media-1 /v1/search rq-40367 ok 743ms
+2026-08-14T08:56:44Z WARN  billing-1 /v1/invoice rq-40368 slow response 1804ms
+2026-08-14T08:03:57Z INFO  billing-2 /v1/session rq-40369 ok 852ms
+2026-08-14T08:10:10Z INFO  search-1 /v1/media/upload rq-40370 ok 258ms
+2026-08-14T08:17:23Z INFO  media-1 /v1/search rq-40371 ok 1514ms
+2026-08-14T08:24:36Z INFO  billing-1 /v1/invoice rq-40372 ok 171ms
+2026-08-14T08:31:49Z WARN  billing-2 /v1/session rq-40373 slow response 1834ms
+2026-08-14T08:38:02Z INFO  search-1 /v1/media/upload rq-40374 ok 643ms
+2026-08-14T08:45:15Z WARN  media-1 /v1/search rq-40375 slow response 1688ms
+2026-08-14T08:52:28Z INFO  billing-1 /v1/invoice rq-40376 ok 1463ms
+2026-08-14T08:59:41Z ERROR billing-2 /v1/session rq-40377 failed after 73ms code=RATE_LIMITED
+2026-08-14T08:06:54Z INFO  search-1 /v1/media/upload rq-40378 ok 518ms
+2026-08-14T08:13:07Z INFO  media-1 /v1/search rq-40379 ok 1179ms
+2026-08-14T08:20:20Z INFO  billing-1 /v1/invoice rq-40380 ok 905ms
+2026-08-14T08:27:33Z INFO  billing-2 /v1/session rq-40381 ok 1318ms
+2026-08-14T08:34:46Z INFO  search-1 /v1/media/upload rq-40382 ok 1359ms
+2026-08-14T08:41:59Z INFO  media-1 /v1/search rq-40383 ok 547ms
+2026-08-14T08:48:12Z INFO  billing-1 /v1/invoice rq-40384 ok 1158ms
+2026-08-14T08:55:25Z INFO  billing-2 /v1/session rq-40385 ok 490ms
+2026-08-14T08:02:38Z INFO  search-1 /v1/media/upload rq-40386 ok 1291ms
+2026-08-14T08:09:51Z INFO  media-1 /v1/search rq-40387 ok 798ms
+2026-08-14T08:16:04Z WARN  billing-1 /v1/invoice rq-40388 slow response 1756ms
+2026-08-14T08:23:17Z INFO  billing-2 /v1/session rq-40389 ok 944ms
+2026-08-14T08:30:30Z ERROR search-1 /v1/media/upload rq-40390 failed after 850ms code=POOL_EXHAUSTED
+2026-08-14T08:37:43Z INFO  media-1 /v1/search rq-40391 ok 322ms
+2026-08-14T08:44:56Z INFO  billing-1 /v1/invoice rq-40392 ok 1416ms
+2026-08-14T08:51:09Z INFO  billing-2 /v1/session rq-40393 ok 1532ms
+2026-08-14T08:58:22Z INFO  search-1 /v1/media/upload rq-40394 ok 436ms
+2026-08-14T08:05:35Z INFO  media-1 /v1/search rq-40395 ok 1301ms
+2026-08-14T08:12:48Z INFO  billing-1 /v1/invoice rq-40396 ok 857ms
+2026-08-14T08:19:01Z INFO  billing-2 /v1/session rq-40397 ok 900ms
+2026-08-14T08:26:14Z INFO  search-1 /v1/media/upload rq-40398 ok 413ms
+2026-08-14T08:33:27Z INFO  media-1 /v1/search rq-40399 ok 856ms
+2026-08-14T08:40:40Z WARN  billing-1 /v1/invoice rq-40400 slow response 1853ms
+2026-08-14T08:47:53Z INFO  billing-2 /v1/session rq-40401 ok 464ms
+2026-08-14T08:54:06Z INFO  search-1 /v1/media/upload rq-40402 ok 824ms
+2026-08-14T08:01:19Z ERROR media-1 /v1/search rq-40403 failed after 875ms code=POOL_EXHAUSTED
+2026-08-14T08:08:32Z INFO  billing-1 /v1/invoice rq-40404 ok 995ms
+2026-08-14T08:15:45Z INFO  billing-2 /v1/session rq-40405 ok 876ms
+2026-08-14T08:22:58Z INFO  search-1 /v1/media/upload rq-40406 ok 1366ms
+2026-08-14T08:29:11Z INFO  media-1 /v1/search rq-40407 ok 1449ms
+2026-08-14T08:36:24Z INFO  billing-1 /v1/invoice rq-40408 ok 494ms
+2026-08-14T08:43:37Z INFO  billing-2 /v1/session rq-40409 ok 6ms
+2026-08-14T08:50:50Z INFO  search-1 /v1/media/upload rq-40410 ok 738ms
+2026-08-14T08:57:03Z WARN  media-1 /v1/search rq-40411 slow response 1648ms
+2026-08-14T08:04:16Z INFO  billing-1 /v1/invoice rq-40412 ok 174ms
+2026-08-14T08:11:29Z INFO  billing-2 /v1/session rq-40413 ok 728ms
+2026-08-14T08:18:42Z INFO  search-1 /v1/media/upload rq-40414 ok 1482ms
+2026-08-14T08:25:55Z INFO  media-1 /v1/search rq-40415 ok 351ms
+2026-08-14T08:32:08Z ERROR billing-1 /v1/invoice rq-40416 failed after 233ms code=POOL_EXHAUSTED
+2026-08-14T08:39:21Z WARN  billing-2 /v1/session rq-40417 slow response 1728ms
+2026-08-14T08:46:34Z INFO  search-1 /v1/media/upload rq-40418 ok 387ms
+2026-08-14T08:53:47Z INFO  media-1 /v1/search rq-40419 ok 1487ms
+2026-08-14T09:00:00Z INFO  billing-1 /v1/invoice rq-40420 ok 1540ms
+2026-08-14T09:07:13Z INFO  billing-2 /v1/session rq-40421 ok 899ms
+2026-08-14T09:14:26Z INFO  search-1 /v1/media/upload rq-40422 ok 255ms
+2026-08-14T09:21:39Z INFO  media-1 /v1/search rq-40423 ok 432ms
+2026-08-14T09:28:52Z INFO  billing-1 /v1/invoice rq-40424 ok 348ms
+2026-08-14T09:35:05Z INFO  billing-2 /v1/session rq-40425 ok 1568ms
+2026-08-14T09:42:18Z INFO  search-1 /v1/media/upload rq-40426 ok 491ms
+2026-08-14T09:49:31Z INFO  media-1 /v1/search rq-40427 ok 1578ms
+2026-08-14T09:56:44Z INFO  billing-1 /v1/invoice rq-40428 ok 86ms
+2026-08-14T09:03:57Z ERROR billing-2 /v1/session rq-40429 failed after 161ms code=POOL_EXHAUSTED
+2026-08-14T09:10:10Z INFO  search-1 /v1/media/upload rq-40430 ok 241ms
+2026-08-14T09:17:23Z INFO  media-1 /v1/search rq-40431 ok 1252ms
+2026-08-14T09:24:36Z INFO  billing-1 /v1/invoice rq-40432 ok 1271ms
+2026-08-14T09:31:49Z INFO  billing-2 /v1/session rq-40433 ok 716ms
+2026-08-14T09:38:02Z INFO  search-1 /v1/media/upload rq-40434 ok 1358ms
+2026-08-14T09:45:15Z INFO  media-1 /v1/search rq-40435 ok 1403ms
+2026-08-14T09:52:28Z WARN  billing-1 /v1/invoice rq-40436 slow response 1618ms
+2026-08-14T09:59:41Z INFO  billing-2 /v1/session rq-40437 ok 332ms
+2026-08-14T09:06:54Z INFO  search-1 /v1/media/upload rq-40438 ok 376ms
+2026-08-14T09:13:07Z INFO  media-1 /v1/search rq-40439 ok 822ms
+2026-08-14T09:20:20Z INFO  billing-1 /v1/invoice rq-40440 ok 934ms
+2026-08-14T09:27:33Z INFO  billing-2 /v1/session rq-40441 ok 1445ms
+2026-08-14T09:34:46Z ERROR search-1 /v1/media/upload rq-40442 failed after 1413ms code=POOL_EXHAUSTED
+2026-08-14T09:41:59Z INFO  media-1 /v1/search rq-40443 ok 490ms
+2026-08-14T09:48:12Z WARN  billing-1 /v1/invoice rq-40444 slow response 1842ms
+2026-08-14T09:55:25Z INFO  billing-2 /v1/session rq-40445 ok 370ms
+2026-08-14T09:02:38Z INFO  search-1 /v1/media/upload rq-40446 ok 1375ms
+2026-08-14T09:09:51Z INFO  media-1 /v1/search rq-40447 ok 511ms
+2026-08-14T09:16:04Z INFO  billing-1 /v1/invoice rq-40448 ok 1066ms
+2026-08-14T09:23:17Z INFO  billing-2 /v1/session rq-40449 ok 1286ms
+2026-08-14T09:30:30Z INFO  search-1 /v1/media/upload rq-40450 ok 647ms
+2026-08-14T09:37:43Z INFO  media-1 /v1/search rq-40451 ok 1066ms
+2026-08-14T09:44:56Z INFO  billing-1 /v1/invoice rq-40452 ok 712ms
+2026-08-14T09:51:09Z INFO  billing-2 /v1/session rq-40453 ok 1497ms
+2026-08-14T09:58:22Z INFO  search-1 /v1/media/upload rq-40454 ok 961ms
+2026-08-14T09:05:35Z ERROR media-1 /v1/search rq-40455 failed after 1404ms code=POOL_EXHAUSTED
+2026-08-14T09:12:48Z INFO  billing-1 /v1/invoice rq-40456 ok 630ms
+2026-08-14T09:19:01Z INFO  billing-2 /v1/session rq-40457 ok 1164ms
+2026-08-14T09:26:14Z INFO  search-1 /v1/media/upload rq-40458 ok 737ms
+2026-08-14T09:33:27Z INFO  media-1 /v1/search rq-40459 ok 900ms
+2026-08-14T09:40:40Z INFO  billing-1 /v1/invoice rq-40460 ok 1236ms
+2026-08-14T09:47:53Z INFO  billing-2 /v1/session rq-40461 ok 1095ms
+2026-08-14T09:54:06Z INFO  search-1 /v1/media/upload rq-40462 ok 1511ms
+2026-08-14T09:01:19Z WARN  media-1 /v1/search rq-40463 slow response 1732ms
+2026-08-14T09:08:32Z INFO  billing-1 /v1/invoice rq-40464 ok 1094ms
+2026-08-14T09:15:45Z INFO  billing-2 /v1/session rq-40465 ok 1047ms
+2026-08-14T09:22:58Z INFO  search-1 /v1/media/upload rq-40466 ok 42ms
+2026-08-14T09:29:11Z INFO  media-1 /v1/search rq-40467 ok 764ms
+2026-08-14T09:36:24Z ERROR billing-1 /v1/invoice rq-40468 failed after 686ms code=TIMEOUT_UPSTREAM
+2026-08-14T09:43:37Z INFO  billing-2 /v1/session rq-40469 ok 651ms
+2026-08-14T09:50:50Z INFO  search-1 /v1/media/upload rq-40470 ok 1428ms
+2026-08-14T09:57:03Z INFO  media-1 /v1/search rq-40471 ok 602ms
+2026-08-14T09:04:16Z INFO  billing-1 /v1/invoice rq-40472 ok 864ms
+2026-08-14T09:11:29Z INFO  billing-2 /v1/session rq-40473 ok 218ms
+2026-08-14T09:18:42Z WARN  search-1 /v1/media/upload rq-40474 slow response 1666ms
+2026-08-14T09:25:55Z INFO  media-1 /v1/search rq-40475 ok 942ms
+2026-08-14T09:32:08Z INFO  billing-1 /v1/invoice rq-40476 ok 436ms
+2026-08-14T09:39:21Z INFO  billing-2 /v1/session rq-40477 ok 1187ms
+2026-08-14T09:46:34Z INFO  search-1 /v1/media/upload rq-40478 ok 8ms
+2026-08-14T09:53:47Z INFO  media-1 /v1/search rq-40479 ok 524ms
+2026-08-14T09:00:00Z INFO  billing-1 /v1/invoice rq-40480 ok 1140ms
+2026-08-14T09:07:13Z ERROR billing-2 /v1/session rq-40481 failed after 196ms code=TIMEOUT_UPSTREAM
+2026-08-14T09:14:26Z INFO  search-1 /v1/media/upload rq-40482 ok 1382ms
+2026-08-14T09:21:39Z INFO  media-1 /v1/search rq-40483 ok 283ms
+2026-08-14T09:28:52Z INFO  billing-1 /v1/invoice rq-40484 ok 1156ms
+2026-08-14T09:35:05Z INFO  billing-2 /v1/session rq-40485 ok 869ms
+2026-08-14T09:42:18Z INFO  search-1 /v1/media/upload rq-40486 ok 1393ms
+2026-08-14T09:49:31Z INFO  media-1 /v1/search rq-40487 ok 481ms
+2026-08-14T09:56:44Z INFO  billing-1 /v1/invoice rq-40488 ok 249ms
+2026-08-14T09:03:57Z WARN  billing-2 /v1/session rq-40489 slow response 1806ms
+2026-08-14T09:10:10Z WARN  search-1 /v1/media/upload rq-40490 slow response 1854ms
+2026-08-14T09:17:23Z INFO  media-1 /v1/search rq-40491 ok 1518ms
+2026-08-14T09:24:36Z WARN  billing-1 /v1/invoice rq-40492 slow response 1622ms
+2026-08-14T09:31:49Z INFO  billing-2 /v1/session rq-40493 ok 1073ms
+2026-08-14T09:38:02Z ERROR search-1 /v1/media/upload rq-40494 failed after 1293ms code=DECODE_FAILED
+2026-08-14T09:45:15Z INFO  media-1 /v1/search rq-40495 ok 1104ms
+2026-08-14T09:52:28Z WARN  billing-1 /v1/invoice rq-40496 slow response 1835ms
+2026-08-14T09:59:41Z INFO  billing-2 /v1/session rq-40497 ok 1006ms
+2026-08-14T09:06:54Z INFO  search-1 /v1/media/upload rq-40498 ok 1560ms
+2026-08-14T09:13:07Z INFO  media-1 /v1/search rq-40499 ok 178ms
+2026-08-14T09:20:20Z INFO  billing-1 /v1/invoice rq-40500 ok 247ms
+2026-08-14T09:27:33Z INFO  billing-2 /v1/session rq-40501 ok 649ms
+2026-08-14T09:34:46Z INFO  search-1 /v1/media/upload rq-40502 ok 1261ms
+2026-08-14T09:41:59Z INFO  media-1 /v1/search rq-40503 ok 272ms
+2026-08-14T09:48:12Z WARN  billing-1 /v1/invoice rq-40504 slow response 1603ms
+2026-08-14T09:55:25Z INFO  billing-2 /v1/session rq-40505 ok 138ms
+2026-08-14T09:02:38Z INFO  search-1 /v1/media/upload rq-40506 ok 55ms
+2026-08-14T09:09:51Z ERROR media-1 /v1/search rq-40507 failed after 514ms code=RATE_LIMITED
+2026-08-14T09:16:04Z INFO  billing-1 /v1/invoice rq-40508 ok 466ms
+2026-08-14T09:23:17Z INFO  billing-2 /v1/session rq-40509 ok 705ms
+2026-08-14T09:30:30Z INFO  search-1 /v1/media/upload rq-40510 ok 35ms
+2026-08-14T09:37:43Z INFO  media-1 /v1/search rq-40511 ok 1570ms
+2026-08-14T09:44:56Z INFO  billing-1 /v1/invoice rq-40512 ok 936ms
+2026-08-14T09:51:09Z INFO  billing-2 /v1/session rq-40513 ok 1042ms
+2026-08-14T09:58:22Z INFO  search-1 /v1/media/upload rq-40514 ok 1548ms
+2026-08-14T09:05:35Z INFO  media-1 /v1/search rq-40515 ok 264ms
+2026-08-14T09:12:48Z INFO  billing-1 /v1/invoice rq-40516 ok 1023ms
+2026-08-14T09:19:01Z INFO  billing-2 /v1/session rq-40517 ok 1043ms
+2026-08-14T09:26:14Z INFO  search-1 /v1/media/upload rq-40518 ok 1392ms
+2026-08-14T09:33:27Z INFO  media-1 /v1/search rq-40519 ok 949ms
+2026-08-14T09:40:40Z ERROR billing-1 /v1/invoice rq-40520 failed after 343ms code=POOL_EXHAUSTED
+2026-08-14T09:47:53Z INFO  billing-2 /v1/session rq-40521 ok 324ms
+2026-08-14T09:54:06Z INFO  search-1 /v1/media/upload rq-40522 ok 421ms
+2026-08-14T09:01:19Z WARN  media-1 /v1/search rq-40523 slow response 1693ms
+2026-08-14T09:08:32Z INFO  billing-1 /v1/invoice rq-40524 ok 318ms
+2026-08-14T09:15:45Z INFO  billing-2 /v1/session rq-40525 ok 320ms
+2026-08-14T09:22:58Z INFO  search-1 /v1/media/upload rq-40526 ok 25ms
+2026-08-14T09:29:11Z WARN  media-1 /v1/search rq-40527 slow response 1694ms
+2026-08-14T09:36:24Z INFO  billing-1 /v1/invoice rq-40528 ok 349ms
+2026-08-14T09:43:37Z INFO  billing-2 /v1/session rq-40529 ok 743ms
+2026-08-14T09:50:50Z INFO  search-1 /v1/media/upload rq-40530 ok 271ms
+2026-08-14T09:57:03Z INFO  media-1 /v1/search rq-40531 ok 1099ms
+2026-08-14T09:04:16Z INFO  billing-1 /v1/invoice rq-40532 ok 375ms
+2026-08-14T09:11:29Z ERROR billing-2 /v1/session rq-40533 failed after 542ms code=POOL_EXHAUSTED
+2026-08-14T09:18:42Z WARN  search-1 /v1/media/upload rq-40534 slow response 1799ms
+2026-08-14T09:25:55Z INFO  media-1 /v1/search rq-40535 ok 550ms
+2026-08-14T09:32:08Z INFO  billing-1 /v1/invoice rq-40536 ok 391ms
+2026-08-14T09:39:21Z INFO  billing-2 /v1/session rq-40537 ok 1448ms
+2026-08-14T09:46:34Z INFO  search-1 /v1/media/upload rq-40538 ok 742ms
+2026-08-14T09:53:47Z WARN  media-1 /v1/search rq-40539 slow response 1729ms
+2026-08-14T09:00:00Z INFO  billing-1 /v1/invoice rq-40540 ok 1403ms
+2026-08-14T09:07:13Z INFO  billing-2 /v1/session rq-40541 ok 141ms
+2026-08-14T09:14:26Z WARN  search-1 /v1/media/upload rq-40542 slow response 1768ms
+2026-08-14T09:21:39Z INFO  media-1 /v1/search rq-40543 ok 176ms
+2026-08-14T09:28:52Z INFO  billing-1 /v1/invoice rq-40544 ok 1013ms
+2026-08-14T09:35:05Z INFO  billing-2 /v1/session rq-40545 ok 767ms
+2026-08-14T09:42:18Z ERROR search-1 /v1/media/upload rq-40546 failed after 1269ms code=POOL_EXHAUSTED
+2026-08-14T09:49:31Z INFO  media-1 /v1/search rq-40547 ok 82ms
+2026-08-14T09:56:44Z INFO  billing-1 /v1/invoice rq-40548 ok 1435ms
+2026-08-14T09:03:57Z WARN  billing-2 /v1/session rq-40549 slow response 1623ms
+2026-08-14T09:10:10Z INFO  search-1 /v1/media/upload rq-40550 ok 711ms
+2026-08-14T09:17:23Z WARN  media-1 /v1/search rq-40551 slow response 1785ms
+2026-08-14T09:24:36Z WARN  billing-1 /v1/invoice rq-40552 slow response 1807ms
+2026-08-14T09:31:49Z INFO  billing-2 /v1/session rq-40553 ok 861ms
+2026-08-14T09:38:02Z WARN  search-1 /v1/media/upload rq-40554 slow response 1647ms
+2026-08-14T09:45:15Z WARN  media-1 /v1/search rq-40555 slow response 1620ms
+2026-08-14T09:52:28Z INFO  billing-1 /v1/invoice rq-40556 ok 1477ms
+2026-08-14T09:59:41Z INFO  billing-2 /v1/session rq-40557 ok 1129ms
+2026-08-14T09:06:54Z INFO  search-1 /v1/media/upload rq-40558 ok 1012ms
+2026-08-14T09:13:07Z ERROR media-1 /v1/search rq-40559 failed after 901ms code=POOL_EXHAUSTED
+2026-08-14T10:20:20Z INFO  billing-1 /v1/invoice rq-40560 ok 1409ms
+2026-08-14T10:27:33Z INFO  billing-2 /v1/session rq-40561 ok 44ms
+2026-08-14T10:34:46Z INFO  search-1 /v1/media/upload rq-40562 ok 674ms
+2026-08-14T10:41:59Z INFO  media-1 /v1/search rq-40563 ok 632ms
+2026-08-14T10:48:12Z WARN  billing-1 /v1/invoice rq-40564 slow response 1771ms
+2026-08-14T10:55:25Z INFO  billing-2 /v1/session rq-40565 ok 1475ms
+2026-08-14T10:02:38Z INFO  search-1 /v1/media/upload rq-40566 ok 1224ms
+2026-08-14T10:09:51Z INFO  media-1 /v1/search rq-40567 ok 1395ms
+2026-08-14T10:16:04Z WARN  billing-1 /v1/invoice rq-40568 slow response 1899ms
+2026-08-14T10:23:17Z INFO  billing-2 /v1/session rq-40569 ok 429ms
+2026-08-14T10:30:30Z INFO  search-1 /v1/media/upload rq-40570 ok 1212ms
+2026-08-14T10:37:43Z INFO  media-1 /v1/search rq-40571 ok 1089ms
+2026-08-14T10:44:56Z ERROR billing-1 /v1/invoice rq-40572 failed after 351ms code=POOL_EXHAUSTED
+2026-08-14T10:51:09Z INFO  billing-2 /v1/session rq-40573 ok 231ms
+2026-08-14T10:58:22Z INFO  search-1 /v1/media/upload rq-40574 ok 120ms
+2026-08-14T10:05:35Z WARN  media-1 /v1/search rq-40575 slow response 1872ms
+2026-08-14T10:12:48Z INFO  billing-1 /v1/invoice rq-40576 ok 343ms
+2026-08-14T10:19:01Z INFO  billing-2 /v1/session rq-40577 ok 1189ms
+2026-08-14T10:26:14Z INFO  search-1 /v1/media/upload rq-40578 ok 1066ms
+2026-08-14T10:33:27Z INFO  media-1 /v1/search rq-40579 ok 1162ms
+2026-08-14T10:40:40Z INFO  billing-1 /v1/invoice rq-40580 ok 865ms
+2026-08-14T10:47:53Z INFO  billing-2 /v1/session rq-40581 ok 1307ms
+2026-08-14T10:54:06Z INFO  search-1 /v1/media/upload rq-40582 ok 959ms
+2026-08-14T10:01:19Z INFO  media-1 /v1/search rq-40583 ok 1060ms
+2026-08-14T10:08:32Z INFO  billing-1 /v1/invoice rq-40584 ok 353ms
+2026-08-14T10:15:45Z ERROR billing-2 /v1/session rq-40585 failed after 1713ms code=POOL_EXHAUSTED
+2026-08-14T10:22:58Z INFO  search-1 /v1/media/upload rq-40586 ok 1199ms
+2026-08-14T10:29:11Z INFO  media-1 /v1/search rq-40587 ok 1185ms
+2026-08-14T10:36:24Z INFO  billing-1 /v1/invoice rq-40588 ok 708ms
+2026-08-14T10:43:37Z INFO  billing-2 /v1/session rq-40589 ok 842ms
+2026-08-14T10:50:50Z INFO  search-1 /v1/media/upload rq-40590 ok 806ms
+2026-08-14T10:57:03Z INFO  media-1 /v1/search rq-40591 ok 115ms
+2026-08-14T10:04:16Z INFO  billing-1 /v1/invoice rq-40592 ok 113ms
+2026-08-14T10:11:29Z INFO  billing-2 /v1/session rq-40593 ok 355ms
+2026-08-14T10:18:42Z INFO  search-1 /v1/media/upload rq-40594 ok 274ms
+2026-08-14T10:25:55Z INFO  media-1 /v1/search rq-40595 ok 248ms
+2026-08-14T10:32:08Z INFO  billing-1 /v1/invoice rq-40596 ok 1493ms
+2026-08-14T10:39:21Z INFO  billing-2 /v1/session rq-40597 ok 779ms
+2026-08-14T10:46:34Z ERROR search-1 /v1/media/upload rq-40598 failed after 1099ms code=TIMEOUT_UPSTREAM
+2026-08-14T10:53:47Z INFO  media-1 /v1/search rq-40599 ok 1410ms
+2026-08-14T10:00:00Z INFO  billing-1 /v1/invoice rq-40600 ok 566ms
+2026-08-14T10:07:13Z WARN  billing-2 /v1/session rq-40601 slow response 1849ms
+2026-08-14T10:14:26Z INFO  search-1 /v1/media/upload rq-40602 ok 424ms
+2026-08-14T10:21:39Z INFO  media-1 /v1/search rq-40603 ok 222ms
+2026-08-14T10:28:52Z WARN  billing-1 /v1/invoice rq-40604 slow response 1758ms
+2026-08-14T10:35:05Z WARN  billing-2 /v1/session rq-40605 slow response 1761ms
+2026-08-14T10:42:18Z WARN  search-1 /v1/media/upload rq-40606 slow response 1844ms
+2026-08-14T10:49:31Z WARN  media-1 /v1/search rq-40607 slow response 1635ms
+2026-08-14T10:56:44Z INFO  billing-1 /v1/invoice rq-40608 ok 958ms
+2026-08-14T10:03:57Z WARN  billing-2 /v1/session rq-40609 slow response 1679ms
+2026-08-14T10:10:10Z INFO  search-1 /v1/media/upload rq-40610 ok 1323ms
+2026-08-14T10:17:23Z ERROR media-1 /v1/search rq-40611 failed after 85ms code=TIMEOUT_UPSTREAM
+2026-08-14T10:24:36Z INFO  billing-1 /v1/invoice rq-40612 ok 236ms
+2026-08-14T10:31:49Z INFO  billing-2 /v1/session rq-40613 ok 1414ms
+2026-08-14T10:38:02Z WARN  search-1 /v1/media/upload rq-40614 slow response 1881ms
+2026-08-14T10:45:15Z INFO  media-1 /v1/search rq-40615 ok 1585ms
+2026-08-14T10:52:28Z INFO  billing-1 /v1/invoice rq-40616 ok 1534ms
+2026-08-14T10:59:41Z WARN  billing-2 /v1/session rq-40617 slow response 1871ms
+2026-08-14T10:06:54Z INFO  search-1 /v1/media/upload rq-40618 ok 387ms
+2026-08-14T10:13:07Z INFO  media-1 /v1/search rq-40619 ok 1024ms
+2026-08-14T10:20:20Z INFO  billing-1 /v1/invoice rq-40620 ok 1332ms
+2026-08-14T10:27:33Z INFO  billing-2 /v1/session rq-40621 ok 250ms
+2026-08-14T10:34:46Z INFO  search-1 /v1/media/upload rq-40622 ok 347ms
+2026-08-14T10:41:59Z INFO  media-1 /v1/search rq-40623 ok 1272ms
+2026-08-14T10:48:12Z ERROR billing-1 /v1/invoice rq-40624 failed after 917ms code=DECODE_FAILED
+2026-08-14T10:55:25Z INFO  billing-2 /v1/session rq-40625 ok 519ms
+2026-08-14T10:02:38Z WARN  search-1 /v1/media/upload rq-40626 slow response 1661ms
+2026-08-14T10:09:51Z INFO  media-1 /v1/search rq-40627 ok 1398ms
+2026-08-14T10:16:04Z INFO  billing-1 /v1/invoice rq-40628 ok 920ms
+2026-08-14T10:23:17Z INFO  billing-2 /v1/session rq-40629 ok 1026ms
+2026-08-14T10:30:30Z INFO  search-1 /v1/media/upload rq-40630 ok 1156ms
+2026-08-14T10:37:43Z WARN  media-1 /v1/search rq-40631 slow response 1773ms
+2026-08-14T10:44:56Z INFO  billing-1 /v1/invoice rq-40632 ok 1519ms
+2026-08-14T10:51:09Z INFO  billing-2 /v1/session rq-40633 ok 1306ms
+2026-08-14T10:58:22Z INFO  search-1 /v1/media/upload rq-40634 ok 1284ms
+2026-08-14T10:05:35Z INFO  media-1 /v1/search rq-40635 ok 765ms
+2026-08-14T10:12:48Z INFO  billing-1 /v1/invoice rq-40636 ok 1268ms
+2026-08-14T10:19:01Z ERROR billing-2 /v1/session rq-40637 failed after 1432ms code=RATE_LIMITED
+2026-08-14T10:26:14Z INFO  search-1 /v1/media/upload rq-40638 ok 357ms
+2026-08-14T10:33:27Z INFO  media-1 /v1/search rq-40639 ok 1296ms
+2026-08-14T10:40:40Z INFO  billing-1 /v1/invoice rq-40640 ok 119ms
+2026-08-14T10:47:53Z INFO  billing-2 /v1/session rq-40641 ok 808ms
+2026-08-14T10:54:06Z INFO  search-1 /v1/media/upload rq-40642 ok 576ms
+2026-08-14T10:01:19Z WARN  media-1 /v1/search rq-40643 slow response 1625ms
+2026-08-14T10:08:32Z INFO  billing-1 /v1/invoice rq-40644 ok 120ms
+2026-08-14T10:15:45Z INFO  billing-2 /v1/session rq-40645 ok 930ms
+2026-08-14T10:22:58Z INFO  search-1 /v1/media/upload rq-40646 ok 360ms
+2026-08-14T10:29:11Z INFO  media-1 /v1/search rq-40647 ok 863ms
+2026-08-14T10:36:24Z INFO  billing-1 /v1/invoice rq-40648 ok 587ms
+2026-08-14T10:43:37Z INFO  billing-2 /v1/session rq-40649 ok 674ms
+2026-08-14T10:50:50Z ERROR search-1 /v1/media/upload rq-40650 failed after 56ms code=POOL_EXHAUSTED
+2026-08-14T10:57:03Z INFO  media-1 /v1/search rq-40651 ok 945ms
+2026-08-14T10:04:16Z INFO  billing-1 /v1/invoice rq-40652 ok 1377ms
+2026-08-14T10:11:29Z INFO  billing-2 /v1/session rq-40653 ok 543ms
+2026-08-14T10:18:42Z INFO  search-1 /v1/media/upload rq-40654 ok 314ms
+2026-08-14T10:25:55Z INFO  media-1 /v1/search rq-40655 ok 1577ms
+2026-08-14T10:32:08Z INFO  billing-1 /v1/invoice rq-40656 ok 506ms
+2026-08-14T10:39:21Z INFO  billing-2 /v1/session rq-40657 ok 1482ms
+2026-08-14T10:46:34Z INFO  search-1 /v1/media/upload rq-40658 ok 241ms
+2026-08-14T10:53:47Z INFO  media-1 /v1/search rq-40659 ok 479ms
+2026-08-14T10:00:00Z WARN  billing-1 /v1/invoice rq-40660 slow response 1630ms
+2026-08-14T10:07:13Z INFO  billing-2 /v1/session rq-40661 ok 1388ms
+2026-08-14T10:14:26Z INFO  search-1 /v1/media/upload rq-40662 ok 1137ms
+2026-08-14T10:21:39Z ERROR media-1 /v1/search rq-40663 failed after 1775ms code=POOL_EXHAUSTED
+2026-08-14T10:28:52Z INFO  billing-1 /v1/invoice rq-40664 ok 1280ms
+2026-08-14T10:35:05Z INFO  billing-2 /v1/session rq-40665 ok 14ms
+2026-08-14T10:42:18Z INFO  search-1 /v1/media/upload rq-40666 ok 210ms
+2026-08-14T10:49:31Z INFO  media-1 /v1/search rq-40667 ok 11ms
+2026-08-14T10:56:44Z INFO  billing-1 /v1/invoice rq-40668 ok 272ms
+2026-08-14T10:03:57Z INFO  billing-2 /v1/session rq-40669 ok 686ms
+2026-08-14T10:10:10Z INFO  search-1 /v1/media/upload rq-40670 ok 383ms
+2026-08-14T10:17:23Z INFO  media-1 /v1/search rq-40671 ok 211ms
+2026-08-14T10:24:36Z INFO  billing-1 /v1/invoice rq-40672 ok 115ms
+2026-08-14T10:31:49Z INFO  billing-2 /v1/session rq-40673 ok 512ms
+2026-08-14T10:38:02Z INFO  search-1 /v1/media/upload rq-40674 ok 401ms
+2026-08-14T10:45:15Z WARN  media-1 /v1/search rq-40675 slow response 1826ms
+2026-08-14T10:52:28Z ERROR billing-1 /v1/invoice rq-40676 failed after 191ms code=POOL_EXHAUSTED
+2026-08-14T10:59:41Z INFO  billing-2 /v1/session rq-40677 ok 651ms
+2026-08-14T10:06:54Z WARN  search-1 /v1/media/upload rq-40678 slow response 1632ms
+2026-08-14T10:13:07Z INFO  media-1 /v1/search rq-40679 ok 959ms
+2026-08-14T10:20:20Z WARN  billing-1 /v1/invoice rq-40680 slow response 1810ms
+2026-08-14T10:27:33Z INFO  billing-2 /v1/session rq-40681 ok 251ms
+2026-08-14T10:34:46Z INFO  search-1 /v1/media/upload rq-40682 ok 1239ms
+2026-08-14T10:41:59Z INFO  media-1 /v1/search rq-40683 ok 1124ms
+2026-08-14T10:48:12Z WARN  billing-1 /v1/invoice rq-40684 slow response 1705ms
+2026-08-14T10:55:25Z WARN  billing-2 /v1/session rq-40685 slow response 1746ms
+2026-08-14T10:02:38Z INFO  search-1 /v1/media/upload rq-40686 ok 662ms
+2026-08-14T10:09:51Z INFO  media-1 /v1/search rq-40687 ok 707ms
+2026-08-14T10:16:04Z INFO  billing-1 /v1/invoice rq-40688 ok 1559ms
+2026-08-14T10:23:17Z ERROR billing-2 /v1/session rq-40689 failed after 1854ms code=POOL_EXHAUSTED
+2026-08-14T10:30:30Z WARN  search-1 /v1/media/upload rq-40690 slow response 1884ms
+2026-08-14T10:37:43Z WARN  media-1 /v1/search rq-40691 slow response 1722ms
+2026-08-14T10:44:56Z WARN  billing-1 /v1/invoice rq-40692 slow response 1710ms
+2026-08-14T10:51:09Z INFO  billing-2 /v1/session rq-40693 ok 1035ms
+2026-08-14T10:58:22Z INFO  search-1 /v1/media/upload rq-40694 ok 1452ms
+2026-08-14T10:05:35Z INFO  media-1 /v1/search rq-40695 ok 852ms
+2026-08-14T10:12:48Z INFO  billing-1 /v1/invoice rq-40696 ok 208ms
+2026-08-14T10:19:01Z INFO  billing-2 /v1/session rq-40697 ok 1578ms
+2026-08-14T10:26:14Z INFO  search-1 /v1/media/upload rq-40698 ok 205ms
+2026-08-14T10:33:27Z INFO  media-1 /v1/search rq-40699 ok 684ms
+2026-08-14T11:40:40Z WARN  billing-1 /v1/invoice rq-40700 slow response 1760ms
+2026-08-14T11:47:53Z INFO  billing-2 /v1/session rq-40701 ok 951ms
+2026-08-14T11:54:06Z ERROR search-1 /v1/media/upload rq-40702 failed after 306ms code=POOL_EXHAUSTED
+2026-08-14T11:01:19Z INFO  media-1 /v1/search rq-40703 ok 778ms
+2026-08-14T11:08:32Z INFO  billing-1 /v1/invoice rq-40704 ok 565ms
+2026-08-14T11:15:45Z INFO  billing-2 /v1/session rq-40705 ok 465ms
+2026-08-14T11:22:58Z WARN  search-1 /v1/media/upload rq-40706 slow response 1735ms
+2026-08-14T11:29:11Z INFO  media-1 /v1/search rq-40707 ok 298ms
+2026-08-14T11:36:24Z WARN  billing-1 /v1/invoice rq-40708 slow response 1900ms
+2026-08-14T11:43:37Z INFO  billing-2 /v1/session rq-40709 ok 146ms
+2026-08-14T11:50:50Z WARN  search-1 /v1/media/upload rq-40710 slow response 1815ms
+2026-08-14T11:57:03Z INFO  media-1 /v1/search rq-40711 ok 972ms
+2026-08-14T11:04:16Z INFO  billing-1 /v1/invoice rq-40712 ok 859ms
+2026-08-14T11:11:29Z INFO  billing-2 /v1/session rq-40713 ok 733ms
+2026-08-14T11:18:42Z WARN  search-1 /v1/media/upload rq-40714 slow response 1817ms
+2026-08-14T11:25:55Z ERROR media-1 /v1/search rq-40715 failed after 562ms code=POOL_EXHAUSTED
+2026-08-14T11:32:08Z INFO  billing-1 /v1/invoice rq-40716 ok 24ms
+2026-08-14T11:39:21Z WARN  billing-2 /v1/session rq-40717 slow response 1891ms
+2026-08-14T11:46:34Z INFO  search-1 /v1/media/upload rq-40718 ok 1077ms
+2026-08-14T11:53:47Z INFO  media-1 /v1/search rq-40719 ok 1257ms
+2026-08-14T11:00:00Z INFO  billing-1 /v1/invoice rq-40720 ok 304ms
+2026-08-14T11:07:13Z INFO  billing-2 /v1/session rq-40721 ok 977ms
+2026-08-14T11:14:26Z INFO  search-1 /v1/media/upload rq-40722 ok 1167ms
+2026-08-14T11:21:39Z INFO  media-1 /v1/search rq-40723 ok 1437ms
+2026-08-14T11:28:52Z INFO  billing-1 /v1/invoice rq-40724 ok 145ms
+2026-08-14T11:35:05Z INFO  billing-2 /v1/session rq-40725 ok 597ms
+2026-08-14T11:42:18Z INFO  search-1 /v1/media/upload rq-40726 ok 275ms
+2026-08-14T11:49:31Z INFO  media-1 /v1/search rq-40727 ok 1421ms
+2026-08-14T11:56:44Z ERROR billing-1 /v1/invoice rq-40728 failed after 914ms code=TIMEOUT_UPSTREAM
+2026-08-14T11:03:57Z INFO  billing-2 /v1/session rq-40729 ok 667ms
+2026-08-14T11:10:10Z INFO  search-1 /v1/media/upload rq-40730 ok 66ms
+2026-08-14T11:17:23Z INFO  media-1 /v1/search rq-40731 ok 707ms
+2026-08-14T11:24:36Z INFO  billing-1 /v1/invoice rq-40732 ok 268ms
+2026-08-14T11:31:49Z INFO  billing-2 /v1/session rq-40733 ok 266ms
+2026-08-14T11:38:02Z INFO  search-1 /v1/media/upload rq-40734 ok 163ms
+2026-08-14T11:45:15Z INFO  media-1 /v1/search rq-40735 ok 82ms
+2026-08-14T11:52:28Z WARN  billing-1 /v1/invoice rq-40736 slow response 1871ms
+2026-08-14T11:59:41Z INFO  billing-2 /v1/session rq-40737 ok 1028ms
+2026-08-14T11:06:54Z WARN  search-1 /v1/media/upload rq-40738 slow response 1614ms
+2026-08-14T11:13:07Z INFO  media-1 /v1/search rq-40739 ok 1280ms
+2026-08-14T11:20:20Z INFO  billing-1 /v1/invoice rq-40740 ok 443ms
+2026-08-14T11:27:33Z ERROR billing-2 /v1/session rq-40741 failed after 1705ms code=TIMEOUT_UPSTREAM
+2026-08-14T11:34:46Z INFO  search-1 /v1/media/upload rq-40742 ok 305ms
+2026-08-14T11:41:59Z INFO  media-1 /v1/search rq-40743 ok 1359ms
+2026-08-14T11:48:12Z INFO  billing-1 /v1/invoice rq-40744 ok 644ms
+2026-08-14T11:55:25Z INFO  billing-2 /v1/session rq-40745 ok 1566ms
+2026-08-14T11:02:38Z INFO  search-1 /v1/media/upload rq-40746 ok 888ms
+2026-08-14T11:09:51Z INFO  media-1 /v1/search rq-40747 ok 650ms
+2026-08-14T11:16:04Z WARN  billing-1 /v1/invoice rq-40748 slow response 1624ms
+2026-08-14T11:23:17Z INFO  billing-2 /v1/session rq-40749 ok 1379ms
+2026-08-14T11:30:30Z INFO  search-1 /v1/media/upload rq-40750 ok 1476ms
+2026-08-14T11:37:43Z INFO  media-1 /v1/search rq-40751 ok 962ms
+2026-08-14T11:44:56Z INFO  billing-1 /v1/invoice rq-40752 ok 831ms
+2026-08-14T11:51:09Z INFO  billing-2 /v1/session rq-40753 ok 1147ms
+2026-08-14T11:58:22Z ERROR search-1 /v1/media/upload rq-40754 failed after 302ms code=DECODE_FAILED
+2026-08-14T11:05:35Z INFO  media-1 /v1/search rq-40755 ok 1145ms
+2026-08-14T11:12:48Z INFO  billing-1 /v1/invoice rq-40756 ok 20ms
+2026-08-14T11:19:01Z INFO  billing-2 /v1/session rq-40757 ok 1052ms
+2026-08-14T11:26:14Z WARN  search-1 /v1/media/upload rq-40758 slow response 1737ms
+2026-08-14T11:33:27Z WARN  media-1 /v1/search rq-40759 slow response 1713ms
+2026-08-14T11:40:40Z INFO  billing-1 /v1/invoice rq-40760 ok 307ms
+2026-08-14T11:47:53Z WARN  billing-2 /v1/session rq-40761 slow response 1663ms
+2026-08-14T11:54:06Z INFO  search-1 /v1/media/upload rq-40762 ok 1227ms
+2026-08-14T11:01:19Z INFO  media-1 /v1/search rq-40763 ok 1049ms
+2026-08-14T11:08:32Z INFO  billing-1 /v1/invoice rq-40764 ok 830ms
+2026-08-14T11:15:45Z WARN  billing-2 /v1/session rq-40765 slow response 1865ms
+2026-08-14T11:22:58Z INFO  search-1 /v1/media/upload rq-40766 ok 1141ms
+2026-08-14T11:29:11Z ERROR media-1 /v1/search rq-40767 failed after 1124ms code=RATE_LIMITED
+2026-08-14T11:36:24Z INFO  billing-1 /v1/invoice rq-40768 ok 1299ms
+2026-08-14T11:43:37Z INFO  billing-2 /v1/session rq-40769 ok 1377ms
+2026-08-14T11:50:50Z INFO  search-1 /v1/media/upload rq-40770 ok 1435ms
+2026-08-14T11:57:03Z INFO  media-1 /v1/search rq-40771 ok 719ms
+2026-08-14T11:04:16Z INFO  billing-1 /v1/invoice rq-40772 ok 36ms
+2026-08-14T11:11:29Z INFO  billing-2 /v1/session rq-40773 ok 525ms
+2026-08-14T11:18:42Z INFO  search-1 /v1/media/upload rq-40774 ok 1175ms
+2026-08-14T11:25:55Z INFO  media-1 /v1/search rq-40775 ok 916ms
+2026-08-14T11:32:08Z WARN  billing-1 /v1/invoice rq-40776 slow response 1828ms
+2026-08-14T11:39:21Z INFO  billing-2 /v1/session rq-40777 ok 1156ms
+2026-08-14T11:46:34Z INFO  search-1 /v1/media/upload rq-40778 ok 1470ms
+2026-08-14T11:53:47Z INFO  media-1 /v1/search rq-40779 ok 328ms
+2026-08-14T11:00:00Z ERROR billing-1 /v1/invoice rq-40780 failed after 970ms code=POOL_EXHAUSTED
+2026-08-14T11:07:13Z INFO  billing-2 /v1/session rq-40781 ok 695ms
+2026-08-14T11:14:26Z INFO  search-1 /v1/media/upload rq-40782 ok 769ms
+2026-08-14T11:21:39Z INFO  media-1 /v1/search rq-40783 ok 757ms
+2026-08-14T11:28:52Z INFO  billing-1 /v1/invoice rq-40784 ok 1029ms
+2026-08-14T11:35:05Z INFO  billing-2 /v1/session rq-40785 ok 915ms
+2026-08-14T11:42:18Z INFO  search-1 /v1/media/upload rq-40786 ok 1246ms
+2026-08-14T11:49:31Z WARN  media-1 /v1/search rq-40787 slow response 1823ms
+2026-08-14T11:56:44Z INFO  billing-1 /v1/invoice rq-40788 ok 1392ms
+2026-08-14T11:03:57Z INFO  billing-2 /v1/session rq-40789 ok 888ms
+2026-08-14T11:10:10Z INFO  search-1 /v1/media/upload rq-40790 ok 1010ms
+2026-08-14T11:17:23Z INFO  media-1 /v1/search rq-40791 ok 329ms
+2026-08-14T11:24:36Z INFO  billing-1 /v1/invoice rq-40792 ok 1461ms
+2026-08-14T11:31:49Z ERROR billing-2 /v1/session rq-40793 failed after 1145ms code=POOL_EXHAUSTED
+2026-08-14T11:38:02Z INFO  search-1 /v1/media/upload rq-40794 ok 907ms
+2026-08-14T11:45:15Z INFO  media-1 /v1/search rq-40795 ok 1064ms
+2026-08-14T11:52:28Z INFO  billing-1 /v1/invoice rq-40796 ok 1307ms
+2026-08-14T11:59:41Z INFO  billing-2 /v1/session rq-40797 ok 377ms
+2026-08-14T11:06:54Z INFO  search-1 /v1/media/upload rq-40798 ok 350ms
+2026-08-14T11:13:07Z INFO  media-1 /v1/search rq-40799 ok 695ms
+2026-08-14T11:20:20Z INFO  billing-1 /v1/invoice rq-40800 ok 556ms
+2026-08-14T11:27:33Z INFO  billing-2 /v1/session rq-40801 ok 1014ms
+2026-08-14T11:34:46Z INFO  search-1 /v1/media/upload rq-40802 ok 1194ms
+2026-08-14T11:41:59Z WARN  media-1 /v1/search rq-40803 slow response 1690ms
+2026-08-14T11:48:12Z INFO  billing-1 /v1/invoice rq-40804 ok 785ms
+2026-08-14T11:55:25Z INFO  billing-2 /v1/session rq-40805 ok 169ms
+2026-08-14T11:02:38Z ERROR search-1 /v1/media/upload rq-40806 failed after 170ms code=POOL_EXHAUSTED
+2026-08-14T11:09:51Z INFO  media-1 /v1/search rq-40807 ok 178ms
+2026-08-14T11:16:04Z INFO  billing-1 /v1/invoice rq-40808 ok 224ms
+2026-08-14T11:23:17Z INFO  billing-2 /v1/session rq-40809 ok 886ms
+2026-08-14T11:30:30Z INFO  search-1 /v1/media/upload rq-40810 ok 851ms
+2026-08-14T11:37:43Z INFO  media-1 /v1/search rq-40811 ok 785ms
+2026-08-14T11:44:56Z INFO  billing-1 /v1/invoice rq-40812 ok 257ms
+2026-08-14T11:51:09Z INFO  billing-2 /v1/session rq-40813 ok 745ms
+2026-08-14T11:58:22Z WARN  search-1 /v1/media/upload rq-40814 slow response 1619ms
+2026-08-14T11:05:35Z WARN  media-1 /v1/search rq-40815 slow response 1707ms
+2026-08-14T11:12:48Z INFO  billing-1 /v1/invoice rq-40816 ok 31ms
+2026-08-14T11:19:01Z WARN  billing-2 /v1/session rq-40817 slow response 1817ms
+2026-08-14T11:26:14Z INFO  search-1 /v1/media/upload rq-40818 ok 1283ms
+2026-08-14T11:33:27Z ERROR media-1 /v1/search rq-40819 failed after 206ms code=POOL_EXHAUSTED
+2026-08-14T11:40:40Z INFO  billing-1 /v1/invoice rq-40820 ok 328ms
+2026-08-14T11:47:53Z INFO  billing-2 /v1/session rq-40821 ok 1467ms
+2026-08-14T11:54:06Z INFO  search-1 /v1/media/upload rq-40822 ok 337ms
+2026-08-14T11:01:19Z INFO  media-1 /v1/search rq-40823 ok 1558ms
+2026-08-14T11:08:32Z INFO  billing-1 /v1/invoice rq-40824 ok 382ms
+2026-08-14T11:15:45Z INFO  billing-2 /v1/session rq-40825 ok 898ms
+2026-08-14T11:22:58Z INFO  search-1 /v1/media/upload rq-40826 ok 279ms
+2026-08-14T11:29:11Z WARN  media-1 /v1/search rq-40827 slow response 1789ms
+2026-08-14T11:36:24Z INFO  billing-1 /v1/invoice rq-40828 ok 1549ms
+2026-08-14T11:43:37Z INFO  billing-2 /v1/session rq-40829 ok 961ms
+2026-08-14T11:50:50Z INFO  search-1 /v1/media/upload rq-40830 ok 1288ms
+2026-08-14T11:57:03Z WARN  media-1 /v1/search rq-40831 slow response 1796ms
+2026-08-14T11:04:16Z ERROR billing-1 /v1/invoice rq-40832 failed after 551ms code=POOL_EXHAUSTED
+2026-08-14T11:11:29Z WARN  billing-2 /v1/session rq-40833 slow response 1647ms
+2026-08-14T11:18:42Z INFO  search-1 /v1/media/upload rq-40834 ok 680ms
+2026-08-14T11:25:55Z INFO  media-1 /v1/search rq-40835 ok 1523ms
+2026-08-14T11:32:08Z WARN  billing-1 /v1/invoice rq-40836 slow response 1877ms
+2026-08-14T11:39:21Z WARN  billing-2 /v1/session rq-40837 slow response 1798ms
+2026-08-14T11:46:34Z INFO  search-1 /v1/media/upload rq-40838 ok 1326ms
+2026-08-14T11:53:47Z INFO  media-1 /v1/search rq-40839 ok 1547ms
+2026-08-14T12:00:00Z INFO  billing-1 /v1/invoice rq-40840 ok 1548ms
+2026-08-14T12:07:13Z INFO  billing-2 /v1/session rq-40841 ok 195ms
+2026-08-14T12:14:26Z INFO  search-1 /v1/media/upload rq-40842 ok 1120ms
+2026-08-14T12:21:39Z WARN  media-1 /v1/search rq-40843 slow response 1854ms
+2026-08-14T12:28:52Z INFO  billing-1 /v1/invoice rq-40844 ok 770ms
+2026-08-14T12:35:05Z ERROR billing-2 /v1/session rq-40845 failed after 1324ms code=POOL_EXHAUSTED
+2026-08-14T12:42:18Z INFO  search-1 /v1/media/upload rq-40846 ok 232ms
+2026-08-14T12:49:31Z INFO  media-1 /v1/search rq-40847 ok 1507ms
+2026-08-14T12:56:44Z INFO  billing-1 /v1/invoice rq-40848 ok 1338ms
+2026-08-14T12:03:57Z INFO  billing-2 /v1/session rq-40849 ok 1203ms
+2026-08-14T12:10:10Z WARN  search-1 /v1/media/upload rq-40850 slow response 1730ms
+2026-08-14T12:17:23Z INFO  media-1 /v1/search rq-40851 ok 1275ms
+2026-08-14T12:24:36Z INFO  billing-1 /v1/invoice rq-40852 ok 1507ms
+2026-08-14T12:31:49Z INFO  billing-2 /v1/session rq-40853 ok 1498ms
+2026-08-14T12:38:02Z INFO  search-1 /v1/media/upload rq-40854 ok 1298ms
+2026-08-14T12:45:15Z INFO  media-1 /v1/search rq-40855 ok 1279ms
+2026-08-14T12:52:28Z INFO  billing-1 /v1/invoice rq-40856 ok 1556ms
+2026-08-14T12:59:41Z INFO  billing-2 /v1/session rq-40857 ok 64ms
+2026-08-14T12:06:54Z ERROR search-1 /v1/media/upload rq-40858 failed after 860ms code=TIMEOUT_UPSTREAM
+2026-08-14T12:13:07Z INFO  media-1 /v1/search rq-40859 ok 78ms
+2026-08-14T12:20:20Z INFO  billing-1 /v1/invoice rq-40860 ok 330ms
+2026-08-14T12:27:33Z INFO  billing-2 /v1/session rq-40861 ok 869ms
+2026-08-14T12:34:46Z INFO  search-1 /v1/media/upload rq-40862 ok 983ms
+2026-08-14T12:41:59Z INFO  media-1 /v1/search rq-40863 ok 1180ms
+2026-08-14T12:48:12Z WARN  billing-1 /v1/invoice rq-40864 slow response 1631ms
+2026-08-14T12:55:25Z WARN  billing-2 /v1/session rq-40865 slow response 1809ms
+2026-08-14T12:02:38Z INFO  search-1 /v1/media/upload rq-40866 ok 619ms
+2026-08-14T12:09:51Z INFO  media-1 /v1/search rq-40867 ok 198ms
+2026-08-14T12:16:04Z INFO  billing-1 /v1/invoice rq-40868 ok 76ms
+2026-08-14T12:23:17Z INFO  billing-2 /v1/session rq-40869 ok 1395ms
+2026-08-14T12:30:30Z INFO  search-1 /v1/media/upload rq-40870 ok 731ms
+2026-08-14T12:37:43Z ERROR media-1 /v1/search rq-40871 failed after 1748ms code=TIMEOUT_UPSTREAM
+2026-08-14T12:44:56Z INFO  billing-1 /v1/invoice rq-40872 ok 85ms
+2026-08-14T12:51:09Z INFO  billing-2 /v1/session rq-40873 ok 10ms
+2026-08-14T12:58:22Z INFO  search-1 /v1/media/upload rq-40874 ok 840ms
+2026-08-14T12:05:35Z INFO  media-1 /v1/search rq-40875 ok 626ms
+2026-08-14T12:12:48Z INFO  billing-1 /v1/invoice rq-40876 ok 68ms
+2026-08-14T12:19:01Z INFO  billing-2 /v1/session rq-40877 ok 236ms
+2026-08-14T12:26:14Z INFO  search-1 /v1/media/upload rq-40878 ok 1512ms
+2026-08-14T12:33:27Z WARN  media-1 /v1/search rq-40879 slow response 1775ms
+2026-08-14T12:40:40Z INFO  billing-1 /v1/invoice rq-40880 ok 1134ms
+2026-08-14T12:47:53Z INFO  billing-2 /v1/session rq-40881 ok 1032ms
+2026-08-14T12:54:06Z INFO  search-1 /v1/media/upload rq-40882 ok 350ms
+2026-08-14T12:01:19Z INFO  media-1 /v1/search rq-40883 ok 1544ms
+2026-08-14T12:08:32Z ERROR billing-1 /v1/invoice rq-40884 failed after 1572ms code=DECODE_FAILED
+2026-08-14T12:15:45Z INFO  billing-2 /v1/session rq-40885 ok 547ms
+2026-08-14T12:22:58Z INFO  search-1 /v1/media/upload rq-40886 ok 125ms
+2026-08-14T12:29:11Z INFO  media-1 /v1/search rq-40887 ok 1509ms
+2026-08-14T12:36:24Z INFO  billing-1 /v1/invoice rq-40888 ok 610ms
+2026-08-14T12:43:37Z INFO  billing-2 /v1/session rq-40889 ok 389ms
+2026-08-14T12:50:50Z WARN  search-1 /v1/media/upload rq-40890 slow response 1691ms
+2026-08-14T12:57:03Z INFO  media-1 /v1/search rq-40891 ok 1056ms
+2026-08-14T12:04:16Z INFO  billing-1 /v1/invoice rq-40892 ok 568ms
+2026-08-14T12:11:29Z INFO  billing-2 /v1/session rq-40893 ok 1419ms
+2026-08-14T12:18:42Z WARN  search-1 /v1/media/upload rq-40894 slow response 1632ms
+2026-08-14T12:25:55Z INFO  media-1 /v1/search rq-40895 ok 1435ms
+2026-08-14T12:32:08Z WARN  billing-1 /v1/invoice rq-40896 slow response 1698ms
+2026-08-14T12:39:21Z ERROR billing-2 /v1/session rq-40897 failed after 1600ms code=RATE_LIMITED
+2026-08-14T12:46:34Z INFO  search-1 /v1/media/upload rq-40898 ok 1460ms
+2026-08-14T12:53:47Z INFO  media-1 /v1/search rq-40899 ok 135ms
+2026-08-14T12:00:00Z INFO  billing-1 /v1/invoice rq-40900 ok 459ms
+2026-08-14T12:07:13Z WARN  billing-2 /v1/session rq-40901 slow response 1607ms
+2026-08-14T12:14:26Z INFO  search-1 /v1/media/upload rq-40902 ok 1284ms
+2026-08-14T12:21:39Z INFO  media-1 /v1/search rq-40903 ok 1507ms
+2026-08-14T12:28:52Z INFO  billing-1 /v1/invoice rq-40904 ok 892ms
+2026-08-14T12:35:05Z INFO  billing-2 /v1/session rq-40905 ok 1123ms
+2026-08-14T12:42:18Z INFO  search-1 /v1/media/upload rq-40906 ok 760ms
+2026-08-14T12:49:31Z INFO  media-1 /v1/search rq-40907 ok 700ms
+2026-08-14T12:56:44Z INFO  billing-1 /v1/invoice rq-40908 ok 81ms
+2026-08-14T12:03:57Z WARN  billing-2 /v1/session rq-40909 slow response 1805ms
+2026-08-14T12:10:10Z ERROR search-1 /v1/media/upload rq-40910 failed after 1381ms code=POOL_EXHAUSTED
+2026-08-14T12:17:23Z INFO  media-1 /v1/search rq-40911 ok 1214ms
+2026-08-14T12:24:36Z INFO  billing-1 /v1/invoice rq-40912 ok 828ms
+2026-08-14T12:31:49Z INFO  billing-2 /v1/session rq-40913 ok 270ms
+2026-08-14T12:38:02Z INFO  search-1 /v1/media/upload rq-40914 ok 770ms
+2026-08-14T12:45:15Z INFO  media-1 /v1/search rq-40915 ok 244ms
+2026-08-14T12:52:28Z INFO  billing-1 /v1/invoice rq-40916 ok 90ms
+2026-08-14T12:59:41Z WARN  billing-2 /v1/session rq-40917 slow response 1832ms
+2026-08-14T12:06:54Z WARN  search-1 /v1/media/upload rq-40918 slow response 1728ms
+2026-08-14T12:13:07Z INFO  media-1 /v1/search rq-40919 ok 1332ms
+2026-08-14T12:20:20Z INFO  billing-1 /v1/invoice rq-40920 ok 1449ms
+2026-08-14T12:27:33Z INFO  billing-2 /v1/session rq-40921 ok 991ms
+2026-08-14T12:34:46Z WARN  search-1 /v1/media/upload rq-40922 slow response 1881ms
+2026-08-14T12:41:59Z ERROR media-1 /v1/search rq-40923 failed after 1084ms code=POOL_EXHAUSTED
+2026-08-14T12:48:12Z INFO  billing-1 /v1/invoice rq-40924 ok 662ms
+2026-08-14T12:55:25Z INFO  billing-2 /v1/session rq-40925 ok 1122ms
+2026-08-14T12:02:38Z INFO  search-1 /v1/media/upload rq-40926 ok 260ms
+2026-08-14T12:09:51Z WARN  media-1 /v1/search rq-40927 slow response 1870ms
+2026-08-14T12:16:04Z INFO  billing-1 /v1/invoice rq-40928 ok 859ms
+2026-08-14T12:23:17Z WARN  billing-2 /v1/session rq-40929 slow response 1793ms
+2026-08-14T12:30:30Z INFO  search-1 /v1/media/upload rq-40930 ok 743ms
+2026-08-14T12:37:43Z INFO  media-1 /v1/search rq-40931 ok 89ms
+2026-08-14T12:44:56Z INFO  billing-1 /v1/invoice rq-40932 ok 841ms
+2026-08-14T12:51:09Z INFO  billing-2 /v1/session rq-40933 ok 1192ms
+2026-08-14T12:58:22Z INFO  search-1 /v1/media/upload rq-40934 ok 1064ms
+2026-08-14T12:05:35Z INFO  media-1 /v1/search rq-40935 ok 766ms
+2026-08-14T12:12:48Z ERROR billing-1 /v1/invoice rq-40936 failed after 1351ms code=POOL_EXHAUSTED
+2026-08-14T12:19:01Z WARN  billing-2 /v1/session rq-40937 slow response 1726ms
+2026-08-14T12:26:14Z INFO  search-1 /v1/media/upload rq-40938 ok 483ms
+2026-08-14T12:33:27Z INFO  media-1 /v1/search rq-40939 ok 1534ms
+2026-08-14T12:40:40Z INFO  billing-1 /v1/invoice rq-40940 ok 1565ms
+2026-08-14T12:47:53Z INFO  billing-2 /v1/session rq-40941 ok 251ms
+2026-08-14T12:54:06Z INFO  search-1 /v1/media/upload rq-40942 ok 1452ms
+2026-08-14T12:01:19Z INFO  media-1 /v1/search rq-40943 ok 913ms
+2026-08-14T12:08:32Z INFO  billing-1 /v1/invoice rq-40944 ok 1430ms
+2026-08-14T12:15:45Z WARN  billing-2 /v1/session rq-40945 slow response 1687ms
+2026-08-14T12:22:58Z INFO  search-1 /v1/media/upload rq-40946 ok 708ms
+2026-08-14T12:29:11Z INFO  media-1 /v1/search rq-40947 ok 220ms
+2026-08-14T12:36:24Z WARN  billing-1 /v1/invoice rq-40948 slow response 1842ms
+2026-08-14T12:43:37Z ERROR billing-2 /v1/session rq-40949 failed after 987ms code=POOL_EXHAUSTED
+2026-08-14T12:50:50Z INFO  search-1 /v1/media/upload rq-40950 ok 150ms
+2026-08-14T12:57:03Z INFO  media-1 /v1/search rq-40951 ok 1501ms
+2026-08-14T12:04:16Z INFO  billing-1 /v1/invoice rq-40952 ok 353ms
+2026-08-14T12:11:29Z INFO  billing-2 /v1/session rq-40953 ok 1469ms
+2026-08-14T12:18:42Z INFO  search-1 /v1/media/upload rq-40954 ok 893ms
+2026-08-14T12:25:55Z INFO  media-1 /v1/search rq-40955 ok 1252ms
+2026-08-14T12:32:08Z INFO  billing-1 /v1/invoice rq-40956 ok 1075ms
+2026-08-14T12:39:21Z WARN  billing-2 /v1/session rq-40957 slow response 1653ms
+2026-08-14T12:46:34Z INFO  search-1 /v1/media/upload rq-40958 ok 28ms
+2026-08-14T12:53:47Z INFO  media-1 /v1/search rq-40959 ok 503ms
+2026-08-14T12:00:00Z WARN  billing-1 /v1/invoice rq-40960 slow response 1723ms
+2026-08-14T12:07:13Z INFO  billing-2 /v1/session rq-40961 ok 1124ms
+2026-08-14T12:14:26Z ERROR search-1 /v1/media/upload rq-40962 failed after 975ms code=POOL_EXHAUSTED
+2026-08-14T12:21:39Z INFO  media-1 /v1/search rq-40963 ok 659ms
+2026-08-14T12:28:52Z INFO  billing-1 /v1/invoice rq-40964 ok 1085ms
+2026-08-14T12:35:05Z INFO  billing-2 /v1/session rq-40965 ok 509ms
+2026-08-14T12:42:18Z WARN  search-1 /v1/media/upload rq-40966 slow response 1774ms
+2026-08-14T12:49:31Z INFO  media-1 /v1/search rq-40967 ok 421ms
+2026-08-14T12:56:44Z INFO  billing-1 /v1/invoice rq-40968 ok 1278ms
+2026-08-14T12:03:57Z INFO  billing-2 /v1/session rq-40969 ok 398ms
+2026-08-14T12:10:10Z INFO  search-1 /v1/media/upload rq-40970 ok 598ms
+2026-08-14T12:17:23Z INFO  media-1 /v1/search rq-40971 ok 1485ms
+2026-08-14T12:24:36Z INFO  billing-1 /v1/invoice rq-40972 ok 499ms
+2026-08-14T12:31:49Z INFO  billing-2 /v1/session rq-40973 ok 1348ms
+2026-08-14T12:38:02Z INFO  search-1 /v1/media/upload rq-40974 ok 1221ms
+2026-08-14T12:45:15Z ERROR media-1 /v1/search rq-40975 failed after 325ms code=POOL_EXHAUSTED
+2026-08-14T12:52:28Z INFO  billing-1 /v1/invoice rq-40976 ok 279ms
+2026-08-14T12:59:41Z INFO  billing-2 /v1/session rq-40977 ok 1098ms
+2026-08-14T12:06:54Z INFO  search-1 /v1/media/upload rq-40978 ok 1302ms
+2026-08-14T12:13:07Z INFO  media-1 /v1/search rq-40979 ok 1213ms
+2026-08-14T13:20:20Z INFO  billing-1 /v1/invoice rq-40980 ok 118ms
+2026-08-14T13:27:33Z INFO  billing-2 /v1/session rq-40981 ok 1333ms
+2026-08-14T13:34:46Z INFO  search-1 /v1/media/upload rq-40982 ok 1165ms
+2026-08-14T13:41:59Z WARN  media-1 /v1/search rq-40983 slow response 1673ms
+2026-08-14T13:48:12Z WARN  billing-1 /v1/invoice rq-40984 slow response 1789ms
+2026-08-14T13:55:25Z INFO  billing-2 /v1/session rq-40985 ok 163ms
+2026-08-14T13:02:38Z WARN  search-1 /v1/media/upload rq-40986 slow response 1673ms
+2026-08-14T13:09:51Z WARN  media-1 /v1/search rq-40987 slow response 1617ms
+2026-08-14T13:16:04Z ERROR billing-1 /v1/invoice rq-40988 failed after 1607ms code=TIMEOUT_UPSTREAM
+2026-08-14T13:23:17Z INFO  billing-2 /v1/session rq-40989 ok 671ms
+2026-08-14T13:30:30Z INFO  search-1 /v1/media/upload rq-40990 ok 1500ms
+2026-08-14T13:37:43Z INFO  media-1 /v1/search rq-40991 ok 20ms
+2026-08-14T13:44:56Z INFO  billing-1 /v1/invoice rq-40992 ok 78ms
+2026-08-14T13:51:09Z WARN  billing-2 /v1/session rq-40993 slow response 1814ms
+2026-08-14T13:58:22Z INFO  search-1 /v1/media/upload rq-40994 ok 1362ms
+2026-08-14T13:05:35Z INFO  media-1 /v1/search rq-40995 ok 423ms
+2026-08-14T13:12:48Z INFO  billing-1 /v1/invoice rq-40996 ok 1077ms
+2026-08-14T13:19:01Z INFO  billing-2 /v1/session rq-40997 ok 603ms
+2026-08-14T13:26:14Z INFO  search-1 /v1/media/upload rq-40998 ok 1378ms
+2026-08-14T13:33:27Z INFO  media-1 /v1/search rq-40999 ok 572ms
+2026-08-14T13:40:40Z INFO  billing-1 /v1/invoice rq-41000 ok 931ms
+2026-08-14T13:47:53Z ERROR billing-2 /v1/session rq-41001 failed after 1423ms code=TIMEOUT_UPSTREAM
+2026-08-14T13:54:06Z INFO  search-1 /v1/media/upload rq-41002 ok 24ms
+2026-08-14T13:01:19Z INFO  media-1 /v1/search rq-41003 ok 288ms
+2026-08-14T13:08:32Z INFO  billing-1 /v1/invoice rq-41004 ok 993ms
+2026-08-14T13:15:45Z INFO  billing-2 /v1/session rq-41005 ok 357ms
+2026-08-14T13:22:58Z INFO  search-1 /v1/media/upload rq-41006 ok 181ms
+2026-08-14T13:29:11Z INFO  media-1 /v1/search rq-41007 ok 498ms
+2026-08-14T13:36:24Z WARN  billing-1 /v1/invoice rq-41008 slow response 1759ms
+2026-08-14T13:43:37Z INFO  billing-2 /v1/session rq-41009 ok 870ms
+2026-08-14T13:50:50Z INFO  search-1 /v1/media/upload rq-41010 ok 1536ms
+2026-08-14T13:57:03Z INFO  media-1 /v1/search rq-41011 ok 951ms
+2026-08-14T13:04:16Z INFO  billing-1 /v1/invoice rq-41012 ok 884ms
+2026-08-14T13:11:29Z INFO  billing-2 /v1/session rq-41013 ok 708ms
+2026-08-14T13:18:42Z ERROR search-1 /v1/media/upload rq-41014 failed after 1012ms code=DECODE_FAILED
+2026-08-14T13:25:55Z WARN  media-1 /v1/search rq-41015 slow response 1601ms
+2026-08-14T13:32:08Z WARN  billing-1 /v1/invoice rq-41016 slow response 1768ms
+2026-08-14T13:39:21Z INFO  billing-2 /v1/session rq-41017 ok 1515ms
+2026-08-14T13:46:34Z INFO  search-1 /v1/media/upload rq-41018 ok 334ms
+2026-08-14T13:53:47Z INFO  media-1 /v1/search rq-41019 ok 437ms
+2026-08-14T13:00:00Z INFO  billing-1 /v1/invoice rq-41020 ok 1333ms
+2026-08-14T13:07:13Z INFO  billing-2 /v1/session rq-41021 ok 118ms
+2026-08-14T13:14:26Z WARN  search-1 /v1/media/upload rq-41022 slow response 1730ms
+2026-08-14T13:21:39Z INFO  media-1 /v1/search rq-41023 ok 692ms
+2026-08-14T13:28:52Z INFO  billing-1 /v1/invoice rq-41024 ok 360ms
+2026-08-14T13:35:05Z INFO  billing-2 /v1/session rq-41025 ok 823ms
+2026-08-14T13:42:18Z WARN  search-1 /v1/media/upload rq-41026 slow response 1822ms
+2026-08-14T13:49:31Z ERROR media-1 /v1/search rq-41027 failed after 1324ms code=RATE_LIMITED
+2026-08-14T13:56:44Z INFO  billing-1 /v1/invoice rq-41028 ok 425ms
+2026-08-14T13:03:57Z INFO  billing-2 /v1/session rq-41029 ok 990ms
+2026-08-14T13:10:10Z INFO  search-1 /v1/media/upload rq-41030 ok 1012ms
+2026-08-14T13:17:23Z INFO  media-1 /v1/search rq-41031 ok 783ms
+2026-08-14T13:24:36Z INFO  billing-1 /v1/invoice rq-41032 ok 110ms
+2026-08-14T13:31:49Z WARN  billing-2 /v1/session rq-41033 slow response 1691ms
+2026-08-14T13:38:02Z INFO  search-1 /v1/media/upload rq-41034 ok 1184ms
+2026-08-14T13:45:15Z INFO  media-1 /v1/search rq-41035 ok 1293ms
+2026-08-14T13:52:28Z INFO  billing-1 /v1/invoice rq-41036 ok 876ms
+2026-08-14T13:59:41Z INFO  billing-2 /v1/session rq-41037 ok 940ms
+2026-08-14T13:06:54Z WARN  search-1 /v1/media/upload rq-41038 slow response 1870ms
+2026-08-14T13:13:07Z WARN  media-1 /v1/search rq-41039 slow response 1854ms
+2026-08-14T13:20:20Z ERROR billing-1 /v1/invoice rq-41040 failed after 248ms code=POOL_EXHAUSTED
+2026-08-14T13:27:33Z INFO  billing-2 /v1/session rq-41041 ok 209ms
+2026-08-14T13:34:46Z INFO  search-1 /v1/media/upload rq-41042 ok 802ms
+2026-08-14T13:41:59Z INFO  media-1 /v1/search rq-41043 ok 673ms
+2026-08-14T13:48:12Z INFO  billing-1 /v1/invoice rq-41044 ok 372ms
+2026-08-14T13:55:25Z INFO  billing-2 /v1/session rq-41045 ok 97ms
+2026-08-14T13:02:38Z INFO  search-1 /v1/media/upload rq-41046 ok 1583ms
+2026-08-14T13:09:51Z INFO  media-1 /v1/search rq-41047 ok 790ms
+2026-08-14T13:16:04Z WARN  billing-1 /v1/invoice rq-41048 slow response 1652ms
+2026-08-14T13:23:17Z WARN  billing-2 /v1/session rq-41049 slow response 1869ms
+2026-08-14T13:30:30Z WARN  search-1 /v1/media/upload rq-41050 slow response 1680ms
+2026-08-14T13:37:43Z WARN  media-1 /v1/search rq-41051 slow response 1671ms
+2026-08-14T13:44:56Z INFO  billing-1 /v1/invoice rq-41052 ok 1353ms
+2026-08-14T13:51:09Z ERROR billing-2 /v1/session rq-41053 failed after 865ms code=POOL_EXHAUSTED
+2026-08-14T13:58:22Z INFO  search-1 /v1/media/upload rq-41054 ok 1531ms
+2026-08-14T13:05:35Z INFO  media-1 /v1/search rq-41055 ok 227ms
+2026-08-14T13:12:48Z INFO  billing-1 /v1/invoice rq-41056 ok 1003ms
+2026-08-14T13:19:01Z WARN  billing-2 /v1/session rq-41057 slow response 1656ms
+2026-08-14T13:26:14Z INFO  search-1 /v1/media/upload rq-41058 ok 407ms
+2026-08-14T13:33:27Z INFO  media-1 /v1/search rq-41059 ok 409ms
+2026-08-14T13:40:40Z INFO  billing-1 /v1/invoice rq-41060 ok 1229ms
+2026-08-14T13:47:53Z INFO  billing-2 /v1/session rq-41061 ok 754ms
+2026-08-14T13:54:06Z INFO  search-1 /v1/media/upload rq-41062 ok 746ms
+2026-08-14T13:01:19Z INFO  media-1 /v1/search rq-41063 ok 366ms
+2026-08-14T13:08:32Z INFO  billing-1 /v1/invoice rq-41064 ok 1150ms
+2026-08-14T13:15:45Z INFO  billing-2 /v1/session rq-41065 ok 1514ms
+2026-08-14T13:22:58Z ERROR search-1 /v1/media/upload rq-41066 failed after 1477ms code=POOL_EXHAUSTED
+2026-08-14T13:29:11Z INFO  media-1 /v1/search rq-41067 ok 152ms
+2026-08-14T13:36:24Z INFO  billing-1 /v1/invoice rq-41068 ok 1483ms
+2026-08-14T13:43:37Z INFO  billing-2 /v1/session rq-41069 ok 1307ms
+2026-08-14T13:50:50Z INFO  search-1 /v1/media/upload rq-41070 ok 1143ms
+2026-08-14T13:57:03Z WARN  media-1 /v1/search rq-41071 slow response 1718ms
+2026-08-14T13:04:16Z INFO  billing-1 /v1/invoice rq-41072 ok 447ms
+2026-08-14T13:11:29Z WARN  billing-2 /v1/session rq-41073 slow response 1667ms
+2026-08-14T13:18:42Z INFO  search-1 /v1/media/upload rq-41074 ok 895ms
+2026-08-14T13:25:55Z INFO  media-1 /v1/search rq-41075 ok 1563ms
+2026-08-14T13:32:08Z INFO  billing-1 /v1/invoice rq-41076 ok 1153ms
+2026-08-14T13:39:21Z INFO  billing-2 /v1/session rq-41077 ok 947ms
+2026-08-14T13:46:34Z INFO  search-1 /v1/media/upload rq-41078 ok 118ms
+2026-08-14T13:53:47Z ERROR media-1 /v1/search rq-41079 failed after 939ms code=POOL_EXHAUSTED
+2026-08-14T13:00:00Z INFO  billing-1 /v1/invoice rq-41080 ok 327ms
+2026-08-14T13:07:13Z INFO  billing-2 /v1/session rq-41081 ok 730ms
+2026-08-14T13:14:26Z INFO  search-1 /v1/media/upload rq-41082 ok 653ms
+2026-08-14T13:21:39Z INFO  media-1 /v1/search rq-41083 ok 940ms
+2026-08-14T13:28:52Z INFO  billing-1 /v1/invoice rq-41084 ok 313ms
+2026-08-14T13:35:05Z INFO  billing-2 /v1/session rq-41085 ok 382ms
+2026-08-14T13:42:18Z INFO  search-1 /v1/media/upload rq-41086 ok 279ms
+2026-08-14T13:49:31Z INFO  media-1 /v1/search rq-41087 ok 429ms
+2026-08-14T13:56:44Z INFO  billing-1 /v1/invoice rq-41088 ok 152ms
+2026-08-14T13:03:57Z INFO  billing-2 /v1/session rq-41089 ok 1049ms
+2026-08-14T13:10:10Z WARN  search-1 /v1/media/upload rq-41090 slow response 1605ms
+2026-08-14T13:17:23Z INFO  media-1 /v1/search rq-41091 ok 418ms
+2026-08-14T13:24:36Z ERROR billing-1 /v1/invoice rq-41092 failed after 31ms code=POOL_EXHAUSTED
+2026-08-14T13:31:49Z INFO  billing-2 /v1/session rq-41093 ok 770ms
+2026-08-14T13:38:02Z INFO  search-1 /v1/media/upload rq-41094 ok 93ms
+2026-08-14T13:45:15Z INFO  media-1 /v1/search rq-41095 ok 875ms
+2026-08-14T13:52:28Z INFO  billing-1 /v1/invoice rq-41096 ok 353ms
+2026-08-14T13:59:41Z INFO  billing-2 /v1/session rq-41097 ok 1081ms
+2026-08-14T13:06:54Z INFO  search-1 /v1/media/upload rq-41098 ok 1170ms
+2026-08-14T13:13:07Z INFO  media-1 /v1/search rq-41099 ok 1597ms
+2026-08-14T13:20:20Z INFO  billing-1 /v1/invoice rq-41100 ok 413ms
+2026-08-14T14:00:00Z SUMMARY window=8h requests=1100 errors=84 build=svc-4.18.2 digest=8F2C-77A1-DE30

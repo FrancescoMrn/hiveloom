@@ -83,7 +83,7 @@ def test_explain_policy_is_open_string():
 
 def test_explain_loop_steps_surfaces_field():
     info = annotate.explain("loop.steps")
-    assert info["type"] == "list[str]"
+    assert info["type"] == "list[str | SequentialStep]"
     assert info["default"] == []
 
 

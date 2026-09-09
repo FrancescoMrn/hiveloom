@@ -37,7 +37,7 @@ export interface Span {
   durationMs: number | null
   turn: number | null
   failed: boolean
-  /** tool_update / tool_retry / tool_truncated seqs carrying the same call id. */
+  /** tool_update / tool_retry / tool_spilled / tool_truncated seqs carrying the same call id. */
   updateSeqs: number[]
   usage?: Usage
   costUsd?: number
@@ -191,6 +191,7 @@ export function projectTrajectory(events: TraceEvent[]): Trajectory {
       }
       case 'tool_update':
       case 'tool_retry':
+      case 'tool_spilled':
       case 'tool_truncated': {
         const key = String(payload.id ?? '')
         const span = openTool.get(key) ?? spanOfToolName(spans, payload.name)

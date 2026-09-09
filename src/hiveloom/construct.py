@@ -468,12 +468,29 @@ def add_tool(
     builtin: str | None = None,
     code: str | None = None,
     description: str | None = None,
+    *,
+    hosts: list[str] | None = None,
+    **params: Any,
 ) -> HarnessSpec:
-    """Add a tool. Exactly one of ``builtin`` / ``code`` must be given."""
+    """Add a tool. Exactly one of ``builtin`` / ``code`` must be given.
+
+    ``params`` are the builtin's inline catalog parameters (``commands`` for
+    ``shell``, ``limit`` for ``recall_runs``, …) and are validated against the
+    catalog by the commit below. ``hosts`` is the pre-existing spelling of
+    ``http_get``'s parameter and is kept for callers that already pass it.
+    """
     directory = Path(directory)
     entry, created = _make_ref(
         directory, "tool", builtin, code, description, require_description=True
     )
+    if hosts and builtin != "http_get":
+        raise SpecError("hosts may only be declared for the http_get builtin")
+    if builtin == "http_get" and hosts:
+        entry["hosts"] = list(hosts)
+    supplied = {k: v for k, v in params.items() if v is not None}
+    if supplied and builtin is None:
+        raise SpecError("parameters may only be declared for a builtin tool")
+    entry.update(supplied)
     raw = load_raw(directory)
     raw.setdefault("tools", []).append(entry)
     return _commit(directory, raw, created, "add_tool", {"builtin": builtin, "code": code})

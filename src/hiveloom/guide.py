@@ -1,10 +1,11 @@
-"""The agent guidance that ships with the package.
+"""The agent guidance and reference documents that ship with the package.
 
-``AGENTS.md`` and the ``skills/`` folder are the entry point for an agent
-driving hiveloom, but an agent that ran ``pip install hiveloom`` has no
-repository to read them from. The wheel therefore carries them under
-``hiveloom/agent_docs/`` (the repo-root files are the single source; the build
-copies them in), and ``hiveloom guide`` prints them.
+``AGENTS.md``, the ``skills/`` folder, and selected ``docs/`` references are the
+guidance for an agent driving hiveloom, but an agent that ran
+``pip install hiveloom`` has no repository to read them from. The wheel
+therefore carries them under ``hiveloom/agent_docs/`` (the repo-root files are
+the single source; the build copies them in), and ``hiveloom guide`` prints
+them.
 
 Resolution prefers the packaged copy and falls back to the repository layout,
 so the command behaves identically in a checkout and in an install.
@@ -22,9 +23,67 @@ COMPACT_DOC = "SKILL.md"
 SKILLS_DIR = "skills"
 _SKILL_PREFIX = "hiveloom-"
 
+REFERENCE_TOPICS = (
+    (
+        "confinement",
+        "Product boundary: agent = model + harness, roles, guarantees, and limits.",
+        "docs/task-confinement.md",
+    ),
+    (
+        "spec",
+        "Harness fields, builtins, playbooks, and enforced safety invariants.",
+        "docs/spec.md",
+    ),
+    (
+        "architecture",
+        "Runtime components, data flow, journal, Hive, and evolution.",
+        "docs/architecture.md",
+    ),
+    (
+        "models",
+        "Builtin model providers, pricing, caching, and custom model entries.",
+        "docs/models.md",
+    ),
+    (
+        "extending",
+        "Extension packs, providers, MCP servers, hooks, skills, and SDK use.",
+        "docs/extending.md",
+    ),
+    (
+        "evaluating",
+        "Local eval documents, dataset loaders, scorers, and the native runner.",
+        "docs/evaluating.md",
+    ),
+    (
+        "journal",
+        "Run journals, integrity checks, forks, lineage, and model swaps.",
+        "docs/journal.md",
+    ),
+    (
+        "workbench",
+        "Development UI, live run control, traces, versions, and proposals.",
+        "docs/workbench.md",
+    ),
+    (
+        "deploying",
+        "Packaging, deployment topologies, trace collection, and gated evolution.",
+        "docs/deploying-and-evolving.md",
+    ),
+    (
+        "control-plane",
+        "Authenticated operational HTTP API and concurrency model.",
+        "docs/control-plane.md",
+    ),
+    (
+        "sync-protocol",
+        "Cloud link, trace sync, versioning, and trust model.",
+        "docs/sync-protocol.md",
+    ),
+)
+
 
 def agent_docs_dir() -> Path:
-    """The directory holding AGENTS.md, SKILL.md and skills/."""
+    """The directory holding the packaged guidance, skills, and references."""
     packaged = Path(__file__).resolve().parent / "agent_docs"
     if (packaged / ENTRY_DOC).exists():
         return packaged
@@ -38,7 +97,7 @@ def agent_docs_dir() -> Path:
 
 
 def list_topics() -> list[dict[str, str]]:
-    """Every readable topic: the entry doc, the compact skill, then the skills."""
+    """Every readable entry, reference, and lifecycle-skill topic."""
     base = agent_docs_dir()
     topics = [
         {
@@ -55,6 +114,9 @@ def list_topics() -> list[dict[str, str]]:
                 "path": COMPACT_DOC,
             }
         )
+    for name, description, path in REFERENCE_TOPICS:
+        if (base / path).exists():
+            topics.append({"name": name, "description": description, "path": path})
     for skill_dir in sorted((base / SKILLS_DIR).glob(f"{_SKILL_PREFIX}*")):
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():

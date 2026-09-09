@@ -1,7 +1,8 @@
 # Extending hiveloom
 
 hiveloom's catalog is open: tools, guardrails, validators, loop policies,
-compaction methods, event hooks, and model providers are **catalog entries**,
+compaction methods, event hooks, eval datasets/scorers, and model providers are
+**catalog entries**,
 and extensions register new entries through one API. A registered entry shows
 up in `hiveloom catalog`, validates in specs like a builtin, and appears in the
 generator's meta-prompt — so `hiveloom generate` can weave harnesses with a
@@ -44,6 +45,10 @@ def hiveloom_extension(hive: ExtensionAPI) -> None:
                              description="File-aware summarization.")
     hive.register_hook("audit_log", make_audit_handler,
                        description="Record every tool call to the audit sink.")
+    hive.register_dataset("local_cases", make_dataset,
+                          description="Load held-out local eval cases.")
+    hive.register_scorer("task_quality", make_scorer,
+                         description="Score a verified run against expected data.")
     hive.register_blueprint("scraper", "Always add no_network_write. Task: $ARGUMENTS")
 
     # ambient: runs for every harness in this process (e.g. org-wide audit)
@@ -56,6 +61,34 @@ Base classes to implement: `hiveloom.tools.registry.Tool`,
 `hiveloom.guardrails.base.Guardrail`, `hiveloom.verify.base.Verifier`,
 `hiveloom.loop.policies.LoopPolicy`,
 `hiveloom.context.manager.CompactionMethod`.
+Eval factories return a loader with `load()` or a scorer with
+`score(ScorerContext)`; see [evaluating.md](evaluating.md).
+
+Validators may keep the legacy two-argument method or request structured
+run-local evidence with a third argument:
+
+```python
+from hiveloom import VerificationContext
+from hiveloom.verify import VerdictResult, Verifier
+
+class SelectedRecordsExist(Verifier):
+    name = "selected_records_exist"
+
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict,
+        verification_context: VerificationContext,
+    ) -> VerdictResult:
+        calls = verification_context.tool_calls
+        return VerdictResult(passed=any(call.name == "lookup" for call in calls))
+```
+
+`VerificationContext` contains bounded, redacted `tool_calls`, structured step
+receipts, declared artifacts, and the current `run_id`. Tool evidence includes
+only allowed calls that executed in this run. Read the typed context directly;
+do not parse a trace or retain its private payloads. The same context is also
+available at `run_context["verification_context"]` for code-hook compatibility.
 
 ## Where extensions load from
 
@@ -102,7 +135,10 @@ def setup(hive):
         base_url="https://api.mylab.example/v1",
         open_catalog=False,              # only the ids below validate
         models=[{"id": "mylab-small", "input_cost_per_mtok": 0.1,
-                 "output_cost_per_mtok": 0.4}],
+                 "output_cost_per_mtok": 0.4,
+                 "supports_tool_calling": True,
+                 "supports_structured_output": False,
+                 "supports_reasoning_replay": True}],
     )
 ```
 
@@ -111,9 +147,59 @@ fight over one provider name; only `models.yaml` may override a builtin.
 Pricing lives in the registry, and unknown models fall back to conservative
 Haiku-class pricing so cost guardrails never under-count.
 
+Provider adapters return the old `ModelResponse(text=..., usage=...)` minimum
+or add provenance that Hiveloom can carry without knowing the vendor:
+
+```python
+from hiveloom.models import ModelResponse, Usage
+
+return ModelResponse(
+    text=answer,
+    usage=Usage(input_tokens=120, output_tokens=20),
+    model=raw["model"],                 # identity actually reported
+    provider_request_id=raw["id"],
+    billed_cost=raw["usage"]["cost"], # charge for this call
+    billed_currency="USD",
+    reasoning=replay_data,             # opaque JSON needed on the next turn
+    provider_metadata={"route": "fast"},
+)
+```
+
+If a provider bills in another currency, retain the original amount and set
+`billed_cost_usd` only after the adapter performs a real conversion. Otherwise
+Hiveloom keeps the charge as provenance and uses its token-price estimate for
+the USD cost guardrail. Each provider call reports `cost_source` as `billed`
+or `estimated` in the journal and public run result.
+
+`reasoning` and `provider_metadata` must be JSON-safe and are size-bounded.
+Metadata reaches the trace through the normal `logging.redact` policy, but it
+is deliberately omitted from the run-result receipt. Do not put credentials in
+metadata; use the harness environment and provider constructor.
+
+OpenAI-compatible extensions can use supported codecs instead of copying
+private helpers:
+
+```python
+from hiveloom.models.openai_compat import (
+    normalize_openai_response,
+    to_openai_messages,
+    to_openai_tool,
+)
+```
+
+The pre-1.1 underscore names remain aliases for compatibility, not extension
+API. Reasoning fields normalized by this codec are replayed only to the same
+OpenAI-compatible provider and are dropped by Hiveloom at a model swap.
+
 Generate/evolve can use any provider too: `--model ollama/qwen3:32b`
 (`provider/model-id`). Note `model` stays in `ALWAYS_FROZEN` — the registry
 widens what a human or generator may choose, never what evolution can mutate.
+
+Adapters may override `ModelProvider.probe_capabilities(config)` for a
+provider-specific live check. Return only the generic
+`ProviderCapabilityObservation`; routing policy and vendor response bodies stay
+inside the extension. Core compares the reported effective model against the
+caller's exact or alias policy and never treats an alias as the requested ID.
 
 ## MCP servers
 

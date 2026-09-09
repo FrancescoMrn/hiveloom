@@ -9,22 +9,29 @@ discovery is eager.
 
 from __future__ import annotations
 
+import errno
 import logging
+import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hiveloom import trust
+from hiveloom import __version__, confine, trust
+from hiveloom.confine import ConfinementUnavailable
 from hiveloom.context.manager import ContextManager
 from hiveloom.events import build_event_bus
 from hiveloom.guardrails.builtin import build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.loop.control import RunControl
-from hiveloom.models.provider import ModelConfig, ModelProvider
+from hiveloom.models.provider import ModelConfig as ProviderModelConfig
+from hiveloom.models.provider import ModelProvider
 from hiveloom.models.router import ModelRouter
+from hiveloom.package import resolve_trace_dir
 from hiveloom.playbooks import PlaybookManager, load_playbooks
+from hiveloom.private import RunBoundary
 from hiveloom.skills import load_skills
 from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
 from hiveloom.tools.registry import build_registry
@@ -32,20 +39,32 @@ from hiveloom.verify.builtin import build_verifiers
 
 if TYPE_CHECKING:
     from hiveloom.generate.llm import StrongModel
-    from hiveloom.spec.schema import HarnessSpec
+from hiveloom.spec.schema import HarnessSpec, SequentialStep
 
 log = logging.getLogger(__name__)
+
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 def _resolve_input(base: Path, value: str) -> str:
     """If ``value`` names an existing file, read it; otherwise treat it as text."""
     direct = Path(value)
-    if direct.is_file():
+    if _is_file(direct):
         return direct.read_text(encoding="utf-8")
     nested = base / value
-    if nested.is_file():
+    if _is_file(nested):
         return nested.read_text(encoding="utf-8")
     return value
+
+
+def _is_file(path: Path) -> bool:
+    """Like :meth:`Path.is_file`, but an overlong literal is not a path."""
+    try:
+        return path.is_file()
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return False
+        raise
 
 
 def split_conversation(
@@ -108,13 +127,6 @@ def _resolve_conversation(
     return [], input_value if literal_input else _resolve_input(base, input_value)
 
 
-def _resolve_trace_dir(base: Path, trace_dir: str) -> Path:
-    path = Path(trace_dir)
-    if path.is_absolute():
-        return path
-    return (base / trace_dir).resolve()
-
-
 def new_run_id() -> str:
     """Allocate a run id ahead of the run itself.
 
@@ -126,6 +138,16 @@ def new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:16]}"
 
 
+def validate_run_id(value: str) -> str:
+    """Validate a caller-allocated run id before it becomes a trace filename."""
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError(
+            "run_id must be 1-128 characters: letters, numbers, '.', '_' or '-'; "
+            "it must start with a letter or number"
+        )
+    return value
+
+
 # Kept for callers written against the private name.
 _new_run_id = new_run_id
 
@@ -135,6 +157,9 @@ def dry_run(
     input_value: str | None = None,
     *,
     conversation: list[dict[str, Any]] | None = None,
+    literal_input: bool = False,
+    model_override: str | None = None,
+    provider_override: str | None = None,
     approve_trust=None,
 ) -> dict[str, Any]:
     """Assemble the first model call without calling the model provider.
@@ -147,11 +172,16 @@ def dry_run(
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
+    spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    runtime_config = _runtime_config(
+        spec, model_override=model_override, provider_override=provider_override
+    )
     resolve_hooks(spec, base)
-    registry = build_registry(spec, base)
+    run_boundary = RunBoundary.resolve(base, spec)
+    registry = build_registry(spec, base, run_boundary=run_boundary)
     try:
         history, run_input = _resolve_conversation(
-            base, input_value, conversation, literal_input=False
+            base, input_value, conversation, literal_input=literal_input
         )
 
         from hiveloom.models.provider import _estimate_messages_tokens
@@ -171,14 +201,53 @@ def dry_run(
             manager = PlaybookManager(load_playbooks(spec, base), registry)
             manager.enter_initial()
             context_manager.set_playbooks(manager)
+        initial_tools = registry.active_names()
+        effective_tools = list(initial_tools)
+        step_plan = []
+        for index, step in enumerate(spec.loop.steps):
+            if isinstance(step, SequentialStep):
+                if step.tools is not None:
+                    effective_tools = [
+                        name for name in step.tools if name in initial_tools
+                    ]
+                step_plan.append(
+                    {
+                        "id": step.id,
+                        "index": index,
+                        "instruction": step.instruction,
+                        "tools": list(effective_tools),
+                        "require_tool_calls": step.require_tool_calls,
+                        "max_model_calls": step.max_model_calls,
+                        "max_tool_calls": step.max_tool_calls,
+                        "enforced": True,
+                    }
+                )
+            else:
+                step_plan.append(
+                    {
+                        "id": f"step-{index + 1}",
+                        "index": index,
+                        "instruction": step,
+                        "tools": list(effective_tools),
+                        "require_tool_calls": [],
+                        "max_model_calls": None,
+                        "max_tool_calls": None,
+                        "enforced": False,
+                    }
+                )
+        if step_plan:
+            registry.set_active(step_plan[0]["tools"])
         system = context_manager.system()
         messages = [*history, {"role": "user", "content": run_input}]
         return {
             "name": spec.name,
             "model": spec.model.id,
+            "provider": spec.model.provider,
+            "runtime_config": runtime_config,
             "system": system,
             "messages": messages,
             "tools": registry.anthropic_payload(),
+            "steps": step_plan,
             "estimated_input_tokens": _estimate_messages_tokens(system, messages),
         }
     finally:
@@ -200,9 +269,13 @@ def run_harness(
     literal_input: bool = False,
     control: RunControl | None = None,
     run_id: str | None = None,
+    trace_dir: str | Path | None = None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
     resume_messages: list[dict[str, Any]] | None = None,
     lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
+    approve_network: Callable[[str], bool] | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -236,6 +309,10 @@ def run_harness(
     steering messages, both consumed at the loop's next turn boundary.
     ``run_id`` lets the caller pre-allocate the id (so it can be announced to
     a client before the run finishes); by default one is generated.
+    ``trace_dir`` selects a durable trace root for this run. ``model_override``
+    and ``provider_override`` build a validated in-memory model config: they
+    never write the harness, but they do participate in its runtime snapshot
+    and version hash so evidence from different executors is not combined.
     ``providers`` pre-registers model provider instances by name, for the
     cross-provider case: a playbook or an operator may move the run onto a
     provider the spec never named, and the router would otherwise construct one
@@ -249,6 +326,11 @@ def run_harness(
     :mod:`hiveloom.fork`. ``lineage`` is the accompanying provenance record
     (parent run id, journal seq) written into ``run_started``.
 
+    ``approve_network`` is the run-scoped decision point for an undeclared
+    ``http_get`` hostname. It receives only the normalized hostname and returns
+    true to allow that host for the rest of this run. Without a callback the
+    request fails closed; interactive CLI runs supply the operator prompt.
+
     ``literal_input`` skips the input-names-a-file convenience — see
     :func:`_resolve_input`. It is required when the input comes from an
     untrusted caller (``hiveloom serve`` and the HTTP control plane): over
@@ -260,6 +342,11 @@ def run_harness(
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
+    spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
+    runtime_config = _runtime_config(
+        spec, model_override=model_override, provider_override=provider_override
+    )
+    run_id = validate_run_id(run_id) if run_id is not None else new_run_id()
     resolve_hooks(spec, base)
 
     if resume_messages is not None:
@@ -276,13 +363,24 @@ def run_harness(
         history, run_input = _resolve_conversation(
             base, input_value, conversation, literal_input=literal_input
         )
-    registry = build_registry(spec, base)
+    # Resolve caller overrides exactly once, before any component is built.
+    # Every path-sensitive component receives this same effective boundary.
+    run_boundary = RunBoundary.resolve(
+        base, spec, trace_dir=trace_dir, hive_path=hive_path
+    )
+    registry = build_registry(spec, base, run_boundary=run_boundary)
+    # An explicitly required process sandbox is checked before any paid model
+    # turn. The default `auto` policy is opportunistic and never blocks a run.
+    gap = confine.unavailable_reason(spec.confinement)
+    if gap is not None:
+        registry.close()
+        raise ConfinementUnavailable(gap)
     # Bound before the try: several steps below it can raise, and an unbound
     # name in the finally would mask the real error with a NameError.
     router: ModelRouter | None = None
     try:
         guardrails = build_guardrails(spec, registry, base)
-        verifiers = build_verifiers(spec, base)
+        verifiers = build_verifiers(spec, base, run_boundary=run_boundary)
         skills = load_skills(spec, base)
         playbooks = (
             PlaybookManager(load_playbooks(spec, base), registry)
@@ -295,7 +393,7 @@ def run_harness(
 
         router = ModelRouter.create(
             base,
-            ModelConfig(
+            ProviderModelConfig(
                 id=spec.model.id,
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
@@ -306,14 +404,15 @@ def run_harness(
         )
 
         version_hash = spec_version_hash(spec, base)
-        run_id = run_id or new_run_id()
         trace = TraceWriter(
-            _resolve_trace_dir(base, spec.logging.trace_dir),
+            run_boundary.trace_dir,
             run_id=run_id,
             harness_name=spec.name,
             harness_id=spec.id,
             version_hash=version_hash,
-            redact_patterns=spec.logging.redact,
+            redact_patterns=spec.logging.redact.patterns,
+            redact_keys=spec.logging.redact.keys,
+            redact_paths=spec.logging.redact.paths,
             level=spec.logging.level,
             on_event=on_event,
         )
@@ -342,6 +441,12 @@ def run_harness(
             resume=resume_messages is not None,
             lineage=lineage,
             router=router,
+            harness_version_hash=version_hash,
+            runtime_version=__version__,
+            runtime_config=runtime_config,
+            hive_path=hive_path,
+            run_boundary=run_boundary,
+            approve_network=approve_network,
         )
         result = loop.run()
     finally:
@@ -350,21 +455,51 @@ def run_harness(
             router.close()
 
     if ingest:
-        _ingest_trace(trace.path, hive_path)
-        # Auto-propose needs this run ingested before it can count the failure.
-        _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+        indexed = _ingest_trace(trace.path, hive_path)
+        if indexed:
+            # Auto-propose needs this run ingested before it can count the failure.
+            _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+            _apply_trace_retention(spec, trace.path, hive_path)
     return result
 
 
-def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> None:
+def _ingest_trace(trace_path: Path, hive_path: str | Path | None) -> bool:
     """Best-effort ingest of a finished run's trace into the Hive."""
     from hiveloom.logging.hive import Hive
 
     try:
         with Hive(hive_path) as hive:
             hive.ingest_trace_file(trace_path)
+        return True
     except Exception:  # noqa: BLE001 - ingestion must never fail a completed run
-        pass
+        return False
+
+
+def _apply_trace_retention(
+    spec: HarnessSpec, trace_path: Path, hive_path: str | Path | None
+) -> None:
+    """Apply an explicit policy without invalidating the just-finished result."""
+    if spec.logging.retention is None:
+        return
+    try:
+        from hiveloom.logging.hive import Hive
+        from hiveloom.logging.retention import prune_trace_root
+
+        with Hive(hive_path) as hive:
+            hive.ingest_dir(trace_path.parent)
+            prune_trace_root(
+                trace_path.parent,
+                spec.logging.retention,
+                hive=hive,
+                preserve=[trace_path],
+            )
+    except Exception as exc:  # noqa: BLE001 - maintenance cannot erase a completed result
+        log.warning(
+            "trace retention failed for harness %s: %s: %s",
+            spec.name,
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _maybe_auto_propose(
@@ -416,7 +551,14 @@ def _maybe_auto_propose(
                     return
 
             model = strong_model or build_strong_model(auto.model, base)
-            report = analyze(hive, spec.identity, version=version)
+            report = analyze(
+                hive,
+                spec.identity,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+                objectives=spec.evolution.objectives,
+            )
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
             # otherwise every failing run past min_failures re-pays a
@@ -437,9 +579,9 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
     """The JSON shape of a completed run, shared by the CLI and the HTTP control plane.
 
     ``ok`` reflects only ``status == "success"`` — ``verify_failed``,
-    ``guardrail_halt``, ``max_turns``, ``stopped``, and ``error`` are all completed runs
-    reported here, not raised exceptions, so both callers can never diverge
-    on what a finished run looks like.
+    ``guardrail_halt``, ``step_failed``, ``max_turns``, ``stopped``, and ``error``
+    are all completed runs reported here, not raised exceptions, so both
+    callers can never diverge on what a finished run looks like.
     """
     return {
         "ok": result.status == "success",
@@ -452,6 +594,51 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "trace_path": result.trace_path,
         "reason": result.reason,
         "artifacts": result.artifacts,
+        "provider_calls": getattr(result, "provider_calls", []),
+        "steps": [
+            step.model_dump(mode="json")
+            for step in getattr(result, "steps", [])
+        ],
+        # Structural fakes and 1.0-era embedding adapters may still return the
+        # pre-override result shape. Keep that additive transition readable.
+        "runtime_config": getattr(result, "runtime_config", {}),
+        "execution": (
+            result.execution.model_dump(mode="json")
+            if getattr(result, "execution", None) is not None
+            else None
+        ),
+    }
+
+
+def _apply_runtime_model_overrides(
+    spec: HarnessSpec,
+    model_override: str | None,
+    provider_override: str | None,
+) -> HarnessSpec:
+    """Return a validated in-memory spec with run-only model selection."""
+    if model_override is None and provider_override is None:
+        return spec
+
+    from hiveloom.spec.schema import ModelConfig as SpecModelConfig
+
+    model = SpecModelConfig(
+        id=model_override or spec.model.id,
+        provider=provider_override or spec.model.provider,
+        max_tokens=spec.model.max_tokens,
+        temperature=spec.model.temperature,
+    )
+    return spec.model_copy(update={"model": model})
+
+
+def _runtime_config(
+    spec: HarnessSpec,
+    *,
+    model_override: str | None,
+    provider_override: str | None,
+) -> dict[str, Any]:
+    return {
+        "requested": {"model": model_override, "provider": provider_override},
+        "resolved": {"model": spec.model.id, "provider": spec.model.provider},
     }
 
 
@@ -472,7 +659,7 @@ def resolve_and_ingest(target: str | Path, hive) -> str:
         # happen before parsing a foreign harness rather than only before run.
         trust.ensure_trusted(yaml_path.parent)
         spec = load_spec(yaml_path)
-        hive.ingest_dir(_resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
+        hive.ingest_dir(resolve_trace_dir(yaml_path.parent, spec.logging.trace_dir))
         return spec.identity
     return str(target)
 

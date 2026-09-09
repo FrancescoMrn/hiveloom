@@ -27,7 +27,12 @@ jobs:
         run: uv sync --extra dev
       - name: Ruff
         run: uv run ruff check .
-      - name: Check pyproject.toml and __init__.py versions match
+      - name: Check the version wiring still resolves
+        # There is one version now, `hiveloom.__version__`, and hatchling reads
+        # it from there. What can still break silently is the wiring: a static
+        # `version` added back to pyproject.toml, or `[tool.hatch.version].path`
+        # pointed elsewhere, publishes a wheel under a version nothing else
+        # agrees with. `build` below checks the artifacts actually carry it.
         run: |
           uv run python - <<'EOF'
           import re
@@ -35,13 +40,18 @@ jobs:
           import tomllib
           from pathlib import Path
 
-          pyproject = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          init = re.search(
-              r'__version__ = "([^"]+)"', Path("src/hiveloom/__init__.py").read_text()
-          ).group(1)
-          if pyproject != init:
-              sys.exit(f"version mismatch: pyproject.toml={pyproject} __init__.py={init}")
-          print(f"version {pyproject} consistent")
+          config = tomllib.loads(Path("pyproject.toml").read_text())
+          if "version" in config["project"]:
+              sys.exit("pyproject.toml pins a static version; it must stay dynamic")
+          if "version" not in config["project"].get("dynamic", []):
+              sys.exit("pyproject.toml no longer declares version as dynamic")
+          path = config["tool"]["hatch"]["version"]["path"]
+          if path != "src/hiveloom/__init__.py":
+              sys.exit(f"[tool.hatch.version].path is {path}, not src/hiveloom/__init__.py")
+          match = re.search(r'^__version__ = "([^"]+)"$', Path(path).read_text(), re.M)
+          if match is None:
+              sys.exit(f"no top-level __version__ assignment in {path}")
+          print(f"version {match.group(1)} resolves from {path}")
           EOF
 
   test:
@@ -59,6 +69,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dev dependencies
         run: uv sync --extra dev
+      - name: Install a sandbox backend, if the runner can have one
+        # Without bwrap the confinement tests marked `sandboxed` skip, and this
+        # release's kernel-enforced isolation goes untested here. This step
+        # cannot fail the job: if the runner will not give us a working bwrap,
+        # `available_backend()` reports none and those tests skip as before.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap || true
       # No ANTHROPIC_API_KEY on purpose: tests must pass offline with fake
       # providers (CONTRIBUTING.md contract).
       - name: Run tests with branch coverage
@@ -103,7 +119,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -133,6 +149,23 @@ jobs:
           enable-cache: true
       - name: Build sdist and wheel
         run: uv build
+      - name: Check the built distribution carries hiveloom.__version__
+        # The one thing the wiring check in `lint` cannot see: whether hatchling
+        # actually stamped that version onto the artifacts we would publish.
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/hiveloom/__init__.py)
+          if [ -z "$VERSION" ]; then
+            echo "::error::no __version__ in src/hiveloom/__init__.py"
+            exit 1
+          fi
+          for artifact in "dist/hiveloom-$VERSION.tar.gz" \
+                          "dist/hiveloom-$VERSION-py3-none-any.whl"; do
+            if [ ! -f "$artifact" ]; then
+              echo "::error::missing $artifact; dist holds: $(ls dist)"
+              exit 1
+            fi
+          done
+          echo "built hiveloom $VERSION"
       - name: Check distribution metadata
         run: uvx twine check dist/*
       - name: Smoke-test the wheel in a clean environment
@@ -162,16 +195,40 @@ jobs:
           fi
           echo "generated harness artifacts excluded"
       - name: Ensure the sdist ships only runtime, harnesses, and agent guidance
+        # Development material (tests, evals, CI config) stays in the repository
+        # — see [tool.hatch.build.targets.sdist]. The reference documents under
+        # docs/ are the one exception: `uv build` builds the wheel *from* the
+        # sdist, and the wheel force-includes them as `hiveloom guide` topics, so
+        # they have to travel in it. Anything else under docs/ — drafts,
+        # proposals, images — must not, so the shipped set is compared against
+        # the force-include list rather than waved through by prefix.
         run: |
           SDIST=$(ls dist/*.tar.gz)
-          # Development material (tests, docs, evals, CI config) stays in the
-          # repository — see [tool.hatch.build.targets.sdist].
-          if tar -tzf "$SDIST" | sed 's|^[^/]*/||' \
-            | grep -E '^(tests|docs|evals|\.github|\.claude)/'; then
-            echo "::error::sdist contains development-only material"
-            exit 1
-          fi
-          echo "sdist scope clean"
+          python3 - "$SDIST" <<'EOF'
+          import sys
+          import tarfile
+          import tomllib
+          from pathlib import Path
+
+          wheel = tomllib.loads(Path("pyproject.toml").read_text())
+          force_include = wheel["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+          guide_docs = {name for name in force_include if name.startswith("docs/")}
+
+          with tarfile.open(sys.argv[1]) as archive:
+              shipped = [n.split("/", 1)[1] for n in archive.getnames() if "/" in n]
+
+          offenders = sorted(
+              name
+              for name in shipped
+              if name.startswith(("tests/", "evals/", ".github/", ".claude/"))
+              or (name.startswith("docs/") and name not in guide_docs)
+          )
+          for name in offenders:
+              print(f"::error::sdist ships {name}, which is repository-only material")
+          if offenders:
+              sys.exit("sdist scope violated")
+          print(f"sdist scope clean ({len(guide_docs)} guide documents)")
+          EOF
       - name: Ensure the agent guidance is packaged in the wheel
         run: |
           WHEEL=$(ls dist/*.whl)

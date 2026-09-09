@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dominant_failure_code", "error_count", "build_digest"],
+  "properties": {
+    "dominant_failure_code": {
+      "type": "string",
+      "description": "The code=... value on the most ERROR lines."
+    },
+    "error_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total ERROR lines in the window."
+    },
+    "build_digest": {
+      "type": "string",
+      "description": "The digest= value on the final SUMMARY line — it lives in the tail, which is the part a truncated tool result used to lose."
+    }
+  }
+}

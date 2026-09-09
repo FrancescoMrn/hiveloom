@@ -97,6 +97,68 @@ def test_catalog_policies_lists_sequential_steps():
     assert "sequential_steps" in names
 
 
+def test_catalog_validators_lists_grounded_references():
+    result = runner.invoke(app, ["catalog", "validators", "--json"])
+
+    assert result.exit_code == ExitCode.OK
+    entries = {entry["name"]: entry for entry in _json(result)["entries"]}
+    assert entries["grounded_references"]["params"][0]["name"] == "output_path"
+
+
+def test_add_grounded_reference_validator_from_cli(tmp_path: Path):
+    directory = str(tmp_path / "grounded")
+    runner.invoke(app, ["init", directory, "--name", "grounded", "--task", "T"])
+    runner.invoke(app, ["add", "tool", "--builtin", "file_read", "--dir", directory])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "validator",
+            "--builtin",
+            "grounded_references",
+            "--output-path",
+            "$.selected[*].id",
+            "--evidence-path",
+            "file_read=$.candidates[*].id",
+            "--dir",
+            directory,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.OK
+    ref = load_spec(directory).verify.validators[-1]
+    assert ref.params()["evidence_paths"] == [
+        {"tool": "file_read", "path": "$.candidates[*].id"}
+    ]
+
+
+def test_add_grounded_reference_validator_rejects_bad_cli_selector(tmp_path: Path):
+    directory = str(tmp_path / "grounded-error")
+    runner.invoke(app, ["init", directory, "--name", "grounded", "--task", "T"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "validator",
+            "--builtin",
+            "grounded_references",
+            "--output-path",
+            "$.selected[*].id",
+            "--evidence-path",
+            "missing-separator",
+            "--dir",
+            directory,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == ExitCode.SPEC_ERROR
+    assert "TOOL=JSON_PATH" in _json(result)["error"]
+
+
 def test_explain_loop_steps():
     r = runner.invoke(app, ["explain", "loop.steps", "--json"])
     assert r.exit_code == ExitCode.OK
@@ -215,6 +277,116 @@ def test_run_dry_run_needs_no_api_key():
     assert _json(r)["dry_run"] is True
 
 
+def test_run_input_text_accepts_overlong_literal(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="literal", task="Echo input.")
+    value = "x" * 10_000
+
+    r = runner.invoke(
+        app, ["run", str(directory), "--input-text", value, "--dry-run", "--json"]
+    )
+
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["messages"][-1]["content"] == value
+
+
+def test_legacy_run_input_treats_overlong_value_as_literal(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="legacy-literal", task="Echo input.")
+    value = "x" * 10_000
+
+    r = runner.invoke(
+        app, ["run", str(directory), "--input", value, "--dry-run", "--json"]
+    )
+
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["messages"][-1]["content"] == value
+
+
+def test_run_input_file_missing_is_spec_error(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="missing-input", task="Echo input.")
+
+    r = runner.invoke(
+        app, ["run", str(directory), "--input-file", "missing.txt", "--dry-run", "--json"]
+    )
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert _json(r) == {"ok": False, "error": "input file not found: missing.txt"}
+
+
+def test_run_input_flags_are_mutually_exclusive(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="conflict", task="Echo input.")
+
+    r = runner.invoke(
+        app,
+        [
+            "run",
+            str(directory),
+            "--input-text",
+            "literal",
+            "--input-file",
+            "case.txt",
+            "--json",
+        ],
+    )
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "pass exactly one" in _json(r)["error"]
+
+
+def test_run_runtime_flags_reach_runner(tmp_path: Path, monkeypatch):
+    from hiveloom import runner as runner_mod
+    from hiveloom.loop.agent_loop import RunResult
+
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="runtime-flags", task="Echo input.")
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake_run_harness(*args, **kwargs):
+        calls.append((args, kwargs))
+        return RunResult(
+            status="success",
+            run_id="case-17",
+            trace_path=str(tmp_path / "durable" / "case-17.jsonl"),
+            runtime_config={
+                "requested": {"model": "qwen3.5-9b", "provider": "openrouter"},
+                "resolved": {"model": "qwen3.5-9b", "provider": "openrouter"},
+            },
+        )
+
+    monkeypatch.setattr(runner_mod, "run_harness", fake_run_harness)
+    r = runner.invoke(
+        app,
+        [
+            "run",
+            str(directory),
+            "--input-text",
+            "rank this case",
+            "--model",
+            "qwen3.5-9b",
+            "--provider",
+            "openrouter",
+            "--run-id",
+            "case-17",
+            "--trace-dir",
+            str(tmp_path / "durable"),
+            "--json",
+        ],
+    )
+
+    assert r.exit_code == ExitCode.OK
+    args, kwargs = calls[0]
+    assert args == (str(directory), "rank this case")
+    assert kwargs["literal_input"] is True
+    assert kwargs["model_override"] == "qwen3.5-9b"
+    assert kwargs["provider_override"] == "openrouter"
+    assert kwargs["run_id"] == "case-17"
+    assert kwargs["trace_dir"] == str(tmp_path / "durable")
+    assert _json(r)["runtime_config"]["resolved"]["model"] == "qwen3.5-9b"
+
+
 def test_control_plane_json_startup_contract(tmp_path: Path, monkeypatch):
     from hiveloom import construct
 
@@ -254,7 +426,19 @@ def test_guide_lists_every_topic():
     r = runner.invoke(app, ["guide", "--list", "--json"])
     assert r.exit_code == ExitCode.OK
     names = [t["name"] for t in _json(r)["topics"]]
-    assert names[:2] == ["agents", "all"]
+    assert names[:3] == ["agents", "all", "confinement"]
+    assert {
+        "spec",
+        "architecture",
+        "models",
+        "extending",
+        "evaluating",
+        "journal",
+        "workbench",
+        "deploying",
+        "control-plane",
+        "sync-protocol",
+    } <= set(names)
     # One topic per lifecycle skill, named without the hiveloom- prefix.
     assert {"build", "run", "evolve", "extend", "ship"} <= set(names)
     assert all(t["description"] for t in _json(r)["topics"])
@@ -268,6 +452,14 @@ def test_guide_prints_raw_markdown():
     skill = runner.invoke(app, ["guide", "build"])
     assert skill.exit_code == ExitCode.OK
     assert "name: hiveloom-build" in skill.stdout
+
+    confinement = runner.invoke(app, ["guide", "confinement"])
+    assert confinement.exit_code == ExitCode.OK
+    assert "Agent = model + harness" in confinement.stdout
+
+    spec = runner.invoke(app, ["guide", "spec"])
+    assert spec.exit_code == ExitCode.OK
+    assert spec.stdout.startswith("# Harness spec reference")
 
 
 def test_guide_unknown_topic_is_a_spec_error():
@@ -377,6 +569,32 @@ def test_add_playbook_rejects_a_duplicate_name(tmp_path: Path):
     assert "already listed" in json.loads(result.stdout)["error"]
 
 
+def test_add_http_tool_can_preapprove_hosts(tmp_path: Path):
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="http", task="Fetch a document.")
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "tool",
+            "--builtin",
+            "http_get",
+            "--host",
+            "example.com",
+            "--host",
+            "*.example.org",
+            "--dir",
+            str(directory),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    tool = next(ref for ref in load_spec(directory).tools if ref.builtin == "http_get")
+    assert tool.params()["hosts"] == ["example.com", "*.example.org"]
+
+
 def test_version_flag_reports_the_installed_version():
     """`hiveloom --version` is the first command the install docs tell a new
     user to run, so it has to exist and print something parseable."""
@@ -386,3 +604,45 @@ def test_version_flag_reports_the_installed_version():
         r = runner.invoke(app, [flag])
         assert r.exit_code == ExitCode.OK
         assert r.stdout.strip() == _version("hiveloom")
+
+
+def test_add_tool_param_declares_a_shell_allowlist(tmp_path: Path):
+    """The allowlist is reachable from the CLI; hand-editing YAML is not required."""
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+
+    r = runner.invoke(
+        app,
+        ["add", "tool", "--builtin", "shell", "--param", 'commands=["wc -l app.log"]',
+         "--dir", directory, "--json"],
+    )
+    assert r.exit_code == ExitCode.OK, r.stdout
+    spec = load_spec(directory)
+    shell = next(t for t in spec.tools if getattr(t, "builtin", None) == "shell")
+    assert shell.params() == {"commands": ["wc -l app.log"]}
+
+
+def test_add_tool_param_requires_name_equals_value(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app,
+        ["add", "tool", "--builtin", "shell", "--param", "commands", "--dir", directory,
+         "--json"],
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "name=value" in _json(r)["error"]
+
+
+def test_add_tool_param_rejects_unbuildable_shell_rule(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+    r = runner.invoke(
+        app,
+        ["add", "tool", "--builtin", "shell",
+         "--param", 'commands=[{argv: [cat], allow_extra_args: true}]',
+         "--dir", directory, "--json"],
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert "arbitrary extra arguments" in _json(r)["error"]
+    assert load_spec(directory).tools == []

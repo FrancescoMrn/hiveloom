@@ -72,6 +72,10 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+friction_app = typer.Typer(help="Query recovered retries and other indexed run friction.")
+app.add_typer(friction_app, name="friction")
+traces_app = typer.Typer(help="Manage raw trace files under a validated Hiveloom root.")
+app.add_typer(traces_app, name="traces")
 keys_app = typer.Typer(
     help="Ed25519 keys and bearer tokens for the (non-production) HTTP control plane."
 )
@@ -84,6 +88,10 @@ registry_app = typer.Typer(
     help="The local harness registry: what `hiveloom mcp serve --registered` offers to agents."
 )
 app.add_typer(registry_app, name="registry")
+metrics_app = typer.Typer(help="Record, import, and query numeric run metrics.")
+app.add_typer(metrics_app, name="metrics")
+eval_app = typer.Typer(help="Validate and run versioned local evaluations.")
+app.add_typer(eval_app, name="eval")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -104,6 +112,17 @@ def _fail(message: str, json_output: bool, code: int) -> None:
     else:
         _err_console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code)
+
+
+def _optional_bool(value: str | None, option: str) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise SpecError(f"{option} must be true or false")
 
 
 def _guard(json_output: bool):
@@ -160,7 +179,11 @@ def schema(
 @app.command()
 def catalog(
     kind: str = typer.Argument(
-        ..., help="One of: tools, guardrails, validators, policies, compaction, hooks."
+        ...,
+        help=(
+            "One of: tools, guardrails, validators, policies, compaction, hooks, "
+            "datasets, scorers."
+        ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -223,7 +246,29 @@ def explain(
 
 @app.command()
 def models(
-    provider: str = typer.Argument("", help="Show only this provider's models."),
+    name_or_action: str = typer.Argument(
+        "", help="Provider to list, or 'probe' for a model capability probe."
+    ),
+    target: str = typer.Argument("", help="Harness path when the action is 'probe'."),
+    model: str | None = typer.Option(None, "--model", help="Run-only model to probe."),
+    probe_provider: str | None = typer.Option(
+        None, "--provider", help="Run-only provider to probe."
+    ),
+    identity: str = typer.Option(
+        "warn", "--identity", help="Identity policy: warn, exact, or alias."
+    ),
+    alias: list[str] = typer.Option([], "--alias", help="Accepted effective-model alias."),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Contact the provider for up to two possibly billed model calls.",
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Ignore a valid cached probe."),
+    require_compatible: bool = typer.Option(
+        False,
+        "--require-compatible",
+        help="Return a validation error when identity is not accepted.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """List model providers and their known models, pricing, and key status.
@@ -232,9 +277,74 @@ def models(
     in ``model.provider``, and which environment variable holds its key. An
     ``open`` provider also accepts model ids not listed here (new releases,
     aggregator routes, whatever a local server is serving); a closed one does
-    not, so a typo fails validation. Free: this never touches the API.
+    not, so a typo fails validation. Listing and declared probes are free.
+    `models probe ... --live` explicitly opts into up to two possibly billed
+    provider calls.
     """
     from hiveloom import ext
+
+    if name_or_action == "probe":
+        from hiveloom import trust as trust_mod
+        from hiveloom.models.capabilities import (
+            probe_model,
+            probe_plan,
+            require_compatible_probe,
+        )
+        from hiveloom.spec.loader import load_spec
+        from hiveloom.spec.schema import ModelConfig
+
+        with _guard(json_output):
+            if not target:
+                raise SpecError("models probe requires a harness path")
+            if identity not in {"warn", "exact", "alias"}:
+                raise SpecError("--identity must be warn, exact, or alias")
+            harness_path = Path(target)
+            yaml_path = harness_path / "harness.yaml" if harness_path.is_dir() else harness_path
+            trust_mod.ensure_trusted(yaml_path.parent, _trust_prompt(json_output))
+            spec = load_spec(yaml_path)
+            resolved = ModelConfig(
+                provider=probe_provider or spec.model.provider,
+                id=model or spec.model.id,
+                max_tokens=min(spec.model.max_tokens, 128),
+                temperature=spec.model.temperature,
+            )
+            provider_instance = (
+                ext.build_provider(resolved.provider, yaml_path.parent) if live else None
+            )
+            result = probe_model(
+                resolved.provider,
+                resolved.id,
+                provider=provider_instance,
+                live=live,
+                policy=identity,
+                aliases=alias,
+                refresh=refresh,
+            )
+            if require_compatible:
+                require_compatible_probe(result)
+            payload = {
+                "ok": True,
+                "plan": probe_plan(live=live).model_dump(mode="json"),
+                "probe": result.model_dump(mode="json"),
+            }
+            if json_output:
+                _emit_json(payload)
+            else:
+                mode = "cached" if result.cached else "live" if result.live else "declared"
+                _console.print(
+                    f"[green]probe[/green] {resolved.provider}/{resolved.id} ({mode})\n"
+                    f"identity: {result.identity.status} "
+                    f"({'accepted' if result.identity.accepted else 'rejected'})\n"
+                    f"{payload['plan']['note']}"
+                )
+        return
+
+    if target:
+        raise SpecError("a second argument is only valid for `hiveloom models probe`")
+    if any((model, probe_provider, alias, live, refresh, require_compatible)) or identity != "warn":
+        raise SpecError("probe options require `hiveloom models probe HARNESS`")
+
+    provider = name_or_action
 
     entries = ext.providers()
     if provider:
@@ -336,6 +446,92 @@ def extensions(
 
 
 @app.command()
+def confinement(
+    directory: str | None = typer.Argument(
+        None, help="Harness directory. Omit to report this machine's capability alone."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Report how this machine will confine processes a harness spawns.
+
+    The `shell` tool and the `command_succeeds` validator start subprocesses.
+    What the spec asks for and what the machine can enforce are different
+    questions — a policy of `network: false` is only real where a sandbox
+    backend exists. This answers the second question before a run does.
+
+    With no argument it reports the machine alone, against schema defaults. A
+    directory that is named must load: answering for a harness that does not
+    exist, with defaults it never declared, is worse than saying so.
+    """
+    from hiveloom import confine
+    from hiveloom.egress import policy_name
+    from hiveloom.spec.loader import harness_path, load_spec
+    from hiveloom.spec.schema import ConfinementConfig, EgressConfig
+
+    spec = None
+    if directory is None:
+        config = ConfinementConfig()
+        source = "(no harness named; schema defaults)"
+    else:
+        try:
+            spec = load_spec(harness_path(directory))
+        except (SpecError, OSError) as exc:
+            _fail(str(exc), json_output, ExitCode.SPEC_ERROR)
+        config = spec.confinement
+        source = str(harness_path(directory))
+    info = confine.describe(config)
+    info["provider_egress_policy"] = policy_name(
+        spec.egress if spec is not None else EgressConfig(),
+        spec.logging.redact if spec is not None else None,
+    )
+    info["provider_egress_active"] = info["provider_egress_policy"] != "off"
+    if spec is not None:
+        info["prompt_injection_boundary"] = confine.risk_facts(
+            spec, provider_egress_active=info["provider_egress_active"]
+        )
+    blocked = confine.unavailable_reason(config)
+    if json_output:
+        _emit_json({"ok": blocked is None, "source": source, "blocked": blocked, **info})
+        # A policy this machine cannot honor is a non-zero exit in both output
+        # modes: the JSON caller is usually the one gating a deploy on it.
+        if blocked:
+            raise typer.Exit(ExitCode.SPEC_ERROR)
+        return
+
+    _console.print(f"[dim]{source}[/dim]")
+    table = Table(title="process confinement")
+    table.add_column("property", style="bold cyan")
+    table.add_column("value")
+    table.add_row("declared mode", info["mode"])
+    table.add_row("backend in use", info["backend"])
+    table.add_row("filesystem isolated", "yes" if info["filesystem_isolated"] else "no")
+    table.add_row("runtime state hidden", "yes" if info["runtime_state_hidden"] else "no")
+    table.add_row("network isolated", "yes" if info["network_isolated"] else "no")
+    table.add_row("home hidden", "yes" if info["home_hidden"] else "no")
+    table.add_row("resource limits", "yes" if info["limits_applied"] else "no")
+    table.add_row("provider egress", info["provider_egress_policy"])
+    if spec is not None:
+        boundary = info["prompt_injection_boundary"]
+        table.add_row(
+            "safe for untrusted input",
+            "yes" if boundary["safe_for_untrusted_input"] else "no",
+        )
+        if boundary["http_undeclared_hosts_require_approval"]:
+            table.add_row("new HTTP hosts", "operator approval required")
+    _console.print(table)
+    if info["backend"] == "none" and info["mode"] != "off":
+        _console.print(
+            "[yellow]no OS sandbox on this host[/yellow]: spawned processes get a "
+            "scrubbed environment, resource limits and a timeout. That is not "
+            "filesystem isolation — the harness's .hiveloom, journal and spill "
+            "store stay readable to any command allowed to read files."
+        )
+    if blocked:
+        _err_console.print(f"[red]{blocked}[/red]")
+        raise typer.Exit(ExitCode.SPEC_ERROR)
+
+
+@app.command()
 def guide(
     topic: str = typer.Argument(
         "agents", help="Topic to print: agents (default), all, or a skill name."
@@ -392,6 +588,39 @@ def validate(
             _emit_json({"ok": True, "name": spec.name, "message": "harness is valid"})
         else:
             _console.print(f"[green]valid[/green] — {spec.name}")
+
+
+@app.command()
+def migrate(
+    harness_dir: str = typer.Argument(".", help="Harness directory to migrate."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Atomically migrate legacy harness document fields.
+
+    The current migration renames the document-format field from ``version``
+    to ``schema_version``. Full validation runs before and after the write,
+    with rollback on error. Harness behavior identity does not change.
+    """
+    from hiveloom.spec.migrate import migrate_harness
+
+    with _guard(json_output):
+        result = migrate_harness(
+            harness_dir,
+            approve_trust=_trust_prompt(json_output),
+        )
+        payload = {"ok": True, **result.model_dump(mode="json")}
+        if json_output:
+            _emit_json(payload)
+        elif result.changed:
+            _console.print(
+                f"[green]migrated[/green] {result.from_field} -> {result.to_field} "
+                f"(behavior {result.behavior_hash_after})"
+            )
+        else:
+            _console.print(
+                f"[green]already current[/green] — {result.to_field}: "
+                f"{result.schema_version}"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -460,12 +689,33 @@ def add_tool_cmd(
     builtin: str | None = typer.Option(None, "--builtin", help="Builtin tool name."),
     code: str | None = typer.Option(None, "--code", help="Code hook path.py:function."),
     description: str | None = typer.Option(None, "--description", help="Tool description."),
+    host: list[str] = typer.Option(
+        [],
+        "--host",
+        help="Pre-approve an http_get hostname (repeatable; other hosts prompt at run time).",
+    ),
+    param: list[str] = typer.Option(
+        [],
+        "--param",
+        help=(
+            "Builtin parameter as name=value, value parsed as YAML (repeatable). "
+            "See `hiveloom catalog tools` for each builtin's parameters, e.g. "
+            "--param 'commands=[\"grep app.log\"]'."
+        ),
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Add a tool. ``--code`` scaffolds a stub file if it does not exist."""
     with _guard(json_output):
-        construct.add_tool(directory, builtin=builtin, code=code, description=description)
+        construct.add_tool(
+            directory,
+            builtin=builtin,
+            code=code,
+            description=description,
+            hosts=host or None,
+            **_parse_params(param),
+        )
         _added(json_output, "tool", builtin or code)
 
 
@@ -478,11 +728,35 @@ def add_validator_cmd(
     pattern: str | None = typer.Option(None, "--pattern", help="For regex_match."),
     path: str | None = typer.Option(None, "--path", help="For file_exists."),
     command: str | None = typer.Option(None, "--command", help="For command_succeeds."),
+    output_path: str | None = typer.Option(
+        None, "--output-path", help="JSON output selector for grounded_references."
+    ),
+    evidence_path: list[str] | None = typer.Option(
+        None,
+        "--evidence-path",
+        help="Repeat TOOL=JSON_PATH selectors for grounded_references.",
+    ),
+    normalize: str | None = typer.Option(
+        None, "--normalize", help="Reference normalization for grounded_references."
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Add a verifier. ``--code`` scaffolds a stub file if it does not exist."""
     with _guard(json_output):
+        evidence_paths = None
+        if evidence_path:
+            evidence_paths = []
+            for selector in evidence_path:
+                if "=" not in selector:
+                    raise SpecError(
+                        "--evidence-path must use TOOL=JSON_PATH, for example "
+                        "search=$.candidates[*].id"
+                    )
+                tool, json_path = selector.split("=", 1)
+                if not tool.strip() or not json_path.strip():
+                    raise SpecError("--evidence-path tool and JSON path must not be empty")
+                evidence_paths.append({"tool": tool, "path": json_path})
         construct.add_validator(
             directory,
             builtin=builtin,
@@ -492,6 +766,9 @@ def add_validator_cmd(
             pattern=pattern,
             path=path,
             command=command,
+            output_path=output_path,
+            evidence_paths=evidence_paths,
+            normalize=normalize,
         )
         _added(json_output, "validator", builtin or code)
 
@@ -699,6 +976,21 @@ def _trust_prompt(json_output: bool):
     return approve
 
 
+def _network_prompt(non_interactive: bool):
+    """Ask for one run-scoped HTTP destination, or fail closed."""
+    if non_interactive:
+        return None
+
+    def approve(hostname: str) -> bool:
+        _console.print(
+            f"[yellow]network access requested[/yellow] {hostname}\n"
+            "The model is asking to send an HTTP request to this host."
+        )
+        return typer.confirm("Allow this host for the rest of this run?", default=False)
+
+    return approve
+
+
 @app.command()
 def trust(
     harness_dir: str = typer.Argument(..., help="Harness directory to trust."),
@@ -901,7 +1193,27 @@ def mcp_list_tools_cmd(
 def run(
     harness_dir: str = typer.Argument(".", help="Harness directory to run."),
     input_value: str = typer.Option(
-        None, "--input", help="Input FILE path or literal TEXT (omit with --resume)."
+        None,
+        "--input",
+        help="Legacy FILE-or-TEXT input heuristic (deprecated; use an explicit input flag).",
+    ),
+    input_text: str = typer.Option(
+        None, "--input-text", help="Literal input text; never interpreted as a path."
+    ),
+    input_file: str = typer.Option(
+        None, "--input-file", help="Read input from this file; missing files are errors."
+    ),
+    model: str = typer.Option(
+        None, "--model", help="Override model id for this run without editing the harness."
+    ),
+    provider: str = typer.Option(
+        None, "--provider", help="Override provider for this run without editing the harness."
+    ),
+    run_id: str = typer.Option(
+        None, "--run-id", help="Use this caller-allocated run id."
+    ),
+    trace_dir: str = typer.Option(
+        None, "--trace-dir", help="Write this run's trace under a durable directory."
     ),
     resume: bool = typer.Option(
         False,
@@ -945,9 +1257,12 @@ def run(
     from hiveloom import trust as trust_mod
 
     with _guard(json_output):
-        if resume == (input_value is not None):
+        input_count = sum(
+            value is not None for value in (input_value, input_text, input_file)
+        )
+        if (resume and input_count) or (not resume and input_count != 1):
             _fail(
-                "pass exactly one of --input or --resume",
+                "pass exactly one of --input-text, --input-file, legacy --input, or --resume",
                 json_output,
                 ExitCode.SPEC_ERROR,
             )
@@ -960,12 +1275,33 @@ def run(
                 _console.print(f"[green]pulled[/green] @ {pulled['version_hash']}")
         if approve:
             trust_mod.record_trust(harness_dir)
-        if dry_run and input_value is None:
-            _fail("--dry-run needs --input", json_output, ExitCode.SPEC_ERROR)
+        if dry_run and resume:
+            _fail(
+                "--dry-run needs an input and cannot be used with --resume",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
             return
+        literal_input = input_text is not None or input_file is not None
+        resolved_input = input_text if input_text is not None else input_value
+        if input_file is not None:
+            from hiveloom.spec.loader import harness_path
+
+            base = harness_path(harness_dir).parent
+            direct = Path(input_file)
+            candidates = [direct] if direct.is_absolute() else [direct, base / direct]
+            selected = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if selected is None:
+                raise SpecError(f"input file not found: {input_file}")
+            resolved_input = selected.read_text(encoding="utf-8")
         if dry_run:
             info = runner.dry_run(
-                harness_dir, input_value, approve_trust=_trust_prompt(json_output)
+                harness_dir,
+                resolved_input,
+                literal_input=literal_input,
+                model_override=model,
+                provider_override=provider,
+                approve_trust=_trust_prompt(json_output),
             )
             if json_output:
                 _emit_json({"ok": True, "dry_run": True, **info})
@@ -973,6 +1309,15 @@ def run(
                 _console.print(f"[bold]dry run[/bold] — {info['name']} ({info['model']})")
                 _console.print(f"system:\n{info['system']}")
                 _console.print(f"tools: {[t['name'] for t in info['tools']]}")
+                if info.get("steps"):
+                    _console.print("steps:")
+                    for step in info["steps"]:
+                        _console.print(
+                            f"  {step['id']}: tools={step['tools']} "
+                            f"required={step['require_tool_calls']} "
+                            f"model_calls<={step['max_model_calls']} "
+                            f"tool_calls<={step['max_tool_calls']}"
+                        )
                 _console.print(f"first message: {info['messages'][0]['content']}")
             return
 
@@ -1000,16 +1345,30 @@ def run(
                     "parent_run_id": record.get("parent_run_id", ""),
                     "forked_at_seq": record.get("at_seq"),
                     "parent_line_hash": record.get("parent_line_hash", ""),
+                    # The spilled results this fork was granted at fork time.
+                    "spill_handles": record.get("spill_handles") or [],
+                    "spill_manifest": record.get("spill_manifest") or [],
                 },
                 on_event=on_event,
+                run_id=run_id,
+                trace_dir=trace_dir,
+                model_override=model,
+                provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
+                approve_network=_network_prompt(json_output or stream),
             )
         else:
             result = runner.run_harness(
                 harness_dir,
-                input_value,
+                resolved_input,
+                literal_input=literal_input,
                 on_event=on_event,
+                run_id=run_id,
+                trace_dir=trace_dir,
+                model_override=model,
+                provider_override=provider,
                 approve_trust=_trust_prompt(json_output or stream),
+                approve_network=_network_prompt(json_output or stream),
             )
         payload = runner.run_result_payload(result)
         if stream:
@@ -1172,8 +1531,9 @@ def trace(
             return
 
         events: list[dict[str, Any]] = []
-        trace_file = Path(run.get("trace_path", ""))
-        if trace_file.exists():
+        trace_path = run.get("trace_path")
+        trace_file = Path(trace_path) if trace_path else None
+        if trace_file is not None and trace_file.is_file():
             events = [
                 _json.loads(line)
                 for line in trace_file.read_text(encoding="utf-8").splitlines()
@@ -1181,9 +1541,14 @@ def trace(
             ]
 
         if verify:
-            if not trace_file.exists():
+            if trace_file is None or not trace_file.is_file():
+                detail = (
+                    f"pruned at {run['trace_pruned_at']}"
+                    if run.get("trace_pruned_at")
+                    else "missing"
+                )
                 _fail(
-                    f"trace file for '{run_id}' is missing: {trace_file}",
+                    f"trace file for '{run_id}' is {detail}",
                     json_output,
                     ExitCode.SPEC_ERROR,
                 )
@@ -1260,8 +1625,76 @@ def trace(
         )
         if run.get("reason"):
             _console.print(f"reason: {run['reason']}")
+        if run.get("trace_pruned_at"):
+            _console.print(f"[dim]raw journal pruned at {run['trace_pruned_at']}[/dim]")
         for event in events:
             _console.print(f"  [dim]{event['seq']:>3}[/dim] {event['type']}")
+
+
+@traces_app.command("prune")
+def traces_prune(
+    target: str = typer.Argument(..., help="Harness directory whose trace policy applies."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Plan and report deletions without changing files or the Hive."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Apply the configured retention policy."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Plan or apply explicit age, count, and byte limits for raw journals."""
+    from hiveloom import trust
+    from hiveloom.logging.hive import Hive
+    from hiveloom.logging.retention import prune_trace_root
+    from hiveloom.spec.loader import harness_path, load_spec
+
+    with _guard(json_output):
+        yaml_path = harness_path(target)
+        if not yaml_path.exists():
+            raise SpecError(f"no harness spec found at {yaml_path}")
+        trust.ensure_trusted(yaml_path.parent)
+        spec = load_spec(yaml_path)
+        if spec.logging.retention is None:
+            raise SpecError("logging.retention is not configured")
+        if not dry_run and not yes:
+            raise SpecError("pass --dry-run to inspect the plan or --yes to apply it")
+        configured = Path(spec.logging.trace_dir).expanduser()
+        trace_root = (
+            configured.resolve()
+            if configured.is_absolute()
+            else (yaml_path.parent / configured).resolve()
+        )
+        if dry_run:
+            plan = prune_trace_root(
+                trace_root,
+                spec.logging.retention,
+                dry_run=True,
+            )
+        else:
+            with Hive() as hive:
+                # Raw evidence is not removed until every valid candidate has
+                # an indexed record that can survive its journal.
+                hive.ingest_dir(trace_root)
+                plan = prune_trace_root(
+                    trace_root,
+                    spec.logging.retention,
+                    hive=hive,
+                )
+        payload = {"ok": True, "dry_run": dry_run, **plan.to_dict()}
+        if json_output:
+            _emit_json(payload)
+            return
+        verb = "would prune" if dry_run else "pruned"
+        _console.print(
+            f"[bold]{verb} {payload['selected_runs']} trace(s)[/bold] "
+            f"({payload['selected_bytes']} bytes) under {payload['root']}"
+        )
+        for item in payload["selected"]:
+            _console.print(
+                f"  {item['run_id']}  {item['size']} bytes  {', '.join(item['reasons'])}"
+            )
+        if not payload["limits_satisfied"]:
+            _console.print(
+                "[yellow]configured limits cannot be met while preserving protected files[/yellow]"
+            )
 
 
 @app.command()
@@ -1337,10 +1770,16 @@ def fork(
         if run is None:
             _fail(f"run '{run_id}' not found in the Hive", json_output, ExitCode.SPEC_ERROR)
             return
-        trace_file = Path(run.get("trace_path", ""))
-        if not trace_file.exists():
+        trace_path = run.get("trace_path")
+        trace_file = Path(trace_path) if trace_path else None
+        if trace_file is None or not trace_file.is_file():
+            detail = (
+                f"pruned at {run['trace_pruned_at']}"
+                if run.get("trace_pruned_at")
+                else "missing"
+            )
             _fail(
-                f"the journal for '{run_id}' is missing: {trace_file}",
+                f"the journal for '{run_id}' is {detail}",
                 json_output,
                 ExitCode.SPEC_ERROR,
             )
@@ -1498,9 +1937,75 @@ def lineage(
             _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
 
 
+@friction_app.command("list")
+def friction_list(
+    target: str = typer.Argument(..., help="Harness name, id, or harness directory."),
+    category: str | None = typer.Option(None, "--category", help="Filter by category."),
+    component: str | None = typer.Option(None, "--component", help="Filter by component."),
+    recovered: str | None = typer.Option(
+        None, "--recovered", help="Filter by recovery state: true or false."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Filter by requested, effective, or legacy model path."
+    ),
+    since: str | None = typer.Option(None, "--since", help="ISO timestamp lower bound."),
+    until: str | None = typer.Option(None, "--until", help="ISO timestamp upper bound."),
+    limit: int = typer.Option(100, "--limit", help="Maximum records to return."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List indexed run friction without opening raw journals."""
+    from hiveloom import runner
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if limit < 1 or limit > 1000:
+            raise SpecError("--limit must be between 1 and 1000")
+        recovered_value = _optional_bool(recovered, "--recovered")
+        with Hive() as hive:
+            key = runner.resolve_and_ingest(target, hive)
+            records = hive.list_friction(
+                key,
+                category=category,
+                component=component,
+                recovered=recovered_value,
+                model=model,
+                since=since,
+                until=until,
+                limit=limit,
+            )
+        if json_output:
+            _emit_json(
+                {"ok": True, "harness_key": key, "count": len(records), "friction": records}
+            )
+            return
+        if not records:
+            _console.print("[dim]no indexed friction matched[/dim]")
+            return
+        table = Table(title=f"run friction for {key}")
+        table.add_column("time", style="dim")
+        table.add_column("run")
+        table.add_column("category", style="yellow")
+        table.add_column("component")
+        table.add_column("recovered", justify="center")
+        table.add_column("summary")
+        for record in records:
+            table.add_row(
+                record.get("timestamp") or "",
+                record["run_id"],
+                record["category"],
+                record.get("component") or "",
+                "yes" if record["recovered"] else "no",
+                record["summary"],
+            )
+        _console.print(table)
+
+
 @app.command()
 def stats(
     target: str = typer.Argument(..., help="Harness name or harness directory."),
+    include_friction: bool = typer.Option(
+        False, "--include-friction", help="Include indexed retries and recovered failures."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show Hive stats for a harness: success rate, cost, and turns per version.
@@ -1526,11 +2031,13 @@ def stats(
             summary = hive.summary(key, display_name=display)
             recent = hive.recent_failures(key, 5)
             outcomes = hive.outcome_summary(key)
+            friction = hive.friction_summary(key) if include_friction else None
 
         if json_output:
-            _emit_json(
-                {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
-            )
+            payload = {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
+            if friction is not None:
+                payload["friction"] = friction
+            _emit_json(payload)
             return
 
         _console.print(
@@ -1601,6 +2108,27 @@ def stats(
                 f"{outcomes['outcome_success_rate']:.0%} held up "
                 f"({outcomes['failures']} rejected by the world)"
             )
+        if friction is not None:
+            _console.print(
+                f"[bold]friction[/bold]: {friction['events']} event(s) across "
+                f"{friction['runs']} run(s), {friction['recovered']} recovered"
+            )
+            if friction["categories"]:
+                table = Table(title="friction by category")
+                table.add_column("category", style="yellow")
+                table.add_column("events", justify="right")
+                table.add_column("runs", justify="right")
+                table.add_column("recovered", justify="right", style="green")
+                table.add_column("unrecovered", justify="right")
+                for row in friction["categories"]:
+                    table.add_row(
+                        row["category"],
+                        str(row["events"]),
+                        str(row["runs"]),
+                        str(row["recovered"]),
+                        str(row["unrecovered"]),
+                    )
+                _console.print(table)
         sigs = summary["failure_signatures"]
         if sigs["verdicts"]:
             _console.print("[yellow]top failure verdicts:[/yellow]")
@@ -1610,6 +2138,358 @@ def stats(
             _console.print("[yellow]top guardrail triggers:[/yellow]")
             for g in sigs["guardrails"]:
                 _console.print(f"  {g['count']}× {g['guardrail']} ({g['kind']})")
+
+
+def _metric_target(target: str, hive: Any) -> str:
+    """Resolve a harness directory or already-indexed harness key."""
+    from hiveloom import runner
+
+    return runner.resolve_and_ingest(target, hive)
+
+
+@eval_app.command("schema")
+def eval_schema(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),
+) -> None:
+    """Emit the machine-readable eval document contract without loading code."""
+    from hiveloom.evals import EvalSpec
+
+    schema = EvalSpec.model_json_schema()
+    if json_output:
+        _emit_json({"ok": True, "schema": schema})
+    else:
+        _console.print_json(data=schema)
+
+
+@eval_app.command("validate")
+def eval_validate(
+    path: str = typer.Argument(..., help="Path to an eval YAML document."),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Resolve a dataset and scorers without running a model or exposing cases."""
+    from hiveloom.evals import validate_eval_spec
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        validated = validate_eval_spec(path, approve_trust=approval)
+        payload = {
+            "ok": True,
+            "path": str(validated.path),
+            "harness_path": str(validated.harness_path),
+            "schema_version": validated.spec.schema_version,
+            "case_count": validated.case_count,
+            "repetitions": validated.spec.repetitions,
+            "dataset": validated.spec.dataset.loader,
+            "scorers": [scorer.name for scorer in validated.spec.scorers],
+            "identity": validated.identity.model_dump(mode="json"),
+        }
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]valid[/green] {validated.case_count} case(s), "
+                f"eval {validated.identity.eval_id[:12]}"
+            )
+
+
+def _eval_manifest_payload(manifest: Any) -> dict[str, Any]:
+    from hiveloom.eval_runner import manifest_path as eval_manifest_path
+
+    return {
+        "ok": manifest.status == "completed",
+        "eval_run_id": manifest.eval_run_id,
+        "status": manifest.status,
+        "summary": manifest.summary(),
+        "manifest_path": str(eval_manifest_path(manifest.eval_run_id)),
+        "manifest": manifest.model_dump(mode="json"),
+    }
+
+
+def _emit_eval_manifest(manifest: Any, json_output: bool) -> None:
+    payload = _eval_manifest_payload(manifest)
+    if json_output:
+        _emit_json(payload)
+    else:
+        summary = payload["summary"]
+        _console.print(
+            f"[green]{manifest.eval_run_id}[/green] {manifest.status}: "
+            f"{summary['completed']}/{summary['total']} completed"
+        )
+        _console.print(f"manifest: {payload['manifest_path']}")
+    if manifest.status != "completed":
+        raise typer.Exit(ExitCode.RUNTIME_ERROR)
+
+
+@eval_app.command("run")
+def eval_run_command(
+    path: str = typer.Argument(..., help="Path to an eval YAML document."),
+    model: str | None = typer.Option(None, "--model", help="Run-only model override."),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Run-only provider override."
+    ),
+    repetitions: int | None = typer.Option(
+        None, "--repetitions", min=1, max=10_000
+    ),
+    concurrency: int = typer.Option(1, "--concurrency", min=1, max=128),
+    infrastructure_retries: int = typer.Option(
+        0, "--infrastructure-retries", min=0, max=20
+    ),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Run a model/case/repetition matrix with an atomic resumable manifest."""
+    from hiveloom.eval_runner import run_eval
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        manifest = run_eval(
+            path,
+            model_override=model,
+            provider_override=provider,
+            repetitions=repetitions,
+            concurrency=concurrency,
+            infrastructure_retries=infrastructure_retries,
+            approve_trust=approval,
+        )
+        _emit_eval_manifest(manifest, json_output)
+
+
+@eval_app.command("resume")
+def eval_resume_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Resume only unfinished cells after revalidating every content digest."""
+    from hiveloom.eval_runner import resume_eval
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        manifest = resume_eval(eval_run_id, approve_trust=approval)
+        _emit_eval_manifest(manifest, json_output)
+
+
+@eval_app.command("status")
+def eval_status_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Read an eval checkpoint without loading evaluator or harness code."""
+    from hiveloom.eval_runner import load_eval_manifest
+
+    with _guard(json_output):
+        manifest = load_eval_manifest(eval_run_id)
+        payload = _eval_manifest_payload(manifest)
+        payload["ok"] = True
+        if json_output:
+            _emit_json(payload)
+        else:
+            summary = payload["summary"]
+            _console.print(
+                f"[green]{manifest.eval_run_id}[/green] {manifest.status}: "
+                f"{summary['completed']}/{summary['total']} completed"
+            )
+
+
+def _eval_output_format(format_name: str, json_output: bool) -> str:
+    selected = "json" if json_output else format_name.lower()
+    if selected not in {"json", "markdown"}:
+        raise ValueError("eval report format must be 'json' or 'markdown'")
+    return selected
+
+
+@eval_app.command("report")
+def eval_report_command(
+    eval_run_id: str = typer.Argument(..., help="Eval run id to report."),
+    format_name: str = typer.Option("json", "--format", help="json or markdown."),
+    json_output: bool = typer.Option(False, "--json", help="Emit canonical JSON."),
+) -> None:
+    """Build a report from indexed eval state without reading raw traces."""
+    from hiveloom.eval_reports import build_eval_report, render_report_markdown
+
+    selected = _eval_output_format(format_name, json_output)
+    with _guard(selected == "json"):
+        report = build_eval_report(eval_run_id)
+        if selected == "json":
+            _emit_json({"ok": True, "report": report})
+        else:
+            _console.print(render_report_markdown(report), markup=False)
+
+
+@eval_app.command("compare")
+def eval_compare_command(
+    baseline_id: str = typer.Argument(..., help="Baseline eval run id."),
+    candidate_id: str = typer.Argument(..., help="Candidate eval run id."),
+    format_name: str = typer.Option("json", "--format", help="json or markdown."),
+    json_output: bool = typer.Option(False, "--json", help="Emit canonical JSON."),
+) -> None:
+    """Compare matching case/repetition cells and label unmatched cells."""
+    from hiveloom.eval_reports import compare_evals, render_comparison_markdown
+
+    selected = _eval_output_format(format_name, json_output)
+    with _guard(selected == "json"):
+        comparison = compare_evals(baseline_id, candidate_id)
+        if selected == "json":
+            _emit_json({"ok": True, "comparison": comparison})
+        else:
+            _console.print(render_comparison_markdown(comparison), markup=False)
+
+
+@metrics_app.command("schema")
+def metrics_schema(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON schema."),
+) -> None:
+    """Emit the machine-readable RunMetric ingestion contract."""
+    from hiveloom.metrics import RunMetric
+
+    schema = RunMetric.model_json_schema()
+    if json_output:
+        _emit_json({"ok": True, "schema": schema})
+    else:
+        _console.print_json(data=schema)
+
+
+@metrics_app.command("record")
+def metrics_record(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    run_id: str = typer.Option(..., "--run-id", help="Indexed run receiving the metric."),
+    name: str = typer.Option(..., "--name", help="User-defined metric name."),
+    value: float = typer.Option(..., "--value", help="Finite numeric value."),
+    direction: str = typer.Option(..., "--direction", help="maximize or minimize."),
+    unit: str = typer.Option(..., "--unit", help="Metric unit, for example ratio or usd."),
+    source: str = typer.Option(..., "--source", help="Scorer/evaluator identity."),
+    scope: str = typer.Option("run", "--scope", help="case, run, or eval."),
+    metadata: str = typer.Option("{}", "--metadata", help="JSON object with bounded metadata."),
+    idempotency_key: str | None = typer.Option(
+        None, "--idempotency-key", help="Optional caller-owned deduplication key."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Attach one validated numeric metric to an indexed run."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.metrics import RunMetric, record_run_metrics
+
+    with _guard(json_output):
+        parsed_metadata = json.loads(metadata)
+        if not isinstance(parsed_metadata, dict):
+            raise ValueError("--metadata must be a JSON object")
+        metric = RunMetric(
+            run_id=run_id,
+            name=name,
+            value=value,
+            direction=direction,
+            unit=unit,
+            source=source,
+            scope=scope,
+            metadata=parsed_metadata,
+            idempotency_key=idempotency_key,
+        )
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            receipt = record_run_metrics(hive, harness_key, [metric])
+        payload = {
+            "ok": True,
+            "harness_key": harness_key,
+            **receipt,
+            "idempotency_key": metric.resolved_idempotency_key(),
+        }
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]recorded[/green] {metric.name}={metric.value:g} {metric.unit} "
+                f"for {metric.run_id} ({receipt['duplicates']} duplicate)"
+            )
+
+
+@metrics_app.command("import")
+def metrics_import(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    path: str = typer.Argument(..., help="NDJSON file containing RunMetric objects."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Transactionally import metrics after validating every NDJSON row."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.metrics import load_metrics_ndjson, record_run_metrics
+
+    with _guard(json_output):
+        metrics = load_metrics_ndjson(path)
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            receipt = record_run_metrics(hive, harness_key, metrics)
+        payload = {"ok": True, "harness_key": harness_key, **receipt}
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]imported[/green] {receipt['inserted']} metric(s), "
+                f"{receipt['duplicates']} duplicate(s)"
+            )
+
+
+@metrics_app.command("list")
+def metrics_list(
+    target: str = typer.Argument(..., help="Harness name, id, or directory."),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    name: str | None = typer.Option(None, "--name"),
+    source: str | None = typer.Option(None, "--source"),
+    scope: str | None = typer.Option(None, "--scope"),
+    model: str | None = typer.Option(None, "--model"),
+    since: str | None = typer.Option(None, "--since", help="Run finish time, ISO 8601."),
+    until: str | None = typer.Option(None, "--until", help="Run finish time, ISO 8601."),
+    limit: int = typer.Option(1000, "--limit", min=1, max=100_000),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List metrics and scope-safe aggregates with explicit missing counts."""
+    from hiveloom.logging.hive import Hive
+
+    with _guard(json_output):
+        if scope is not None and scope not in {"case", "run", "eval"}:
+            raise ValueError("--scope must be case, run, or eval")
+        with Hive() as hive:
+            harness_key = _metric_target(target, hive)
+            filters = {
+                "run_id": run_id,
+                "name": name,
+                "source": source,
+                "scope": scope,
+                "model": model,
+                "since": since,
+                "until": until,
+            }
+            metrics = hive.list_metrics(harness_key, limit=limit, **filters)
+            aggregates = hive.metric_aggregates(harness_key, **filters)
+        payload = {
+            "ok": True,
+            "harness_key": harness_key,
+            "metrics": metrics,
+            "aggregates": aggregates,
+        }
+        if json_output:
+            _emit_json(payload)
+            return
+        table = Table(title=f"metrics: {harness_key}")
+        for column in ("run", "name", "value", "unit", "scope", "source", "model"):
+            table.add_column(column)
+        for metric in metrics:
+            table.add_row(
+                metric["run_id"],
+                metric["name"],
+                f"{metric['value']:g}",
+                metric["unit"],
+                metric["scope"],
+                metric["source"],
+                metric["model"] or "-",
+            )
+        _console.print(table)
+        for aggregate in aggregates:
+            _console.print(
+                f"[cyan]{aggregate['name']}[/cyan] ({aggregate['scope']}, "
+                f"{aggregate['source']}): mean={aggregate['mean']:g}, "
+                f"n={aggregate['sample_count']}, "
+                f"missing={aggregate['missing_value_count']}"
+            )
 
 
 @app.command()
@@ -1700,9 +2580,9 @@ def evolve(
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
 
-    Guardrails/model/logging.redact can never be changed. YAML changes within the
-    mutable set auto-apply with ``--yes``; regenerated code always needs y/n
-    approval. Recorded in the Hive under a new version hash. With ``--propose``,
+    Safety configuration and metric objectives can never be changed. YAML
+    changes within the mutable set auto-apply with ``--yes``; regenerated code
+    always needs y/n approval. Recorded in the Hive under a new version hash. With ``--propose``,
     the gated proposal is queued (see ``hiveloom proposals``) instead of applied;
     a human reviews and applies it later via ``proposals apply``.
 
@@ -1732,7 +2612,14 @@ def evolve(
             name = runner.resolve_and_ingest(harness_dir, hive)
             # Scoped to one version — see analyze().
             version = _analysis_version(harness_dir, spec, base, from_parent=from_parent)
-            report = evolve_mod.analyze(hive, name, version=version)
+            report = evolve_mod.analyze(
+                hive,
+                name,
+                version=version,
+                excerpt_config=spec.evolution.trace_excerpts,
+                redaction=spec.logging.redact,
+                objectives=spec.evolution.objectives,
+            )
             if report.is_empty():
                 reason = _nothing_to_evolve_reason(
                     hive, name, version, from_parent=from_parent
@@ -2374,6 +3261,28 @@ def keys_sign_cmd(
             _emit_json({"ok": True, "token": token, "key_id": key_id})
         else:
             _console.print(token)
+
+
+def _parse_params(pairs: list[str]) -> dict[str, Any]:
+    """Parse repeated ``--param name=value`` flags into builtin parameters.
+
+    The value is read as YAML, matching ``set``: ``limit=5`` is an int and
+    ``commands=["grep app.log"]`` is a list. Names are validated against the
+    catalog when the spec is committed, so a typo is rejected there with the
+    builtin's allowed parameter names.
+    """
+    import yaml
+
+    parsed: dict[str, Any] = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        name = name.strip()
+        if not sep or not name:
+            raise SpecError(f"--param expects name=value (got {pair!r})")
+        if name in parsed:
+            raise SpecError(f"--param {name} given more than once")
+        parsed[name] = yaml.safe_load(value)
+    return parsed
 
 
 def _added(json_output: bool, kind: str, ident: str | None) -> None:

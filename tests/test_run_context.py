@@ -86,6 +86,10 @@ def test_tool_receives_caller_context(tmp_path: Path):
         "input",
         "harness_dir",
         "run_id",
+        "harness_id",
+        "harness_name",
+        "harness_version_hash",
+        "hive_path",
         "context",
         "artifacts",
     }

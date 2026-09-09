@@ -11,8 +11,25 @@ description: >-
 # Running a hiveloom harness
 
 ```bash
-hiveloom run ./h --input notes.txt --json     # --input takes a FILE path or literal TEXT
+hiveloom run ./h --input-file notes.txt --json
+hiveloom run ./h --input-text "literal task" --json
 ```
+
+Use the explicit flags in scripts and evals. Legacy `--input` still guesses
+whether its value is a file or literal text for one deprecation cycle.
+
+Run-only model selection and evidence paths do not rewrite the harness:
+
+```bash
+hiveloom run ./h --input-file case.txt \
+  --provider openrouter --model qwen3.5-9b \
+  --run-id case-17 --trace-dir ./eval-traces --json
+```
+
+The JSON result's `runtime_config` keeps explicit `requested` overrides apart
+from the validated `resolved` model and provider. A runtime model override is
+included in that run's harness snapshot and version hash, so Hive statistics
+do not mix it with the model stored in `harness.yaml`.
 
 Needs credentials for the configured provider when required (for example,
 `ANTHROPIC_API_KEY` for the default provider, loaded from the harness `.env`
@@ -29,11 +46,17 @@ inside; guardrails and validators gate it.
 | 3 | spec/validation error | `hiveloom validate ./h` and fix the construction |
 | 4 | runtime error | read the trace tail; usually a tool/hook exception or missing env var |
 
+A structured sequential step that exhausts `max_model_calls` or
+`max_tool_calls` returns `status: step_failed` with exit 4. Inspect the JSON
+result's `steps` receipts and the `step_started`, `step_violation`,
+`step_completed`, and `step_failed` trace events. The same receipts are
+available from the Hive run record.
+
 ## Before spending API budget
 
 ```bash
 hiveloom validate ./h                          # structure + code-hook checks
-hiveloom run ./h --input x.txt --dry-run       # no model call; MCP discovery still does I/O
+hiveloom run ./h --input-file x.txt --dry-run  # no model call; MCP discovery still does I/O
 ```
 
 A harness folder that arrived from elsewhere (unzipped artifact, clone) is
@@ -51,6 +74,9 @@ hiveloom trace run_abc123 --json           # one run: summary + ordered events
 hiveloom trace run_abc123 --dir ./h        # ingest the folder's traces first if unknown
 hiveloom stats ./h --json                  # success rate / cost / turns PER VERSION HASH
 hiveloom stats my-harness-name             # by name, from the Hive
+hiveloom stats ./h --include-friction --json
+hiveloom friction list ./h --recovered true --json
+hiveloom metrics list ./h --name recall_at_5 --json
 ```
 
 To debug a failure, read the trace's `verification_result`,
@@ -58,12 +84,44 @@ To debug a failure, read the trace's `verification_result`,
 proximate cause. `stats` bucketing by version hash is what proves a later
 mutation helped.
 
+Final success does not mean a clean run. The friction index keeps recovered
+output-validation failures, retries, tool errors, compactions, guardrail
+events, provider errors, operator steering, and loop limits queryable after
+the run finishes. Filter by `--category`, `--component`, `--recovered`,
+`--model`, `--since`, or `--until`; summaries are bounded and come from the
+already-redacted journal.
+
+External evaluators can attach numeric quality signals without copying private
+inputs or trace bodies into the Hive:
+
+```bash
+hiveloom metrics schema --json
+hiveloom metrics record ./h --run-id run_abc123 \
+  --name recall_at_5 --value 0.4 --direction maximize \
+  --unit ratio --source matching_eval_v1 --scope case --json
+hiveloom metrics import ./h metrics.ndjson --json
+hiveloom metrics list ./h --source matching_eval_v1 --model qwen3.5-9b --json
+```
+
+Imports validate fully before one transaction. Repeating the same logical
+metric is idempotent; changing a value under the same key is rejected. Read
+`sample_count` and `missing_value_count` together, and compare only aggregates
+whose scope, source, unit, and direction match.
+
 The trace is a hash-chained journal, so two more things are available:
 
 ```bash
 hiveloom trace run_abc123 --verify         # append-only chain intact? (exit 4 if broken)
 hiveloom trace run_abc123 --materialize 42 # the exact request sent at that seq
+hiveloom traces prune ./h --dry-run --json  # preview explicit age/count/byte retention
 ```
+
+`logging.redact` accepts `keys`, payload-relative `paths` with `[*]`, and
+`patterns`; legacy regex lists still work. Redaction happens before persistence
+and stream delivery. `logging.retention` is opt-in. Apply a previewed plan with
+`hiveloom traces prune ./h --yes --json`; the current run is preserved during
+automatic cleanup, and the Hive marks removed raw evidence with
+`trace_pruned_at` instead of leaving stale paths.
 
 When reading the events is not enough, **fork the run** and reproduce the
 failure from the turn it happened on, against a changed harness:
@@ -84,7 +142,7 @@ therefore cannot be forked. See [docs/journal.md](../../docs/journal.md).
 ## Embedding in another program
 
 ```bash
-hiveloom run ./h --input x --stream        # every trace event as a JSON line; result last
+hiveloom run ./h --input-text x --stream   # every trace event as a JSON line; result last
 ```
 
 Or the Python SDK:
@@ -93,6 +151,24 @@ Or the Python SDK:
 from hiveloom import run_harness
 result = run_harness("./h", "notes.txt", on_event=lambda e: print(e.type))
 ```
+
+Read `result.execution` instead of scraping its trace for batch receipts. It
+contains the behavior hash, runtime version, requested/resolved/effective
+model identity, timestamps, total usage, cost source, verification attempts,
+execution fingerprint, and durable trace path. A clean first pass and a
+recovered success both have `status == "success"`; distinguish them with
+`result.execution.verification`.
+
+For `loop.policy: sequential_steps`, `result.steps` records each step's status,
+model/tool counts, completed required calls, and bounded violations. This avoids
+parsing trace text to distinguish a missing required call from a global loop
+limit.
+
+Custom validators can request `VerificationContext` as a third argument. It
+contains bounded, redacted tool evidence, step receipts, and artifacts from the
+current run, so validators can check provenance without reading trace files.
+The builtin `grounded_references` fails when a scalar selected from the final
+JSON output is absent from its configured successful tool-result paths.
 
 ## Next steps
 

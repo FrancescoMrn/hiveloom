@@ -96,9 +96,10 @@ release.
 
 ## Versioning and releases
 
-The project uses semantic versioning. Update the project version in
-`pyproject.toml`; `src/hiveloom/__init__.py` exposes the matching runtime
-version. Record notable changes in [CHANGELOG.md](CHANGELOG.md) under an
+The project uses semantic versioning. There is exactly one place to change it:
+`__version__` in `src/hiveloom/__init__.py`. `pyproject.toml` declares the
+version `dynamic` and hatchling reads it from there, so the distribution can
+never be published under a version the runtime disagrees with. Record notable changes in [CHANGELOG.md](CHANGELOG.md) under an
 `[Unreleased]` heading as part of the same pull request. Build release
 artifacts with `uv build` and validate a harness package before publishing.
 

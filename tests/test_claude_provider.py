@@ -22,6 +22,8 @@ def _response(
     cache_write: int = 0,
 ) -> types.SimpleNamespace:
     return types.SimpleNamespace(
+        id="msg_fixture",
+        model="claude-served-fixture",
         content=[types.SimpleNamespace(type="text", text=text)],
         stop_reason="end_turn",
         usage=types.SimpleNamespace(
@@ -124,6 +126,8 @@ def test_usage_reports_cache_tokens(monkeypatch):
     assert result.usage.cache_read_tokens == 800
     assert result.usage.cache_write_tokens == 200
     assert result.usage.input_tokens == 10
+    assert result.model == "claude-served-fixture"
+    assert result.provider_request_id == "msg_fixture"
 
 
 def test_overflow_bad_request_maps_to_context_overflow(monkeypatch):
@@ -152,11 +156,31 @@ def test_other_bad_request_propagates_unchanged(monkeypatch):
         )
 
 
-def test_temperature_omitted_for_models_that_reject_sampling_params(monkeypatch):
+def test_temperature_travels_in_extra_body_only_where_it_is_accepted(monkeypatch):
+    """The signature here mirrors ``anthropic`` 1.x: no ``temperature`` keyword.
+
+    A permissive ``**kwargs`` fake hid a real crash — the SDK removed the
+    parameter in 1.0, so every run of a harness that set one died at turn 0 with
+    ``Messages.create() got an unexpected keyword argument 'temperature'``.
+    """
     captured: dict[str, Any] = {}
 
-    def create(**kwargs):
-        captured.update(kwargs)
+    def create(
+        *,
+        model,
+        max_tokens,
+        system=None,
+        messages=None,
+        tools=None,
+        extra_body=None,
+        stop_sequences=None,
+        metadata=None,
+    ):
+        captured.clear()
+        captured.update(
+            model=model, max_tokens=max_tokens, system=system, messages=messages,
+            tools=tools, extra_body=extra_body,
+        )
         return _response()
 
     provider, _ = _make_provider(monkeypatch, create)
@@ -164,13 +188,13 @@ def test_temperature_omitted_for_models_that_reject_sampling_params(monkeypatch)
         system="s", messages=[{"role": "user", "content": "x"}], tools=[],
         config=ModelConfig(id="claude-opus-5"),
     )
-    assert "temperature" not in captured
+    assert captured["extra_body"] is None
 
     provider.complete(
         system="s", messages=[{"role": "user", "content": "x"}], tools=[],
         config=ModelConfig(id="claude-haiku-4-5", temperature=0.0),
     )
-    assert captured["temperature"] == 0.0
+    assert captured["extra_body"] == {"temperature": 0.0}
 
 
 def test_thinking_blocks_are_preserved_on_the_assistant_turn(monkeypatch):

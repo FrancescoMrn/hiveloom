@@ -1,6 +1,9 @@
 [project]
 name = "hiveloom"
-version = "1.0.0"
+# Read from hiveloom.__version__, which `hiveloom package` stamps into every
+# harness lock. Two hand-maintained copies of one number drift, and the way
+# that failure shows up is a wheel published under a version it is not.
+dynamic = ["version"]
 description = "Generate, run, and evolve agent harnesses on the fly so small models reliably perform company tasks."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,6 +58,9 @@ hiveloom = "hiveloom.cli:app"
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/hiveloom/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/hiveloom"]
 
@@ -65,6 +71,17 @@ packages = ["src/hiveloom"]
 "AGENTS.md" = "hiveloom/agent_docs/AGENTS.md"
 "SKILL.md" = "hiveloom/agent_docs/SKILL.md"
 "skills" = "hiveloom/agent_docs/skills"
+"docs/task-confinement.md" = "hiveloom/agent_docs/docs/task-confinement.md"
+"docs/spec.md" = "hiveloom/agent_docs/docs/spec.md"
+"docs/architecture.md" = "hiveloom/agent_docs/docs/architecture.md"
+"docs/models.md" = "hiveloom/agent_docs/docs/models.md"
+"docs/extending.md" = "hiveloom/agent_docs/docs/extending.md"
+"docs/evaluating.md" = "hiveloom/agent_docs/docs/evaluating.md"
+"docs/journal.md" = "hiveloom/agent_docs/docs/journal.md"
+"docs/workbench.md" = "hiveloom/agent_docs/docs/workbench.md"
+"docs/deploying-and-evolving.md" = "hiveloom/agent_docs/docs/deploying-and-evolving.md"
+"docs/control-plane.md" = "hiveloom/agent_docs/docs/control-plane.md"
+"docs/sync-protocol.md" = "hiveloom/agent_docs/docs/sync-protocol.md"
 
 # The sdist carries the library, the example harnesses, and the agent
 # guidance — nothing else. The wheel deliberately ships only the library and
@@ -78,6 +95,17 @@ only-include = [
     "skills",
     "AGENTS.md",
     "SKILL.md",
+    "docs/task-confinement.md",
+    "docs/spec.md",
+    "docs/architecture.md",
+    "docs/models.md",
+    "docs/extending.md",
+    "docs/evaluating.md",
+    "docs/journal.md",
+    "docs/workbench.md",
+    "docs/deploying-and-evolving.md",
+    "docs/control-plane.md",
+    "docs/sync-protocol.md",
     "README.md",
     "LICENSE",
 ]

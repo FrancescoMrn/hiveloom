@@ -144,6 +144,10 @@ def test_mcp_servers_is_always_frozen():
     assert "mcp_servers" in ALWAYS_FROZEN
 
 
+def test_trace_excerpt_policy_is_always_frozen():
+    assert "evolution.trace_excerpts" in ALWAYS_FROZEN
+
+
 def test_builtin_required_param_missing_rejected():
     with pytest.raises(ValidationError, match="requires parameter"):
         HarnessSpec.model_validate(
