@@ -195,6 +195,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key variable is read from `.env`; other variables in that file are no
   longer adopted into the process environment.
 
+### Removed
+
+- **The workbench's first-generation direct-run chat.** The copilot-first
+  design replaced it and nothing reached it from the app entry any more: the
+  `Chat` thread, `Composer`, `NewRun`, `NewHarness`, `HarnessList`,
+  `BranchDialog`, the `useRun` workspace hook, `taskGuide` and `harnesses`
+  grouping, and their tests are gone. `MessageBody` and `DelegationTrail` —
+  the only live exports of that thread — moved to
+  `devtools/ui/src/components/messages.tsx`.
+- The API routes that only that UI reached: `POST /api/harnesses` (harness
+  creation now goes through the copilot's `create_harness` tool and
+  `hiveloom.construct`), `POST /api/harnesses/{id}/trust`, and
+  `GET /api/runs/live`. The live-run control surface (`stop`, `messages`,
+  `model`, `playbook`, `fork`, `export`, `resume`) is unchanged.
+
 ## [1.1.0] - 2026-09-09
 
 The containment and evidence release. Large tool results stay retrievable

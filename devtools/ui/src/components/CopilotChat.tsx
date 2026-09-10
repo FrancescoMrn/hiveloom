@@ -5,7 +5,7 @@ import { api } from '../api'
 import { runLabel } from '../runs'
 import type { Artifact, Attachment, CopilotInfo, Harness, RunRow } from '../types'
 import type { CopilotWorkspace } from '../useCopilot'
-import { DelegationTrail, MessageBody } from './Chat'
+import { DelegationTrail, MessageBody } from './messages'
 import { StatusPill } from './common'
 
 const ARTIFACT_LABELS: Record<string, { icon: string; title: string }> = {

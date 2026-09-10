@@ -422,11 +422,6 @@ export interface Comparison {
   underpowered: boolean
 }
 
-export interface PendingMessage {
-  id: string
-  content: string
-}
-
 /* ---------------------------------------------------------- workbench state */
 
 /** Version hash → the label a person gave it, per harness folder. */

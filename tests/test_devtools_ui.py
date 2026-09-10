@@ -557,10 +557,6 @@ def live_run(client, monkeypatch):
     stream_done.wait(timeout=5)
 
 
-def test_a_running_run_is_listed_and_addressable(client, live_run) -> None:
-    assert live_run["run_id"] in client.get("/api/runs/live").json()["run_ids"]
-
-
 def test_stop_reaches_the_runtime_control(client, live_run) -> None:
     response = client.post(
         f"/api/runs/{live_run['run_id']}/stop", json={"reason": "changed my mind"}
@@ -1389,38 +1385,6 @@ def test_a_run_model_without_a_provider_is_refused(client: TestClient, monkeypat
         "/api/harnesses/example-summarizer/run", json={"input": "go", "model": "gpt-4.1-mini"}
     )
     assert response.status_code == 400
-
-
-# --------------------------------------------------------------------- #
-# Trust on create
-# --------------------------------------------------------------------- #
-def test_creating_a_harness_can_leave_it_untrusted(client: TestClient, tmp_path: Path) -> None:
-    """Trust is the caller's to grant. A workbench set to ask first must be able
-    to say no, and the gate has to hear it."""
-    target = tmp_path / "asked-first"
-    response = client.post(
-        "/api/harnesses",
-        json={
-            "directory": str(target),
-            "name": "asked-first",
-            "task": "Do a thing.",
-            "trust": False,
-        },
-    )
-    assert response.status_code == 201
-    assert response.json()["trusted"] is False
-    assert ui.trust_mod.is_trusted(str(target)) is False
-
-
-def test_creating_a_harness_trusts_it_by_default(client: TestClient, tmp_path: Path) -> None:
-    target = tmp_path / "vouched"
-    response = client.post(
-        "/api/harnesses",
-        json={"directory": str(target), "name": "vouched", "task": "Do a thing."},
-    )
-    assert response.status_code == 201
-    assert response.json()["trusted"] is True
-    assert ui.trust_mod.is_trusted(str(target)) is True
 
 
 # --------------------------------------------------------------------- #

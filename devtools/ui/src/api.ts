@@ -16,7 +16,6 @@ import {
   type ForkResult,
   type MaterializedContext,
   type MemoryRecord,
-  type PendingMessage,
   type Proposal,
   type Provider,
   type RunResult,
@@ -100,12 +99,6 @@ export const api = {
   harnessInterface: (id: string) =>
     call<HarnessInterface>(`/api/harnesses/${id}/interface`),
 
-  create: (body: { directory: string; name: string; task: string; trust: boolean }) =>
-    call<{ id: string; trusted: boolean }>('/api/harnesses', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-
   saveSpec: (id: string, yaml: string) =>
     call<{ ok: true; id: string }>(`/api/harnesses/${id}/spec`, {
       method: 'PUT',
@@ -114,9 +107,6 @@ export const api = {
 
   validate: (id: string) =>
     call<{ ok: true; name: string }>(`/api/harnesses/${id}/validate`, { method: 'POST' }),
-
-  trust: (id: string) =>
-    call<{ ok: true }>(`/api/harnesses/${id}/trust`, { method: 'POST' }),
 
   runs: (id: string) => call<{ runs: RunRow[] }>(`/api/harnesses/${id}/runs`).then((r) => r.runs),
 
@@ -153,9 +143,6 @@ export const api = {
       temperature: number | null
       max_input_tokens: number
     }>(`/api/harnesses/${id}/model`, { method: 'PUT', body: JSON.stringify(body) }),
-
-  /** The journal file as written — the hash chain is over those bytes. */
-  exportUrl: (runId: string) => `/api/runs/${runId}/export`,
 
   /* ------------------------------------------------- version labels */
 
@@ -208,13 +195,6 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
 
-  /** Queue an operator message for the run's next turn boundary. */
-  steer: (runId: string, content: string) =>
-    call<{ ok: true; id: string }>(`/api/runs/${runId}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ content }),
-    }),
-
   /* --------------------------------------------------------- evolution */
 
   proposals: (id: string, status?: string) =>
@@ -252,26 +232,6 @@ export const api = {
     call<Comparison>(
       `/api/harnesses/${id}/compare?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`,
     ),
-
-  /* ------------------------------------------------- live run control */
-
-  pendingMessages: (runId: string) =>
-    call<{ messages: PendingMessage[] }>(`/api/runs/${runId}/messages`).then((r) => r.messages),
-
-  editMessage: (runId: string, messageId: string, content: string) =>
-    call<{ ok: true }>(`/api/runs/${runId}/messages/${messageId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ content }),
-    }),
-
-  dropMessage: (runId: string, messageId: string) =>
-    call<{ ok: true }>(`/api/runs/${runId}/messages/${messageId}`, { method: 'DELETE' }),
-
-  switchModel: (runId: string, body: { model?: string; provider?: string; reason?: string }) =>
-    call<{ ok: true; queued_for_next_turn: true }>(`/api/runs/${runId}/model`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
 
   fork: (
     runId: string,
@@ -326,23 +286,6 @@ export async function streamCopilot(
   onAccepted?: (runId: string) => void,
 ): Promise<RunResult | { type: 'error'; error: string }> {
   return streamEndpoint('/api/copilot/chat', body, onEvent, signal, onAccepted)
-}
-
-/** Resume a harness fork from its recorded model-call boundary. */
-export async function streamResume(
-  id: string,
-  body: Record<string, never>,
-  onEvent: (event: TraceEvent) => void,
-  signal?: AbortSignal,
-  onAccepted?: (runId: string) => void,
-): Promise<RunResult | { type: 'error'; error: string }> {
-  return streamEndpoint(
-    `/api/harnesses/${id}/resume`,
-    body,
-    onEvent,
-    signal,
-    onAccepted,
-  )
 }
 
 async function streamEndpoint(
