@@ -18,6 +18,7 @@ def tool(
     description: str | None = None,
     tags: list[str] | None = None,
     guidelines: str | None = None,
+    handles: list[str] | None = None,
 ) -> Callable[..., Any]:
     """Mark a function as a hiveloom tool.
 
@@ -29,6 +30,18 @@ def tool(
     Can be used bare (``@tool``) or called (``@tool(...)``). ``guidelines``
     is short usage guidance injected into the system prompt while the tool is
     active (name the tool in it).
+
+    ``handles`` names string parameters that may be given the handle of a
+    spilled tool result instead of a literal::
+
+        @tool(description="Index a document.", handles=["text"])
+        def index(text: str) -> str: ...
+
+    The runtime then replaces a handle-shaped value with the stored object's
+    full text at dispatch, so a large result can move from one tool to another
+    without passing through the model's context. A value that is not a handle
+    is passed through unchanged, and an unresolvable handle is a tool error
+    rather than a literal.
     """
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -36,6 +49,7 @@ def tool(
             "description": description or (fn.__doc__ or "").strip(),
             "tags": list(tags or []),
             "guidelines": (guidelines or "").strip(),
+            "handles": list(handles or []),
         }
         return fn
 

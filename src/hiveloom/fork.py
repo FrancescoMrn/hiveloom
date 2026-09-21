@@ -52,6 +52,7 @@ from typing import Any
 
 import yaml
 
+from hiveloom.context.notes import NOTE_NAME_RE, NOTES_INHERITED_DIR
 from hiveloom.context.spill import _write_private, handles_in_messages
 from hiveloom.errors import SpecError
 from hiveloom.logging.journal import (
@@ -346,6 +347,101 @@ def _verified_spill_bytes(path: Path, manifest: dict[str, Any]) -> bytes | None:
     return raw if hashlib.sha256(raw).hexdigest() == manifest["sha256"] else None
 
 
+def _notes_in_journal(
+    events: list[dict[str, Any]], until_seq: int
+) -> dict[str, dict[str, Any]]:
+    """The notes the parent run *holds* at the fork point, from its journal.
+
+    Replayed rather than collected: a note written twice and then deleted is
+    not a note the fork inherits, and only the journal (hash-chained, verified
+    before this runs) says which writes survived.
+    """
+    held: dict[str, dict[str, Any]] = {}
+    for event in events:
+        kind = event.get("type")
+        if kind not in ("note_written", "note_deleted") or event.get("seq", 0) > until_seq:
+            continue
+        payload = event.get("payload", {})
+        name = str(payload.get("name", ""))
+        if not NOTE_NAME_RE.fullmatch(name):
+            continue
+        if kind == "note_deleted":
+            held.pop(name, None)
+            continue
+        digest = str(payload.get("sha256", ""))
+        size = payload.get("bytes")
+        if re.fullmatch(r"[0-9a-f]{64}", digest) and isinstance(size, int) and size >= 0:
+            held[name] = {"name": name, "sha256": digest, "bytes": size}
+    return held
+
+
+def _spill_root(snapshot: dict[str, Any], target: Path) -> Path:
+    """Where the fork's own runs will keep spilled results and notes.
+
+    Read off the forked spec rather than the default, so a harness with a
+    relocated ``logging.trace_dir`` inherits into the directory its resumed
+    run will actually look in.
+    """
+    try:
+        trace_dir = (yaml.safe_load(snapshot["spec"]) or {}).get("logging", {}).get(
+            "trace_dir", DEFAULT_TRACE_DIR
+        )
+    except yaml.YAMLError:
+        trace_dir = DEFAULT_TRACE_DIR
+    configured = Path(trace_dir)
+    return (configured if configured.is_absolute() else target / configured) / "spill"
+
+
+def _carry_notes(
+    trace_path: str | Path,
+    snapshot: dict[str, Any],
+    target: Path,
+    held: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Copy the notes this fork is entitled to inherit.
+
+    One condition rather than the two spilled results need: a note is never
+    quoted in the conversation (that is the point of it), so the parent's
+    verified journal is the only statement of what exists. Each copy is
+    verified against the digest the journal recorded before it is written into
+    the fork, and the fork's own run re-authorizes from the manifest.
+    """
+    if not held:
+        return [], []
+    source = Path(trace_path).parent / "spill"
+    destination = _spill_root(snapshot, target) / NOTES_INHERITED_DIR
+
+    inherited: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for name, manifest in sorted(held.items()):
+        candidates = list(source.glob(f"*/notes/{name}.txt"))
+        verified = next(
+            (
+                raw
+                for path in candidates
+                if (raw := _verified_spill_bytes(path, manifest)) is not None
+            ),
+            None,
+        )
+        if verified is None:
+            missing.append(name)
+            continue
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            destination.chmod(0o700)
+            _write_private(destination / f"{name}.txt", verified)
+            inherited.append(manifest)
+        except OSError:
+            missing.append(name)
+    warnings: list[str] = []
+    if missing:
+        warnings.append(
+            f"{len(missing)} note(s) could not be carried into the fork "
+            f"({', '.join(missing)}); the resumed run starts without them"
+        )
+    return inherited, warnings
+
+
 def _carry_spill(
     trace_path: str | Path,
     snapshot: dict[str, Any],
@@ -367,16 +463,7 @@ def _carry_spill(
     if not quoted:
         return [], []
     source = Path(trace_path).parent / "spill"
-    try:
-        trace_dir = (yaml.safe_load(snapshot["spec"]) or {}).get("logging", {}).get(
-            "trace_dir", DEFAULT_TRACE_DIR
-        )
-    except yaml.YAMLError:
-        trace_dir = DEFAULT_TRACE_DIR
-    configured = Path(trace_dir)
-    destination = (
-        (configured if configured.is_absolute() else target / configured) / "spill" / INHERITED_DIR
-    )
+    destination = _spill_root(snapshot, target) / INHERITED_DIR
 
     inherited: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -485,6 +572,9 @@ def create_fork(
     minted = _spilled_in_journal(events, point.seq) if chain.chained else {}
     inherited, spill_warnings = _carry_spill(trace_path, snapshot, target, state, minted)
     warnings.extend(spill_warnings)
+    held_notes = _notes_in_journal(events, point.seq) if chain.chained else {}
+    notes, note_warnings = _carry_notes(trace_path, snapshot, target, held_notes)
+    warnings.extend(note_warnings)
 
     envelope = events[0]
     lineage = {
@@ -501,6 +591,10 @@ def create_fork(
         # never as "a handle appears in the transcript".
         "spill_handles": [item["handle"] for item in inherited],
         "spill_manifest": inherited,
+        # The notes the parent held at this point, by name and digest. Same
+        # rule as the spill manifest: authority travels as an explicit,
+        # hash-bound list written from the verified journal.
+        "notes_manifest": notes,
     }
     if override is not None:
         lineage["model_override"] = override

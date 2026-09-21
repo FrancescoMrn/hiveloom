@@ -131,6 +131,39 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
         ],
     ),
     CatalogEntry(
+        name="notes",
+        description=(
+            "Keep run-scoped notes the model writes and reads by name. A note "
+            "lives outside the conversation, so it survives compaction; the "
+            "system prompt carries only the index (name, size, first line). "
+            "Opt-in: storage is private to the run and is discarded with it."
+        ),
+        tags=["write", "memory", "context"],
+        params=[
+            ParamSpec(
+                name="max_notes",
+                type="int",
+                required=False,
+                default=32,
+                description=(
+                    "Notes the run may hold at once (hard-capped at 256). The index "
+                    "is rendered into every turn's system prompt, so the count is a "
+                    "prompt budget as much as a storage one."
+                ),
+            ),
+            ParamSpec(
+                name="max_note_bytes",
+                type="int",
+                required=False,
+                default=0,
+                description=(
+                    "Largest single note in bytes (hard-capped at 1 MiB). 0 takes "
+                    "the harness's context.tool_results.max_inline_bytes."
+                ),
+            ),
+        ],
+    ),
+    CatalogEntry(
         name="recall_runs",
         description=(
             "Look up this harness's own prior runs in the Hive — successes as "

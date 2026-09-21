@@ -646,3 +646,39 @@ def test_add_tool_param_rejects_unbuildable_shell_rule(tmp_path: Path):
     assert r.exit_code == ExitCode.SPEC_ERROR
     assert "arbitrary extra arguments" in _json(r)["error"]
     assert load_spec(directory).tools == []
+
+
+def test_memory_list_is_empty_and_free_on_a_fresh_harness(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+
+    r = runner.invoke(app, ["memory", "list", directory, "--json"])
+
+    assert r.exit_code == ExitCode.OK
+    payload = _json(r)
+    assert payload == {
+        "ok": True,
+        "name": "h",
+        "enabled": True,
+        "max_entries": 24,
+        "max_entry_chars": 600,
+        "prompt_budget_chars": 6000,
+        "rendered_chars": 0,
+        "count": 0,
+        "entries": [],
+    }
+
+
+def test_memory_add_rejects_an_unknown_kind_with_exit_3(tmp_path: Path):
+    directory = str(tmp_path / "h")
+    runner.invoke(app, ["init", directory, "--name", "h", "--task", "T"])
+
+    r = runner.invoke(
+        app,
+        ["memory", "add", directory, "--kind", "hunch", "--title", "T",
+         "--content", "C", "--json"],
+    )
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert _json(r)["ok"] is False
+    assert load_spec(directory).memory.entries == []

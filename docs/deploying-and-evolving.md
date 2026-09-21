@@ -24,7 +24,7 @@ The running deployment does **not** evolve itself:
 - Evolution is a **gated, versioned, auditable mutation**, not silent drift.
   The evolver can never change `id`, `guardrails`, `model`, `logging.redact`,
   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-  `evolution.trace_excerpts`, or `evolution.objectives`;
+  `evolution.trace_excerpts`, `evolution.objectives`, or the `memory` budgets;
   regenerated code hooks require explicit y/n approval; every applied change
   bumps an `# evolved: N` counter and records old→new version hashes in the
   Hive.
@@ -99,6 +99,44 @@ There is no auto-apply: a human always calls `proposals apply` or
 Hive / A/B runner discussion below anticipates — proposals live in the same
 Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
 can populate the same queue without changing this review step.
+
+### Proposing a durable lesson
+
+A proposal can add to the harness's [durable memory](spec.md#memory) — a
+standing constraint the runs keep rediscovering — instead of enlarging the
+system prompt around it. The proposing model is told the current entry count
+and the budgets, and appends by writing the next index:
+
+```json
+{"path": "memory.entries.2",
+ "value": {"id": "iso-dates", "kind": "rule", "title": "Dates in ISO 8601",
+           "content": "Emit dates as YYYY-MM-DD.",
+           "source": "evolve", "evidence": "4 runs failed date_format"},
+ "rationale": "date_format rejected 4 of the last 9 runs"}
+```
+
+An index equal to the current length appends; an existing index replaces that
+entry. Everything else under `memory` — the budgets and `enabled` — is refused
+by the gate, so a proposal can add a lesson but never widen the store that
+holds it, and an entry that would break `max_entries`, `max_entry_chars`, or
+`prompt_budget_chars` is rejected with the rest of its batch and leaves
+`harness.yaml` untouched.
+
+Reviewing one is the ordinary flow, plus one question:
+
+```console
+hiveloom proposals show ./harness <id> --json   # the entry, its rationale, the gate result
+hiveloom memory list ./harness                  # what is already there, and how full it is
+hiveloom proposals apply ./harness <id>
+hiveloom memory show ./harness iso-dates        # the applied entry, with its evidence
+```
+
+Ask whether the lesson is *durable* (true of every future run, not of the runs
+in this failure cluster), whether it belongs in memory rather than in a
+validator (memory advises the model, it does not check its work), and whether
+it is worth its tokens on every model call of every run. A lesson that stops
+paying comes out with `hiveloom memory forget`, which is a spec change like any
+other and moves the version hash accordingly.
 
 ### Attempt memory and operator findings
 

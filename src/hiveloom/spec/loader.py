@@ -25,6 +25,7 @@ from hiveloom.spec.schema import (
     CodeToolRef,
     CodeValidatorRef,
     HarnessSpec,
+    MemoryConfig,
     TraceExcerptConfig,
 )
 
@@ -73,6 +74,11 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
         data["evolution"].pop("trace_excerpts", None)
     if not data.get("evolution", {}).get("objectives"):
         data["evolution"].pop("objectives", None)
+    # A harness that has learned nothing keeps the exact YAML — and therefore
+    # the exact version hash and fitness bucket — it had before memory existed.
+    # The section reappears the moment anything in it is not the default.
+    if data.get("memory") == MemoryConfig().model_dump(mode="json"):
+        data.pop("memory", None)
     return data
 
 

@@ -568,3 +568,241 @@ def test_a_query_matching_everything_stops_counting(tmp_path: Path):
     record = store.spill(tool="t", content="a" * 200_000)
     report = store.search(record.handle, "a")
     assert "+ match(es)" in report
+
+
+# --------------------------------------------------------------------------- #
+# Transforming a stored object in place
+# --------------------------------------------------------------------------- #
+def _stored(tmp_path: Path, content: str, inline_budget: int = 4000) -> tuple[SpillStore, str]:
+    """A store with a generous inline budget already holding ``content``.
+
+    Only an oversized result is ever stored, so the object is minted by a
+    narrow-budget store in the same root and then inherited by the store under
+    test — which is how a fork reaches one too.
+    """
+    producer = _store(tmp_path, run_id="producer", max_inline_bytes=40)
+    record = producer.spill(tool="t", content=content)
+    store = _store(tmp_path, run_id="under_test", max_inline_bytes=inline_budget)
+    granted = store.inherit(
+        [{"handle": record.handle, "sha256": record.sha256, "bytes": record.total_bytes}],
+        tmp_path / "spill" / "producer",
+    )
+    assert granted == [record.handle]
+    return store, record.handle
+
+
+def _numbered(count: int = 60) -> str:
+    return "\n".join(
+        f"line {i:03d} {'even' if i % 2 == 0 else 'odd'}" for i in range(count)
+    )
+
+
+def test_transform_returns_a_line_range(tmp_path: Path):
+    store, handle = _stored(tmp_path, _numbered())
+
+    out = store.transform(handle, "lines", {"start": 3, "count": 2})
+    assert "3: line 002 even" in out
+    assert "4: line 003 odd" in out
+    assert "line 010" not in out
+
+
+def test_transform_greps_per_line_with_context(tmp_path: Path):
+    store, handle = _stored(tmp_path, _numbered())
+
+    out = store.transform(
+        handle, "grep", {"pattern": r"line 00[12] ", "max_matches": 2, "context_lines": 1}
+    )
+    assert "2: line 001 odd" in out
+    assert "3: line 002 even" in out
+    # Context lines are marked differently from matches, as grep -C does.
+    assert "1- line 000 even" in out
+
+
+def test_transform_counts_lines_bytes_and_matches(tmp_path: Path):
+    store, handle = _stored(tmp_path, _numbered(10))
+
+    out = store.transform(handle, "count", {"pattern": "even"})
+    assert "10 lines" in out
+    assert "5 lines matching" in out
+
+
+def test_transform_selects_a_json_path(tmp_path: Path):
+    document = {"items": [{"id": f"id-{i}", "pad": "x" * 40} for i in range(6)]}
+    store, handle = _stored(tmp_path, json.dumps(document))
+
+    out = store.transform(handle, "json_path", {"path": "$.items[*].id"})
+    assert json.loads(out) == [f"id-{i}" for i in range(6)]
+    assert "pad" not in out
+
+
+def test_transform_sorts_and_deduplicates(tmp_path: Path):
+    store, handle = _stored(tmp_path, "\n".join(["b", "a", "b", "c"] * 60))
+
+    ordered = store.transform(handle, "sort", {"unique": True})
+    assert ordered.splitlines()[1:] == ["a", "b", "c"]
+    first_seen = store.transform(handle, "unique", {})
+    assert first_seen.splitlines()[1:] == ["b", "a", "c"]
+
+
+def test_transform_head_and_tail(tmp_path: Path):
+    store, handle = _stored(tmp_path, "HEAD" + ("m" * 800) + "TAIL")
+
+    assert store.transform(handle, "head", {"bytes": 4}).endswith("HEAD")
+    assert store.transform(handle, "tail", {"bytes": 4}).endswith("TAIL")
+
+
+def test_transform_concat_joins_authorized_objects_only(tmp_path: Path):
+    store, first = _stored(tmp_path, "A" * 300)
+    second = _store(tmp_path, run_id="producer", max_inline_bytes=40).spill(
+        tool="t", content="B" * 300
+    )
+    store.inherit(
+        [{"handle": second.handle, "sha256": second.sha256, "bytes": second.total_bytes}],
+        tmp_path / "spill" / "producer",
+    )
+
+    joined = store.transform(first, "concat", {"handles": [second.handle]})
+    assert "A" * 300 in joined
+    assert "B" * 300 in joined
+    # concat reaches nothing this run could not already read.
+    with pytest.raises(SpillError, match="unknown handle"):
+        store.transform(first, "concat", {"handles": ["tr_0000000000000000"]})
+
+
+def test_an_oversized_transform_becomes_a_derived_object(tmp_path: Path):
+    store, handle = _stored(tmp_path, _numbered(400), inline_budget=200)
+    minted: list[tuple] = []
+    store.set_on_derived(lambda record, source, op: minted.append((record, source, op)))
+
+    out = store.transform(handle, "grep", {"pattern": "even", "max_matches": 200})
+    derived = HANDLE_RE.findall(out)
+    assert derived and derived[-1] != handle
+    # The derived object is readable under its own handle, so a narrowing that
+    # is still too large can be narrowed again rather than abandoned.
+    assert "even" in store.read(derived[-1], offset=0, limit=200)
+    assert minted and minted[0][1] == handle and minted[0][2] == "grep"
+
+    sidecar = json.loads(
+        (store._run_dir / f"{minted[0][0].handle}.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["derived_from"] == handle
+    assert sidecar["op"] == "grep"
+    assert sidecar["tool"] == "transform_result"
+
+
+def test_transform_refuses_an_unknown_op_and_an_unknown_handle(tmp_path: Path):
+    store, handle = _stored(tmp_path, _numbered())
+
+    with pytest.raises(SpillError, match="unknown op"):
+        store.transform(handle, "eval", {})
+    with pytest.raises(SpillError, match="unknown handle"):
+        store.transform("tr_0000000000000000", "count", {})
+
+
+def test_transform_refuses_a_catastrophically_backtracking_pattern(tmp_path: Path):
+    store, handle = _stored(tmp_path, _numbered())
+
+    with pytest.raises(SpillError, match="backtrack"):
+        store.transform(handle, "grep", {"pattern": "(a+)+$"})
+    with pytest.raises(SpillError, match="at most"):
+        store.transform(handle, "grep", {"pattern": "a" * 300})
+    with pytest.raises(SpillError, match="invalid regular expression"):
+        store.transform(handle, "grep", {"pattern": "("})
+
+
+def test_a_line_without_newlines_is_still_bounded(tmp_path: Path):
+    # A stored object need not contain a newline at all; a "line" is split at
+    # the bound so a regex never meets an unbounded string.
+    from hiveloom.context import spill as spill_module
+
+    store, handle = _stored(tmp_path, "z" * (spill_module._LINE_MAX_BYTES + 100))
+    out = store.transform(handle, "count", {})
+    assert "2 lines" in out
+
+
+def test_the_model_can_transform_without_reading_into_context(tmp_path: Path):
+    harness = _harness(tmp_path, BIG_TOOL, "report")
+    provider = HandleAwareProvider(
+        [
+            tool_response("report", {}, call_id="c1"),
+            tool_response(
+                "transform_result",
+                {"handle": "{{handle}}", "op": "grep", "pattern": "NEEDLE"},
+                call_id="c2",
+            ),
+            text_response("done"),
+        ]
+    )
+    result = runner.run_harness(
+        harness, "go", provider=provider, literal_input=True, ingest=False
+    )
+
+    assert result.status == "success"
+    transformed = _tool_result_text(provider, 2)
+    assert "NEEDLE the answer is 42" in transformed
+    # One line out of a 200 KB object, without a read of the object first.
+    assert len(transformed.encode("utf-8")) < 2000
+    assert "transform_result" in {t["name"] for t in provider.calls[1]["tools"]}
+
+
+def test_a_derived_object_is_journalled_as_minted(tmp_path: Path):
+    # The fork path reads minted handles off the verified journal, so an object
+    # created inside a tool call has to appear there like any other spill.
+    harness = _harness(tmp_path, BIG_TOOL, "report")
+    provider = HandleAwareProvider(
+        [
+            tool_response("report", {}, call_id="c1"),
+            tool_response(
+                "transform_result",
+                {"handle": "{{handle}}", "op": "lines", "start": 1, "count": 4000},
+                call_id="c2",
+            ),
+            text_response("done"),
+        ]
+    )
+    result = runner.run_harness(
+        harness, "go", provider=provider, literal_input=True, ingest=False
+    )
+
+    spilled = [e for e in read_events(result.trace_path) if e["type"] == "tool_spilled"]
+    derived = [e for e in spilled if e["payload"]["name"] == "transform_result"]
+    assert derived, "a derived object must be journalled as minted"
+    assert derived[0]["payload"]["op"] == "lines"
+    assert derived[0]["payload"]["derived_from"] == spilled[0]["payload"]["handle"]
+
+
+# --------------------------------------------------------------------------- #
+# Handing a stored object to another tool
+# --------------------------------------------------------------------------- #
+def test_a_stored_result_is_written_out_without_passing_through_context(tmp_path: Path):
+    harness = _harness(tmp_path, BIG_TOOL, "report")
+    construct.add_tool(harness, builtin="file_write", description="Write a file.")
+    provider = HandleAwareProvider(
+        [
+            tool_response("report", {}, call_id="c1"),
+            tool_response(
+                "file_write",
+                {"path": "out.txt", "content": "{{handle}}"},
+                call_id="c2",
+            ),
+            text_response("done"),
+        ]
+    )
+    result = runner.run_harness(
+        harness, "go", provider=provider, literal_input=True, ingest=False
+    )
+
+    assert result.status == "success"
+    written = (harness / "out.txt").read_text(encoding="utf-8")
+    assert "NEEDLE the answer is 42" in written
+    assert len(written) > 100_000
+
+    # What the model emitted, and what the journal records of it, is the
+    # handle: the expansion exists only for the duration of the call.
+    call = next(
+        e
+        for e in read_events(result.trace_path)
+        if e["type"] == "tool_call" and e["payload"]["name"] == "file_write"
+    )
+    assert HANDLE_RE.fullmatch(call["payload"]["input"]["content"])
+    assert "NEEDLE the answer is 42" not in str(provider.calls[2]["messages"])

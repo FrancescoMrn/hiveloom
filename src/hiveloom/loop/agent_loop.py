@@ -26,7 +26,11 @@ from pydantic import BaseModel, Field
 from hiveloom import confine
 from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
-from hiveloom.context.spill import SpillStore
+from hiveloom.context.notes import (
+    FALLBACK_MAX_NOTE_BYTES as FALLBACK_NOTE_BYTES,
+)
+from hiveloom.context.notes import NOTES_TOOL, NotesStore, NotesTool
+from hiveloom.context.spill import SpillError, SpillStore
 from hiveloom.egress import EgressFilter
 from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
@@ -51,7 +55,7 @@ from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.private import RunBoundary
 from hiveloom.spec.schema import HarnessSpec
-from hiveloom.tools.registry import ToolRegistry, ToolResult
+from hiveloom.tools.registry import ToolError, ToolRegistry, ToolResult
 from hiveloom.verify.base import (
     ToolEvidenceRecord,
     VerdictResult,
@@ -267,10 +271,32 @@ class AgentLoop:
                 config=spec.context.tool_results,
                 redact=trace.redact_text,
             )
+            self._spill.set_on_derived(self._journal_derived_object)
             for name in spill.TOOL_NAMES:
                 tool = registry.get(name)
                 if tool is not None:
                     tool.bind(self._spill)
+        # `notes` is opt-in and spec-declared, so it is built by the registry
+        # and bound here: the loop owns the run directory it writes into, the
+        # redaction applied on the way in, and the journal that records it.
+        self._notes: NotesStore | None = None
+        notes_tool = registry.get(NOTES_TOOL)
+        if isinstance(notes_tool, NotesTool):
+            inline_budget = spec.context.tool_results.max_inline_bytes
+            self._notes = NotesStore(
+                self._run_boundary.spill_dir,
+                run_id=run_id,
+                max_notes=notes_tool.max_notes,
+                max_note_bytes=notes_tool.max_note_bytes or inline_budget or FALLBACK_NOTE_BYTES,
+                max_read_bytes=inline_budget or FALLBACK_NOTE_BYTES,
+                redact=trace.redact_text,
+                journal=self._trace.emit,
+            )
+            notes_tool.bind(self._notes)
+            # A callable, not a snapshot: the index has to reflect what the
+            # model has written by *this* turn, and it is re-rendered on every
+            # assembly like the playbook fragment.
+            self._context.set_notes_index(self._notes.index_text)
 
     # ------------------------------------------------------------------ #
     # Public surface for policies and hooks
@@ -391,6 +417,15 @@ class AgentLoop:
             if inherited:
                 self._registry.activate(list(spill.TOOL_NAMES))
                 self._trace.emit("spill_inherited", handles=inherited)
+        if self._notes is not None and self._lineage:
+            # Same rule for notes: `hiveloom fork` copied the notes the
+            # parent's verified journal says it wrote, and the manifest in
+            # fork.yaml — not the seeded transcript — is what authorizes them.
+            carried = self._notes.inherit(
+                self._lineage.get("notes_manifest") or [], self._notes.inherited_dir
+            )
+            if carried:
+                self._trace.emit("notes_inherited", names=carried)
         self._context.seed_history(self._history)
         if not self._resume:
             self._context.add_user(self._run_input)
@@ -993,6 +1028,24 @@ class AgentLoop:
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
 
+    def _journal_derived_object(self, record: Any, source: str, op: str) -> None:
+        """Record an object ``transform_result`` minted inside a tool call.
+
+        Emitted as ``tool_spilled`` rather than an event of its own so the fork
+        path — which reads minted handles off the verified journal — sees a
+        derived object exactly as it sees a spilled one, and can carry it.
+        """
+        self._trace.emit(
+            "tool_spilled",
+            name=spill.TRANSFORM_TOOL,
+            handle=record.handle,
+            bytes=record.total_bytes,
+            sha256=record.sha256,
+            omitted_bytes=record.omitted_bytes,
+            derived_from=source,
+            op=op,
+        )
+
     def _result_block(self, call: Any, result: Any) -> dict[str, Any]:
         """The context-facing form of a finalized result, spilled if oversized.
 
@@ -1122,7 +1175,12 @@ class AgentLoop:
             self._trace.emit("tool_update", id=_call.id, name=_call.name, content=progress)
 
         run_context = self._run_context()
-        result = self._registry.dispatch(call, on_update=on_update, run_context=run_context)
+        result = self._registry.dispatch(
+            call,
+            on_update=on_update,
+            run_context=run_context,
+            resolve_handle=self._resolve_handle_arg,
+        )
         if (
             result.is_error
             and result.retryable
@@ -1130,11 +1188,32 @@ class AgentLoop:
         ):
             self._trace.emit("tool_retry", id=call.id, name=call.name)
             result = self._registry.dispatch(
-                call, on_update=on_update, run_context=run_context
+                call,
+                on_update=on_update,
+                run_context=run_context,
+                resolve_handle=self._resolve_handle_arg,
             )
         if result.is_error and self._spec.loop.on_tool_error == "abort":
             raise ToolAbort(f"tool '{call.name}' failed: {result.content}")
         return result
+
+    def _resolve_handle_arg(self, handle: str, max_bytes: int) -> str:
+        """Expand a handle-typed tool argument under this run's authority.
+
+        Passed to every dispatch, consulted only for the parameters a tool
+        declares as handle-capable. A run with no store resolves nothing —
+        there is no object to reach — and the refusal reaches the model as a
+        tool error.
+        """
+        if self._spill is None:
+            raise ToolError(
+                "this harness stores no oversized tool results, so there is no "
+                f"handle to expand ('{handle}')"
+            )
+        try:
+            return self._spill.resolve_text(handle, max_bytes)
+        except SpillError as exc:
+            raise ToolError(str(exc)) from exc
 
     def _finalize_call(self, call: Any, result: Any) -> str | None:
         """After-hooks and after-guardrails for one call. Returns a halt reason."""

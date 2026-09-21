@@ -19,6 +19,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model.max_tokens`, and configurable OpenAI-compatible `timeout_seconds`.
 - Frozen `model.params` for provider request fields, forwarded by the Claude and
   OpenAI-compatible providers and preserved by runtime model overrides.
+- Durable harness memory: a `memory` spec section whose entries render as a
+  `# Memory` system-prompt section every run, managed with
+  `hiveloom memory list|show|add|forget`. The executor never writes it; entries
+  reach `harness.yaml` only through that CLI or an applied evolution proposal,
+  which may append or replace one entry at a time. `memory.enabled` and the
+  entry/character/prompt budgets are frozen from evolution and hard-capped, and
+  an over-budget entry is a validation error rather than a silent eviction.
+
+- Run-scoped notes: the opt-in `notes` builtin lets the executor write, read
+  and delete named notes that live outside the conversation and so survive
+  compaction. Only their index (name, size, first line) enters the system
+  prompt. Notes are private to the run, redacted before the write, journaled as
+  `note_written`/`note_deleted`, bounded by `max_notes`/`max_note_bytes`, and
+  carried into a fork only through a hash-bound manifest replayed from the
+  parent's verified journal.
+- `transform_result` reshapes a stored tool result in place — `lines`, `head`,
+  `tail`, `grep`, `json_path`, `count`, `sort`, `unique` and `concat` — so a
+  large object can be narrowed without paging it through context. Output that
+  still exceeds the inline budget becomes a derived object with its own handle.
+  Every op is bounded in bytes scanned and emitted, and a pattern that repeats
+  an unbounded quantifier is refused.
+- Handle-typed tool parameters: a tool may declare which string parameters
+  accept a stored-result handle (`@tool(..., handles=["content"])`, or
+  `handle_params` on a `Tool`; `file_write` declares `content`). The runtime
+  expands the handle under the run's authority at dispatch, capped at 4 MiB,
+  while the journal and the provider keep the handle. An unresolvable handle is
+  a tool error, never a silent literal.
 
 - Experimental `best_of_n` loop policy on the ARC branch: collect multiple
   attempts and select a plurality answer. General-purpose release limitations

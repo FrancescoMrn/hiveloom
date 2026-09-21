@@ -30,6 +30,7 @@ from hiveloom.confine import (
     resolve_backend,
     run_confined,
 )
+from hiveloom.context.notes import DEFAULT_MAX_NOTES, NotesTool
 from hiveloom.package import is_sensitive_path
 from hiveloom.private import RunBoundary, env_files, is_private
 from hiveloom.spec.schema import BuiltinToolRef, ConfinementConfig
@@ -169,13 +170,22 @@ class FileWriteTool(Tool):
         self._run_boundary = run_boundary
         entry = BUILTIN_TOOLS["file_write"]
         self.name = "file_write"
+        # A large result the model wants written out should not have to be
+        # re-emitted token by token: `content` may instead be the handle of a
+        # spilled result, which the registry expands from private storage at
+        # dispatch (see ``Tool.handle_params``).
+        self.handle_params = ("content",)
         self.description = entry.description
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative file path."},
-                "content": {"type": "string", "description": "File contents to write."},
+                "content": {
+                    "type": "string",
+                    "description": "File contents to write, or the handle of a stored "
+                    "tool result (tr_…) to write that result's full text.",
+                },
             },
             "required": ["path", "content"],
         }
@@ -789,6 +799,17 @@ def _register_factories() -> None:
     )
     ext.register_builtin_factory(
         "tools", "load_skill", lambda _p, ctx: LoadSkillTool(ctx.base, ctx.skills)
+    )
+    ext.register_builtin_factory(
+        "tools",
+        "notes",
+        # Built here from its spec-time limits and bound to the run's storage
+        # by the agent loop, which owns the run directory, the redaction
+        # patterns and the journal — the same arrangement the spill readers use.
+        lambda p, _ctx: NotesTool(
+            max_notes=p.get("max_notes", DEFAULT_MAX_NOTES),
+            max_note_bytes=p.get("max_note_bytes", 0) or 0,
+        ),
     )
     ext.register_builtin_factory(
         "tools",

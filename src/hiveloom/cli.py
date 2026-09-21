@@ -73,6 +73,10 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+memory_app = typer.Typer(
+    help="Inspect and edit a harness's durable memory (spec `memory.entries`)."
+)
+app.add_typer(memory_app, name="memory")
 friction_app = typer.Typer(help="Query recovered retries and other indexed run friction.")
 app.add_typer(friction_app, name="friction")
 traces_app = typer.Typer(help="Manage raw trace files under a validated Hiveloom root.")
@@ -2959,6 +2963,161 @@ def proposals_reject_cmd(
             _emit_json({"ok": True, "proposal_id": proposal_id, "status": "rejected"})
         else:
             _console.print(f"[yellow]rejected[/yellow] proposal {proposal_id}")
+
+
+# --------------------------------------------------------------------------- #
+# Memory (durable, bounded lessons rendered into the system prompt)
+# --------------------------------------------------------------------------- #
+def _memory_entry_payload(entry: Any) -> dict[str, Any]:
+    return entry.model_dump(mode="json", exclude_none=True)
+
+
+def _load_memory(harness_dir: str, json_output: bool):
+    """Trust-gate, then load the spec — memory is read from the same document
+    every other command validates, never from a side file."""
+    from hiveloom import trust as trust_mod
+    from hiveloom.spec.loader import load_spec
+
+    trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
+    return load_spec(harness_dir)
+
+
+@memory_app.command("list")
+def memory_list_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List this harness's durable lessons, in the order they are rendered."""
+    with _guard(json_output):
+        spec = _load_memory(harness_dir, json_output)
+        memory = spec.memory
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "name": spec.name,
+                    "enabled": memory.enabled,
+                    "max_entries": memory.max_entries,
+                    "max_entry_chars": memory.max_entry_chars,
+                    "prompt_budget_chars": memory.prompt_budget_chars,
+                    "rendered_chars": len(memory.render()),
+                    "count": len(memory.entries),
+                    "entries": [_memory_entry_payload(e) for e in memory.entries],
+                }
+            )
+            return
+        if not memory.entries:
+            _console.print("[green]no memory entries[/green]")
+            return
+        table = Table(
+            title=(
+                f"memory: {len(memory.entries)}/{memory.max_entries} entries, "
+                f"{len(memory.render())}/{memory.prompt_budget_chars} prompt chars"
+                + ("" if memory.enabled else " [disabled]")
+            )
+        )
+        table.add_column("id", style="bold cyan")
+        table.add_column("kind", style="green")
+        table.add_column("title")
+        table.add_column("source", style="dim")
+        for entry in memory.entries:
+            table.add_row(entry.id, entry.kind, entry.title, entry.source or "-")
+        _console.print(table)
+
+
+@memory_app.command("show")
+def memory_show_cmd(
+    harness_dir: str = typer.Argument(..., help="Harness directory."),
+    entry_id: str = typer.Argument(..., help="Memory entry id."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show one lesson in full, including the evidence kept out of the prompt."""
+    with _guard(json_output):
+        spec = _load_memory(harness_dir, json_output)
+        entry = next((e for e in spec.memory.entries if e.id == entry_id), None)
+        if entry is None:
+            raise SpecError(f"no memory entry with id '{entry_id}'")
+        if json_output:
+            _emit_json({"ok": True, **_memory_entry_payload(entry)})
+            return
+        _console.print(f"[bold cyan]{entry.id}[/bold cyan]  ([green]{entry.kind}[/green])")
+        _console.print(entry.title)
+        _console.print(entry.content)
+        if entry.source:
+            _console.print(f"source: {entry.source}")
+        if entry.evidence:
+            _console.print(f"evidence: {entry.evidence}")
+        if entry.created_at:
+            _console.print(f"created_at: {entry.created_at}")
+
+
+@memory_app.command("add")
+def memory_add_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    kind: str = typer.Option(..., "--kind", help="fact | rule | example."),
+    title: str = typer.Option(..., "--title", help="Short label; the id is slugged from it."),
+    content: str = typer.Option(..., "--content", help="The lesson, in the imperative."),
+    source: str = typer.Option(
+        "operator", "--source", help="Provenance recorded with the entry."
+    ),
+    evidence: str | None = typer.Option(
+        None, "--evidence", help="Why this was learned (kept out of the prompt)."
+    ),
+    entry_id: str | None = typer.Option(
+        None, "--id", help="Explicit id instead of the slug derived from --title."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Add a durable lesson to `memory.entries`.
+
+    Validated and rolled back like any construction command: an entry that
+    would exceed `memory.max_entries`, `memory.max_entry_chars`, or
+    `memory.prompt_budget_chars` fails with exit 3 and writes nothing.
+    """
+    with _guard(json_output):
+        spec = construct.add_memory_entry(
+            harness_dir,
+            kind=kind,
+            title=title,
+            content=content,
+            source=source or None,
+            evidence=evidence,
+            entry_id=entry_id,
+        )
+        added = spec.memory.entries[-1]
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "added": "memory",
+                    "ref": added.id,
+                    "count": len(spec.memory.entries),
+                    "entry": _memory_entry_payload(added),
+                }
+            )
+        else:
+            _added(False, "memory entry", added.id)
+
+
+@memory_app.command("forget")
+def memory_forget_cmd(
+    harness_dir: str = typer.Argument(..., help="Harness directory."),
+    entry_id: str = typer.Argument(..., help="Memory entry id to remove."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Remove one durable lesson by id."""
+    with _guard(json_output):
+        spec = construct.forget_memory_entry(harness_dir, entry_id)
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "removed": entry_id,
+                    "count": len(spec.memory.entries),
+                }
+            )
+        else:
+            _console.print(f"[yellow]forgot[/yellow] memory entry {entry_id}")
 
 
 @app.command()

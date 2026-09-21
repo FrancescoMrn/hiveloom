@@ -38,6 +38,31 @@ not instructions.
   number of unsuccessful attempts.
 - An empty ledger means no history was supplied, not necessarily a first run.
 
+## Durable memory
+
+`memory.entries` is where a lesson that must survive into *every* future run
+belongs — a domain fact the runs keep rediscovering, a rule the validators keep
+enforcing, an example of the shape the output must take. It is rendered into
+the system prompt verbatim, one line per entry, so each one costs tokens on
+every model call of every run.
+
+- An entry is `{"id": "<a-z0-9-slug>", "kind": "fact" | "rule" | "example",
+  "title": "<short label>", "content": "<the lesson, imperative>",
+  "source": "<provenance>", "evidence": "<why it was learned>"}`. `id` must be
+  unique. `evidence` is for the reviewer and is not shown to the executor.
+- Append one by writing the path `memory.entries.<current length>`; replace one
+  by writing its index. Never rewrite the whole `memory.entries` list: that
+  discards lessons a reviewer already accepted.
+- `memory.enabled`, `memory.max_entries`, `memory.max_entry_chars`, and
+  `memory.prompt_budget_chars` are frozen. Proposing any of them — or rewriting
+  the `memory` mapping around them — is rejected outright. A full store is not
+  an invitation to raise the ceiling; propose replacing the weakest entry, and
+  say which one and why.
+- Prefer one durable entry over enlarging `system_prompt` when the lesson is a
+  standing constraint rather than a restatement of the task. Prefer a validator
+  or a tool when the failure needs enforcement rather than a reminder: memory
+  advises the model, it does not check its work.
+
 ## How to propose
 
 - Diagnose the failed layer before choosing a mutation:
@@ -91,7 +116,11 @@ Return **only** a JSON object (no prose, no fences):
   "rationale": "one-line summary of the mutation",
   "yaml_changes": [
     {"path": "system_prompt", "value": "You are ...", "rationale": "..."},
-    {"path": "loop.max_turns", "value": 30, "rationale": "..."}
+    {"path": "loop.max_turns", "value": 30, "rationale": "..."},
+    {"path": "memory.entries.2", "value": {"id": "iso-dates", "kind": "rule",
+     "title": "Dates in ISO 8601", "content": "Emit dates as YYYY-MM-DD.",
+     "source": "evolve", "evidence": "4 runs failed date_format"},
+     "rationale": "..."}
   ],
   "code_changes": [
     {"file": "validators/check.py", "source": "def validate(...):\n    ...\n", "rationale": "..."}

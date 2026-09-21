@@ -617,6 +617,92 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
     return _commit(directory, raw, created, "add_skill", {"name": name})
 
 
+_MEMORY_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def memory_slug(title: str) -> str:
+    """Derive a memory entry id from its title.
+
+    Deterministic so the same lesson added twice collides on the id instead of
+    quietly becoming two entries; the caller can always pass an explicit id.
+    """
+    slug = _MEMORY_SLUG_RE.sub("-", title.casefold()).strip("-")[:64].strip("-")
+    if not slug or not slug[0].isalnum():
+        raise SpecError(
+            f"could not derive a memory id from title {title!r}; pass an explicit id "
+            "(a-z, 0-9, dashes)"
+        )
+    return slug
+
+
+def add_memory_entry(
+    directory: str | Path,
+    *,
+    kind: str,
+    title: str,
+    content: str,
+    source: str | None = None,
+    evidence: str | None = None,
+    entry_id: str | None = None,
+) -> HarnessSpec:
+    """Append a durable lesson to ``memory.entries``.
+
+    The operator-side write path. It goes through :func:`_commit` like every
+    other construction command, so the entry count, the entry length, and the
+    rendered prompt budget are all enforced by the schema before anything is
+    written — and an over-budget entry leaves ``harness.yaml`` untouched.
+    """
+    directory = Path(directory)
+    raw = load_raw(directory)
+    memory = raw.setdefault("memory", {})
+    if not isinstance(memory, dict):
+        raise SpecError("memory section is not a mapping; fix harness.yaml first")
+    entries = memory.setdefault("entries", [])
+    if not isinstance(entries, list):
+        raise SpecError("memory.entries is not a list; fix harness.yaml first")
+
+    new_id = entry_id or memory_slug(title)
+    if any(isinstance(e, dict) and e.get("id") == new_id for e in entries):
+        raise SpecError(
+            f"memory entry '{new_id}' already exists; forget it first or use another id"
+        )
+    entry: dict[str, Any] = {
+        "id": new_id,
+        "kind": kind,
+        "title": title,
+        "content": content,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    if source:
+        entry["source"] = source
+    if evidence:
+        entry["evidence"] = evidence
+    entries.append(entry)
+    return _commit(directory, raw, [], "add_memory", {"id": new_id, "kind": kind})
+
+
+def forget_memory_entry(directory: str | Path, entry_id: str) -> HarnessSpec:
+    """Remove one durable lesson by id, validating and rolling back like any edit.
+
+    Deliberately not part of :func:`remove_item`: memory entries key on ``id``
+    rather than a builtin/code/name ref, and a bare `hiveloom remove <name>`
+    must never reach into what the harness has learned.
+    """
+    directory = Path(directory)
+    raw = load_raw(directory)
+    memory = raw.get("memory")
+    entries = memory.get("entries") if isinstance(memory, dict) else None
+    kept = (
+        [e for e in entries if not (isinstance(e, dict) and e.get("id") == entry_id)]
+        if isinstance(entries, list)
+        else []
+    )
+    if not isinstance(entries, list) or len(kept) == len(entries):
+        raise SpecError(f"no memory entry with id '{entry_id}'")
+    memory["entries"] = kept
+    return _commit(directory, raw, [], "forget_memory", {"id": entry_id})
+
+
 _PLAYBOOK_PROMPT_STUB = """# {name}
 
 TODO: write the guidance that applies while the harness is in this playbook.

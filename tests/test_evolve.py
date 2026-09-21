@@ -323,6 +323,170 @@ def test_gate_rejects_case_variant_frozen_paths(tmp_path: Path):
     assert len(result.rejected) == 3
 
 
+def test_gate_rejects_the_memory_budgets_but_accepts_an_entry(tmp_path: Path):
+    """Evolution may add a lesson; it may never widen the store that holds it."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "memory.max_entries", "value": 200},
+            {"path": "memory.enabled", "value": False},
+            {"path": "memory", "value": {"max_entry_chars": 4000}},
+            {
+                "path": "memory.entries.0",
+                "value": {
+                    "id": "iso-dates",
+                    "kind": "rule",
+                    "title": "Dates in ISO 8601",
+                    "content": "Emit dates as YYYY-MM-DD.",
+                },
+            },
+        ]
+    )
+
+    result = gate(spec, proposal)
+
+    assert [change.path for change in result.accepted] == ["memory.entries.0"]
+    assert {r["path"] for r in result.rejected} == {
+        "memory.max_entries",
+        "memory.enabled",
+        "memory",
+    }
+    assert all(r["reason"] == "frozen path" for r in result.rejected)
+
+
+def test_gate_rejects_memory_paths_that_are_not_entries(tmp_path: Path):
+    """The positive statement of the same rule, independent of ALWAYS_FROZEN:
+    the only thing under `memory` evolution may write is an entry."""
+    harness = _harness(tmp_path)
+    construct.set_field(harness, "evolution.mutable", '["memory"]')
+    spec = load_spec(harness)
+
+    result = gate(spec, MutationProposal(yaml_changes=[{"path": "memory.notes", "value": 1}]))
+
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == (
+        "only memory.entries is evolvable; the memory budgets are frozen"
+    )
+
+
+def test_applying_a_memory_entry_appends_at_the_list_length(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    result = apply_proposal(
+        harness,
+        MutationProposal(
+            yaml_changes=[
+                {
+                    "path": "memory.entries.1",
+                    "value": {
+                        "id": "iso-dates",
+                        "kind": "rule",
+                        "title": "Dates in ISO 8601",
+                        "content": "Emit dates as YYYY-MM-DD.",
+                        "source": "evolve",
+                    },
+                }
+            ]
+        ),
+        apply_yaml=True,
+    )
+
+    assert result.changed is True
+    entries = load_spec(harness).memory.entries
+    assert [entry.id for entry in entries] == ["nulls", "iso-dates"]
+    assert "# Memory" in _spec_system_prompt(harness)
+
+
+def test_applying_the_first_memory_entry_creates_the_list(tmp_path: Path):
+    """A harness that has learned nothing omits the section entirely, so the
+    first append has to create a list — not a mapping with a "0" key."""
+    harness = _harness(tmp_path)
+    assert "memory:" not in (harness / "harness.yaml").read_text()
+
+    result = apply_proposal(
+        harness,
+        MutationProposal(
+            yaml_changes=[
+                {
+                    "path": "memory.entries.0",
+                    "value": {
+                        "id": "iso-dates",
+                        "kind": "rule",
+                        "title": "Dates in ISO 8601",
+                        "content": "Emit dates as YYYY-MM-DD.",
+                    },
+                }
+            ]
+        ),
+    )
+
+    assert result.changed is True
+    assert [entry.id for entry in load_spec(harness).memory.entries] == ["iso-dates"]
+
+
+def test_an_over_budget_memory_entry_is_rejected_and_nothing_is_written(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "memory.prompt_budget_chars", 200)
+    before = (harness / "harness.yaml").read_text()
+
+    result = apply_proposal(
+        harness,
+        MutationProposal(
+            yaml_changes=[
+                {
+                    "path": "memory.entries.0",
+                    "value": {
+                        "id": "too-long",
+                        "kind": "fact",
+                        "title": "Too long",
+                        "content": "x" * 400,
+                    },
+                }
+            ]
+        ),
+        apply_yaml=True,
+    )
+
+    assert result.changed is False
+    assert "prompt_budget_chars" in result.rejected[0]["reason"]
+    assert (harness / "harness.yaml").read_text() == before
+
+
+def test_a_memory_index_past_the_end_is_a_clear_error(tmp_path: Path):
+    """Append is exactly one past the end; anything beyond is a mistake, and
+    silently extending the list would leave a hole the schema cannot describe."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "memory.entries.3", "value": {"id": "x"}}]
+    )
+
+    result = gate(spec, proposal)
+
+    assert not result.accepted
+    assert "out of range" in result.rejected[0]["reason"]
+    assert "0 would append" in result.rejected[0]["reason"]
+
+
+def test_evolve_prompt_tells_the_proposer_where_memory_lives(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    system, user = build_evolve_prompt(load_spec(harness), _report())
+
+    assert "memory.entries" in system
+    assert "Durable memory: 1 entry of at most 24" in user
+    assert "`memory.entries.1`" in user
+
+
+def _spec_system_prompt(harness: Path) -> str:
+    """What the executor would be shown for this harness, memory included."""
+    from hiveloom.context.manager import ContextManager
+    from hiveloom.models.fake import FakeModelProvider
+
+    return ContextManager(load_spec(harness), FakeModelProvider([])).system()
+
+
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
     system, user = build_evolve_prompt(load_spec(_harness(tmp_path)), _report())
 

@@ -29,6 +29,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `model`/`model_provider` (**always frozen**), `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
+| `memory` | Durable lessons rendered into every run's system prompt | `enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars` (**all frozen from evolution**), `entries` (evolvable) |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
@@ -59,7 +60,8 @@ for each new hostname during a plain CLI run.
   (allowlist-only, disabled without one), `http_get` (declared hosts or a
   run-time operator decision), `load_skill` (reads a declared skill in full —
   progressive disclosure without a filesystem reader),
-  `recall_runs` (this harness's own prior runs, from the Hive).
+  `recall_runs` (this harness's own prior runs, from the Hive),
+  `notes` (run-scoped scratch storage that survives compaction).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
   `regex_output_filter` are *singletons*: only one entry is meaningful, so
@@ -213,10 +215,63 @@ query="..."). Do not guess at the omitted content — read it.
 REPORT TAIL
 ```
 
-`read_tool_result` and `search_tool_result` are added automatically, and stay
-**inactive until the first spill** — a harness that never spills never pays for
-them in its tool payload. Neither is spellable in a spec, and neither can be
-reached by `search_tools`.
+`read_tool_result`, `search_tool_result` and `transform_result` are added
+automatically, and stay **inactive until the first spill** — a harness that
+never spills never pays for them in its tool payload. None is spellable in a
+spec, and none can be reached by `search_tools`.
+
+### Reshaping a stored result in place
+
+Reading a 40 MB log back 4 KB at a time to find twelve lines spends the whole
+context budget on the 39.9 MB that did not matter. `transform_result` runs a
+fixed set of ops against the *stored bytes* and returns only what they produced:
+
+| `op` | Arguments | Returns |
+|---|---|---|
+| `lines` | `start` (1-based), `count` | a numbered line range |
+| `head` / `tail` | `bytes` | the first/last bytes |
+| `grep` | `pattern`, `max_matches` (≤ 200), `context_lines` (≤ 5) | matching lines |
+| `json_path` | `path` | the selection, as JSON |
+| `count` | `pattern` (optional) | lines, bytes, matching lines |
+| `sort` | `unique` | the lines in order |
+| `unique` | — | distinct lines, first seen first |
+| `concat` | `handles` (≤ 8 objects in total) | the objects joined |
+
+If the output fits `max_inline_bytes` it comes back inline. If it does not, it
+is stored as a **derived object** with its own handle (the sidecar records
+`derived_from` and the op, and a `tool_spilled` event records it as minted), so
+a narrowing that is still too large can be narrowed again rather than
+abandoned.
+
+Deliberately not a scripting surface. Each op is bounded in what it may scan
+(32 MB, streamed in windows) and what it may emit (4 MB); a `grep`/`count`
+pattern is at most 256 characters, is applied to **one line at a time** rather
+than to the whole buffer, and is refused when it repeats a group that already
+contains an unbounded quantifier — the catastrophic-backtracking shape. A
+"line" is itself bounded at 1 MiB, so an object with no newlines in it is still
+matched against bounded input. No op can name a path, and `concat` reaches only
+objects this run was already authorized to read.
+
+### Handing a stored result to another tool
+
+A tool may declare which of its string parameters accept a handle in place of a
+literal. `file_write` declares `content`, so a large result can be written out
+without the model re-emitting it token by token:
+
+```json
+{"path": "report.txt", "content": "tr_9f2c1a04b7e35d16"}
+```
+
+At dispatch the runtime replaces a value that matches the handle pattern *in
+full* with the stored object's text, resolved under the run's authority. A
+value that is not a handle is passed through unchanged, and a handle this run
+cannot resolve is a tool error — never a silent literal, which is the one
+outcome indistinguishable from success. One expansion is capped at 4 MiB. The
+journal's `tool_call` event and the provider both keep the handle; the
+expansion exists only for the duration of the call.
+
+Code tools opt in through the decorator — see
+[Handle-typed parameters](extending.md#handle-typed-parameters).
 
 The point is that nothing is thrown away. Before, an oversized result was cut
 to its leading characters and the model was told the rest was in the trace —
@@ -259,6 +314,58 @@ A tool that truncates *its own* output before returning (`http_get` caps the
 response body) is outside this mechanism — the runtime can only preserve what
 the tool hands it.
 
+## Notes
+
+`notes` is opt-in scratch storage for the executor — the write side of the same
+boundary spilled results live behind. Everything a model concludes otherwise
+lives in the conversation, and the conversation is the one thing compaction is
+allowed to throw away.
+
+```yaml
+tools:
+  - builtin: notes
+    max_notes: 32         # notes held at once (hard cap 256)
+    max_note_bytes: 0     # largest note; 0 = context.tool_results.max_inline_bytes
+```
+
+The model calls it with `action: write | read | delete` and a `name`
+(`^[a-z0-9][a-z0-9_-]{0,63}$`), plus `content` on a write or `offset`/`limit`
+on a read. Writing an existing name replaces that note.
+
+What the conversation carries is not the note but the **index** of notes,
+rendered into the system prompt in a stable order:
+
+```
+# Notes
+Your own notes for this run. They are not part of the conversation, so they
+survive when older turns are compacted away. …
+- findings (412 bytes): the invoice total disagrees with the line items
+- plan (96 bytes): 1. reconcile totals  2. flag the mismatch
+```
+
+So a note survives compaction by construction — it was never a message — and
+costs one line per note rather than a body. An empty store renders no section.
+
+The same rules as spilled results, for the same reasons:
+
+- notes live under the run's own directory beside the spill objects (0600 files
+  in a 0700 directory), inside the trace directory `file_read`/`file_write`
+  refuse and confinement masks from spawned processes;
+- **a name is not a capability**: resolution goes through a per-run map, and a
+  fork re-authorizes from the hash-bound `notes_manifest` in `fork.yaml`, which
+  `hiveloom fork` replays from the parent's *verified* journal — a note written
+  and then deleted is not a note the fork inherits;
+- `logging.redact` is applied **before** the write;
+- every write and delete is journaled (`note_written`, `note_deleted`), so
+  `trace --verify` and `fork` see the store the model saw;
+- counts and sizes are bounded by the spec, and a write past either limit is a
+  tool error naming the limit rather than a silent drop. A read is ranged like
+  `read_tool_result`, so reading a note back cannot exceed the inline budget.
+
+Notes are **run-scoped**: they are discarded with the run, and nothing in them
+reaches the harness, the Hive or another run. Durable lessons belong in
+[`memory`](#memory), which is spec state and goes through proposals.
+
 ## Recalling prior runs
 
 `recall_runs` is opt-in memory: declare it and the executor can look up **this
@@ -296,6 +403,83 @@ Three properties bound it:
 
 Recall reads the same Hive the run will be ingested into. A harness with no
 history yet gets a plain "nothing recorded" answer rather than an error.
+
+## Memory
+
+`recall_runs` above is *lookup*: the executor asks about earlier runs while it
+works. `memory` is the layer above it — what the harness has already concluded,
+carried into every run without anyone asking:
+
+```yaml
+memory:
+  enabled: true              # frozen from evolution
+  max_entries: 24            # frozen; hard cap 200
+  max_entry_chars: 600       # frozen; hard cap 4000
+  prompt_budget_chars: 6000  # frozen; hard cap 40000
+  entries:                   # evolvable
+    - id: iso-dates
+      kind: rule             # fact | rule | example
+      title: Dates in ISO 8601
+      content: Emit dates as YYYY-MM-DD; the validators reject locale formats.
+      source: prop_2f1c9a
+      evidence: 3 runs rejected by the date_format validator
+      created_at: 2026-09-21T18:00:00+00:00
+```
+
+Entries render as a `# Memory` section of the system prompt, after the skills
+index and before the tool guidelines, one bullet per entry in declaration
+order:
+
+```
+# Memory
+Lessons from earlier runs of this harness. Treat them as standing constraints
+on how you work, not as the current task.
+- [rule] Dates in ISO 8601: Emit dates as YYYY-MM-DD; the validators reject locale formats.
+```
+
+What keeps it from becoming drift:
+
+- **The executor never writes it.** There is no tool that edits `memory`. An
+  entry reaches `harness.yaml` only through `hiveloom memory add` (validated
+  and rolled back like every construction command) or through an applied
+  evolution proposal — gate, full re-validation, `# evolved: N`, rollback.
+- **The budgets are frozen from evolution** and hard-capped in the schema. A
+  harness can add a lesson; it can never raise the ceiling on how many lessons
+  there are, how long one may be, or how much prompt they occupy — nor set
+  `enabled: false` to hide what it already wrote. `memory.entries` is the only
+  path under `memory` the gate will ever accept. *Frozen from evolution* is not
+  frozen from you: `hiveloom set memory.max_entries 10` is the sanctioned
+  builder-side path, as for every other frozen field.
+- **Bounded, not truncated.** Too many entries, an over-long one, or a rendered
+  section above `prompt_budget_chars` is a validation error at write time (exit
+  3, nothing written), never a silent eviction at run time. Which lesson to drop
+  is a review decision.
+- **A memory change is a behavior change.** Entries live in `harness.yaml`
+  rather than a side file, so they move the spec version hash and land in their
+  own fitness bucket — the effect of a lesson is measurable like any other
+  mutation. A harness with an all-default `memory` section keeps its exact
+  previous YAML and hash.
+- **What the model saw is journalled.** The section is part of the assembled
+  system prompt, so it appears in the `context_system` event and `trace
+  --verify` and `fork` reproduce it.
+- `evidence` is for whoever reviews the entry; it is not rendered into the
+  prompt. Whitespace in `content` is collapsed on render, so one entry is always
+  one line.
+
+Operator commands (all with `--json`, exit 3 on a spec error):
+
+```bash
+hiveloom memory list ./harness                       # entries + budget usage
+hiveloom memory show ./harness iso-dates             # one lesson, with evidence
+hiveloom memory add ./harness --kind rule \
+  --title "Dates in ISO 8601" \
+  --content "Emit dates as YYYY-MM-DD." \
+  --evidence "3 runs rejected by date_format"        # id is slugged from --title
+hiveloom memory forget ./harness iso-dates
+```
+
+Set `enabled: false` to keep the entries in the spec while showing the executor
+none of them — that is how to measure whether memory is earning its tokens.
 
 ## Process confinement
 
@@ -601,7 +785,8 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
    `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-   `evolution.trace_excerpts`, or `evolution.objectives` — nor any
+   `evolution.trace_excerpts`, `evolution.objectives`, or the `memory` budgets
+   (`enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`) — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
    never side-effecting code.

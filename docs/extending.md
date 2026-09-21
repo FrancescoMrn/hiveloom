@@ -269,6 +269,30 @@ progress as `tool_update` trace events, and `ToolResult(terminate=True)` to
 end the run without a final model call (honored when every result in the batch
 terminates).
 
+### Handle-typed parameters
+
+A large tool result is stored whole and reaches the model as a preview plus a
+handle (see [Large tool results](spec.md#large-tool-results)). A tool that
+consumes such a result should not make the model retype it. Name the string
+parameters that may be given a handle instead of a literal:
+
+```python
+from hiveloom.tools import tool
+
+
+@tool(description="Index a document for retrieval.", handles=["text"])
+def index_document(text: str, label: str = "") -> str:
+    return f"indexed {len(text)} characters as {label}"
+```
+
+At dispatch the runtime replaces a value matching the handle pattern *in full*
+with the stored object's text, resolved under the run's authority; anything
+else is passed through unchanged. An unresolvable handle is a tool error rather
+than a literal, one expansion is capped at 4 MiB, and the journal and the
+provider both keep the handle — the tool sees the bytes, the transcript does
+not. A `Tool` subclass declares the same thing as `handle_params = ("text",)`;
+the builtin `file_write` declares `content` that way.
+
 ## Blueprints (generator house style)
 
 A blueprint is a markdown fragment appended to `hiveloom generate`'s

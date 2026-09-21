@@ -122,6 +122,9 @@ class ContextManager:
             provider=spec.model.provider,
         )
         self._system_prompt = spec.system_prompt
+        # Snapshotted once: the spec cannot change mid-run, and a section that
+        # is rebuilt per assembly would be a needless prompt-cache risk.
+        self._memory_section = spec.memory.render() if spec.memory.enabled else ""
         self.provider = provider
         self._trace = trace
         self._events = events
@@ -137,6 +140,7 @@ class ContextManager:
         self._compaction_model_call: Callable[[str, list[dict[str, Any]]], Any] | None = None
         self._plan: str | None = None
         self._playbooks: Any = None
+        self._notes_index: Callable[[], str | None] | None = None
         self.messages: list[dict[str, Any]] = []
         self._history_count = 0
 
@@ -233,6 +237,16 @@ class ContextManager:
         """
         self._playbooks = manager
 
+    def set_notes_index(self, index: Callable[[], str | None]) -> None:
+        """Attach the run's note index (see :mod:`hiveloom.context.notes`).
+
+        A callable rather than a rendered string: notes are written during the
+        run, so what the model is told it has must be re-read on every
+        assembly. Returning None means the store is empty and no section is
+        rendered at all.
+        """
+        self._notes_index = index
+
     # ------------------------------------------------------------------ #
     # Assembly & budgeting
     # ------------------------------------------------------------------ #
@@ -263,6 +277,18 @@ class ContextManager:
                     self._skills, loader="load_skill" if has_load_skill else "file_read"
                 )
             )
+        # Durable lessons (spec `memory`), after the skills index and before the
+        # tool guidelines: standing constraints on how to work, in declaration
+        # order and identical on every turn, so the prefix stays cacheable.
+        if self._memory_section:
+            parts.append(self._memory_section)
+        # What this run has written down, listed by name in a stable order. The
+        # notes themselves stay out of context — this is the table of contents
+        # that tells the model what it can read back after compaction.
+        if self._notes_index is not None:
+            index = self._notes_index()
+            if index:
+                parts.append(index)
         if self._registry is not None:
             guidelines = self._registry.guidelines()
             if guidelines:

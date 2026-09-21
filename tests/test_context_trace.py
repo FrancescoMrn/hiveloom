@@ -326,3 +326,53 @@ def _assert_tool_blocks_paired(messages: list) -> None:
                 seen.add(block["id"])
             elif block.get("type") == "tool_result":
                 assert block["tool_use_id"] in seen, f"orphaned tool_result: {block}"
+
+
+def _memory_spec(**memory) -> HarnessSpec:
+    return HarnessSpec.model_validate(
+        {"name": "t", "description": "d", "system_prompt": "sp", "memory": memory}
+    )
+
+
+def test_memory_section_renders_between_the_skills_index_and_tool_guidelines():
+    """Section order is the prompt's cache prefix: it must not depend on what
+    a given run happens to carry."""
+    from hiveloom.skills import Skill
+
+    spec = _memory_spec(
+        entries=[
+            {"id": "iso-dates", "kind": "rule", "title": "Dates", "content": "Emit YYYY-MM-DD."}
+        ]
+    )
+    cm = ContextManager(
+        spec,
+        FakeModelProvider([]),
+        skills=[
+            Skill(name="research", description="How to research", path="skills/r/SKILL.md")
+        ],
+    )
+
+    system = cm.system()
+
+    assert system.index("research") < system.index("# Memory")
+    assert cm.system() == system  # stable across assemblies
+
+
+def test_memory_counts_toward_the_input_token_estimate():
+    """A prompt prefix paid for on every call has to be visible to the budget."""
+    empty = ContextManager(_memory_spec(), FakeModelProvider([]))
+    filled = ContextManager(
+        _memory_spec(
+            entries=[
+                {
+                    "id": "iso-dates",
+                    "kind": "rule",
+                    "title": "Dates in ISO 8601",
+                    "content": "Emit dates as YYYY-MM-DD, never a locale format.",
+                }
+            ]
+        ),
+        FakeModelProvider([]),
+    )
+
+    assert filled.estimated_input_tokens() > empty.estimated_input_tokens()

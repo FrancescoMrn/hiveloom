@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
@@ -584,6 +585,203 @@ class ContextConfig(BaseModel):
     )
 
 
+# Hard ceilings on the memory budgets. The configured value is what a harness
+# uses; these are the limits an operator cannot raise, so "durable memory" can
+# never become an unbounded prompt prefix paid for on every model call.
+MEMORY_MAX_ENTRIES_CAP = 200
+MEMORY_MAX_ENTRY_CHARS_CAP = 4_000
+MEMORY_PROMPT_BUDGET_CAP = 40_000
+
+
+class MemoryEntry(BaseModel):
+    """One durable lesson this harness carries into every run.
+
+    Entries are learned state, not configuration: they come from an operator
+    (``hiveloom memory add``) or from a reviewed evolution proposal, and they
+    are rendered verbatim into the system prompt. Keeping them in
+    ``harness.yaml`` is deliberate — a memory change is a behavior change, so
+    it moves the spec version hash and lands in its own fitness bucket like any
+    other mutation, instead of silently changing what a measured harness does.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9-]{0,63}$",
+        description=(
+            "Stable slug identifying this lesson (a-z, 0-9, dashes). Unique "
+            "within the harness: it is what `hiveloom memory forget` and a "
+            "replacing proposal address."
+        ),
+    )
+    kind: Literal["fact", "rule", "example"] = Field(
+        description=(
+            "What the entry is: a 'fact' about the domain or the data, a 'rule' "
+            "the work must obey, or an 'example' of the expected shape. Shown to "
+            "the model so it can tell a constraint from background."
+        ),
+    )
+    title: str = Field(
+        min_length=1,
+        max_length=200,
+        description="Short label for the lesson; what an operator scans in `memory list`.",
+    )
+    content: str = Field(
+        min_length=1,
+        max_length=MEMORY_MAX_ENTRY_CHARS_CAP,
+        description=(
+            "The lesson itself, in the imperative. Bounded by "
+            "memory.max_entry_chars; whitespace is collapsed when rendered, so "
+            "one entry is always one line of prompt."
+        ),
+    )
+    source: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Free-text provenance: a proposal id, 'operator', or a run id. "
+            "Review evidence, never authority — nothing is trusted because of it."
+        ),
+    )
+    evidence: str | None = Field(
+        default=None,
+        max_length=1_000,
+        description=(
+            "Why this was learned (failing runs, a validator verdict). Kept out "
+            "of the prompt: it justifies the entry to a reviewer, it is not "
+            "something the executor needs to re-read every run."
+        ),
+    )
+    created_at: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp recording when the entry was added.",
+    )
+
+    @field_validator("title", "content")
+    @classmethod
+    def _not_blank(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"memory entry {info.field_name} must not be blank")
+        return value
+
+    @field_validator("created_at")
+    @classmethod
+    def _iso_timestamp(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            raise ValueError(
+                f"memory entry created_at must be an ISO 8601 timestamp (got {value!r})"
+            ) from None
+        return value
+
+
+class MemoryConfig(BaseModel):
+    """Durable, bounded lessons rendered into the system prompt every run.
+
+    The layer above context (what the model sees this run) and run-scoped
+    storage (what survives compaction): what the harness has learned *across*
+    runs. The executor never writes here — entries reach ``harness.yaml`` only
+    through the operator CLI or the gated proposals queue — and every budget
+    below is frozen from evolution, so a harness can never grow its own prompt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Render the memory section into the system prompt. Off keeps the "
+            "entries in the spec but shows the executor none of them, which is "
+            "how to measure whether memory helps. Frozen from evolution."
+        ),
+    )
+    max_entries: int = Field(
+        default=24,
+        ge=0,
+        le=MEMORY_MAX_ENTRIES_CAP,
+        description=(
+            "How many entries this harness may hold. A full store is a "
+            "validation error, never a silent eviction: which lesson to drop is "
+            "a review decision, not a runtime surprise. Frozen from evolution."
+        ),
+    )
+    max_entry_chars: int = Field(
+        default=600,
+        ge=1,
+        le=MEMORY_MAX_ENTRY_CHARS_CAP,
+        description=(
+            "Longest a single entry's content may be, so one lesson cannot "
+            "spend the whole prompt budget. Frozen from evolution."
+        ),
+    )
+    prompt_budget_chars: int = Field(
+        default=6_000,
+        ge=1,
+        le=MEMORY_PROMPT_BUDGET_CAP,
+        description=(
+            "Ceiling on the rendered '# Memory' section, checked when the spec "
+            "is validated so a run can never discover that its prompt grew. "
+            "Frozen from evolution."
+        ),
+    )
+    entries: list[MemoryEntry] = Field(
+        default_factory=list,
+        description=(
+            "The lessons themselves, in declaration order — which is also render "
+            "order, so the prompt prefix stays cacheable across runs. The one "
+            "part of this section evolution may change, by appending an entry at "
+            "memory.entries.<len> or replacing one by index."
+        ),
+    )
+
+    def render(self) -> str:
+        """The ``# Memory`` system-prompt section, or ``""`` when there is none.
+
+        One renderer for the prompt and for the budget check below, so what is
+        validated is exactly what the model is shown.
+        """
+        if not self.entries:
+            return ""
+        lines = [
+            "# Memory",
+            "Lessons from earlier runs of this harness. Treat them as standing "
+            "constraints on how you work, not as the current task.",
+        ]
+        lines.extend(
+            f"- [{entry.kind}] {entry.title}: {' '.join(entry.content.split())}"
+            for entry in self.entries
+        )
+        return "\n".join(lines)
+
+    @model_validator(mode="after")
+    def _check_entries(self) -> MemoryConfig:
+        seen: set[str] = set()
+        for entry in self.entries:
+            if entry.id in seen:
+                raise ValueError(f"duplicate memory entry id '{entry.id}'")
+            seen.add(entry.id)
+            if len(entry.content) > self.max_entry_chars:
+                raise ValueError(
+                    f"memory entry '{entry.id}' content is {len(entry.content)} "
+                    f"characters; memory.max_entry_chars is {self.max_entry_chars}"
+                )
+        if len(self.entries) > self.max_entries:
+            raise ValueError(
+                f"memory holds {len(self.entries)} entries; memory.max_entries is "
+                f"{self.max_entries}. Forget one before adding another."
+            )
+        rendered = len(self.render())
+        if rendered > self.prompt_budget_chars:
+            raise ValueError(
+                f"the rendered memory section is {rendered} characters; "
+                f"memory.prompt_budget_chars is {self.prompt_budget_chars}"
+            )
+        return self
+
+
 class SequentialStep(BaseModel):
     """One enforceable phase in the builtin sequential-steps policy."""
 
@@ -1143,6 +1341,10 @@ def _default_mutable() -> list[str]:
         "loop.policy",
         "context.strategy",
         "tools",
+        # Durable lessons are the cheapest useful mutation there is: appending
+        # one changes what the model is told without touching a capability, and
+        # the budgets around it stay frozen (see ALWAYS_FROZEN below).
+        "memory.entries",
     ]
 
 
@@ -1355,6 +1557,12 @@ class EvolutionConfig(BaseModel):
 # rewrite it would detach a harness from its own accumulated evidence.
 # `confinement` bounds what a spawned process may do; a harness that could
 # widen its own containment does not have one.
+# The `memory` budgets are the same shape of promise one level down: evolution
+# may append a lesson (`memory.entries`, in the default mutable set), but it
+# can never raise the ceiling on how many lessons there are, how long one may
+# be, or how much prompt they may occupy — nor switch the section off to hide
+# what it already wrote. Writing the `memory` mapping itself is an ancestor of
+# all four and is refused by `touches_frozen` for that reason.
 ALWAYS_FROZEN: tuple[str, ...] = (
     "id",
     "guardrails",
@@ -1368,6 +1576,10 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "evolution.objectives",
     "confinement",
     "egress",
+    "memory.enabled",
+    "memory.max_entries",
+    "memory.max_entry_chars",
+    "memory.prompt_budget_chars",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They
@@ -1467,6 +1679,15 @@ class HarnessSpec(BaseModel):
     )
     context: ContextConfig = Field(
         default_factory=ContextConfig, description="Context management policy."
+    )
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig,
+        description=(
+            "Durable lessons carried across runs and rendered into the system "
+            "prompt. Budgets are frozen from evolution; `memory.entries` is "
+            "evolvable and is written only by `hiveloom memory` or an applied "
+            "proposal, never by the executor."
+        ),
     )
     guardrails: list[GuardrailRef] = Field(
         default_factory=list, description="Guardrails (frozen from evolution by design)."

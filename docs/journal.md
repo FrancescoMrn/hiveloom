@@ -183,9 +183,34 @@ records the handle, the total size, and how many bytes the model did not see —
 so a trace shows both what the tool produced and what the run actually reasoned
 over. Redaction is applied to spill objects exactly as it is to the journal.
 
+`transform_result` can create a further object *inside* a tool call — the
+narrowed result of an op that was itself too large to inline. Those are
+journaled as `tool_spilled` too, with `name: transform_result` plus
+`derived_from` and `op`, so the fork path (which reads minted handles off the
+verified journal) treats a derived object exactly as it treats a spilled one.
+
 `hiveloom fork` copies the objects a fork's context still quotes into the
 fork's own trace directory, so a resumed fork can read them back rather than
-inheriting previews it can never expand.
+inheriting previews it can never expand. `spill_inherited` records what the
+resumed run was granted.
+
+### Notes
+
+A harness that declares the `notes` tool gives the executor a small run-private
+store (see [Notes](spec.md#notes)). Every change to it is an event:
+
+| Event | Records |
+|---|---|
+| `note_written` | `{name, bytes, sha256, replaced, content}` |
+| `note_deleted` | `{name}` |
+| `notes_inherited` | the names a resumed fork was granted |
+
+The content is in the event, so `hiveloom trace` shows what the model wrote
+down, and the fold reconstructs the store rather than guessing at it: `hiveloom
+fork` replays `note_written`/`note_deleted` up to the fork point, copies the
+notes still held, and writes them into `fork.yaml` as a hash-bound
+`notes_manifest`. A note written and then deleted is not a note the fork
+inherits, and a name mentioned in the transcript grants nothing.
 
 ## Forking a run
 
