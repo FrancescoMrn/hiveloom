@@ -206,6 +206,28 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
             ),
         ],
     ),
+    CatalogEntry(
+        name="propose_memory",
+        description=(
+            "Offer a durable lesson for this harness to remember across runs. "
+            "It is queued as an evolution proposal for human review — the "
+            "executor never writes the spec. Opt-in, and bounded per run."
+        ),
+        tags=["write", "memory"],
+        params=[
+            ParamSpec(
+                name="max_per_run",
+                type="int",
+                required=False,
+                default=3,
+                description=(
+                    "Proposals one run may add to the review queue (hard-capped "
+                    "at 10). A run with more lessons than this has usually found "
+                    "one and restated it; a human reads every row either way."
+                ),
+            ),
+        ],
+    ),
 )
 
 

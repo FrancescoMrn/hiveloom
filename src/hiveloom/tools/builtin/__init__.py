@@ -15,11 +15,15 @@ import ipaddress
 import shlex
 import socket
 import threading
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import urlsplit
+
+from pydantic import ValidationError
 
 from hiveloom import ext
 from hiveloom.catalog import BUILTIN_TOOLS, EXTRA_ARGS_SAFE_BINARIES, parse_shell_rule
@@ -33,7 +37,13 @@ from hiveloom.confine import (
 from hiveloom.context.notes import DEFAULT_MAX_NOTES, NotesTool
 from hiveloom.package import is_sensitive_path
 from hiveloom.private import RunBoundary, env_files, is_private
-from hiveloom.spec.schema import BuiltinToolRef, ConfinementConfig
+from hiveloom.spec.schema import (
+    BuiltinToolRef,
+    ConfinementConfig,
+    HarnessSpec,
+    MemoryConfig,
+    MemoryEntry,
+)
 from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 
 _MAX_HTTP_BYTES = 200_000
@@ -42,6 +52,14 @@ _MAX_HTTP_BYTES = 200_000
 #: context, so the spec's `limit` is itself capped and each field is clipped.
 _RECALL_MAX_LIMIT = 10
 _RECALL_FIELD_CHARS = 1200
+
+#: The one tool through which the executor may reach durable memory — and only
+#: as a queued suggestion. Named here because the agent loop binds it.
+PROPOSE_MEMORY_TOOL = "propose_memory"
+_PROPOSE_MEMORY_PER_RUN_DEFAULT = 3
+#: Ceiling on `max_per_run`. Every queued row costs a human a review decision,
+#: so the spec's own limit is itself capped, like `recall_runs`'s.
+_PROPOSE_MEMORY_MAX_PER_RUN = 10
 
 # One lock per resolved target path (never dropped: paths per process are few
 # and bounded by the working directory's file count).
@@ -748,6 +766,324 @@ def _clip(text: str, limit: int) -> str:
     return f"{text[:limit]}… [+{len(text) - limit} chars]"
 
 
+class ProposeMemoryTool(Tool):
+    """Let the executor offer a durable lesson — to a review queue, never to the spec.
+
+    ``recall_runs`` reads history and ``memory`` renders what the harness has
+    already concluded; this is the one path by which the *model* can suggest a
+    new conclusion. It writes nothing: the lesson becomes an ordinary queued
+    evolution proposal appending to ``memory.entries``, and reaches
+    ``harness.yaml`` only if an operator later runs ``proposals apply``, which
+    re-gates, re-validates, and rolls back like every other mutation.
+
+    What keeps handing this to a small model safe:
+
+    * **No spec write, ever.** The executor's most privileged action here is an
+      `INSERT` into a review queue.
+    * **Own harness only.** Identity, version and Hive path come from the run
+      context, never from tool input, exactly as ``recall_runs`` does.
+    * **Already redacted.** ``logging.redact`` is applied to the entry before
+      it is queued or journaled, so a lesson cannot carry a secret out of a run
+      and into the system prompt of every run that follows.
+    * **Bounded.** ``max_per_run`` caps queue pressure from one run, and the
+      spec's memory budgets are validated before anything is queued.
+
+    A harness with memory turned off, an unreachable Hive, a run that has spent
+    its cap, or a lesson already pending gets a plain explanatory result rather
+    than a tool error: proposing is an aside, never something the run has to
+    recover from.
+    """
+
+    tags = ["write", "memory"]
+    wants_run_context = True
+
+    def __init__(self, *, max_per_run: int = _PROPOSE_MEMORY_PER_RUN_DEFAULT):
+        entry = BUILTIN_TOOLS[PROPOSE_MEMORY_TOOL]
+        self.name = PROPOSE_MEMORY_TOOL
+        self.description = entry.description
+        self.tags = list(entry.tags)
+        self.max_per_run = max(1, min(int(max_per_run), _PROPOSE_MEMORY_MAX_PER_RUN))
+        self.guidelines = (
+            f"Use {PROPOSE_MEMORY_TOOL} only for a lesson that will be true of "
+            "every future run of this harness — a constraint you had to "
+            "discover, a shape the verifier insists on. It does not change "
+            "anything now: it queues a suggestion a human reviews later, so it "
+            "is never a substitute for doing the current task correctly. At "
+            f"most {self.max_per_run} per run."
+        )
+        self._spec: HarnessSpec | None = None
+        self._redact: Callable[[str], str] | None = None
+        self._journal: Callable[..., Any] | None = None
+        self._run_id = ""
+        self._queued: set[str] = set()
+        # The cap is a check-then-act on a set two parallel tool calls in one
+        # turn share (`loop.tool_execution`), so the check, the slot it claims
+        # and the run-id reset that empties it are taken under this lock.
+        self._lock = threading.Lock()
+        self._reserved = 0
+        self.input_schema = {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["fact", "rule", "example"],
+                    "description": (
+                        "'fact' for something true of the domain or the data, "
+                        "'rule' for something every run must obey, 'example' "
+                        "for the shape the work is expected to take."
+                    ),
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short label for the lesson, for whoever reviews it.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "The lesson itself, in the imperative, standing on its "
+                        "own without this run's context."
+                    ),
+                },
+                "evidence": {
+                    "type": "string",
+                    "description": (
+                        "What happened in this run that taught you this. Shown "
+                        "to the reviewer; never rendered into a later prompt."
+                    ),
+                },
+            },
+            "required": ["kind", "title", "content"],
+        }
+
+    def bind(
+        self,
+        spec: HarnessSpec,
+        *,
+        redact: Callable[[str], str],
+        journal: Callable[..., Any],
+    ) -> None:
+        """Hand the tool the running spec, the run's redaction, and its journal.
+
+        Bound by the agent loop for the same reason the notes store is: the
+        loop is what knows which spec is executing, which patterns this run
+        redacts, and where its journal is. Unbound (``run --dry-run``, an SDK
+        caller with no run) the tool fails as a tool error rather than
+        inventing a harness to propose against.
+        """
+        self._spec = spec
+        self._redact = redact
+        self._journal = journal
+
+    def run(
+        self,
+        kind: str = "",
+        title: str = "",
+        content: str = "",
+        evidence: str = "",
+        run_context: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> str:
+        if self._spec is None:
+            raise ToolError(f"{self.name} is not available in this context")
+        context = run_context or {}
+        run_id = str(context.get("run_id") or "")
+        with self._lock:
+            if run_id != self._run_id:
+                # The registry builds one tool per run, but the cap is a
+                # statement about a run, so it is keyed on the run id rather
+                # than on the object's lifetime.
+                self._run_id = run_id
+                self._queued = set()
+                self._reserved = 0
+
+        memory = self._spec.memory
+        entry = self._entry(kind, title, content, evidence, memory, run_id)
+
+        if not memory.enabled:
+            return self._record(
+                entry,
+                "memory_disabled",
+                "this harness has memory turned off, so the lesson was recorded "
+                "in the trace but not queued. Nothing else to do — carry on with "
+                "the task.",
+            )
+        caller = context.get("context")
+        eval_run_id = caller.get("eval_run_id") if isinstance(caller, dict) else None
+        if eval_run_id:
+            return self._record(
+                entry,
+                "eval_run",
+                f"this run is part of eval batch {eval_run_id}, so the lesson was "
+                "recorded in the trace but not queued: a batch would fill the "
+                "review queue with one lesson per case.",
+            )
+        with self._lock:
+            # Reserve the slot here, before the insert that will fill it: two
+            # calls in flight at once must not both read the same free slot
+            # and both queue against it.
+            spent = len(self._queued) + self._reserved
+            if spent < self.max_per_run:
+                self._reserved += 1
+        if spent >= self.max_per_run:
+            return self._record(
+                entry,
+                "cap_reached",
+                f"this run has already queued {spent} lessons, its "
+                f"limit of {self.max_per_run}. The lesson was recorded in the "
+                "trace but not queued.",
+            )
+        try:
+            known = {" ".join(e.content.split()).casefold() for e in memory.entries}
+            if " ".join(entry.content.split()).casefold() in known:
+                return self._record(
+                    entry,
+                    "already_known",
+                    "this harness already remembers that lesson — it is in the "
+                    "memory section of your system prompt. Nothing was queued.",
+                )
+            return self._queue(entry, context, run_id)
+        finally:
+            # A call that did not queue gives its slot back; one that did has
+            # left its proposal id in ``_queued``, which is what the cap counts.
+            with self._lock:
+                self._reserved -= 1
+
+    # -- internals --------------------------------------------------------- #
+    def _entry(
+        self,
+        kind: str,
+        title: str,
+        content: str,
+        evidence: str,
+        memory: MemoryConfig,
+        run_id: str,
+    ) -> MemoryEntry:
+        """Validate and redact one proposed lesson into a ``MemoryEntry``.
+
+        Redaction runs *before* validation so what is measured against the
+        budgets is what would actually be stored — a pattern that expands when
+        it is replaced must not slip past ``max_entry_chars``.
+        """
+        redact = self._redact or (lambda value: value)
+        kind = (kind or "").strip().lower()
+        title = redact((title or "").strip())
+        content = redact((content or "").strip())
+        evidence = redact((evidence or "").strip())
+        if kind not in ("fact", "rule", "example"):
+            raise ToolError(f"kind must be 'fact', 'rule' or 'example' (got {kind!r})")
+        if not title or not content:
+            raise ToolError("a proposed lesson needs a non-empty title and content")
+        if len(content) > memory.max_entry_chars:
+            raise ToolError(
+                f"the lesson is {len(content)} characters; this harness allows "
+                f"{memory.max_entry_chars}. State it more briefly."
+            )
+        try:
+            return MemoryEntry(
+                id=self._entry_id(title, content, memory),
+                kind=kind,
+                title=title,
+                content=content,
+                source=f"executor:{run_id}" if run_id else "executor",
+                evidence=evidence or None,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+        except ValidationError as exc:
+            raise ToolError(f"the proposed lesson is not a valid memory entry: {exc}") from exc
+
+    def _entry_id(self, title: str, content: str, memory: MemoryConfig) -> str:
+        """A slug from the title, disambiguated against what is already stored.
+
+        A collision is a near-duplicate, not the same lesson (identical content
+        is caught before this), so it gets its own id rather than silently
+        replacing an entry a reviewer already accepted.
+        """
+        from hiveloom.construct import memory_slug
+        from hiveloom.errors import SpecError
+
+        try:
+            slug = memory_slug(title)
+        except SpecError as exc:
+            raise ToolError(f"{exc} Give the lesson a title with letters or digits.") from exc
+        if slug not in {entry.id for entry in memory.entries}:
+            return slug
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:6]
+        return f"{slug[:57].rstrip('-')}-{digest}"
+
+    def _queue(self, entry: MemoryEntry, context: dict[str, Any], run_id: str) -> str:
+        from hiveloom.errors import ProposalQueueError
+        from hiveloom.evolve.proposals import create_memory_proposal
+        from hiveloom.logging.hive import Hive  # local import: sqlite only when used
+
+        try:
+            with Hive(context.get("hive_path")) as hive:
+                record = create_memory_proposal(
+                    hive,
+                    self._spec,
+                    str(context.get("harness_dir") or ""),
+                    entry,
+                    run_id=run_id,
+                )
+        except ProposalQueueError as exc:
+            return self._record(entry, "refused", f"the lesson was not queued: {exc}")
+        except Exception as exc:  # noqa: BLE001 - proposing is an aside, not a dependency
+            return self._record(
+                entry,
+                "queue_unavailable",
+                f"the review queue is unavailable, so the lesson was recorded in "
+                f"the trace but not queued ({exc}).",
+            )
+        # The queue dedups on the lesson's content, so what comes back may be a
+        # row this run — or an earlier one — already filed. The receipt names
+        # the run that filed it, which is the honest way to tell the model
+        # whether it just added something or found its own suggestion waiting.
+        with self._lock:
+            duplicate = (
+                record.id in self._queued
+                or (record.evidence or {}).get("run_id") != run_id
+            )
+            self._queued.add(record.id)
+        if duplicate:
+            return self._record(
+                entry,
+                "already_pending",
+                f"an identical lesson is already queued as proposal {record.id}, "
+                "awaiting review. Nothing new was queued.",
+                proposal_id=record.id,
+            )
+        return self._record(
+            entry,
+            "queued",
+            f"queued as proposal {record.id} for review as memory entry "
+            f"'{entry.id}'. It changes nothing in this run: finish the task on "
+            "what you know now.",
+            proposal_id=record.id,
+        )
+
+    def _record(
+        self, entry: MemoryEntry, outcome: str, message: str, proposal_id: str = ""
+    ) -> str:
+        """Journal what was proposed and what became of it, then answer the model.
+
+        One event carrying the outcome rather than an event per stage: the
+        record a fold or a reviewer wants is "the model proposed this, and it
+        was/wasn't queued", and an eval run — which never queues — must still
+        leave the first half of that behind.
+        """
+        if self._journal is not None:
+            self._journal(
+                "memory_proposed",
+                id=entry.id,
+                kind=entry.kind,
+                title=entry.title,
+                content=entry.content,
+                evidence=entry.evidence or "",
+                outcome=outcome,
+                proposal_id=proposal_id,
+            )
+        return message
+
+
 def make_builtin_tool(
     ref: BuiltinToolRef,
     base: Path,
@@ -834,6 +1170,16 @@ def _register_factories() -> None:
             limit=p.get("limit", 3),
             include_output=p.get("include_output", True),
             scope=p.get("scope", "harness"),
+        ),
+    )
+    ext.register_builtin_factory(
+        "tools",
+        PROPOSE_MEMORY_TOOL,
+        # Built from its spec-time cap and bound by the agent loop to the
+        # running spec, this run's redaction and its journal — the arrangement
+        # `notes` uses, for the same reason: the loop owns all three.
+        lambda p, _ctx: ProposeMemoryTool(
+            max_per_run=p.get("max_per_run", _PROPOSE_MEMORY_PER_RUN_DEFAULT),
         ),
     )
 

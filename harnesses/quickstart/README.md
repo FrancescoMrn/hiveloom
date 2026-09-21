@@ -29,6 +29,8 @@ hiveloom trace <run_id>       # the ordered journal for one run
 - `../example-summarizer` adds tools and verification.
 - `../article-extractor` adds a custom tool written in Python.
 - `../routing-lab` adds playbooks, per-playbook models, and forking.
+- `../memory-lab` adds run-scoped notes, in-place transforms of spilled
+  results, and durable memory entries.
 
 ## Changing it
 

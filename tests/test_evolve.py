@@ -465,7 +465,75 @@ def test_a_memory_index_past_the_end_is_a_clear_error(tmp_path: Path):
 
     assert not result.accepted
     assert "out of range" in result.rejected[0]["reason"]
-    assert "0 would append" in result.rejected[0]["reason"]
+    assert "'+' appends" in result.rejected[0]["reason"]
+
+
+def test_a_negative_memory_index_is_rejected_at_the_gate(tmp_path: Path):
+    """`-1` names a different entry after every append, so it never describes
+    the change a reviewer read. Append is spelled `+`."""
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+    before = (harness / "harness.yaml").read_text()
+    spec = load_spec(harness)
+
+    result = gate(
+        spec, MutationProposal(yaml_changes=[{"path": "memory.entries.-1", "value": {"id": "x"}}])
+    )
+
+    assert not result.accepted
+    assert "negative" in result.rejected[0]["reason"]
+    assert "'+' to append" in result.rejected[0]["reason"]
+    assert (harness / "harness.yaml").read_text() == before
+
+
+def test_the_append_segment_adds_an_entry_without_replacing_one(tmp_path: Path):
+    """`memory.entries.+` resolves against the list on disk, so two appends in
+    a row add two entries — where two identical numeric indices would have
+    replaced the first."""
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    def _append(entry_id: str) -> None:
+        apply_proposal(
+            harness,
+            MutationProposal(
+                yaml_changes=[
+                    {
+                        "path": "memory.entries.+",
+                        "value": {
+                            "id": entry_id,
+                            "kind": "rule",
+                            "title": entry_id,
+                            "content": f"Remember {entry_id}.",
+                        },
+                    }
+                ]
+            ),
+            apply_yaml=True,
+        )
+
+    _append("iso-dates")
+    _append("trim-whitespace")
+
+    assert [entry.id for entry in load_spec(harness).memory.entries] == [
+        "nulls",
+        "iso-dates",
+        "trim-whitespace",
+    ]
+
+
+def test_the_append_segment_is_only_valid_as_the_last_segment(tmp_path: Path):
+    """`+` means "add one"; there is nothing to traverse into."""
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    result = gate(
+        load_spec(harness),
+        MutationProposal(yaml_changes=[{"path": "memory.entries.+.content", "value": "x"}]),
+    )
+
+    assert not result.accepted
+    assert "only valid as the last segment" in result.rejected[0]["reason"]
 
 
 def test_evolve_prompt_tells_the_proposer_where_memory_lives(tmp_path: Path):
@@ -476,7 +544,7 @@ def test_evolve_prompt_tells_the_proposer_where_memory_lives(tmp_path: Path):
 
     assert "memory.entries" in system
     assert "Durable memory: 1 entry of at most 24" in user
-    assert "`memory.entries.1`" in user
+    assert "`memory.entries.+`" in user
 
 
 def _spec_system_prompt(harness: Path) -> str:

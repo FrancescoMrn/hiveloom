@@ -26,7 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which may append or replace one entry at a time. `memory.enabled` and the
   entry/character/prompt budgets are frozen from evolution and hard-capped, and
   an over-budget entry is a validation error rather than a silent eviction.
-
+- The opt-in `propose_memory` builtin lets the executor offer a durable lesson
+  from inside a run. It writes nothing: the lesson is redacted, checked against
+  the harness's memory budgets, journaled as `memory_proposed`, and queued as a
+  gated `MutationProposal` with `trigger: executor` that `proposals
+  list|show|apply|reject` handle unchanged. Identity and Hive path come from the
+  run context, proposals dedup on the lesson's content, `max_per_run` bounds one
+  run, and runs launched by `hiveloom eval` record the lesson without queueing.
 - Run-scoped notes: the opt-in `notes` builtin lets the executor write, read
   and delete named notes that live outside the conversation and so survive
   compaction. Only their index (name, size, first line) enters the system
@@ -46,7 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expands the handle under the run's authority at dispatch, capped at 4 MiB,
   while the journal and the provider keep the handle. An unresolvable handle is
   a tool error, never a silent literal.
-
+- `harnesses/memory-lab`: an offline worked example that puts the three memory
+  layers on one task — a spilled log narrowed in place, findings kept in notes
+  across compaction and a fork, a derived object handed to `file_write` by
+  handle, a lesson the executor proposes, and a memory entry that reaches the
+  spec only through `proposals apply`. Its scripted provider parses every value
+  it reports out of a real tool result.
 - Experimental `best_of_n` loop policy on the ARC branch: collect multiple
   attempts and select a plurality answer. General-purpose release limitations
   are documented in `docs/evolution-migration.md`.
@@ -69,6 +80,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider parameters cannot replace harness-controlled identity, transcript,
   tools, output limits, streaming, or response count, and must be bounded JSON.
 - Code-hook validation no longer mistakes `**kwargs` for positional arguments.
+- Queued proposals survive review. `proposals apply` now leaves a proposal
+  `pending` when it applied nothing (YAML declined, no code change approved)
+  instead of marking it `applied` and refusing the retry as "already
+  applied"; `proposals apply --json` without `--yes` is a usage error (exit 3)
+  rather than a no-op that resolved the row. Memory proposals append with the
+  reserved path segment `memory.entries.+`, resolved when the proposal is
+  applied, so a queued lesson can no longer silently replace an entry added
+  since — and an append-only proposal may apply after the harness version
+  moved, so several lessons from one run all reach the spec. A negative list
+  index is refused with a clear message.
+- Memory-layer bookkeeping holds when a turn's tool calls run in parallel.
+  `notes` could hold more than `max_notes` and `propose_memory` could queue
+  more than `max_per_run`, because each read its limit before claiming the slot
+  it was about to fill; the check and the reservation are now one step under
+  one lock, and a note is staged and moved into place rather than unlinked and
+  recreated. `transform_result` no longer answers an oversized single-element
+  result — a `json_path` selection, a `concat` — with the truncation marker and
+  no data at all: the element is cut at the output ceiling, so the result still
+  becomes a derived object that can be narrowed again. `concat` reads under one
+  running byte budget across the objects it joins rather than up to the scan
+  ceiling for each.
 
 ## [1.1.0] - 2026-09-09
 

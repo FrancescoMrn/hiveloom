@@ -84,6 +84,10 @@ Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
   `http_get` (declare repeatable `hosts`; new hosts otherwise need an
   interactive operator decision and fail closed in agent/JSON runs).
   Add them with repeated `--host` flags; never hand-edit the tool entry.
+  Opt-in memory tools: `recall_runs` (this harness's own prior runs), `notes`
+  (run-scoped storage that survives compaction), `propose_memory` (queue a
+  durable lesson for review; it never writes the spec — curate entries with
+  `hiveloom memory list|show|add|forget`).
 - **Validators** (the reward signal — always add at least one):
   `output_schema --schema-file`, `regex_match --pattern`, `file_exists --path`,
   `command_succeeds --command`, `grounded_references --output-path

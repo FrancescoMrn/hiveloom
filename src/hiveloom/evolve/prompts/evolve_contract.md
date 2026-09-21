@@ -50,9 +50,10 @@ every model call of every run.
   "title": "<short label>", "content": "<the lesson, imperative>",
   "source": "<provenance>", "evidence": "<why it was learned>"}`. `id` must be
   unique. `evidence` is for the reviewer and is not shown to the executor.
-- Append one by writing the path `memory.entries.<current length>`; replace one
-  by writing its index. Never rewrite the whole `memory.entries` list: that
-  discards lessons a reviewer already accepted.
+- Append one by writing the path `memory.entries.+` — `+` means "append",
+  resolved when the proposal is applied, so it stays correct if another lesson
+  lands first. Replace one by writing its index. Never rewrite the whole
+  `memory.entries` list: that discards lessons a reviewer already accepted.
 - `memory.enabled`, `memory.max_entries`, `memory.max_entry_chars`, and
   `memory.prompt_budget_chars` are frozen. Proposing any of them — or rewriting
   the `memory` mapping around them — is rejected outright. A full store is not
@@ -117,7 +118,7 @@ Return **only** a JSON object (no prose, no fences):
   "yaml_changes": [
     {"path": "system_prompt", "value": "You are ...", "rationale": "..."},
     {"path": "loop.max_turns", "value": 30, "rationale": "..."},
-    {"path": "memory.entries.2", "value": {"id": "iso-dates", "kind": "rule",
+    {"path": "memory.entries.+", "value": {"id": "iso-dates", "kind": "rule",
      "title": "Dates in ISO 8601", "content": "Emit dates as YYYY-MM-DD.",
      "source": "evolve", "evidence": "4 runs failed date_format"},
      "rationale": "..."}

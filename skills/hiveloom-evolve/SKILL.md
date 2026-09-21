@@ -38,6 +38,14 @@ Diagnose the failed layer before proposing a change:
 - Instrumentation: objective metrics are missing or incomparable. Fix scorer
   coverage; missing observations are not zero.
 
+A recurring lesson belongs in durable memory rather than in a longer prompt:
+review it with `hiveloom memory list|show ./h`, curate with `memory
+add|forget`, and expect queued rows with `trigger: executor` when the harness
+declares the opt-in `propose_memory` tool — they are reviewed like any other
+proposal, and only `proposals apply <dir> <id> --yes --json` writes the spec
+(without `--yes` a `--json` apply exits 3 and leaves the row pending). Memory
+proposals append at `memory.entries.+`, so several from one run all apply.
+
 If a bounded Hive summary is not enough to explain a retry, opt in to
 `evolution.trace_excerpts.enabled` through `hiveloom set`. The selector uses
 indexed friction as an anchor, re-applies `logging.redact`, and enforces hard

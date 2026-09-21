@@ -90,6 +90,14 @@ def test_notes_is_a_catalog_tool_with_bounded_parameters():
     assert catalog.validate_builtin_params(entry, {"retention": "forever"})
 
 
+def test_propose_memory_is_a_catalog_tool_with_bounded_parameters():
+    entry = catalog.BUILTIN_TOOLS["propose_memory"]
+    assert {p.name for p in entry.params} == {"max_per_run"}
+    assert catalog.validate_builtin_params(entry, {"max_per_run": 2}) == []
+    assert catalog.validate_builtin_params(entry, {"max_per_run": "plenty"})
+    assert catalog.validate_builtin_params(entry, {"harness": "../other"})
+
+
 def test_the_runtime_tools_are_not_spellable_in_a_spec():
     # read/search/transform_result are runtime machinery the loop activates,
     # not builtins a harness declares.

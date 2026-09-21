@@ -45,6 +45,14 @@ from hiveloom.tools.registry import ToolError
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "evolve_contract.md"
 _COUNTER_RE = re.compile(r"^#\s*evolved:\s*(\d+)", re.MULTILINE)
 
+#: Final path segment meaning "append to this list", resolved at apply time.
+#: A numeric index is a position, and a position drafted at queue time goes
+#: stale the moment the list grows — the same index then silently *replaces*
+#: an entry. ``+`` says what was meant instead of where it happened to land.
+APPEND_SEGMENT = "+"
+#: The one append a proposal may carry that survives a spec version change.
+MEMORY_APPEND_PATH = f"memory.entries.{APPEND_SEGMENT}"
+
 
 class ProposalError(HiveloomError):
     """Raised when a mutation proposal is malformed."""
@@ -207,13 +215,13 @@ def build_evolve_prompt(spec: HarnessSpec, report: FailureReport) -> tuple[str, 
     safe_spec = yaml.safe_dump(redactor.redact(spec_to_dict(spec)), sort_keys=False)
     memory = spec.memory
     # The spec YAML omits an all-default memory section, so state the counters
-    # explicitly: a proposer cannot compute the append index from what it sees.
+    # explicitly: a proposer cannot see how full the store is from the YAML.
     memory_block = (
         f"Durable memory: {len(memory.entries)} entr"
         f"{'y' if len(memory.entries) == 1 else 'ies'} of at most "
         f"{memory.max_entries}, each up to {memory.max_entry_chars} characters. "
-        f"Append one at `memory.entries.{len(memory.entries)}`, or replace an "
-        "existing entry by its index.\n\n"
+        f"Append one at `{MEMORY_APPEND_PATH}`, or replace an existing entry "
+        "by its index.\n\n"
         if memory.enabled and "memory.entries" in spec.evolution.mutable
         else ""
     )
@@ -582,29 +590,48 @@ def read_counter(yaml_path: Path) -> int:
 
 def _is_index(segment: str) -> bool:
     """True if a dotted segment addresses a list entry rather than a mapping key."""
-    return segment.lstrip("-").isdigit()
+    return segment == APPEND_SEGMENT or segment.lstrip("-").isdigit()
 
 
 def _list_index(target: list[Any], segment: str, *, allow_append: bool = False) -> int:
     """Resolve a dotted segment to a list index, or fail with a clear message.
 
     With ``allow_append`` (the final segment of a write, never an intermediate
-    hop) an index equal to the current length appends. That is how a proposal
-    adds a durable memory entry — ``memory.entries.<len>`` — without rewriting
-    the whole list, which would be both a bigger blast radius and a way to drop
-    entries a reviewer already accepted.
+    hop) :data:`APPEND_SEGMENT` — ``memory.entries.+`` — appends, and so does a
+    numeric index equal to the current length. That is how a proposal adds a
+    durable memory entry without rewriting the whole list, which would be both
+    a bigger blast radius and a way to drop entries a reviewer already
+    accepted. Prefer ``+``: it resolves against the list as it is *now*, so a
+    proposal queued before another one was applied still appends instead of
+    overwriting whatever has since taken that index.
+
+    A negative index is refused rather than counted from the end: a proposal
+    says which entry it means, and ``-1`` names a different one after every
+    append.
     """
+    if segment == APPEND_SEGMENT:
+        if not allow_append:
+            raise SpecError(
+                f"'{APPEND_SEGMENT}' appends, so it is only valid as the last "
+                "segment of a path, not as a step on the way to one"
+            )
+        return len(target)
     try:
         index = int(segment)
     except ValueError:
         raise SpecError(
-            f"'{segment}' is not a valid list index (a numeric segment is "
-            "required to address a list entry)"
+            f"'{segment}' is not a valid list index (a numeric segment, or "
+            f"'{APPEND_SEGMENT}' to append, is required to address a list entry)"
         ) from None
+    if index < 0:
+        raise SpecError(
+            f"list index {index} is negative; address an entry by its position "
+            f"from the start, or use '{APPEND_SEGMENT}' to append"
+        )
     if allow_append and index == len(target):
         return index
-    if not -len(target) <= index < len(target):
-        hint = f"; {len(target)} would append" if allow_append else ""
+    if not index < len(target):
+        hint = f"; '{APPEND_SEGMENT}' appends" if allow_append else ""
         raise SpecError(
             f"list index {index} is out of range (length {len(target)}){hint}"
         )
@@ -619,6 +646,10 @@ def _set_dotted(raw: dict[str, Any], path: str, value: Any) -> None:
     replacing the whole list. That matters for playbooks: targeting one mode's
     prompt is the point, and a whole-list rewrite would be both a bigger
     blast radius and a way to smuggle in fields that are frozen per-entry.
+
+    A final :data:`APPEND_SEGMENT` (``memory.entries.+``) appends instead,
+    resolved here against the list on disk rather than at the time the change
+    was written.
     """
     parts = path.split(".")
     cursor: Any = raw

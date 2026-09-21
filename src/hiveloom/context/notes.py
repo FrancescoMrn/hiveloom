@@ -38,8 +38,10 @@ naming the limit, which the model can act on, rather than a silent drop.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import threading
+import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -131,7 +133,8 @@ class NotesStore:
         self._redact = redact
         self._journal = journal
         # Tool calls in one turn may run in parallel (`loop.tool_execution`),
-        # and two writes are a check-then-act against the same capacity.
+        # and two writes are a check-then-act against the same capacity, so
+        # the check and the slot it claims are taken under this lock together.
         self._lock = threading.Lock()
         # name -> (file, sha256, bytes). Hash-bound like a spill handle, so a
         # note that changed underneath the run is refused rather than served.
@@ -168,27 +171,46 @@ class NotesStore:
                 f"note '{name}' is {len(data)} bytes; this harness allows "
                 f"{self._max_note_bytes} per note. Write a shorter note, or split it."
             )
+        target = self._dir / f"{name}.txt"
         with self._lock:
             replaced = name in self._authorized
-            full = not replaced and len(self._authorized) >= self._max_notes
-            in_use = sorted(self._authorized)
-        if full:
-            raise NotesError(
-                f"this harness allows {self._max_notes} notes and they are all in "
-                f"use ({', '.join(in_use)}). Replace one by name, or delete one."
-            )
-        target = self._dir / f"{name}.txt"
+            if not replaced and len(self._authorized) >= self._max_notes:
+                in_use = sorted(self._authorized)
+                raise NotesError(
+                    f"this harness allows {self._max_notes} notes and they are all in "
+                    f"use ({', '.join(in_use)}). Replace one by name, or delete one."
+                )
+            # The capacity check and the name's claim on a slot are one step,
+            # under one lock: parallel tool calls past the last free slot must
+            # not all find it free. The placeholder holds the slot while the
+            # file is written and is exchanged for the real record below; its
+            # empty digest keeps the half-written note unreadable meanwhile.
+            previous = self._authorized.get(name)
+            reservation = (target, "", len(data))
+            self._authorized[name] = reservation
         try:
             _private_dir(self._root)
             _private_dir(self._root / self._run_id)
             _private_dir(self._dir)
-            # Rewrite is unlink + exclusive create, never an in-place truncate:
-            # the file is then never half-written, and the mode is set at
-            # creation rather than after.
-            with suppress(OSError):
-                target.unlink()
-            _write_private(target, data)
+            # Written aside and moved into place, never an in-place truncate
+            # nor an unlink then create: the note is never half-written, its
+            # mode is set at creation rather than after, and two writes of one
+            # name in a parallel turn cannot race for the filename.
+            staged = self._dir / f".{name}.{uuid.uuid4().hex}.tmp"
+            try:
+                _write_private(staged, data)
+                os.replace(staged, target)
+            finally:
+                with suppress(OSError):
+                    staged.unlink()
         except OSError as exc:
+            with self._lock:
+                # Give the slot back — but only if it is still ours to give.
+                if self._authorized.get(name) == reservation:
+                    if previous is None:
+                        self._authorized.pop(name, None)
+                    else:
+                        self._authorized[name] = previous
             raise NotesError(f"could not store note '{name}': {exc}") from exc
         digest = hashlib.sha256(data).hexdigest()
         with self._lock:

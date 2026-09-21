@@ -305,6 +305,13 @@ def _default_execute(
         trace_dir=manifest.trace_root,
         model_override=manifest.requested_model,
         provider_override=manifest.requested_provider,
+        # Marks this run as one cell of a batch. It reaches tools through the
+        # run context's `context` key, which is where a caller's own values
+        # live: `propose_memory` reads it and records its lesson in the trace
+        # without queueing, because a 200-case matrix would otherwise fill the
+        # review queue with 200 restatements of the same finding. A custom
+        # `execute_cell` that wants the same behavior passes the same key.
+        context={"eval_run_id": manifest.eval_run_id, "eval_cell_id": cell.cell_id},
     )
 
 

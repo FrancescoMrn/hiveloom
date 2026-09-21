@@ -1353,6 +1353,8 @@ def run(
                     # The spilled results this fork was granted at fork time.
                     "spill_handles": record.get("spill_handles") or [],
                     "spill_manifest": record.get("spill_manifest") or [],
+                    # And the notes it was granted, on the same terms.
+                    "notes_manifest": record.get("notes_manifest") or [],
                 },
                 on_event=on_event,
                 run_id=run_id,
@@ -2891,11 +2893,17 @@ def proposals_apply_cmd(
 
     Re-derives the harness's version hash first; if it no longer matches what
     the proposal was drafted against, it fails without touching disk (the
-    harness changed — regenerate). Review with ``proposals show`` first: YAML
-    changes apply with ``--yes`` or interactive confirmation, same as
-    ``evolve`` (asked only after the trust/existence/staleness checks above
-    pass); code changes need per-file ``--approve-code`` or interactive y/n,
-    fed from the proposal's stored gate result rather than a fresh propose.
+    harness changed — regenerate; a proposal that only appends durable memory
+    is exempt, since ``memory.entries.+`` resolves at apply time). Review with
+    ``proposals show`` first: YAML changes apply with ``--yes`` or interactive
+    confirmation, same as ``evolve`` (asked only after the trust/existence/
+    staleness checks above pass); code changes need per-file ``--approve-code``
+    or interactive y/n, fed from the proposal's stored gate result rather than
+    a fresh propose.
+
+    ``--json`` is non-interactive, so there is no confirmation to give: asking
+    it to apply gated YAML changes without ``--yes`` is a usage error (exit 3)
+    rather than a no-op that resolves the row and loses the proposal.
     """
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
@@ -2913,6 +2921,19 @@ def proposals_apply_cmd(
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         with Hive() as hive:
+            record = proposals_mod.get_proposal(hive, proposal_id)
+            if json_output and not yes and record is not None and record.gate.accepted:
+                # Without --yes the confirmation callback can only answer "no"
+                # here, which would apply nothing at all; say so instead of
+                # handing back an ok:true that changed nothing.
+                _fail(
+                    f"proposal '{proposal_id}' has "
+                    f"{len(record.gate.accepted)} gated YAML change(s) and --json "
+                    "cannot prompt: re-run with --yes to apply them, or "
+                    "'proposals reject' to discard it",
+                    json_output,
+                    ExitCode.SPEC_ERROR,
+                )
             result = proposals_mod.apply_proposal_by_id(
                 hive,
                 harness_dir,
@@ -2929,7 +2950,10 @@ def proposals_apply_cmd(
                     f"({result.old_version_hash} -> {result.new_version_hash})"
                 )
             else:
-                _console.print(f"[yellow]no changes applied[/yellow] for proposal {proposal_id}")
+                _console.print(
+                    f"[yellow]no changes applied[/yellow] for proposal {proposal_id} "
+                    "— it is still pending"
+                )
             _print_apply_leftovers(result)
 
 

@@ -61,7 +61,9 @@ for each new hostname during a plain CLI run.
   run-time operator decision), `load_skill` (reads a declared skill in full —
   progressive disclosure without a filesystem reader),
   `recall_runs` (this harness's own prior runs, from the Hive),
-  `notes` (run-scoped scratch storage that survives compaction).
+  `notes` (run-scoped scratch storage that survives compaction),
+  `propose_memory` (offer a durable lesson to the review queue — never to the
+  spec).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
   `regex_output_filter` are *singletons*: only one entry is meaningful, so
@@ -439,10 +441,23 @@ on how you work, not as the current task.
 
 What keeps it from becoming drift:
 
-- **The executor never writes it.** There is no tool that edits `memory`. An
-  entry reaches `harness.yaml` only through `hiveloom memory add` (validated
-  and rolled back like every construction command) or through an applied
-  evolution proposal — gate, full re-validation, `# evolved: N`, rollback.
+- **The executor never writes it.** No tool edits `memory`. An entry reaches
+  `harness.yaml` only through `hiveloom memory add` (validated and rolled back
+  like every construction command) or through an applied evolution proposal —
+  gate, full re-validation, `# evolved: N`, rollback. The executor's most
+  privileged action, with `propose_memory` declared, is to put a suggestion in
+  that review queue (below).
+- **A proposal appends; it does not overwrite.** An evolution proposal writes
+  the reserved final segment `+` — `memory.entries.+` — which is resolved
+  against the list on disk when the proposal is *applied*, not when it is
+  queued. A numeric index still works (an existing one replaces that entry, one
+  equal to the current length appends), but a position chosen at queue time is
+  stale as soon as another lesson lands. Because an append needs no particular
+  version to be correct, an append-only proposal (no code changes) may apply
+  after the harness has moved on; every other proposal is refused with *harness
+  has changed — regenerate*. The gate, full re-validation and rollback still run
+  at apply, so an append that would break a budget is refused there. See
+  [deploying-and-evolving.md](deploying-and-evolving.md#proposing-a-durable-lesson).
 - **The budgets are frozen from evolution** and hard-capped in the schema. A
   harness can add a lesson; it can never raise the ceiling on how many lessons
   there are, how long one may be, or how much prompt they occupy — nor set
@@ -480,6 +495,43 @@ hiveloom memory forget ./harness iso-dates
 
 Set `enabled: false` to keep the entries in the spec while showing the executor
 none of them — that is how to measure whether memory is earning its tokens.
+
+### Letting the executor propose a lesson
+
+The run that discovers a constraint is the one best placed to state it. The
+opt-in `propose_memory` tool lets it do so without weakening anything above:
+
+```bash
+hiveloom add tool --builtin propose_memory --param max_per_run=2 --json
+```
+
+The model calls it with `kind`, `title`, `content` and (optionally) `evidence`.
+What happens then is deliberately unexciting: the lesson is redacted with this
+run's `logging.redact` patterns, checked against the running spec's memory
+budgets, journaled as a `memory_proposed` event, and queued as an ordinary
+`MutationProposal` appending to `memory.entries.+` — `trigger: executor`, gated
+by the same code path as an evolved one, no strong-model call. It then waits
+for `hiveloom proposals apply --yes`, which re-gates, re-validates and rolls
+back like any other mutation. The tool never touches `harness.yaml`.
+
+- Identity, version and Hive path come from the run context, never from tool
+  input, so a model cannot propose into another harness's queue.
+- Proposals dedup on the *content* of the lesson against the harness and spec
+  version, so a run that restates what it already proposed gets the pending row
+  back instead of queueing a near-duplicate.
+- `max_per_run` (default 3, hard cap 10) bounds what one run may add to the
+  queue. All of them can be applied: each is an append, so applying one does
+  not strand the others against the version they were queued at.
+- Memory turned off, an unreachable Hive, a spent cap, a lesson already stored
+  or already pending: the tool answers in plain words and the run carries on.
+  Proposing is an aside, never something to recover from. A malformed or
+  over-long lesson *is* a tool error, because the model can restate it.
+- **Eval runs do not queue.** A matrix of 200 cases would file 200 restatements
+  of one finding, so a run the eval runner launched records its
+  `memory_proposed` event and says so in the result instead. The marker is an
+  `eval_run_id` key in the caller `context` that `hiveloom.eval_runner` passes
+  to every cell; an embedding caller with its own `execute_cell` passes the
+  same key to get the same behavior.
 
 ## Process confinement
 
@@ -806,6 +858,9 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 9. New `http_get` hosts require an operator decision unless pre-approved.
 10. `recall_runs` is scoped to the running harness from the run context, so no
    tool input can widen it to another harness's evidence.
+11. `propose_memory` writes no spec. It queues a gated proposal scoped the same
+   way, redacted before it is stored, bounded per run — and a human still
+   applies it.
 
 ## The harness directory
 

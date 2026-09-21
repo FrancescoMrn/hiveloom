@@ -94,6 +94,12 @@ hiveloom proposals apply ./harness <id>       # apply it (re-checks the harness
 hiveloom proposals reject ./harness <id> --reason "not worth it"
 ```
 
+`apply` needs an answer about the gated YAML changes: `--yes`, or an
+interactive `y`. Declining applies nothing and leaves the proposal `pending`,
+so it is still there to apply later. `--json` cannot prompt, so
+`proposals apply --json` without `--yes` is a usage error (exit 3) rather than
+a call that resolves the row without applying it.
+
 There is no auto-apply: a human always calls `proposals apply` or
 `proposals reject`. This is the additive extension the trace sink / networked
 Hive / A/B runner discussion below anticipates — proposals live in the same
@@ -105,18 +111,33 @@ can populate the same queue without changing this review step.
 A proposal can add to the harness's [durable memory](spec.md#memory) — a
 standing constraint the runs keep rediscovering — instead of enlarging the
 system prompt around it. The proposing model is told the current entry count
-and the budgets, and appends by writing the next index:
+and the budgets, and appends by writing the reserved path segment `+`:
 
 ```json
-{"path": "memory.entries.2",
+{"path": "memory.entries.+",
  "value": {"id": "iso-dates", "kind": "rule", "title": "Dates in ISO 8601",
            "content": "Emit dates as YYYY-MM-DD.",
            "source": "evolve", "evidence": "4 runs failed date_format"},
  "rationale": "date_format rejected 4 of the last 9 runs"}
 ```
 
-An index equal to the current length appends; an existing index replaces that
-entry. Everything else under `memory` — the budgets and `enabled` — is refused
+`+` means *append*, and it is resolved when the proposal is applied, not when
+it is queued. An existing index replaces that entry, and a numeric index equal
+to the current length still appends — but a position written at queue time goes
+stale the moment another entry lands, and the same index then silently replaces
+the lesson that took it. Write `+`.
+
+Because an append says what it does rather than where it lands, it is also the
+one proposal that survives the harness moving underneath it: **a proposal whose
+every change is a `memory.entries.+` append, and that carries no code changes,
+applies against a newer spec version too.** Everything else is still refused
+with *harness has changed — regenerate*, because a mutation drafted against a
+spec the harness no longer has is a fix for a harness that no longer exists.
+Applying against a newer version is not applying unchecked: the gate, full
+re-validation and rollback all run at apply, so an append that would break a
+budget is refused there and leaves the row pending.
+
+Everything else under `memory` — the budgets and `enabled` — is refused
 by the gate, so a proposal can add a lesson but never widen the store that
 holds it, and an entry that would break `max_entries`, `max_entry_chars`, or
 `prompt_budget_chars` is rejected with the rest of its batch and leaves
@@ -137,6 +158,37 @@ validator (memory advises the model, it does not check its work), and whether
 it is worth its tokens on every model call of every run. A lesson that stops
 paying comes out with `hiveloom memory forget`, which is a spec change like any
 other and moves the version hash accordingly.
+
+### Lessons the executor itself proposes
+
+A third source fills the same queue. Declare the opt-in
+[`propose_memory`](spec.md#letting-the-executor-propose-a-lesson) tool and the
+running model can offer a durable lesson mid-run — it discovered the
+constraint, after all — without any new authority:
+
+```bash
+hiveloom add tool --builtin propose_memory --param max_per_run=2 --json
+hiveloom proposals list ./harness --json      # rows with "trigger": "executor"
+```
+
+Such a row is a `MutationProposal` appending to `memory.entries.+` like the one
+above, built with no strong-model call, gated at the moment it is queued, and
+reviewed with the same four commands. Several lessons from one run compose:
+applying the first moves the version hash, and the rest are appends, which
+apply against the new one. Nothing about the review step changes:
+`apply` still re-checks that the harness has not moved, re-gates, re-validates
+and rolls back. What changes is where the queue's input comes from —
+`--propose` (you), `auto_propose` (a failing run), and now the executor's own
+`propose_memory` (a run that learned something).
+
+Two things worth knowing when you review one:
+
+- The `evidence` receipt names the run that proposed it, so
+  `hiveloom trace <run_id>` shows the work that produced the lesson.
+- Queue pressure is bounded by design: `max_per_run` caps one run, identical
+  content dedups against the pending row, and runs launched by `hiveloom eval`
+  never queue at all. If the queue still fills with restatements, the lesson to
+  draw is usually about the harness's prompt, not about memory.
 
 ### Attempt memory and operator findings
 

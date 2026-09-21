@@ -57,14 +57,17 @@ reference documents below also ship as guide topics: for example,
 | Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run\|--resume]`, `trace [--materialize\|--verify]`, `stats`, `metrics` |
 | Define, run, report, or compare an eval | [`skills/hiveloom-eval`](skills/hiveloom-eval/SKILL.md) | `eval schema`, `catalog datasets\|scorers`, `eval validate`, `eval run\|status\|resume`, `eval report\|compare`, `metrics` |
 | Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
-| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `stats` |
+| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `memory list\|show\|add\|forget`, `stats` |
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `models probe`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
 A harness with `evolution.auto_propose.enabled: true` may already have queued a
 `trigger=auto` proposal after a failing `run` — check `proposals list` before
 assuming you need to run `evolve --propose` yourself. It only ever drafts;
-applying still needs an explicit `proposals apply`.
+applying still needs an explicit `proposals apply`. A harness that declares the
+opt-in `propose_memory` tool can also queue `trigger=executor` rows: durable
+lessons the run itself offered, reviewed the same way and curated with
+`hiveloom memory`.
 
 ## Reference docs
 
@@ -84,14 +87,17 @@ applying still needs an explicit `proposals apply`.
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — seven worked examples to imitate: `quickstart`
+- [harnesses/](harnesses/) — eight worked examples to imitate: `quickstart`
   (no tools), `example-summarizer` (tools + verification),
   `article-extractor` (a custom tool + anti-hallucination validator),
   `routing-lab` (playbooks, forking, evolution — offline, no API key),
   `ticket-triage` (an MCP server as the harness's only data source),
   `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
-  synthetic data), and `log-forensics` (confinement around an allowlisted
-  shell, an oversized tool result spilled and read back by handle).
+  synthetic data), `log-forensics` (confinement around an allowlisted
+  shell, an oversized tool result spilled and read back by handle), and
+  `memory-lab` (run-scoped `notes`, `transform_result` over a spilled
+  handle, a handle passed to `file_write`, `propose_memory`, and
+  `memory.entries` grown only through an applied proposal — offline).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 

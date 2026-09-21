@@ -55,6 +55,7 @@ from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.private import RunBoundary
 from hiveloom.spec.schema import HarnessSpec
+from hiveloom.tools.builtin import PROPOSE_MEMORY_TOOL, ProposeMemoryTool
 from hiveloom.tools.registry import ToolError, ToolRegistry, ToolResult
 from hiveloom.verify.base import (
     ToolEvidenceRecord,
@@ -297,6 +298,14 @@ class AgentLoop:
             # model has written by *this* turn, and it is re-rendered on every
             # assembly like the playbook fragment.
             self._context.set_notes_index(self._notes.index_text)
+        # `propose_memory` is opt-in too, and is bound here rather than built
+        # with what it needs: the running spec (whose memory budgets bound a
+        # proposal, and whose identity scopes it), this run's redaction, and
+        # its journal all belong to the loop, and none of them may come from a
+        # tool argument.
+        propose_memory = registry.get(PROPOSE_MEMORY_TOOL)
+        if isinstance(propose_memory, ProposeMemoryTool):
+            propose_memory.bind(spec, redact=trace.redact_text, journal=self._trace.emit)
 
     # ------------------------------------------------------------------ #
     # Public surface for policies and hooks

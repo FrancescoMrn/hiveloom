@@ -609,13 +609,37 @@ def _iter_lines(path: Path, max_bytes: int = TRANSFORM_MAX_SCAN_BYTES):
         yield number + 1, _decode(carry.rstrip(b"\r"))
 
 
+def _cut_utf8(data: bytes, limit: int) -> bytes:
+    """``data`` cut to at most ``limit`` bytes, never through a character."""
+    if len(data) <= limit:
+        return data
+    end = max(0, limit)
+    while end > 0 and (data[end] & 0xC0) == 0x80:
+        end -= 1
+    return data[:end]
+
+
 def _bounded(lines: list[str]) -> str:
-    """Join output lines, stopping at the output ceiling with a marker."""
+    """Join output lines, stopping at the output ceiling with a marker.
+
+    An element that alone overruns what is left is cut rather than dropped:
+    ``json_path`` emits its whole selection as one element and ``concat`` one
+    per object, so dropping it would answer a narrowing with the marker and no
+    data at all — a dead end, where a cut selection still flows on through the
+    "too large, store it as a derived object" path.
+    """
     kept: list[str] = []
     size = 0
-    for line in lines:
-        width = len(line.encode("utf-8")) + 1
+    for index, line in enumerate(lines):
+        encoded = line.encode("utf-8")
+        width = len(encoded) + 1
         if size + width > TRANSFORM_MAX_OUTPUT_BYTES:
+            # The first element is never preceded by a newline, so it has one
+            # more byte of room than the ones after it.
+            room = TRANSFORM_MAX_OUTPUT_BYTES - size - (0 if index == 0 else 1)
+            head = _cut_utf8(encoded, room)
+            if head:
+                kept.append(_decode(head))
             kept.append(
                 f"[{TRANSFORM_TOOL}] output stopped at {TRANSFORM_MAX_OUTPUT_BYTES} bytes."
             )
@@ -625,15 +649,25 @@ def _bounded(lines: list[str]) -> str:
     return "\n".join(kept)
 
 
-def _read_whole(path: Path, handle: str) -> bytes:
-    """The whole object, refused above the scan ceiling rather than truncated."""
+def _read_whole(path: Path, handle: str, limit: int | None = None) -> bytes:
+    """The whole object, refused above the scan ceiling rather than truncated.
+
+    ``limit`` bounds what is brought into memory for a caller that already
+    knows it cannot emit more than that. The refusal above the scan ceiling
+    still applies first, so a bounded read is never a quiet half-answer to
+    "read this object" — it is only the part of an accepted object the caller
+    has budget for.
+    """
     size = path.stat().st_size
     if size > TRANSFORM_MAX_SCAN_BYTES:
         raise SpillError(
             f"'{handle}' is {size} bytes; this op reads at most "
             f"{TRANSFORM_MAX_SCAN_BYTES}. Narrow it first with lines, head or grep."
         )
-    return path.read_bytes()
+    if limit is None or size <= limit:
+        return path.read_bytes()
+    with path.open("rb") as stream:
+        return stream.read(limit)
 
 
 def _compile(pattern: str) -> re.Pattern[str]:
@@ -799,12 +833,20 @@ def _op_concat(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
             f"concat joins at most {TRANSFORM_MAX_CONCAT} objects (got {len(ordered)})"
         )
     parts: list[str] = []
+    # A running budget across the objects, not per object: eight reads of up
+    # to the scan ceiling would be hundreds of megabytes resident to produce
+    # output `_bounded` then cuts to a few. One byte past the ceiling is read
+    # so that the marker is earned rather than guessed.
+    budget = TRANSFORM_MAX_OUTPUT_BYTES + 1
     for item in ordered:
         # Each one resolves under this run's authority; concat is not a way to
         # reach an object the model could not already read.
-        raw = _read_whole(store._resolve(item), item)
+        raw = _read_whole(store._resolve(item), item, limit=budget)
         parts.append(f"[{item}]")
         parts.append(_decode(raw))
+        budget -= len(raw)
+        if budget <= 0:
+            break
     return _bounded(parts)
 
 

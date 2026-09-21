@@ -733,7 +733,8 @@ class MemoryConfig(BaseModel):
             "The lessons themselves, in declaration order — which is also render "
             "order, so the prompt prefix stays cacheable across runs. The one "
             "part of this section evolution may change, by appending an entry at "
-            "memory.entries.<len> or replacing one by index."
+            "memory.entries.+ (resolved when the proposal is applied) or "
+            "replacing one by index."
         ),
     )
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -96,6 +98,51 @@ def test_counts_and_sizes_are_bounded_with_an_actionable_error(tmp_path: Path):
         store.write("one", "z" * 21)
 
 
+def test_capacity_holds_when_writes_run_in_parallel(tmp_path: Path):
+    """`loop.tool_execution: parallel` runs a turn's tool calls at once, so the
+    capacity check and the slot it claims have to be one step: writers past the
+    last free slot must be refused, not all admitted."""
+    store = _store(tmp_path, max_notes=2)
+    writers = 8
+    start = threading.Barrier(writers, timeout=10)
+
+    def write(index: int) -> str:
+        start.wait()
+        try:
+            store.write(f"note-{index}", f"body {index}")
+        except NotesError as exc:
+            return str(exc)
+        return "stored"
+
+    with ThreadPoolExecutor(max_workers=writers) as pool:
+        outcomes = list(pool.map(write, range(writers)))
+
+    assert outcomes.count("stored") == 2
+    assert all("allows 2 notes" in o for o in outcomes if o != "stored")
+    # What the map says is what is on disk and in the prompt index.
+    assert len(store.names) == 2
+    assert len(store.index()) == 2
+    for name in store.names:
+        assert "body" in store.read(name)
+
+
+def test_a_parallel_rewrite_never_counts_against_capacity(tmp_path: Path):
+    store = _store(tmp_path, max_notes=2)
+    store.write("plan", "first draft")
+    store.write("findings", "first finding")
+    start = threading.Barrier(8, timeout=10)
+
+    def rewrite(index: int) -> None:
+        start.wait()
+        store.write("plan" if index % 2 else "findings", f"redraft {index}")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(rewrite, range(8)))
+
+    assert store.names == ["findings", "plan"]
+    assert "redraft" in store.read("plan")
+
+
 def test_an_unusable_name_is_refused(tmp_path: Path):
     store = _store(tmp_path)
     for name in ["../escape", "Findings", "with space", "", "-leading", "x" * 65]:
@@ -158,6 +205,9 @@ def test_a_write_that_cannot_be_stored_is_a_tool_error_not_a_crash(tmp_path: Pat
 
     with pytest.raises(NotesError, match="could not store note"):
         store.write("anything", "x")
+    # The slot the write claimed goes back: a failure costs no capacity, and
+    # the name it reserved resolves to nothing.
+    assert store.names == []
 
 
 def test_every_change_is_journalled_with_its_content(tmp_path: Path):

@@ -9,6 +9,7 @@ import pytest
 
 from hiveloom import construct, runner
 from hiveloom import fork as fork_mod
+from hiveloom.context import spill
 from hiveloom.context.spill import HANDLE_RE, SpillError, SpillStore
 from hiveloom.logging.journal import read_events
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
@@ -688,6 +689,65 @@ def test_an_oversized_transform_becomes_a_derived_object(tmp_path: Path):
     assert sidecar["derived_from"] == handle
     assert sidecar["op"] == "grep"
     assert sidecar["tool"] == "transform_result"
+
+
+def test_an_oversized_json_selection_is_cut_rather_than_discarded(
+    tmp_path: Path, monkeypatch
+):
+    """`json_path` emits its whole selection as one element, so a selection past
+    the output ceiling would be dropped whole, leaving the marker and no data —
+    a narrowing with nothing to narrow next. It is cut at the ceiling instead
+    and travels on as a derived object like any other oversized transform."""
+    monkeypatch.setattr(spill, "TRANSFORM_MAX_OUTPUT_BYTES", 500)
+    document = {"items": [{"id": f"id-{i:04d}", "pad": "x" * 50} for i in range(200)]}
+    store, handle = _stored(tmp_path, json.dumps(document), inline_budget=200)
+
+    out = store.transform(handle, "json_path", {"path": "$.items[*].id"})
+
+    derived = HANDLE_RE.findall(out)
+    assert derived and derived[-1] != handle
+    body = (store._run_dir / f"{derived[-1]}.txt").read_text(encoding="utf-8")
+    # The selection itself, cut at the ceiling, then the marker saying so.
+    assert body.startswith('[\n  "id-0000",')
+    assert '"id-0010"' in body
+    assert body.endswith("[transform_result] output stopped at 500 bytes.")
+    assert len(body.encode("utf-8")) < 700
+
+
+def test_concat_reads_only_what_it_can_emit(tmp_path: Path, monkeypatch):
+    """The output ceiling is a budget across the objects, not per object: eight
+    whole reads of up to the scan ceiling would be hundreds of megabytes
+    resident to produce output that is then cut to a few."""
+    monkeypatch.setattr(spill, "TRANSFORM_MAX_OUTPUT_BYTES", 300)
+    read_whole = spill._read_whole
+    reads: list[tuple[str, int]] = []
+
+    def counting(path, handle, limit=None):
+        raw = read_whole(path, handle, limit)
+        reads.append((handle, len(raw)))
+        return raw
+
+    monkeypatch.setattr(spill, "_read_whole", counting)
+    store, first = _stored(tmp_path, "A" * 500)
+    producer = _store(tmp_path, run_id="producer", max_inline_bytes=40)
+    others = []
+    for letter in "BCD":
+        record = producer.spill(tool="t", content=letter * 500)
+        store.inherit(
+            [{"handle": record.handle, "sha256": record.sha256, "bytes": record.total_bytes}],
+            tmp_path / "spill" / "producer",
+        )
+        others.append(record.handle)
+
+    out = store.transform(first, "concat", {"handles": others})
+
+    # Only the first object was touched, and only up to the ceiling plus the
+    # one byte that earns the marker.
+    assert [handle for handle, _size in reads] == [first]
+    assert sum(size for _handle, size in reads) <= 301
+    assert "[transform_result] output stopped at 300 bytes." in out
+    assert "A" * 200 in out
+    assert "B" not in out
 
 
 def test_transform_refuses_an_unknown_op_and_an_unknown_handle(tmp_path: Path):

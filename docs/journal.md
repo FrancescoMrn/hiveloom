@@ -212,6 +212,19 @@ notes still held, and writes them into `fork.yaml` as a hash-bound
 `notes_manifest`. A note written and then deleted is not a note the fork
 inherits, and a name mentioned in the transcript grants nothing.
 
+### Proposed lessons
+
+A harness that declares the `propose_memory` tool (see
+[Memory](spec.md#letting-the-executor-propose-a-lesson)) emits one
+`memory_proposed` event per call, carrying `{id, kind, title, content,
+evidence, outcome, proposal_id}` — the redacted lesson plus what became of it
+(`queued`, `already_pending`, `already_known`, `cap_reached`, `memory_disabled`,
+`eval_run`, `refused`, `queue_unavailable`). One event with the outcome rather
+than one per stage, so a run that proposed something and did *not* queue it —
+an eval cell, a spent cap — still leaves the lesson behind for a reader. The
+spec itself never changes here: `proposal_id` is what `hiveloom proposals show`
+takes.
+
 ## Forking a run
 
 A fork re-enters a finished run at one of its model calls and replays the
