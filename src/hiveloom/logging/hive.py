@@ -819,6 +819,18 @@ class Hive:
                     component=str(payload.get("name") or "tool"),
                     summary="tool call was not executed because its arguments were truncated",
                 )
+            elif etype == "turn_truncated":
+                add(
+                    event,
+                    "output_truncated",
+                    component="max_tokens",
+                    summary=(
+                        "turn hit the output ceiling with no answer and no tool call"
+                    ),
+                    # A later turn is not proof of recovery; only a successful
+                    # final result establishes it for the indexed evidence.
+                    recovered=run["status"] == "success",
+                )
             elif etype == "context_overflow_recovery":
                 add(
                     event,
@@ -863,6 +875,14 @@ class Hive:
             previous_type = etype
 
         finished = ordered[-1] if ordered else {"seq": 0, "timestamp": None}
+        if run["status"] == "truncated":
+            add(
+                finished,
+                "output_truncated",
+                component="max_tokens",
+                summary=str(run.get("reason") or "run stopped: repeated truncated turns"),
+                recovered=False,
+            )
         if run["status"] == "max_turns":
             add(
                 finished,

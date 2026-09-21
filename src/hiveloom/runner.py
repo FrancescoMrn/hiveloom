@@ -585,7 +585,7 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
     """The JSON shape of a completed run, shared by the CLI and the HTTP control plane.
 
     ``ok`` reflects only ``status == "success"`` — ``verify_failed``,
-    ``guardrail_halt``, ``step_failed``, ``max_turns``, ``stopped``, and ``error``
+    ``guardrail_halt``, ``step_failed``, ``max_turns``, ``truncated``, ``stopped``, and ``error``
     are all completed runs reported here, not raised exceptions, so both
     callers can never diverge on what a finished run looks like.
     """

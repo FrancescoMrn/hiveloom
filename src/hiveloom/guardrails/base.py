@@ -52,6 +52,9 @@ class RunState:
     tool_turns: int = 0
     verify_retries: int = 0
     policy_nudges: int = 0
+    # Turns that hit the output ceiling before producing anything actionable —
+    # a reasoning model can spend a whole budget thinking and emit nothing.
+    truncated_turns: int = 0
     tool_names: set[str] = field(default_factory=set)
     started_at: float = field(default_factory=time.monotonic)
     output: str | None = None

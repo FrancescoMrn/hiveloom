@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Truncated model turns receive continuation feedback within the declared
+  token budget. Three consecutive truncations or exhausted turns return
+  `truncated` (CLI exit 4), retaining partial output; passing verification can
+  still establish success. Truncation is indexed as evolution evidence.
 - OpenAI-compatible calls retry interrupted HTTP reads and transient error
   bodies returned with HTTP 200. Embedded context overflow remains recoverable.
   Blank visible content no longer discards reasoning, and oversized reasoning

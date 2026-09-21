@@ -1,9 +1,10 @@
 """The synchronous agent loop engine.
 
 The loop's *strategy* is a pluggable :class:`~hiveloom.loop.policies.LoopPolicy`
-(``react``/``plan_then_act`` builtin, more via extensions). The loop drives
-guardrail hooks, the lifecycle event bus, the tool registry, context assembly,
-and the verify step, emitting a trace event at every step. Designed so an
+(``react``/``plan_then_act``/``sequential_steps`` builtin, more
+via extensions). The loop drives guardrail hooks, the lifecycle event bus, the
+tool registry, context assembly, and the verify step, emitting a trace event at
+every step. Designed so an
 async version is possible later.
 
 Guardrails and event hooks compose: guardrails are the frozen safety layer
@@ -98,7 +99,8 @@ def _bound_evidence(value: Any, depth: int = 0) -> tuple[Any, bool]:
 class RunResult(BaseModel):
     """The outcome of a harness run."""
 
-    # success | verify_failed | guardrail_halt | step_failed | max_turns | stopped | error
+    # success | verify_failed | guardrail_halt | step_failed | max_turns
+    # truncated | stopped | error
     status: str
     output: str = ""
     turns: int = 0
@@ -143,6 +145,13 @@ def _terminate_output(dispatched: list[Any], results: list[dict[str, Any]]) -> s
     if dispatched and len(dispatched) == len(results) and all(r.terminate for r in dispatched):
         return dispatched[-1].content
     return None
+
+
+# How many consecutive turns may hit the output ceiling without producing an
+# answer or a tool call before the run stops. One is a long thought; a third in
+# a row means the budget cannot fit this model's answer and more turns will not
+# change that.
+_MAX_TRUNCATED_TURNS = 2
 
 
 class AgentLoop:
@@ -404,6 +413,8 @@ class AgentLoop:
                     self._switch_model(**request)
                 for request in self._control.drain_playbook_switches():
                     self._switch_playbook_from_operator(**request)
+            truncation_exhausted = False
+            policy_incomplete = False
             try:
                 self._policy.before_model_turn(self)
                 response = self.model_turn()
@@ -427,6 +438,9 @@ class AgentLoop:
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
+                # A turn that reached a tool is productive: the truncation
+                # streak is about turns that produce nothing at all.
+                self._state.truncated_turns = 0
                 if terminate_output is None:
                     nudge = self._policy.after_tool_turn(self, response)
                     if nudge is not None:
@@ -441,7 +455,39 @@ class AgentLoop:
                 # Every tool result in the batch asked to terminate: treat the
                 # last result as the final output, skipping a model turn.
                 output = terminate_output
+            elif response.stop_reason == "max_tokens":
+                # A turn cut off at the ceiling is not a completion signal. A
+                # reasoning model can spend a whole budget thinking and emit no
+                # answer and no tool call; treating that partial text as the
+                # final output scores a thought as if it were a result. Feed
+                # the truncation back instead — the same failure-as-feedback
+                # rule the tool path already applies (see _dispatch_tools).
+                self._state.truncated_turns += 1
+                self._trace.emit(
+                    "turn_truncated",
+                    consecutive=self._state.truncated_turns,
+                    text_chars=len(response.text or ""),
+                    output_tokens=response.usage.output_tokens,
+                )
+                # Escalation only means something while a turn remains to act on
+                # it. Out of turns — a one-turn harness, a loop at its limit, or
+                # a model truncating every time — feeding back would discard
+                # what the model *did* produce in favour of nothing. Hand the
+                # partial text on and let the verifiers rule on it: an answer
+                # that parses beats a withheld one, and the run status still
+                # records why the turn ended.
+                truncation_exhausted = (
+                    self._state.truncated_turns > _MAX_TRUNCATED_TURNS
+                    or self._state.model_calls >= loop.max_turns
+                )
+                if not truncation_exhausted and self._state.model_calls < loop.max_turns:
+                    self._context.add_user(self._truncation_feedback())
+                    continue
+                output = response.text
+                # Salvaging a partial answer cannot bypass required phases/tools.
+                policy_incomplete = self._policy.wants_continue(self, response) is not None
             else:
+                self._state.truncated_turns = 0
                 nudge = self._policy.wants_continue(self, response)
                 if nudge is not None:
                     self._context.add_user(nudge)
@@ -465,10 +511,15 @@ class AgentLoop:
             if loop.require_verification:
                 verdicts = self._verify(output)
                 last_verdicts = verdicts
-                if all(v.passed for v in verdicts):
+                if (
+                    all(v.passed for v in verdicts)
+                    and not policy_incomplete
+                    and (not truncation_exhausted or verdicts)
+                ):
                     return self._finish("success", output=output, verdicts=verdicts)
                 if (
-                    self._spec.verify.on_fail.action == "retry_with_feedback"
+                    not truncation_exhausted
+                    and self._spec.verify.on_fail.action == "retry_with_feedback"
                     and retries < self._spec.verify.on_fail.max_retries
                 ):
                     retries += 1
@@ -478,12 +529,30 @@ class AgentLoop:
                         f"Verification failed:\n{feedback}\nRevise your answer and try again."
                     )
                     continue
+                if truncation_exhausted:
+                    return self._finish(
+                        "truncated",
+                        output=output,
+                        verdicts=verdicts,
+                        reason=(
+                            self._truncation_reason() + "; loop policy requires further work"
+                            if policy_incomplete else self._truncation_reason(verified=False)
+                        ),
+                    )
                 return self._finish("verify_failed", output=output, verdicts=verdicts)
 
+            if truncation_exhausted:
+                # Nothing verified this output, and the loop ended on the
+                # pathology rather than on the model finishing. Say so.
+                return self._finish(
+                    "truncated", output=output, reason=self._truncation_reason()
+                )
             return self._finish("success", output=output)
 
         return self._finish(
-            "max_turns", output=self._state.output or "", verdicts=last_verdicts
+            "max_turns",
+            output=self._state.output or "",
+            verdicts=last_verdicts,
         )
 
     # ------------------------------------------------------------------ #
@@ -770,6 +839,37 @@ class AgentLoop:
             mode="redact",
         )
         return verdict.system, verdict.messages, verdict.tools
+
+    def _truncation_reason(self, *, verified: bool | None = None) -> str:
+        tail = "; the last one's partial output did not verify" if verified is False else ""
+        return (
+            f"{self._state.truncated_turns} consecutive turns hit the "
+            f"{self._router.config.max_tokens}-token output ceiling{tail}"
+        )
+
+    def _truncation_feedback(self) -> str:
+        """What to tell a model that thought until it ran out of room.
+
+        Escalates: the first message names the budget and asks for the shortest
+        action that makes progress; a repeat says plainly that thinking longer
+        is what is failing, because a model that is losing to its own verbosity
+        will otherwise re-read the same instruction and do the same thing.
+        """
+        ceiling = self._router.config.max_tokens
+        if self._state.truncated_turns == 1:
+            return (
+                f"Your last turn reached the {ceiling}-token output limit while still working, "
+                "so it produced no answer and no tool call. What you wrote is above and still "
+                "counts — do not restate it. Take the single smallest next action that makes "
+                "progress from there: one tool call with your current best guess, however "
+                "rough, or the final answer if you already have one."
+            )
+        return (
+            f"Again cut off at {ceiling} tokens before producing anything "
+            f"({self._state.truncated_turns} turns in a row). Thinking longer is what is "
+            "failing here, not the problem being hard. Emit a tool call or the final answer "
+            "as the very first thing in your next turn, before any explanation."
+        )
 
     def _dispatch_tools(self, response: ModelResponse) -> tuple[str | None, str | None]:
         """Dispatch a turn's tool calls.

@@ -35,6 +35,7 @@ _RUN_STATUS_EXIT = {
     "verify_failed": ExitCode.VERIFY_FAILED,
     "guardrail_halt": ExitCode.GUARDRAIL_HALT,
     "max_turns": ExitCode.RUNTIME_ERROR,
+    "truncated": ExitCode.RUNTIME_ERROR,
     "error": ExitCode.RUNTIME_ERROR,
 }
 
