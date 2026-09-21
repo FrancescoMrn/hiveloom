@@ -196,6 +196,9 @@ class ModelRouter:
             provider=target_provider,
             max_tokens=self.config.max_tokens if max_tokens is None else max_tokens,
             temperature=self.config.temperature if temperature is None else temperature,
+            # A model switch changes which model runs, not how the harness was
+            # declared to call it.
+            params=self.config.params,
         )
         entry = ModelSwitch(
             turn=turn, model=target_model, provider=target_provider, reason=reason

@@ -20,7 +20,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 |---|---|---|
 | `schema_version` | Harness document format | defaults to `0.2.0`; legacy `version` still loads and `hiveloom migrate HARNESS --json` rewrites it atomically |
 | `name` / `description` | Identity (Hive + packaging) | required |
-| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
+| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens` (validated against registered `max_output_tokens` when known), `params` (bounded provider fields; see [models.md](models.md#provider-request-parameters)), `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
 | `tools` | Tools available to the loop | list of `{builtin: name}` or `{code: path.py:fn, description: ...}` |
 | `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |

@@ -116,3 +116,18 @@ def test_kwargs_cannot_replace_a_required_positional_hook_argument():
     assert not _accepts_n_params(bad_validator, 2)
     assert _accepts_n_params(good_validator, 2)
     assert _accepts_n_params(variadic_validator, 2)
+
+
+def test_unused_provider_params_preserve_existing_spec_shape_and_identity():
+    from hiveloom.logging.trace import spec_version_hash
+    from hiveloom.spec.loader import spec_to_dict
+
+    spec = load_spec(EXAMPLE_HARNESS)
+    original_hash = spec_version_hash(spec)
+    assert "params" not in spec_to_dict(spec)["model"]
+    assert "params:" not in dump_spec(spec)
+    spec.model.params = {"seed": 7}
+    assert spec_to_dict(spec)["model"]["params"] == {"seed": 7}
+    assert spec_version_hash(spec) != original_hash
+    spec.model.params = {}
+    assert spec_version_hash(spec) == original_hash

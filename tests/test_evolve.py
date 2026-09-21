@@ -817,3 +817,30 @@ def test_from_parent_needs_a_fork_directory(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == ExitCode.SPEC_ERROR
     assert "fork" in json.loads(result.stdout)["error"]
+
+
+def test_a_strong_model_budget_follows_the_declared_ceiling(monkeypatch):
+    """A reasoning researcher starved of output tokens narrates and never answers.
+
+    Measured on the ARC-AGI-2 evolve prompt: at the old flat 4096 the researcher
+    returned 17,698 characters of reasoning prose and no proposal, three times
+    in a row; at 65,536 it returned valid JSON first try. This is the same
+    defect the executor had — a flat ceiling far below what the model allows —
+    and it gets the same answer: ask the registry.
+    """
+    from hiveloom import ext
+    from hiveloom.generate import llm
+
+    class _Info:
+        max_output_tokens = 8192
+
+    # An explicit request always wins.
+    assert llm.strong_max_tokens("anything", 123) == 123
+    # A declared ceiling below the default caps the ask, so we never request
+    # more room than the provider will give (a 400 ends the call outright).
+    monkeypatch.setattr(ext, "model_info", lambda _id: _Info())
+    assert llm.strong_max_tokens("small-model") == 8192
+    # Unknown capabilities retain the compatible historical fallback.
+    monkeypatch.setattr(ext, "model_info", lambda _id: None)
+    assert llm.strong_max_tokens("unknown") == llm.FALLBACK_STRONG_MAX_TOKENS
+    assert llm.DEFAULT_STRONG_MAX_TOKENS > 4096

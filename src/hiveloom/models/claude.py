@@ -24,6 +24,7 @@ from hiveloom.models.provider import (
     ModelResponse,
     ToolCall,
     Usage,
+    validate_model_params,
 )
 
 _MAX_RETRIES = 3
@@ -108,9 +109,10 @@ class ClaudeProvider(ModelProvider):
         send_temperature = config.temperature is not None and not config.id.startswith(
             _NO_SAMPLING_PREFIXES
         )
-        extra = (
-            {"extra_body": {"temperature": config.temperature}} if send_temperature else {}
-        )
+        body = dict(validate_model_params(config.params))
+        if send_temperature:
+            body["temperature"] = config.temperature
+        extra = {"extra_body": body} if body else {}
         raw = self._call_with_backoff(
             model=config.id,
             max_tokens=config.max_tokens,

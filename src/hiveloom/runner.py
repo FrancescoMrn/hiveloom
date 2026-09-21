@@ -398,6 +398,12 @@ def run_harness(
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
                 provider=spec.model.provider,
+                # Every model field the spec declares has to appear here. This
+                # is the config the router actually calls with, so anything
+                # omitted is silently not sent — a dropped provider pin routes a
+                # run to whichever upstream an aggregator picks, which shows up
+                # as model variance and is not.
+                params=spec.model.params,
             ),
             provider,
             providers=providers,
@@ -621,11 +627,13 @@ def _apply_runtime_model_overrides(
 
     from hiveloom.spec.schema import ModelConfig as SpecModelConfig
 
+    # An override changes model identity while retaining its request settings.
     model = SpecModelConfig(
         id=model_override or spec.model.id,
         provider=provider_override or spec.model.provider,
         max_tokens=spec.model.max_tokens,
         temperature=spec.model.temperature,
+        params=spec.model.params,
     )
     return spec.model_copy(update={"model": model})
 

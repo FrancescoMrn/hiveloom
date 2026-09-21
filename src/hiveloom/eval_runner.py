@@ -182,6 +182,7 @@ def _resolve_model(
         id=model_override or harness.model.id,
         max_tokens=harness.model.max_tokens,
         temperature=harness.model.temperature,
+        params=harness.model.params,
     )
 
 

@@ -396,12 +396,51 @@ class ModelConfig(BaseModel):
     )
     id: str = Field(default="claude-haiku-4-5", description="Model id to execute with.")
     max_tokens: int = Field(
-        default=4096, gt=0, le=32768, description="Max output tokens per call."
+        default=4096,
+        gt=0,
+        le=1_000_000,
+        description=(
+            "Max output tokens per call. The absolute bound here is a typo guard, "
+            "not a capability claim: what a model may actually emit differs by "
+            "orders of magnitude between models, so a registered model's declared "
+            "`max_output_tokens` is what this is checked against when one exists. "
+            "The runtime retains this per-call budget during recovery."
+        ),
     )
     temperature: float | None = Field(
         default=None, ge=0.0, le=1.0,
         description="Sampling temperature. None omits it — required for models that deprecate it.",
     )
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Provider-specific request-body fields, limited to 64 KiB of JSON. "
+            "Cannot override harness-controlled identity, transcript, tools, "
+            "output budgets, temperature, streaming, or response count. "
+            "Unknown fields may be ignored or rejected by the provider."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_max_tokens_against_the_model(self) -> ModelConfig:
+        """Reject budgets above the registered model capability, when known."""
+        from hiveloom import ext
+
+        info = ext.model_info(self.id)
+        declared = getattr(info, "max_output_tokens", None) if info else None
+        if declared is not None and self.max_tokens > declared:
+            raise ValueError(
+                f"model.max_tokens {self.max_tokens} exceeds what {self.id} can emit "
+                f"({declared}); lower it or correct the model's max_output_tokens"
+            )
+        return self
+
+    @field_validator("params")
+    @classmethod
+    def _check_params(cls, value: dict[str, Any]) -> dict[str, Any]:
+        from hiveloom.models.provider import validate_model_params
+
+        return validate_model_params(value)
 
     @field_validator("provider")
     @classmethod

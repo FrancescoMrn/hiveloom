@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Model capability metadata `max_output_tokens`, checked against
+  `model.max_tokens`, and configurable OpenAI-compatible `timeout_seconds`.
+- Frozen `model.params` for provider request fields, forwarded by the Claude and
+  OpenAI-compatible providers and preserved by runtime model overrides.
+
 ### Fixed
 
+- Provider parameters cannot replace harness-controlled identity, transcript,
+  tools, output limits, streaming, or response count, and must be bounded JSON.
 - Code-hook validation no longer mistakes `**kwargs` for positional arguments.
 
 ## [1.1.0] - 2026-09-09

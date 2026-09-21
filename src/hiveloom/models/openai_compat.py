@@ -28,6 +28,7 @@ from hiveloom.models.provider import (
     ToolCall,
     Usage,
     estimate_tokens,
+    validate_model_params,
 )
 
 _STOP_REASONS = {
@@ -75,6 +76,9 @@ class OpenAICompatProvider(ModelProvider):
         config: ModelConfig,
     ) -> ModelResponse:
         payload: dict[str, Any] = {
+            # Spec-declared provider fields first, so the keys the harness owns
+            # always win even if `model.params` validation is somehow bypassed.
+            **validate_model_params(config.params),
             "model": config.id,
             "max_tokens": config.max_tokens,
             **({} if config.temperature is None else {"temperature": config.temperature}),

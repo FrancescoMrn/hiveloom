@@ -235,6 +235,48 @@ to declare a model genuinely free.
 A malformed `models.yaml` never crashes the CLI — the error is collected and
 shown by `hiveloom extensions`.
 
+## Provider request parameters
+
+`model.params` carries provider-specific JSON request fields. Both the Claude
+provider and the OpenAI-compatible provider forward these fields, and model
+overrides retain them. Extensions implementing other providers decide which
+parameters they support. Provider-specific settings may need an operator update
+when switching providers.
+
+```console
+hiveloom set model.params '{"seed": 7}' --dir ./harness --json
+```
+
+Use field names accepted by the selected endpoint. The mapping is limited to
+64 KiB of JSON and cannot replace harness-controlled fields: `model`,
+`messages`, `system`, `input`, `tools`, `functions`, `max_tokens`,
+`max_completion_tokens`, `max_output_tokens`, `temperature`, `stream`,
+`stream_options`, or `n`. `model` remains frozen from evolution, including these
+parameters. Parameters are request-body values, not HTTP headers or SDK options.
+
+A model registered through an extension or `models.yaml` can declare a positive
+`max_output_tokens`. `model.max_tokens` is validated against that capability.
+Unknown capabilities use the spec's absolute 1,000,000-token validation bound;
+this does not promise that an endpoint accepts that many tokens. The runtime
+never automatically raises the configured budget after a truncated response.
+
+Custom OpenAI-compatible endpoints can declare a positive `timeout_seconds`:
+
+```yaml
+providers:
+  local:
+    api: openai_compat
+    base_url: http://localhost:8000/v1
+    timeout_seconds: 600
+    models:
+      - id: local-model
+        max_output_tokens: 16384
+```
+
+The default timeout is 120 seconds per HTTP request. Retries can consume
+additional time. Runtime wall-clock guardrails are checked at loop boundaries;
+they do not cancel a blocking HTTP request.
+
 ## Generation and evolution models
 
 `hiveloom generate` and `hiveloom evolve` use a *strong* model, separate from
@@ -286,3 +328,8 @@ def setup(hive):
 The factory must return a `ModelProvider` (see
 [`models/provider.py`](../src/hiveloom/models/provider.py)). Full extension
 mechanics live in [extending.md](extending.md).
+
+Strong-model generation and evolution use up to 32,768 output tokens when the
+model declares an output capability, capped by that capability. Models without
+a declared capability retain the 4,096-token default. SDK callers may request a
+positive budget explicitly, within any declared model limit.

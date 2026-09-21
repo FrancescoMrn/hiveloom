@@ -219,6 +219,7 @@ class AgentLoop:
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
                 provider=spec.model.provider,
+                params=spec.model.params,
             ),
             provider,
         )
