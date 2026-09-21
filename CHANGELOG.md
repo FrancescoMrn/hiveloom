@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- OpenAI-compatible calls retry interrupted HTTP reads and transient error
+  bodies returned with HTTP 200. Embedded context overflow remains recoverable.
+  Blank visible content no longer discards reasoning, and oversized reasoning
+  and provenance payloads are bounded without discarding useful answers.
 - Provider parameters cannot replace harness-controlled identity, transcript,
   tools, output limits, streaming, or response count, and must be bounded JSON.
 - Code-hook validation no longer mistakes `**kwargs` for positional arguments.
