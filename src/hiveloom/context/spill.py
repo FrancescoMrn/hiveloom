@@ -1131,6 +1131,14 @@ class TransformResultTool(_SpillTool):
             raise ToolError(str(exc)) from exc
 
 
-def spill_tools() -> list[Tool]:
-    """The retrieval tools, unbound — one per registry."""
-    return [ReadToolResultTool(), SearchToolResultTool(), TransformResultTool()]
+def spill_tools(*, transforms: bool = True) -> list[Tool]:
+    """The retrieval tools, unbound — one per registry.
+
+    ``transforms`` follows ``context.tool_results.transforms``: off, the
+    registry never holds a ``transform_result`` at all, so the loop's
+    activation-by-name has nothing to switch on and the model never sees it.
+    """
+    tools: list[Tool] = [ReadToolResultTool(), SearchToolResultTool()]
+    if transforms:
+        tools.append(TransformResultTool())
+    return tools

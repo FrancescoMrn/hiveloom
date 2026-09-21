@@ -220,7 +220,9 @@ REPORT TAIL
 `read_tool_result`, `search_tool_result` and `transform_result` are added
 automatically, and stay **inactive until the first spill** — a harness that
 never spills never pays for them in its tool payload. None is spellable in a
-spec, and none can be reached by `search_tools`.
+spec, and none can be reached by `search_tools`. `tool_results.transforms:
+false` leaves only the two readers: the pre-1.2 surface, and the control arm
+when measuring what the transforms are worth.
 
 ### Reshaping a stored result in place
 

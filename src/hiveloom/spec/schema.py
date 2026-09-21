@@ -546,6 +546,16 @@ class ToolResultsConfig(BaseModel):
             "summary lines, totals, and error tails live at the end."
         ),
     )
+    transforms: bool = Field(
+        default=True,
+        description=(
+            "Offer `transform_result` beside the two readers once something has "
+            "spilled, so a stored result can be narrowed in place (grep, count, "
+            "json_path, ...) instead of paged through context. Off leaves only "
+            "read_tool_result/search_tool_result — the pre-1.2 surface, and the "
+            "control arm when measuring what the transforms are worth."
+        ),
+    )
 
     @model_validator(mode="after")
     def _preview_fits(self) -> ToolResultsConfig:

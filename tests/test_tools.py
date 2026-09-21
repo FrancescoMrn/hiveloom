@@ -472,3 +472,25 @@ def test_a_tool_without_handle_parameters_is_untouched(tmp_path: Path):
         ToolCall(id="1", name="file_read", input={"path": _HANDLE}), resolve_handle=explode
     )
     assert result.is_error  # no such file — but the resolver was never consulted
+
+
+def test_transforms_can_be_switched_off_for_a_control_arm(tmp_path: Path):
+    """`tool_results.transforms: false` leaves only the two readers registered.
+
+    The loop activates the spill tools by name, so a tool that was never
+    registered is never offered — no loop-side switch is needed.
+    """
+    from hiveloom import construct
+    from hiveloom.spec.loader import load_spec
+
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="ctl", task="T")
+    construct.add_tool(directory, builtin="file_read")
+    construct.set_value(directory, "context.tool_results.transforms", False)
+    registry = build_registry(load_spec(directory), directory)
+    assert "transform_result" not in registry.names()
+    assert {"read_tool_result", "search_tool_result"} <= set(registry.names())
+    assert registry.activate(["read_tool_result", "search_tool_result", "transform_result"]) == [
+        "read_tool_result",
+        "search_tool_result",
+    ]

@@ -549,7 +549,7 @@ def build_registry(
         # never spills never pays for them in its tool payload.
         from hiveloom.context.spill import spill_tools  # local import to avoid cycles
 
-        for tool in spill_tools():
+        for tool in spill_tools(transforms=spec.context.tool_results.transforms):
             registry.register(tool, active=False)
     if spec.playbooks:
         registry.register(
