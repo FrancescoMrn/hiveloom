@@ -100,6 +100,45 @@ Hive / A/B runner discussion below anticipates — proposals live in the same
 Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
 can populate the same queue without changing this review step.
 
+### Attempt memory and operator findings
+
+Evolution includes the latest 12 resolved proposals for the same harness
+identity, across versions. An `applied` or `rejected` record describes a review
+decision, not measured improvement or regression. Rejected records retain the
+proposed paths and rejection reason. This automatic history comes from the
+proposal queue; direct `evolve --yes` applications are not queue entries.
+
+Drivers that evaluate and keep or revert mutations can supply a newest-first
+ledger via `analyze(..., attempt_history=[AttemptRecord(...)])`. Each record can
+carry `outcome`, `rationale`, `changed_paths`, `yaml_diff`, `measured`,
+`version_hash`, and `note`. An explicit empty list disables automatic queue
+history. Record inconclusive measurements separately from measured regressions.
+The ledger informs proposals; it does not automatically apply or reject them.
+
+Operator findings can identify opportunities even when all recorded runs pass:
+
+```console
+hiveloom evolve ./harness --propose --note "Formatting passes; investigate retrieval coverage" --json
+```
+
+Repeat `--note` for multiple findings, or pass `analyst_notes` to `analyze`.
+Findings cannot override frozen fields or hard metric constraints. Changing the
+findings or supplied history gives a queued proposal a new deduplication key.
+
+All prompt sections, including the current spec, history, and findings, pass
+through the current redaction policy before text is shortened. Failure evidence
+strings are capped at 1,500 characters; the report section is capped at 64,000
+characters, history at approximately 24,000, and findings at 6,000. History
+includes at most 12 attempts and 2,000 characters per diff. Cuts are marked, and
+oversized JSON sections become a valid JSON object containing an explicitly
+truncated excerpt. These evidence limits do not truncate the current spec.
+
+Malformed proposals and correctable objective omissions receive feedback, with
+at most three total proposing-model calls. Transport errors are left to the
+provider's retry policy; inconsistent metric directions fail before calling
+the model. Frozen-path gates, whole-spec validation, and code approval still
+apply to every proposal.
+
 ### Bounded incident evidence
 
 By default, evolution works from bounded Hive summaries and does not send

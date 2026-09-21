@@ -2577,6 +2577,9 @@ def evolve(
         "--from-parent",
         help="Analyse the parent run's version instead (a fork with no runs yet).",
     ),
+    notes: list[str] | None = typer.Option(
+        None, "--note", help="Operator finding to inform the proposal; repeatable."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
@@ -2620,6 +2623,7 @@ def evolve(
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
                 objectives=spec.evolution.objectives,
+                analyst_notes=notes,
             )
             if report.is_empty():
                 reason = _nothing_to_evolve_reason(

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Evolution attempt memory: recent applied/rejected proposals inform subsequent
+  proposals, and SDK callers can supply measured `AttemptRecord` histories.
+  Review decisions and inconclusive experiments are not treated as proof of
+  quality changes.
+- Operator findings through `evolve --note` (repeatable) and
+  `analyze(analyst_notes=...)`, including opportunities without failed runs.
 - Model capability metadata `max_output_tokens`, checked against
   `model.max_tokens`, and configurable OpenAI-compatible `timeout_seconds`.
 - Frozen `model.params` for provider request fields, forwarded by the Claude and
@@ -16,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Evolution repairs malformed proposals and correctable objective omissions
+  within three total model calls. Inconsistent metric evidence fails before
+  any call. Prompt evidence, history, notes, and the current spec are redacted;
+  evidence sections have size limits. Updated findings/history invalidate stale
+  proposal deduplication keys.
 - Truncated model turns receive continuation feedback within the declared
   token budget. Three consecutive truncations or exhausted turns return
   `truncated` (CLI exit 4), retaining partial output; passing verification can

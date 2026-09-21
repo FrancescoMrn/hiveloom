@@ -77,13 +77,18 @@ class ProposalRecord(BaseModel):
 def _dedup_key(report: FailureReport) -> str:
     """Deterministic key over a failure report's cluster signatures.
 
-    Same failure state (same clusters) against the same spec version always
-    dedups to the same pending proposal, regardless of cluster ordering.
+    Identical clusters, evidence, operator findings, and attempt history against
+    the same spec version reuse a pending proposal, regardless of cluster order.
     """
     signatures = sorted(f"{cluster.kind}:{cluster.signature}" for cluster in report.clusters)
     evidence = report.evidence_receipt() or {}
     material = json.dumps(
-        {"signatures": signatures, "evidence": evidence},
+        {
+            "signatures": signatures,
+            "evidence": evidence,
+            "analyst_notes": report.analyst_notes,
+            "attempt_history": [item.model_dump(mode="json") for item in report.attempt_history],
+        },
         sort_keys=True,
         separators=(",", ":"),
     )

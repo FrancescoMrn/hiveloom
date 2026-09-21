@@ -387,8 +387,23 @@ def test_hard_ceiling_cannot_be_ignored_for_a_cost_improvement(tmp_path: Path):
             ],
         }
     )
+    # A proposal that ignores a violated hard constraint is now told so and given
+    # a chance to correct; a researcher that keeps ignoring it still fails the
+    # step, and the message says how many attempts it took.
     with pytest.raises(ProposalError, match="hard metric constraint.*hallucination_rate"):
-        propose(spec, report, FakeStrongModel([payload]))
+        propose(spec, report, FakeStrongModel([payload, payload, payload]))
+
+    corrected = json.loads(payload)
+    corrected["objective_expectations"].append(
+        {
+            "metric": "hallucination_rate",
+            "expected_change": "decrease",
+            "rationale": "Stay under the ceiling.",
+        }
+    )
+    model = FakeStrongModel([payload, json.dumps(corrected)])
+    assert propose(spec, report, model).rationale
+    assert "could not be used" in model.prompts[-1]["user"]
 
 
 def test_recorded_metric_direction_must_match_the_objective(tmp_path: Path):
@@ -420,8 +435,12 @@ def test_recorded_metric_direction_must_match_the_objective(tmp_path: Path):
             ],
         }
     )
+    # Not correctable by the researcher — the recorded data disagrees with the
+    # objective — so retrying cannot help, but it must still fail loudly.
+    model = FakeStrongModel([payload])
     with pytest.raises(ProposalError, match="direction disagrees"):
-        propose(spec, report, FakeStrongModel([payload]))
+        propose(spec, report, model)
+    assert model.prompts == []
 
 
 def test_metric_proposal_records_expectation_and_aggregate_receipt(tmp_path: Path):

@@ -31,6 +31,7 @@ from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.spec.loader import load_spec
+from hiveloom.spec.schema import HarnessSpec
 
 cli_runner = CliRunner()
 
@@ -39,6 +40,13 @@ def _harness(tmp_path: Path) -> Path:
     directory = tmp_path / "h"
     construct.init_harness(directory, name="demo", task="Do a thing.")
     return directory
+
+
+def _spec_for_prompt() -> HarnessSpec:
+    """A minimal valid spec; these tests are about the prompt, not the harness."""
+    return HarnessSpec(
+        name="demo", description="Do a thing.", system_prompt="Do the thing."
+    )
 
 
 def _report() -> FailureReport:
@@ -819,6 +827,132 @@ def test_from_parent_needs_a_fork_directory(tmp_path: Path, monkeypatch):
     assert "fork" in json.loads(result.stdout)["error"]
 
 
+# --------------------------------------------------------------------------- #
+# A researcher is a model too: a malformed proposal is feedback, not a dead end
+# --------------------------------------------------------------------------- #
+def _minimal_proposal_payload() -> str:
+    return json.dumps(
+        {
+            "rationale": "tighten the answer contract",
+            "yaml_changes": [{"path": "loop.max_turns", "value": 30}],
+        }
+    )
+
+
+def test_a_malformed_proposal_is_retried_with_the_parse_error(tmp_path):
+    """Failing the step on the first bad reply throws away the analysis behind it."""
+    spec = load_spec(_harness(tmp_path))
+    model = FakeStrongModel(
+        ["I think we should... (prose, no object)", _minimal_proposal_payload()]
+    )
+
+    proposal = propose(spec, _report(), model)
+
+    assert proposal.rationale == "tighten the answer contract"
+
+
+def test_the_retry_tells_the_researcher_what_was_wrong(tmp_path):
+    spec = load_spec(_harness(tmp_path))
+    model = FakeStrongModel(["not json at all", _minimal_proposal_payload()])
+
+    propose(spec, _report(), model)
+
+    # The second prompt must carry the failure, or the model repeats itself.
+    assert len(model.prompts) == 2
+    second = model.prompts[-1]["user"]
+    assert "could not be used" in second
+    assert "JSON object and nothing else" in second
+    # ...and the original analysis is still there, not replaced by the complaint.
+    assert model.prompts[0]["user"] in second
+
+
+def test_a_researcher_that_never_complies_still_fails_loudly(tmp_path):
+    spec = load_spec(_harness(tmp_path))
+    model = FakeStrongModel(["prose", "more prose", "still prose"])
+
+    with pytest.raises(ProposalError, match="after 3 attempts"):
+        propose(spec, _report(), model)
+
+
+# --------------------------------------------------------------------------- #
+# Search memory: what was already tried
+# --------------------------------------------------------------------------- #
+def test_the_prompt_carries_what_was_already_tried_and_refuted(tmp_path: Path):
+    """A memoryless proposer re-proposes the same mutation forever.
+
+    This is the defect that stalled the ARC-AGI-2 autoresearch loop: the
+    prompt was the spec plus a failure report, and the driver only advanced its
+    evidence pointer on a *keep*. So after a revert the researcher saw
+    byte-identical input and produced the same idea again — a fixed point
+    wearing the costume of a search.
+    """
+    from hiveloom.evolve.analyzer import AttemptRecord
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    spec = load_spec(_harness(tmp_path))
+    report = FailureReport(
+        harness_name="h",
+        total_runs=10,
+        success_rate=0.4,
+        clusters=[FailureCluster(kind="verdict", signature="bad answer", count=6)],
+        attempt_history=[
+            AttemptRecord(
+                outcome="reverted",
+                rationale="clarify the answer format in the system prompt",
+                changed_paths=["system_prompt"],
+                yaml_diff="-old prompt\n+new prompt\n",
+                measured={"tasks_improved": 3, "tasks_regressed": 6, "p_improved": 0.9},
+                note="primary regressed",
+            )
+        ],
+    )
+    _, user = build_evolve_prompt(spec, report)
+
+    assert "outcome=reverted" in user
+    assert "clarify the answer format in the system prompt" in user
+    assert "tasks_regressed" in user
+    assert "already tried" in user
+    # Rendered once, not twice: the history is stripped from the report JSON so
+    # a long diff does not spend the prompt budget on both copies.
+    assert user.count("clarify the answer format in the system prompt") == 1
+    assert '"attempt_history"' not in user
+
+
+def test_a_history_diff_is_truncated_so_one_attempt_cannot_eat_the_prompt(tmp_path: Path):
+    """77k characters of prompt is how the proposer stopped emitting JSON.
+
+    One rewritten system_prompt is thousands of lines of diff; a dozen of them
+    crowd out the failures the proposal is supposed to address.
+    """
+    from hiveloom.evolve.analyzer import AttemptRecord
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    report = FailureReport(
+        harness_name="h",
+        total_runs=1,
+        success_rate=0.0,
+        attempt_history=[
+            AttemptRecord(outcome="reverted", yaml_diff="+" + ("x" * 50_000))
+        ],
+    )
+    _, user = build_evolve_prompt(load_spec(_harness(tmp_path)), report)
+    assert "(diff truncated)" in user
+    assert len(user) < 20_000
+
+
+def test_an_empty_history_adds_nothing_to_the_prompt(tmp_path: Path):
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    _, user = build_evolve_prompt(
+        load_spec(_harness(tmp_path)),
+        FailureReport(harness_name="h", total_runs=1, success_rate=0.0),
+    )
+    assert "already tried" not in user
+
+
+# --------------------------------------------------------------------------- #
+# The researcher's own output budget
+# --------------------------------------------------------------------------- #
 def test_a_strong_model_budget_follows_the_declared_ceiling(monkeypatch):
     """A reasoning researcher starved of output tokens narrates and never answers.
 
@@ -844,3 +978,75 @@ def test_a_strong_model_budget_follows_the_declared_ceiling(monkeypatch):
     monkeypatch.setattr(ext, "model_info", lambda _id: None)
     assert llm.strong_max_tokens("unknown") == llm.FALLBACK_STRONG_MAX_TOKENS
     assert llm.DEFAULT_STRONG_MAX_TOKENS > 4096
+
+
+def test_unbounded_failure_records_cannot_swamp_the_evolve_prompt():
+    """Every sibling evidence section has a configured cap; this one had none.
+
+    `recent_failures` carried whole run records — task statement, output, and
+    every failed verification — so on a harness with a large task statement
+    five of them were 55k characters of a 129k prompt, burying the clusters the
+    proposal is supposed to address.
+    """
+    from hiveloom.evolve.evolver import _MAX_EVIDENCE_STRING_CHARS, build_evolve_prompt
+
+    huge = "G" * 40_000
+    report = FailureReport(
+        harness_name="h",
+        total_runs=5,
+        success_rate=0.0,
+        clusters=[FailureCluster(kind="verdict", signature="bad answer", count=6)],
+        recent_failures=[{"run_id": "r1", "task": huge, "output": huge}],
+    )
+    _, user = build_evolve_prompt(_spec_for_prompt(), report)
+
+    assert "truncated]" in user
+    assert huge not in user
+    assert len(user) < 20_000
+    # The signal survives the cut: the proposer still sees what went wrong.
+    assert "bad answer" in user
+    assert "G" * _MAX_EVIDENCE_STRING_CHARS in user
+
+
+def test_operator_findings_reach_the_proposer_as_trusted_guidance():
+    """Evidence built from failures cannot contain an opportunity.
+
+    A harness that samples a task once, and would have been right had it
+    sampled three times, produces a clean run with no failure signature at all.
+    No amount of better clustering surfaces that, so findings from analysis need
+    their own channel — and they are operator-authored, so unlike run data they
+    are presented as something to act on.
+    """
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    report = FailureReport(
+        harness_name="h",
+        total_runs=20,
+        success_rate=1.0,
+        analyst_notes=[
+            "Output formatting is 0% of loss; that work is finished.",
+            "Independent samples disagree on 22.2% of pairs.",
+        ],
+    )
+    _, user = build_evolve_prompt(_spec_for_prompt(), report)
+
+    assert "Independent samples disagree on 22.2% of pairs." in user
+    assert "trusted" in user
+    # Rendered once, in its own section — not buried inside the report JSON.
+    assert '"analyst_notes"' not in user
+    assert user.count("Output formatting is 0% of loss") == 1
+
+
+def test_findings_alone_make_a_report_worth_evolving():
+    """A harness with no failures can still have work worth doing.
+
+    `is_empty` gates the whole evolve step. Without this, an arm that fails
+    nothing — the reproduced ARC-AGI-2 reference, for instance — reports
+    "nothing to evolve" even when analysis has found where its remaining loss
+    is and how to reach it.
+    """
+    assert FailureReport(harness_name="h", total_runs=9, success_rate=1.0).is_empty()
+    assert not FailureReport(
+        harness_name="h", total_runs=9, success_rate=1.0,
+        analyst_notes=["wrong_content is 47.9% of loss and sampling is the lever"],
+    ).is_empty()
