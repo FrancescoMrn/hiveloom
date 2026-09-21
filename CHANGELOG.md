@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Code-hook validation no longer mistakes `**kwargs` for positional arguments.
+
 ## [1.1.0] - 2026-09-09
 
 The containment and evidence release. Large tool results stay retrievable

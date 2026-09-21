@@ -99,3 +99,20 @@ def test_resolve_hooks_good_validator_signature(tmp_path: Path):
     )
     spec = load_spec(tmp_path)
     resolve_hooks(spec, tmp_path)  # must not raise
+
+
+def test_kwargs_cannot_replace_a_required_positional_hook_argument():
+    from hiveloom.spec.loader import _accepts_n_params
+
+    def bad_validator(output, **kwargs):
+        pass
+
+    def good_validator(output, context, **kwargs):
+        pass
+
+    def variadic_validator(output, *args):
+        pass
+
+    assert not _accepts_n_params(bad_validator, 2)
+    assert _accepts_n_params(good_validator, 2)
+    assert _accepts_n_params(variadic_validator, 2)

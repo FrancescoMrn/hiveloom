@@ -214,7 +214,7 @@ def _accepts_n_params(func, minimum: int) -> bool:
     except (ValueError, TypeError):
         return True  # builtins / C callables — assume ok
     positional = 0
-    has_var = False
+    absorbs_extra_positionals = False
     for param in sig.parameters.values():
         if param.kind in (
             inspect.Parameter.POSITIONAL_ONLY,
@@ -222,10 +222,13 @@ def _accepts_n_params(func, minimum: int) -> bool:
         ):
             positional += 1
         elif param.kind == inspect.Parameter.VAR_POSITIONAL:
-            has_var = True
-        elif param.kind == inspect.Parameter.VAR_KEYWORD:
-            has_var = True
-    return has_var or positional >= minimum
+            # *args takes whatever is left over; **kwargs does not. Counting
+            # **kwargs here passed `def validate(output, **_)` — one positional
+            # parameter against a two-positional-argument protocol — and the
+            # mismatch then surfaced as a TypeError mid-run, once every cell of
+            # a sweep had already been dispatched.
+            absorbs_extra_positionals = True
+    return absorbs_extra_positionals or positional >= minimum
 
 
 def resolve_hooks(spec: HarnessSpec, base_dir: str | Path) -> None:
