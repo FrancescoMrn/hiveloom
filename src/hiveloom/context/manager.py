@@ -285,6 +285,25 @@ class ContextManager:
     def estimated_input_tokens(self) -> int:
         return self.provider.count_tokens(system=self.system(), messages=self.messages)
 
+    def rewind_to(self, count: int) -> int:
+        """Drop every message after the first ``count``. Returns how many went.
+
+        Compaction *summarises* history because the run still depends on it.
+        This discards it outright, which is what an independent retry needs: a
+        second attempt that can see the first is not a second sample, it is a
+        continuation, and averaging it with the first would be averaging a
+        thing with its own echo. The pinned prefix (system prompt and task
+        statement) is what ``count`` is normally set to.
+        """
+        count = max(0, min(count, len(self.messages)))
+        dropped = len(self.messages) - count
+        if not dropped:
+            return 0
+        self.messages = self.messages[:count]
+        if self._trace is not None:
+            self._trace.emit("context_rewound", kept=count, dropped=dropped)
+        return dropped
+
     def apply_summary(self, summary: str) -> None:
         """Replace compactible history with a summary while retaining pinned messages."""
         pinned = self.messages[: self.pinned_message_count]

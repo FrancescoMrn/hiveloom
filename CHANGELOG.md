@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frozen `model.params` for provider request fields, forwarded by the Claude and
   OpenAI-compatible providers and preserved by runtime model overrides.
 
+- Experimental `best_of_n` loop policy on the ARC branch: collect multiple
+  attempts and select a plurality answer. General-purpose release limitations
+  are documented in `docs/evolution-migration.md`.
+
 ### Fixed
 
 - Evolution repairs malformed proposals and correctable objective omissions

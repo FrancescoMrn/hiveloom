@@ -53,6 +53,10 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     # An unused provider-params field must not invalidate existing run cohorts.
     if not data.get("model", {}).get("params"):
         data["model"].pop("params", None)
+    # Sampling is opt-in; its default must not change other policies' hashes.
+    loop = data.get("loop", {})
+    if loop.get("policy") != "best_of_n" and loop.get("attempts") == 3:
+        loop.pop("attempts", None)
     # Empty lists for these fields are the default; omit them so specs that
     # predate a field keep their exact YAML shape (and version hash) on rewrite.
     for optional_list in ("extensions", "hooks", "skills"):

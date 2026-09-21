@@ -71,9 +71,27 @@ for each new hostname during a plain CLI run.
   600, and confined like any other spawn), `grounded_references` (selected
   output IDs must occur in approved evidence from this run).
 - **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
-  ordered `loop.steps` list; object steps can enforce tools and call limits).
+  ordered `loop.steps` list; object steps can enforce tools and call limits),
+  `best_of_n` (experimental consensus over `loop.attempts` samples).
 - **Compaction:** `summarize`, `truncate_oldest`.
 - **Hooks:** `strip_json_fence` (an opt-in final-output normalizer).
+
+`best_of_n` is experimental on the ARC branch. It rewinds conversation history
+between samples and chooses a plurality over whitespace-normalized outputs.
+Tool state is shared between attempts; journal replay and general-purpose
+verification integration still need the work described in
+[evolution-migration.md](evolution-migration.md#multiple-attempt-consensus-best_of_n).
+
+```yaml
+loop:
+  policy: best_of_n
+  attempts: 5
+  max_turns: 60  # shared across all attempts
+```
+
+`attempts: 1` provides a single-sample control. The trace records
+`attempt_recorded` and `attempts_selected`; ties select the first answer.
+This policy does not automatically increase the configured model token budget.
 
 Structured sequential steps make deterministic phases inspectable and
 enforceable:

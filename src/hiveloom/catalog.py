@@ -323,6 +323,12 @@ POLICIES: dict[str, CatalogEntry] = _entries(
         "tool subsets, required successful calls, and per-step call limits.",
         tags=["loop"],
     ),
+    CatalogEntry(
+        name="best_of_n",
+        description="Solve the task loop.attempts times independently (context rewound "
+        "between attempts) and submit the answer the attempts agree on.",
+        tags=["loop"],
+    ),
 )
 
 

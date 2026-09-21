@@ -1,7 +1,7 @@
 """The synchronous agent loop engine.
 
 The loop's *strategy* is a pluggable :class:`~hiveloom.loop.policies.LoopPolicy`
-(``react``/``plan_then_act``/``sequential_steps`` builtin, more
+(``react``/``plan_then_act``/``sequential_steps``/``best_of_n`` builtin, more
 via extensions). The loop drives guardrail hooks, the lifecycle event bus, the
 tool registry, context assembly, and the verify step, emitting a trace event at
 every step. Designed so an
@@ -218,8 +218,9 @@ class AgentLoop:
             if switch_tool is not None:
                 switch_tool.bind(self._handle_switch_playbook)
         self._events = events if events is not None else EventBus(trace=trace)
+        self._pending_output: str | None = None
         self._policy = policy if policy is not None else build_policy(
-            spec.loop.policy, {"steps": spec.loop.steps}
+            spec.loop.policy, {"steps": spec.loop.steps, "attempts": spec.loop.attempts}
         )
         self._router = router if router is not None else ModelRouter.create(
             self._base,
@@ -293,6 +294,17 @@ class AgentLoop:
     def emit_step_event(self, event: str, **payload: Any) -> None:
         """Emit a policy-owned step event through the run's trace."""
         self._trace.emit(event, **payload)
+
+    @property
+    def pending_output(self) -> str | None:
+        """The answer a terminating tool produced, while the policy may refuse it.
+
+        Set immediately before ``wants_continue_after_tools`` and read only
+        there. A tool that ends the run carries the answer in its result, not
+        in the model's text, so a policy handed only the ``ModelResponse``
+        would see an empty completion and treat a finished attempt as nothing.
+        """
+        return self._pending_output
 
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
@@ -447,6 +459,7 @@ class AgentLoop:
                         self._context.add_user(nudge)
                         self._state.policy_nudges += 1
                     continue
+                self._pending_output = terminate_output
                 nudge = self._policy.wants_continue_after_tools(self, response)
                 if nudge is not None:
                     self._context.add_user(nudge)
@@ -496,6 +509,7 @@ class AgentLoop:
                 # No tool calls -> the model is signalling completion.
                 output = response.text
 
+            output = self._policy.select_output(self, output)
             output = self._transform_output(output)
             self._state.output = output
 
@@ -551,7 +565,7 @@ class AgentLoop:
 
         return self._finish(
             "max_turns",
-            output=self._state.output or "",
+            output=self._policy.fallback_output(self, self._state.output or ""),
             verdicts=last_verdicts,
         )
 

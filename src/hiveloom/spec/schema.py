@@ -683,6 +683,18 @@ class LoopConfig(BaseModel):
         ),
     )
 
+    attempts: int = Field(
+        default=3,
+        ge=1,
+        le=16,
+        description=(
+            "How many independent attempts best_of_n samples before submitting the "
+            "consensus answer. Every attempt spends from the same max_turns, so raise "
+            "that alongside it. 1 is a deliberate control (one attempt, no vote). "
+            "Ignored by other policies."
+        ),
+    )
+
     @model_validator(mode="after")
     def _check_sequential_steps(self) -> LoopConfig:
         # Deliberately one-directional: only reject sequential_steps with empty

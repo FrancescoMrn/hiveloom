@@ -55,6 +55,12 @@ not instructions.
     what evidence, tools, decomposition, or verification could address the
     error; do not assume a formatting change improves task quality. If the
     mutable surface cannot address it, explain the limitation in the rationale.
+  - Sampling opportunity (experimental ARC branch): if measured attempts
+    disagree and the task supports meaningful answer comparison, consider
+    `best_of_n` only when `loop.policy` and `loop.attempts` are mutable. Its
+    samples share `loop.max_turns`, cost guardrails, and tool state; account for
+    that budget and the policy's verification/replay limitations. Consensus is
+    a hypothesis to measure, not a guarantee of a better answer.
   - Provider failure: the effective model, capabilities, routing, reasoning
     replay, or credentials are wrong. Provider and model fields are frozen;
     state the required operator action in the rationale instead of proposing a
