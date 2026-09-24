@@ -94,6 +94,70 @@ Verbatim fragments that must survive: identifiers, tool outputs still needed, \
 constraints, error messages."""
 
 
+_SUMMARY_PREFIX = "[summary of earlier turns]\n"
+# A second compaction must not re-summarize the first summary as if it were one
+# more transcript line: that is how an identifier or a ruled-out approach from
+# the first half of a long run quietly drops out by the third compaction.
+_UPDATE_INSTRUCTION = """An earlier summary of this run is given in \
+<previous-summary>. Produce the updated summary: keep every item in it that is \
+still true, move finished next steps into Progress, and add what the new \
+transcript contributes. Never drop an identifier, value or ruled-out approach \
+from the previous summary unless the new transcript shows it is wrong."""
+_ANCHOR_CHARS = 2000
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        str(block.get("text") or "") for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _summary_prompt(
+    older: list[dict[str, Any]], recent: list[dict[str, Any]]
+) -> str:
+    """The summarize request: format, previous summary, transcript, recency anchor."""
+    previous = [
+        _message_text(message)[len(_SUMMARY_PREFIX):]
+        for message in older
+        if message.get("role") == "user"
+        and _message_text(message).startswith(_SUMMARY_PREFIX)
+    ]
+    transcript = _render_for_summary(
+        [
+            message for message in older
+            if not (
+                message.get("role") == "user"
+                and _message_text(message).startswith(_SUMMARY_PREFIX)
+            )
+        ]
+    )
+    parts = [_SUMMARY_FORMAT]
+    if previous:
+        parts.append(_UPDATE_INSTRUCTION)
+        parts.append("<previous-summary>\n" + "\n\n".join(previous) + "\n</previous-summary>")
+    parts.append(transcript)
+    # The newest thing the agent said, which stays in context verbatim: the
+    # summary must agree with it rather than describe a state already left.
+    latest = next(
+        (
+            _message_text(message) for message in reversed([*older, *recent])
+            if message.get("role") == "assistant" and _message_text(message).strip()
+        ),
+        "",
+    )
+    if latest:
+        parts.append(
+            "<recent-state>\nThe agent's most recent statement; make the summary "
+            "consistent with it and do not describe an earlier state as current:\n"
+            f"{latest[-_ANCHOR_CHARS:]}\n</recent-state>"
+        )
+    return "\n\n".join(parts)
+
+
 class SummarizeCompaction(CompactionMethod):
     name = "summarize"
 
@@ -106,9 +170,11 @@ class SummarizeCompaction(CompactionMethod):
             # rather than make no progress (an overflow retry depends on it).
             keep_from = len(manager.messages) - 1
         older = manager.messages[manager.pinned_message_count : keep_from]
-        transcript = _render_for_summary(older)
         summary_prompt = [
-            {"role": "user", "content": f"{_SUMMARY_FORMAT}\n\n{transcript}"}
+            {
+                "role": "user",
+                "content": _summary_prompt(older, manager.messages[keep_from:]),
+            }
         ]
         response = manager.complete_compaction(
             system="You compress agent transcripts into durable, structured notes.",
@@ -411,7 +477,7 @@ class ContextManager:
         recent = self.messages[keep_from:] if len(self.messages) > 1 else []
         summary_block = {
             "role": "user",
-            "content": f"[summary of earlier turns]\n{summary}",
+            "content": f"{_SUMMARY_PREFIX}{summary}",
         }
         self.messages = [*pinned, summary_block, *recent]
 
