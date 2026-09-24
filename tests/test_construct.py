@@ -221,6 +221,22 @@ def test_add_builtin_validator_with_params(harness_dir: Path):
     assert spec.verify.validators[-1].params()["schema_file"] == "./schemas/output.json"
 
 
+def test_add_artifact_schema_validator_with_params(harness_dir: Path):
+    construct.add_validator(
+        harness_dir,
+        builtin="artifact_schema",
+        schema_file="./schemas/proposal.json",
+        artifact_kind="proposal",
+        min_count=0,
+    )
+    params = load_spec(harness_dir).verify.validators[-1].params()
+    assert params == {
+        "schema_file": "./schemas/proposal.json",
+        "artifact_kind": "proposal",
+        "min_count": 0,
+    }
+
+
 def test_add_guardrail(harness_dir: Path):
     construct.add_guardrail(harness_dir, builtin="max_wall_clock_seconds", value=120)
     spec = load_spec(harness_dir)

@@ -8,6 +8,7 @@ from pathlib import Path
 from hiveloom.spec.schema import HarnessSpec
 from hiveloom.verify.base import VerdictResult
 from hiveloom.verify.builtin import (
+    ArtifactSchemaVerifier,
     CodeVerifier,
     CommandSucceedsVerifier,
     FileExistsVerifier,
@@ -40,6 +41,28 @@ def test_output_schema_invalid_json(tmp_path: Path):
     v = OutputSchemaVerifier("schema.json", tmp_path)
     result = v.validate("not json", {})
     assert not result.passed and "JSON" in result.feedback
+
+
+def test_artifact_schema_validates_matching_artifacts(tmp_path: Path):
+    _schema(tmp_path)
+    verifier = ArtifactSchemaVerifier("schema.json", "proposal", 1, tmp_path)
+    context = {"artifacts": [{"kind": "proposal", "data": {"a": "x"}}]}
+    assert verifier.validate("ignored prose", context).passed
+
+    bad = verifier.validate(
+        "ignored prose", {"artifacts": [{"kind": "proposal", "data": {"b": 1}}]}
+    )
+    assert not bad.passed and "index 0" in bad.feedback and "schema" in bad.feedback
+
+
+def test_artifact_schema_enforces_minimum_count(tmp_path: Path):
+    _schema(tmp_path)
+    verifier = ArtifactSchemaVerifier("schema.json", "proposal", 1, tmp_path)
+    result = verifier.validate("", {"artifacts": [{"kind": "query", "data": {}}]})
+    assert not result.passed and "found 0" in result.feedback
+
+    optional = ArtifactSchemaVerifier("schema.json", "proposal", 0, tmp_path)
+    assert optional.validate("", {"artifacts": []}).passed
 
 
 def test_regex_match():

@@ -66,6 +66,55 @@ class OutputSchemaVerifier(Verifier):
         return VerdictResult(passed=True, verifier=self.name)
 
 
+class ArtifactSchemaVerifier(Verifier):
+    """Validate tool-produced artifact data, not the model's prose output."""
+
+    name = "artifact_schema"
+
+    def __init__(self, schema_file: str, artifact_kind: str, min_count: int, base: Path):
+        self._schema_path = base / schema_file
+        self._artifact_kind = artifact_kind
+        self._min_count = min_count
+
+    def validate(self, run_output: str, run_context: dict[str, Any]) -> VerdictResult:
+        import jsonschema
+
+        if not self._schema_path.exists():
+            return VerdictResult(
+                passed=False,
+                feedback=f"schema file not found: {self._schema_path}",
+                verifier=self.name,
+            )
+        schema = json.loads(self._schema_path.read_text(encoding="utf-8"))
+        artifacts = [
+            artifact
+            for artifact in (run_context.get("artifacts") or [])
+            if artifact.get("kind") == self._artifact_kind
+        ]
+        if len(artifacts) < self._min_count:
+            return VerdictResult(
+                passed=False,
+                feedback=(
+                    f"expected at least {self._min_count} artifact(s) of kind "
+                    f"'{self._artifact_kind}', found {len(artifacts)}"
+                ),
+                verifier=self.name,
+            )
+        for index, artifact in enumerate(artifacts):
+            try:
+                jsonschema.validate(artifact.get("data"), schema)
+            except jsonschema.ValidationError as exc:
+                return VerdictResult(
+                    passed=False,
+                    feedback=(
+                        f"artifact '{self._artifact_kind}' at index {index} does not "
+                        f"match schema: {exc.message}"
+                    ),
+                    verifier=self.name,
+                )
+        return VerdictResult(passed=True, verifier=self.name)
+
+
 class RegexMatchVerifier(Verifier):
     name = "regex_match"
 
@@ -406,6 +455,13 @@ def _register_factories() -> None:
         "validators",
         "output_schema",
         lambda p, ctx: OutputSchemaVerifier(p["schema_file"], ctx.base),
+    )
+    ext.register_builtin_factory(
+        "validators",
+        "artifact_schema",
+        lambda p, ctx: ArtifactSchemaVerifier(
+            p["schema_file"], p["artifact_kind"], p.get("min_count", 1), ctx.base
+        ),
     )
     ext.register_builtin_factory(
         "validators", "regex_match", lambda p, _c: RegexMatchVerifier(p["pattern"])

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Structured artifact verification.** The new builtin `artifact_schema`
+  validator checks every tool artifact of a selected `artifact_kind` against a
+  JSON Schema and can require a minimum count. This gives tool-driven harnesses
+  the same declarative contract checking that `output_schema` already provides
+  for final model output.
+
 ## [1.1.0] - 2026-09-09
 
 The containment and evidence release. Large tool results stay retrievable

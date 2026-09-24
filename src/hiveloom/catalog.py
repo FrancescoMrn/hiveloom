@@ -247,6 +247,35 @@ BUILTIN_VALIDATORS: dict[str, CatalogEntry] = _entries(
         ],
     ),
     CatalogEntry(
+        name="artifact_schema",
+        description=(
+            "Validate every structured artifact of one kind against a JSON schema, "
+            "and optionally require a minimum number of matching artifacts."
+        ),
+        tags=["schema", "artifacts"],
+        params=[
+            ParamSpec(
+                name="schema_file",
+                type="str",
+                required=True,
+                description="Path (relative to the harness dir) of a JSON schema.",
+            ),
+            ParamSpec(
+                name="artifact_kind",
+                type="str",
+                required=True,
+                description="Only artifacts whose kind exactly matches this value are checked.",
+            ),
+            ParamSpec(
+                name="min_count",
+                type="int",
+                required=False,
+                default=1,
+                description="Minimum matching artifacts required for the validator to pass.",
+            ),
+        ],
+    ),
+    CatalogEntry(
         name="regex_match",
         description="Pass only if the run output matches the given regex.",
         tags=["regex"],

@@ -724,7 +724,13 @@ def add_validator_cmd(
     builtin: str | None = typer.Option(None, "--builtin", help="Builtin validator name."),
     code: str | None = typer.Option(None, "--code", help="Code hook path.py:function."),
     description: str | None = typer.Option(None, "--description", help="Optional note."),
-    schema_file: str | None = typer.Option(None, "--schema-file", help="For output_schema."),
+    schema_file: str | None = typer.Option(
+        None, "--schema-file", help="For output_schema or artifact_schema."
+    ),
+    artifact_kind: str | None = typer.Option(
+        None, "--artifact-kind", help="For artifact_schema."
+    ),
+    min_count: int | None = typer.Option(None, "--min-count", help="For artifact_schema."),
     pattern: str | None = typer.Option(None, "--pattern", help="For regex_match."),
     path: str | None = typer.Option(None, "--path", help="For file_exists."),
     command: str | None = typer.Option(None, "--command", help="For command_succeeds."),
@@ -763,6 +769,8 @@ def add_validator_cmd(
             code=code,
             description=description,
             schema_file=schema_file,
+            artifact_kind=artifact_kind,
+            min_count=min_count,
             pattern=pattern,
             path=path,
             command=command,
