@@ -28,7 +28,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
 | `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `model`/`model_provider` (**always frozen**), `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
-| `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
+| `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method,max_tokens}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
 | `memory` | Durable lessons rendered into every run's system prompt | `enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars` (**all frozen from evolution**), `entries` (evolvable) |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |

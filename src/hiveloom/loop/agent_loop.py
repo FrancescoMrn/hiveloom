@@ -745,8 +745,14 @@ class AgentLoop:
         input_tokens = self._router.provider.count_tokens(
             system=system, messages=messages, tools=tools
         )
+        config = self._router.config
+        compaction_cap = self._spec.context.compaction.max_tokens
+        if phase == "compaction" and compaction_cap is not None:
+            config = config.model_copy(
+                update={"max_tokens": min(config.max_tokens, compaction_cap)}
+            )
         self._state.pending_cost_usd = self._router.provider.estimated_cost(
-            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
+            Usage(input_tokens=input_tokens, output_tokens=config.max_tokens),
             self._router.config.id,
             self._router.config.provider,
         )
@@ -787,7 +793,7 @@ class AgentLoop:
             system=system,
             messages=messages,
             tools=tools,
-            config=self._router.config,
+            config=config,
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls

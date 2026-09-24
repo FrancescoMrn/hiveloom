@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Experimental `best_of_n` loop policy on the ARC branch: collect multiple
   attempts and select a plurality answer. General-purpose release limitations
   are documented in `docs/evolution-migration.md`.
+- `context.compaction.max_tokens` caps the output of the summarize call alone.
+  It used to run with `model.max_tokens`, and a reasoning model given a 32k
+  budget spent 545 s on one summary.
 
 ### Fixed
 

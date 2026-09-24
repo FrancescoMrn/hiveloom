@@ -455,3 +455,40 @@ def test_truncate_oldest_keeps_the_newest_exchange():
 
     assert _tool_result_ids(cm.messages)[-1] == "toolu_5"
     _assert_tool_blocks_paired(cm.messages)
+
+
+def test_compaction_max_tokens_caps_only_the_summary_call(tmp_path: Path):
+    import shutil
+
+    from hiveloom import construct, runner
+    from hiveloom.models.fake import text_response, tool_response
+
+    harness = tmp_path / "h"
+    source = Path(__file__).resolve().parent.parent / "harnesses" / "example-summarizer"
+    shutil.copytree(source, harness)
+    (harness / "notes.txt").write_text("The quick brown fox. " * 400)
+    construct.set_field(harness, "context.max_input_tokens", "600")
+    construct.set_field(harness, "context.compaction.trigger_at_pct", "10")
+    construct.set_field(harness, "context.compaction.method", "summarize")
+    construct.set_field(harness, "context.compaction.max_tokens", "256")
+    construct.set_field(harness, "loop.require_verification", "false")
+    caps: list[int] = []
+
+    class Recording(FakeModelProvider):
+        def complete(self, **kwargs):
+            caps.append(kwargs["config"].max_tokens)
+            return super().complete(**kwargs)
+
+    provider = Recording(
+        [
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c1"),
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c2"),
+            text_response("# Goal\n- summarize"),
+            text_response("done"),
+        ]
+    )
+
+    runner.run_harness(harness, "notes.txt", provider=provider)
+
+    assert 256 in caps
+    assert any(cap > 256 for cap in caps)

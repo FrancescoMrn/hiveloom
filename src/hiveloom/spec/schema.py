@@ -498,6 +498,14 @@ class CompactionConfig(BaseModel):
             "(builtins plus extension-registered methods)."
         ),
     )
+    max_tokens: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Output-token ceiling for the summarize call only (default: "
+            "model.max_tokens). A summary is short; a reasoning model given the "
+            "executor's whole output budget can spend minutes on one."
+        ),
+    )
 
     @field_validator("method")
     @classmethod
