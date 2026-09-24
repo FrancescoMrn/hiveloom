@@ -29,7 +29,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `model`/`model_provider` (**always frozen**), `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method,max_tokens}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
-| `memory` | Durable lessons rendered into every run's system prompt | `enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars` (**all frozen from evolution**), `entries` (evolvable) |
+| `memory` | Durable lessons rendered into the system prompt | `enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`, `selection`, `max_selected` (**all frozen from evolution**), `entries` (evolvable) |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
@@ -37,7 +37,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `egress` | What may leave in a model request | `mode` (`redact`\|`block`\|`off`), `detect_credentials`, `patterns`; **frozen from evolution** |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
 | `delegation` | Whether this harness may hand a task to a peer harness | `enabled` (off by default), `directory` (`local`), `when` (`on_start`/`on_verify_fail`/`model_choice`), `min_peer_success_rate`, `min_peer_runs`, `max_depth`, `budget_share`, `exclude`; tunable by evolution |
-| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all three nested policies are frozen |
+| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `reflect` (post-run lesson drafting), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all four nested policies are frozen |
 
 ## Builtins
 
@@ -426,6 +426,8 @@ memory:
   max_entries: 24            # frozen; hard cap 200
   max_entry_chars: 600       # frozen; hard cap 4000
   prompt_budget_chars: 6000  # frozen; hard cap 40000
+  selection: all             # frozen; `relevant` shows pinned + best matches
+  max_selected: 8            # frozen; with `relevant`, entries shown per run
   entries:                   # evolvable
     - id: iso-dates
       kind: rule             # fact | rule | example
@@ -434,6 +436,7 @@ memory:
       source: prop_2f1c9a
       evidence: 3 runs rejected by the date_format validator
       created_at: 2026-09-21T18:00:00+00:00
+      pinned: false          # with `relevant`, always shown
 ```
 
 Entries render as a `# Memory` section of the system prompt, after the skills
@@ -485,6 +488,13 @@ What keeps it from becoming drift:
 - **What the model saw is journalled.** The section is part of the assembled
   system prompt, so it appears in the `context_system` event and `trace
   --verify` and `fork` reproduce it.
+- **A store can outgrow one prompt.** With `selection: relevant` a run is shown
+  its pinned entries plus the entries that best match its task (deterministic
+  tf-idf, chosen once per run), up to `max_selected`; the section says how many
+  more are stored, and the auto-registered, read-only `search_memory` tool looks
+  them up. The choice is journalled as `memory_selected` and indexed, so
+  `hiveloom signal` can tell whether runs shown a lesson fail more or less often.
+  See [signal-driven-evolution.md](signal-driven-evolution.md#5-memory-that-learns-and-scales).
 - `evidence` is for whoever reviews the entry; it is not rendered into the
   prompt. Whitespace in `content` is collapsed on render, so one entry is always
   one line.
@@ -948,8 +958,9 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
    `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-   `evolution.trace_excerpts`, `evolution.objectives`, or the `memory` budgets
-   (`enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`) — nor any
+   `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`, or the
+   `memory` budgets (`enabled`, `max_entries`, `max_entry_chars`,
+   `prompt_budget_chars`, `selection`, `max_selected`) — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
    never side-effecting code.

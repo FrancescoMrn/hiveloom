@@ -9,16 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.0] - 2026-09-24
 
-The collaboration and memory release. A harness can hand its task to a fitter
-peer — locally or over MCP — and still verify the answer itself. It can keep
-working notes outside the conversation, narrow large stored results in place,
-and accumulate durable lessons that reach `harness.yaml` only through a gated,
-human-applied proposal. Evolution remembers what it already tried, takes
-operator findings, and repairs its own malformed proposals; the runtime
-recovers truncated turns and transient provider failures within declared
-budgets.
+The signal, memory and collaboration release. Evolution now finds where a
+harness's evidence points before any model is asked — contrasting failing and
+successful runs feature by feature, counting mechanisms, and saying how much the
+sample can show — makes every proposal a prediction about that place, checks the
+prediction against the runs that follow, and can run a measured keep-or-revert
+loop on an eval. Memory scales and learns: a run sees the lessons that match its
+task, finished runs are reflected into reviewed lessons, and compaction keeps
+what earlier summaries established. A harness can hand its task to a fitter
+peer — locally or over MCP — and still verify the answer itself. It keeps
+working notes outside the conversation and narrows large stored results in
+place. The runtime recovers truncated turns and transient provider failures
+within declared budgets.
 
 ### Added
+
+- **Signal location (`hiveloom signal`, free).** Every ingested run is indexed
+  with features — tools called or erroring, spills, steps violated, playbooks,
+  memory entries shown, notes, lessons proposed, delegations, the executor
+  model, task size, friction per component — never how it ended. The signal map
+  contrasts failing and successful runs of one version feature by feature
+  (Fisher exact, Benjamini-Hochberg across features), collapses features that
+  mark the same runs, maps each to the spec levers that could change it and
+  whether evolution may pull them, lists what failures share when nothing
+  succeeded, counts friction mechanisms per component, attributes each failure
+  to a loss class, and states the success-rate interval and the smallest change
+  the sample could detect. An external failure label counts as a failure. The
+  evolution report carries the map and one or two passing runs (their task and
+  output only under the `trace_excerpts` opt-in).
+- **Aimed proposals.** The proposing prompt receives the signal map as its own
+  section, and the contract gains "Locate, then aim". A proposal carries a
+  `target` — one of the map's targets or `metric:<objective>`, the direction it
+  will move, optionally by how much — which is stored with the evolution.
+- **Assessment (`hiveloom assess`, free).** Every applied evolution is checked
+  against its own prediction on the runs of the new version, with the success
+  rate as a guard: pair by pair when both versions ran the same eval cases
+  (McNemar exact, sign test), unpaired otherwise (Fisher, Welch). Verdicts are
+  `confirmed`, `refuted`, `regressed`, `inconclusive` (with the runs that would
+  settle it) and `pending`. Evolution records keep the proposal id, prediction,
+  changed paths and a bounded diff.
+- **Measured evolution (`evolve --experiment eval.yaml --yes`).** Each round
+  measures the current version on the eval, applies one aimed YAML change, runs
+  the eval on the new version, assesses it pair by pair, and keeps a confirmed
+  change or reverts it byte for byte (`--rounds`, `--keep-inconclusive`,
+  `--remeasure-baseline`). Decisions are stored and reach the next round's
+  history. Code changes are never applied in this mode.
+- **Relevance-selected memory (`memory.selection: relevant`).** A run is shown
+  its pinned entries plus the entries that best match its task, up to
+  `memory.max_selected`, chosen deterministically once per run; the read-only
+  `search_memory` tool finds the rest. The selection is journalled as
+  `memory_selected` and indexed, so the signal map shows whether a lesson helps.
+  `selection` and `max_selected` are frozen from evolution; entries gain
+  `pinned`.
+- **Post-run reflection (`evolution.reflect`, off by default).** After a failed
+  run (or any, with `on: any`) a strong model drafts at most `max_lessons`
+  durable lessons from the run, preferring none to a speculative one; they are
+  queued with `trigger: reflect` through the `propose_memory` path and applied
+  only by a human. Eval runs never reflect, and a cooldown bounds spend. Frozen
+  from evolution.
+- `hiveloom guide signal`: the signal-driven evolution reference
+  (`docs/signal-driven-evolution.md`).
 
 - **Delegation between harnesses (`delegation`, off by default).** A run can
   hand its task to a peer harness from the local registry that is more specific
@@ -107,6 +157,19 @@ budgets.
   `docs/evolution-migration.md`.
 
 ### Changed
+
+- A proposal from `evolve`, `evolve --propose`, auto-propose or the HTTP control
+  plane must name a `target` from the signal map (or state
+  `objective_expectations`); one without is sent back for repair within the
+  existing three-call budget. A model or script that emitted the pre-1.2.0
+  proposal shape needs the field.
+- Evolution's default attempt history is measured: each applied evolution with
+  its assessment verdict or experiment decision, plus rejected proposals,
+  instead of the unmeasured applied/rejected queue ledger.
+- Summarize-compaction carries the previous summary forward in
+  `<previous-summary>` with an instruction to keep what is still true, and
+  anchors the summary to the agent's newest statement, instead of
+  re-summarizing the earlier summary as transcript.
 
 - Truncated model turns receive continuation feedback within the declared
   token budget. Three consecutive truncations or exhausted turns return

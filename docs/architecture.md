@@ -256,7 +256,7 @@ minimal mutation, then **gates it in code**:
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
   `mcp_servers`, `confinement`, `egress`, `evolution.auto_propose`,
-  `evolution.trace_excerpts`, `evolution.objectives`, and the `memory` budgets
+  `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`, and the `memory` budgets
   (`schema.ALWAYS_FROZEN`) — plus
   any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;

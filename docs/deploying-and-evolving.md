@@ -100,8 +100,11 @@ so it is still there to apply later. `--json` cannot prompt, so
 `proposals apply --json` without `--yes` is a usage error (exit 3) rather than
 a call that resolves the row without applying it.
 
-There is no auto-apply: a human always calls `proposals apply` or
-`proposals reject`. This is the additive extension the trace sink / networked
+Queued proposals are never auto-applied: a human always calls `proposals
+apply` or `proposals reject`. The one loop that applies on its own is the
+explicit `evolve --experiment eval.yaml --yes`, which keeps a change only when
+the eval confirms its prediction and reverts it otherwise (see
+[signal-driven-evolution.md](signal-driven-evolution.md)). This is the additive extension the trace sink / networked
 Hive / A/B runner discussion below anticipates — proposals live in the same
 Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
 can populate the same queue without changing this review step.
@@ -416,9 +419,10 @@ The artifact and memory models are portable and complete; the *transport* betwee
   trace sink; you move `.hiveloom/traces/` with whatever tooling you already use.
 - **The Hive is single-machine SQLite** — many replicas cannot all write one Hive
   concurrently; a central multi-deployment Hive would need a networked backend.
-- **Judging is human-in-the-loop** — `stats` gives you the per-version-hash signal
-  to decide; automated A/B re-runs and auto-promote/rollback are future work (the
-  schema's version-hash bucketing is designed to support them).
+- **Judging production runs is human-in-the-loop** — `hiveloom assess` checks
+  each applied evolution against its own prediction on the runs that arrive,
+  and `evolve --experiment` measures and keeps or reverts a change on an eval;
+  promoting a version across a fleet of deployments stays a human decision.
 
 These are additive: the idempotent-by-`run_id`, version-hash-bucketed foundation
 was chosen precisely so a trace sink, a networked Hive, or an A/B runner can be

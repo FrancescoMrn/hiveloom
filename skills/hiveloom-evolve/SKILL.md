@@ -23,7 +23,20 @@ The evolver reads the Hive's clustered failures (ingesting the folder's
 in-folder traces on the fly), asks a strong model for a minimal mutation, and
 gates it **in code**.
 
-Diagnose the failed layer before proposing a change:
+Locate before you change anything, and check after:
+
+```bash
+hiveloom signal ./h --json     # free: where failures concentrate, and how much the sample can show
+hiveloom evolve ./h --json     # the proposal must name one of the signal map's targets
+hiveloom assess ./h --json     # free: did each applied change move its target? confirmed/refuted/...
+hiveloom evolve ./h --experiment eval.yaml --yes --rounds 3 --json  # measured keep-or-revert loop
+```
+
+Read `verdict` first: `actionable` means aim at the strong signal;
+`underpowered` means count a mechanism or collect runs, not compare rates;
+`diffuse` means the loss is content, not plumbing. See `hiveloom guide signal`.
+
+Then diagnose the failed layer before proposing a change:
 
 - Prompt: the evidence and controls are sufficient, but the executor
   misunderstood the task. Clarify the smallest prompt section.
@@ -66,7 +79,7 @@ evidence runs. Metric metadata and raw traces do not enter this evidence path.
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
   `mcp_servers`, `confinement`, `egress`, `evolution.auto_propose`,
-  `evolution.trace_excerpts`, `evolution.objectives`, and the `memory` budgets
+  `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`, and the `memory` budgets
   (`enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`) can
   **never** be changed by evolution. `memory.entries` can: one lesson appended
   or replaced per proposal. Don't try to weaken them by other means either; if a guardrail is

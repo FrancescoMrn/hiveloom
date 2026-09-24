@@ -509,7 +509,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 
 - Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
   `extensions`, `hooks`, `mcp_servers`, `confinement`, `egress`,
-  `evolution.auto_propose`, `evolution.trace_excerpts`, `evolution.objectives`,
+  `evolution.auto_propose`, `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`,
   or the `memory` budgets. Opt-in excerpts are
   re-redacted and bounded
   before they reach the proposing model.

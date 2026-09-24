@@ -153,7 +153,7 @@ retried within the step; exhausted step limits return exit 4.
 When asked to improve a failing harness, **do not** hand-edit it — and never
 touch `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
 `mcp_servers`, `confinement`, `egress`, `evolution.auto_propose`,
-`evolution.trace_excerpts`, `evolution.objectives`, or the `memory` budgets
+`evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`, or the `memory` budgets
 through evolution. Run:
 ```bash
 hiveloom evolve ./h            # analyze Hive failures → propose a gated mutation

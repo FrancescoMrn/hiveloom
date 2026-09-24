@@ -73,6 +73,14 @@ Follow-up work: a consensus-policy release pass.
 
 ### Evaluation-driven keep/revert decisions
 
+*Landed in 1.2.0 as `hiveloom assess` and `evolve --experiment`* — see
+[signal-driven-evolution.md](signal-driven-evolution.md). The contract below is
+what shaped it: McNemar only for paired binary outcomes and the sign test for
+paired metrics; a target stated before measuring; the success rate as a guard
+that no target win overrides; inconclusive kept distinct from refuted and
+reverted by default; the incumbent re-measurable each round. Confirmation on
+held-out evidence remains the operator's job.
+
 The ARC scripts contain reusable ideas: paired per-case comparisons, repeated
 measurements, re-measuring the incumbent, recording inconclusive results,
 tracking diagnostic metrics, and avoiding task selection based on unusually low
@@ -88,7 +96,6 @@ effect-size requirements, missing-data handling, and an approach to repeated
 searches and multiple metric comparisons. Confirm selected candidates on fresh
 or held-out evidence before making release-quality claims.
 
-Follow-up work: evaluation-driven evolution.
 
 ### Opt-in adaptive output budgets
 

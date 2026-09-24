@@ -28,18 +28,19 @@ the library; humans should start at [README.md](README.md).
    operator decision and is denied in non-interactive/`--json` runs.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
    `egress`, `confinement`, `extensions`, `hooks`, `mcp_servers`,
-   `evolution.auto_propose`, `evolution.trace_excerpts`,
-   `evolution.objectives`, and the `memory` budgets are frozen from evolution; the cost guardrail
-   defaults on; `shell` is allowlist-only; foreign harness folders are
-   trust-gated before their code loads. Don't route around any of this on a
-   user's behalf.
+   `evolution.auto_propose`, `evolution.reflect`, `evolution.trace_excerpts`,
+   `evolution.objectives`, and the `memory` budgets are frozen from evolution;
+   the cost guardrail defaults on; `shell` is allowlist-only; foreign harness
+   folders are trust-gated before their code loads. Don't route around any of
+   this on a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
-   `extensions`, `guide`, and `run --dry-run` never call the model API. A
-   harness with `mcp_servers` is the one exception to "free": its tools are
-   discovered eagerly, so `run --dry-run` does perform real local/network I/O
-   against those declared servers (see `docs/spec.md`). `run`, `generate`, and
-   `evolve` need credentials for their configured provider when that provider
-   requires them (for example, `ANTHROPIC_API_KEY` for the default provider).
+   `extensions`, `guide`, `signal`, `assess`, and `run --dry-run` never call the
+   model API. A harness with `mcp_servers` is the one exception to "free":
+   its tools are discovered eagerly, so `run --dry-run` does perform real
+   local/network I/O against those declared servers (see `docs/spec.md`).
+   `run`, `generate`, and `evolve` need credentials for their configured
+   provider when that provider requires them (for example,
+   `ANTHROPIC_API_KEY` for the default provider).
 
 ## Task → skill map
 
@@ -57,7 +58,7 @@ reference documents below also ship as guide topics: for example,
 | Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run\|--resume]`, `trace [--materialize\|--verify]`, `stats`, `metrics` |
 | Define, run, report, or compare an eval | [`skills/hiveloom-eval`](skills/hiveloom-eval/SKILL.md) | `eval schema`, `catalog datasets\|scorers`, `eval validate`, `eval run\|status\|resume`, `eval report\|compare`, `metrics` |
 | Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
-| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `memory list\|show\|add\|forget`, `stats` |
+| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `signal`, `evolve [--yes\|--propose\|--experiment]`, `assess`, `proposals list\|show\|apply\|reject`, `memory list\|show\|add\|forget`, `stats` |
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `models probe`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
@@ -85,6 +86,9 @@ lessons the run itself offered, reviewed the same way and curated with
   dataset/scorer extensions, identity, metrics, and privacy.
 - [docs/delegation.md](docs/delegation.md) — handing a task to a fitter peer
   harness: the three modes, fitness floors, lineage, cost, and limits.
+- [docs/signal-driven-evolution.md](docs/signal-driven-evolution.md) — where
+  the evidence points (`signal`), aimed proposals, `assess`, the measured
+  `evolve --experiment` loop, relevance-selected memory and reflection.
 - [docs/journal.md](docs/journal.md) — the run journal, `trace --verify`,
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
