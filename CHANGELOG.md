@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compaction no longer discards the newest tool results. Summarize-compaction
+  kept only the last message, which for a tool turn is results whose calls had
+  just been summarized away. The orphan repair then dropped them too, so the
+  output the model had just asked for was neither summarized nor kept, and
+  runs re-issued the same calls after every compaction. The newest exchange
+  (the calls and their results) is now kept whole. It is folded into the
+  summary only when it alone exceeds half the budget. `truncate_oldest` keeps
+  it the same way.
 - Evolution repairs malformed proposals and correctable objective omissions
   within three total model calls. Inconsistent metric evidence fails before
   any call. Prompt evidence, history, notes, and the current spec are redacted;

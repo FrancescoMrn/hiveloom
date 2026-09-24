@@ -53,12 +53,24 @@ class TruncateOldestCompaction(CompactionMethod):
     name = "truncate_oldest"
 
     def compact(self, manager: ContextManager, budget: int) -> None:
-        # Keep configured pinned history plus the newest message.
+        # Keep configured pinned history plus the newest exchange. Dropping the
+        # oldest message one at a time used to stop at "the newest message",
+        # which for a tool turn is the results with their tool_use already
+        # gone — the orphan repair then removed them too, so the freshest tool
+        # output was the first casualty rather than the last.
+        pinned = manager.pinned_message_count
         while (
-            len(manager.messages) > manager.pinned_message_count + 1
+            manager.retained_tail_start() > pinned
             and manager.estimated_input_tokens() > budget
         ):
-            del manager.messages[manager.pinned_message_count]
+            del manager.messages[pinned]
+        # The newest exchange alone is over budget: fall back to keeping only
+        # the newest message, as before, rather than sending an overflow.
+        while (
+            len(manager.messages) > pinned + 1
+            and manager.estimated_input_tokens() > budget
+        ):
+            del manager.messages[pinned]
 
 
 # A structured summary keeps the model oriented after history is dropped:
@@ -88,7 +100,12 @@ class SummarizeCompaction(CompactionMethod):
     def compact(self, manager: ContextManager, budget: int) -> None:
         if len(manager.messages) <= manager.pinned_message_count + 1:
             return
-        older = manager.messages[manager.pinned_message_count : -1]
+        keep_from = manager.retained_tail_start(budget)
+        if keep_from <= manager.pinned_message_count:
+            # Nothing precedes the newest exchange: summarize its call half
+            # rather than make no progress (an overflow retry depends on it).
+            keep_from = len(manager.messages) - 1
+        older = manager.messages[manager.pinned_message_count : keep_from]
         transcript = _render_for_summary(older)
         summary_prompt = [
             {"role": "user", "content": f"{_SUMMARY_FORMAT}\n\n{transcript}"}
@@ -97,7 +114,7 @@ class SummarizeCompaction(CompactionMethod):
             system="You compress agent transcripts into durable, structured notes.",
             messages=summary_prompt,
         )
-        manager.apply_summary(response.text)
+        manager.apply_summary(response.text, keep_from=keep_from)
 
 
 class ContextManager:
@@ -330,10 +347,50 @@ class ContextManager:
             self._trace.emit("context_rewound", kept=count, dropped=dropped)
         return dropped
 
-    def apply_summary(self, summary: str) -> None:
-        """Replace compactible history with a summary while retaining pinned messages."""
+    def retained_tail_start(self, budget: int | None = None) -> int:
+        """Index of the first message compaction keeps verbatim at the end.
+
+        The newest *exchange* survives compaction whole: when the last message
+        answers tool calls, the assistant message that made those calls stays
+        with it. Keeping only the last message instead orphans its results,
+        and the orphan repair then drops them — so the output the model had
+        just asked for vanished unread, neither summarized nor kept, and the
+        model re-ran the same calls after every compaction.
+
+        If that exchange alone would take more than half of ``budget``, only
+        the last message is kept (as before) and the rest is compacted, so a
+        turn of large results cannot pin the context above its trigger.
+        """
+        messages = self.messages
+        floor = self.pinned_message_count
+        last = len(messages) - 1
+        if last < floor:
+            return len(messages)
+        start = last
+        if (
+            last - 1 >= floor
+            and _has_block(messages[last], "tool_result")
+            and messages[last - 1].get("role") == "assistant"
+            and _has_block(messages[last - 1], "tool_use")
+        ):
+            start = last - 1
+        if start < last and budget is not None:
+            tail_tokens = self.provider.count_tokens(system="", messages=messages[start:])
+            if tail_tokens > budget // 2:
+                start = last
+        return start
+
+    def apply_summary(self, summary: str, *, keep_from: int | None = None) -> None:
+        """Replace compactible history with a summary while retaining pinned messages.
+
+        ``keep_from`` is where the verbatim tail starts (see
+        :meth:`retained_tail_start`); by default the newest exchange is kept.
+        """
         pinned = self.messages[: self.pinned_message_count]
-        recent = self.messages[-1:] if len(self.messages) > 1 else []
+        if keep_from is None:
+            keep_from = self.retained_tail_start(self._config.max_input_tokens)
+        keep_from = max(self.pinned_message_count, min(keep_from, len(self.messages)))
+        recent = self.messages[keep_from:] if len(self.messages) > 1 else []
         summary_block = {
             "role": "user",
             "content": f"[summary of earlier turns]\n{summary}",
@@ -443,6 +500,13 @@ def _drop_orphan_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, 
             continue
         repaired.append(message if len(kept) == len(content) else {**message, "content": kept})
     return repaired
+
+
+def _has_block(message: dict[str, Any], kind: str) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == kind for block in content
+    )
 
 
 def _render_for_summary(messages: list[dict[str, Any]]) -> str:

@@ -376,3 +376,82 @@ def test_memory_counts_toward_the_input_token_estimate():
     )
 
     assert filled.estimated_input_tokens() > empty.estimated_input_tokens()
+
+
+def _tool_result_ids(messages: list[dict]) -> list[str]:
+    return [
+        block["tool_use_id"]
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    ]
+
+
+def test_summarize_keeps_the_newest_exchange_verbatim():
+    """The results the model just asked for must survive a compaction.
+
+    Keeping only the last message orphaned its tool_results, and the orphan
+    repair then dropped them: the freshest output was neither summarized nor
+    kept, and a live run re-issued the same calls after every compaction.
+    """
+    from hiveloom.models.fake import text_response
+
+    spec = _spec(
+        max_input_tokens=400,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "summarize"},
+    )
+    provider = FakeModelProvider([text_response("# Goal\n- go\n# Next steps\n- none")])
+    cm = ContextManager(spec, provider, None)
+    cm.add_user("TASK: pinned first message")
+    for index in range(4):
+        _tool_cycle(cm, f"toolu_{index}", filler=" with enough length to force compaction")
+
+    assert cm.maybe_compact() is True
+
+    assert _tool_result_ids(cm.messages) == ["toolu_3"]
+    assert cm.messages[-2]["role"] == "assistant"
+    _assert_tool_blocks_paired(cm.messages)
+    # The summarizer saw everything it replaced, and not the kept exchange.
+    transcript = provider.calls[-1]["messages"][0]["content"]
+    assert "toolu_2" in transcript and "toolu_3" not in transcript
+
+
+def test_summarize_folds_an_oversized_newest_exchange_into_the_summary():
+    from hiveloom.models.fake import text_response
+
+    spec = _spec(
+        max_input_tokens=40,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "summarize"},
+    )
+    provider = FakeModelProvider([text_response("# Goal\n- go")])
+    cm = ContextManager(spec, provider, None)
+    cm.add_user("TASK: pinned first message")
+    _tool_cycle(cm, "toolu_0", filler=" x" * 20)
+    _tool_cycle(cm, "toolu_1", filler=" y" * 200)
+
+    assert cm.maybe_compact() is True
+
+    # Too large to keep whole: summarized (seen by the summarizer), not lost.
+    transcript = provider.calls[-1]["messages"][0]["content"]
+    assert "toolu_1" in transcript
+    _assert_tool_blocks_paired(cm.messages)
+
+
+def test_truncate_oldest_keeps_the_newest_exchange():
+    spec = _spec(
+        max_input_tokens=60,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "truncate_oldest"},
+    )
+    cm = ContextManager(spec, FakeModelProvider([]), None)
+    cm.add_user("TASK: pinned first message")
+    for index in range(6):
+        _tool_cycle(cm, f"toolu_{index}", filler=" with enough length to force compaction")
+
+    assert cm.maybe_compact() is True
+
+    assert _tool_result_ids(cm.messages)[-1] == "toolu_5"
+    _assert_tool_blocks_paired(cm.messages)
