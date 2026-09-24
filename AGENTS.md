@@ -28,8 +28,8 @@ the library; humans should start at [README.md](README.md).
    operator decision and is denied in non-interactive/`--json` runs.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
    `egress`, `confinement`, `extensions`, `hooks`, `mcp_servers`,
-   `evolution.auto_propose`, `evolution.trace_excerpts`, and
-   `evolution.objectives` are frozen from evolution; the cost guardrail
+   `evolution.auto_propose`, `evolution.trace_excerpts`,
+   `evolution.objectives`, and the `memory` budgets are frozen from evolution; the cost guardrail
    defaults on; `shell` is allowlist-only; foreign harness folders are
    trust-gated before their code loads. Don't route around any of this on a
    user's behalf.

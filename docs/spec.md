@@ -81,7 +81,7 @@ for each new hostname during a plain CLI run.
 - **Compaction:** `summarize`, `truncate_oldest`.
 - **Hooks:** `strip_json_fence` (an opt-in final-output normalizer).
 
-`best_of_n` is experimental on the ARC branch. It rewinds conversation history
+`best_of_n` is experimental. It rewinds conversation history
 between samples and chooses a plurality over whitespace-normalized outputs.
 Tool state is shared between attempts; journal replay and general-purpose
 verification integration still need the work described in

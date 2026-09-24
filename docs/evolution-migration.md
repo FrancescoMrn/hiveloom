@@ -1,11 +1,12 @@
 # General-purpose evolution migration
 
-This branch extracts reusable changes from the uncommitted `feature/arc-agi-2`
-work at base `5e4e871`. The original ARC working tree is preserved. The branch
-is `feature/evolution-reliability`; it does not contain the ARC dataset, scorer,
-harness assets, experiment outputs, or autoresearch scripts.
+hiveloom 1.2.0 carries the reusable parts of the ARC-AGI-2 benchmark work into
+the library. This note records what generalized, what was corrected on the
+way, and what was deliberately left out. The ARC dataset, scorer, harness
+assets, experiment outputs, and autoresearch scripts are not part of the
+package.
 
-## Included in this branch
+## Included in 1.2.0
 
 | Improvement | Why it generalizes | Release behavior |
 |---|---|---|
@@ -52,8 +53,9 @@ requires evaluation against an appropriate baseline.
 
 ### Multiple-attempt consensus (`best_of_n`)
 
-The concept is reusable, especially for tasks with canonical, short answers.
-The implementation needs an independent release pass:
+`best_of_n` ships in 1.2.0 as an experimental policy. The concept is reusable,
+especially for tasks with canonical, short answers, but these limitations are
+open and should be weighed before relying on it:
 
 1. `context_rewound` is emitted by the new context operation but is not handled
    by journal replay. Forks/materialization can reconstruct a different context.
@@ -67,7 +69,7 @@ The implementation needs an independent release pass:
    come from a different attempt. Define evidence ownership, retries, and
    budget-exhaustion behavior before claiming the chosen answer is verified.
 
-Suggested follow-up branch: `feature/consensus-policy`.
+Follow-up work: a consensus-policy release pass.
 
 ### Evaluation-driven keep/revert decisions
 
@@ -86,7 +88,7 @@ effect-size requirements, missing-data handling, and an approach to repeated
 searches and multiple metric comparisons. Confirm selected candidates on fresh
 or held-out evidence before making release-quality claims.
 
-Suggested follow-up branch: `feature/evaluation-driven-evolution`.
+Follow-up work: evaluation-driven evolution.
 
 ### Opt-in adaptive output budgets
 
@@ -94,11 +96,11 @@ Automatic budget growth may be useful, but should have an operator-owned,
 frozen ceiling and explicit accounting/replay semantics. It is deliberately
 excluded from this release; users can raise `model.max_tokens` through the CLI.
 
-## ARC-specific work retained in the original tree
+## ARC-specific work kept out of the package
 
 `evals/arc-agi-2/`, its grid parser, official attempt scoring, dataset fetching,
 training-pair hypothesis tools, validators, protocol arms, and benchmark test
-module remain in `feature/arc-agi-2`. The experiment scripts retain their
+module stay with the benchmark work, outside the library. The experiment scripts retain their
 benchmark-specific metric names and workflow until the generic experiment
 contract above is designed.
 

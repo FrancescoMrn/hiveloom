@@ -65,10 +65,11 @@ evidence runs. Metric metadata and raw traces do not enter this evidence path.
 ## Hard rules (enforced by the tool — don't fight them)
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, and
-  `evolution.objectives` can
-  **never** be changed by
-  evolution. Don't try to weaken them by other means either; if a guardrail is
+  `mcp_servers`, `confinement`, `egress`, `evolution.auto_propose`,
+  `evolution.trace_excerpts`, `evolution.objectives`, and the `memory` budgets
+  (`enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`) can
+  **never** be changed by evolution. `memory.entries` can: one lesson appended
+  or replaced per proposal. Don't try to weaken them by other means either; if a guardrail is
   genuinely wrong, change it deliberately via `hiveloom add guardrail` /
   `hiveloom set` and say so.
 - Changes must fall within the harness's `evolution.mutable` set.
