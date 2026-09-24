@@ -133,6 +133,21 @@ class MechanismCount(BaseModel):
     addressable: bool = False
 
 
+class FailureFeature(BaseModel):
+    """A feature by how common it is among failed runs, contrast or not.
+
+    When there is nothing to contrast against (every run failed, or almost)
+    prevalence is all there is: the error every failure hits is still where to
+    look, and still a countable target.
+    """
+
+    feature: str
+    failed_runs: int
+    share_of_failures: float
+    levers: list[str] = Field(default_factory=list)
+    addressable: bool = False
+
+
 class SignalQuality(BaseModel):
     """How much this population can resolve at all."""
 
@@ -172,6 +187,7 @@ class SignalMap(BaseModel):
     quality: SignalQuality
     loss: LossAttribution
     signals: list[FeatureSignal] = Field(default_factory=list)
+    failure_features: list[FailureFeature] = Field(default_factory=list)
     mechanisms: list[MechanismCount] = Field(default_factory=list)
     statuses: dict[str, int] = Field(default_factory=dict)
     targets: list[str] = Field(
@@ -383,6 +399,26 @@ def locate_signal(
     signals.sort(key=lambda s: (s.p_value, -abs(s.failure_rate_with - s.failure_rate_without)))
     signals = signals[:max_signals]
 
+    prevalence = Counter(f for r in indexed_fail for f in r["features"])
+    failure_features: list[FailureFeature] = []
+    for feature, count in sorted(
+        prevalence.items(), key=lambda item: (-item[1], _representative_key(item[0]))
+    ):
+        if feature.startswith(("model:", "input:")) or count < max(1, min_support // 2):
+            continue
+        levers, reachable = _reachable(_levers_for(feature), evolution)
+        failure_features.append(
+            FailureFeature(
+                feature=feature,
+                failed_runs=count,
+                share_of_failures=count / len(indexed_fail),
+                levers=levers,
+                addressable=reachable,
+            )
+        )
+        if len(failure_features) >= max_signals:
+            break
+
     # ---- mechanisms --------------------------------------------------------- #
     mechanisms: list[MechanismCount] = []
     for row in hive.friction_by_component(harness_name, version=version)[:max_mechanisms]:
@@ -424,6 +460,7 @@ def locate_signal(
     for s in signals:
         targets += [s.feature, *s.aliases]
     targets += [m.target for m in mechanisms if m.target not in targets]
+    targets += [f.feature for f in failure_features if f.feature not in targets]
 
     signal_map = SignalMap(
         harness_name=harness_name,
@@ -432,6 +469,7 @@ def locate_signal(
         quality=quality,
         loss=loss,
         signals=signals,
+        failure_features=failure_features,
         mechanisms=mechanisms,
         statuses=statuses,
         targets=targets,
@@ -493,6 +531,13 @@ def _headline(signal_map: SignalMap) -> list[str]:
     for signal in signal_map.signals[:3]:
         if signal.strength != "weak":
             lines.append(signal.describe())
+    if signal_map.verdict == "underpowered":
+        for item in signal_map.failure_features[:2]:
+            lines.append(
+                f"{item.feature} is in {item.failed_runs} of the failed runs "
+                f"({item.share_of_failures:.0%}); with nothing to contrast it against, "
+                "prevalence is the only evidence."
+            )
     for mechanism in signal_map.mechanisms[:2]:
         if mechanism.failed_runs:
             lines.append(

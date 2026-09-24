@@ -390,7 +390,12 @@ def apply_proposal_by_id(
 
     try:
         result = evolver.apply_proposal(
-            harness_dir, proposal, hive=hive, approve_code=approve_code, apply_yaml=apply_yaml
+            harness_dir,
+            proposal,
+            hive=hive,
+            approve_code=approve_code,
+            apply_yaml=apply_yaml,
+            proposal_id=proposal_id,
         )
     except BaseException:
         hive.release_proposal_claim(proposal_id)

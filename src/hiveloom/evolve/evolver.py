@@ -78,11 +78,44 @@ class ObjectiveExpectation(BaseModel):
     rationale: str = ""
 
 
+class SignalTarget(BaseModel):
+    """The located signal a proposal aims at, and how it predicts it will move.
+
+    ``signal`` is one of the signal map's target ids (a feature such as
+    ``tool_error:http_get``, a mechanism such as
+    ``friction:output_truncated@max_tokens``, ``status:max_turns``,
+    ``success_rate``) or ``metric:<objective>``. The prediction is what a later
+    assessment checks: the share of runs carrying that signal (or the success
+    rate, or the metric mean) should move in ``expect``'s direction.
+    """
+
+    signal: str
+    expect: Literal["increase", "decrease"]
+    by: float | None = Field(
+        default=None,
+        ge=0,
+        description="Predicted absolute change, as a fraction of runs (or metric units).",
+    )
+    rationale: str = ""
+
+
 class MutationProposal(BaseModel):
     rationale: str = ""
+    target: SignalTarget | None = None
     yaml_changes: list[YamlChange] = Field(default_factory=list)
     code_changes: list[CodeChange] = Field(default_factory=list)
     objective_expectations: list[ObjectiveExpectation] = Field(default_factory=list)
+
+    def prediction(self) -> dict[str, Any] | None:
+        """What this proposal claims it will move, for the evolution record."""
+        if self.target is None and not self.objective_expectations:
+            return None
+        return {
+            "target": self.target.model_dump() if self.target is not None else None,
+            "objective_expectations": [
+                expectation.model_dump() for expectation in self.objective_expectations
+            ],
+        }
 
 
 class GateResult(BaseModel):
@@ -797,11 +830,15 @@ def apply_proposal(
     hive: Hive | None = None,
     approve_code: Callable[[CodeChange], bool] | None = None,
     apply_yaml: bool = True,
+    proposal_id: str | None = None,
 ) -> ApplyResult:
     """Gate and apply a proposal, versioning the spec and recording in the Hive.
 
     ``approve_code`` is asked for each code change (defaults to reject). YAML
-    changes apply when ``apply_yaml`` is true and they pass the gate.
+    changes apply when ``apply_yaml`` is true and they pass the gate. The Hive
+    record keeps the proposal's prediction and what it changed, linked to
+    ``proposal_id`` when it came from the queue, so the next version's runs can
+    be assessed against the claim (see :mod:`hiveloom.evolve.assess`).
     """
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
@@ -856,6 +893,14 @@ def apply_proposal(
             validate_harness(yaml_path)  # full re-validation incl. code hooks
             new_hash = spec_version_hash(new_spec, base)
             if hive is not None:
+                diff = "".join(
+                    unified_diff(
+                        dump_spec(spec).splitlines(keepends=True),
+                        dump_spec(new_spec).splitlines(keepends=True),
+                        fromfile="before",
+                        tofile="after",
+                    )
+                )
                 hive.record_evolution(
                     spec.identity,
                     old_hash,
@@ -863,6 +908,13 @@ def apply_proposal(
                     counter,
                     proposal.rationale,
                     datetime.now(UTC).isoformat(),
+                    proposal_id=proposal_id,
+                    prediction=proposal.prediction(),
+                    changes={
+                        "paths": [change.path for change in applied_yaml],
+                        "code": applied_code,
+                        "yaml_diff": diff[:_MAX_HISTORY_DIFF_CHARS],
+                    },
                 )
     except BaseException:
         snapshot.restore()

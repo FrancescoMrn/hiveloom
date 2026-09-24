@@ -232,6 +232,11 @@ def test_too_few_runs_is_reported_as_underpowered_not_mined(tmp_path):
         signal_map = locate_signal(hive, "h")
     assert signal_map.verdict == "underpowered"
     assert any("detectable" in line for line in signal_map.headline)
+    # Nothing to contrast against, but what every failure shares is still a target.
+    top = signal_map.failure_features[0]
+    assert (top.feature, top.failed_runs, top.share_of_failures) == ("tool_error:http_get", 3, 1.0)
+    assert signal_map.knows_target("tool_error:http_get")
+    assert any("prevalence is the only evidence" in line for line in signal_map.headline)
 
 
 def test_no_failures_and_no_runs_have_their_own_verdicts(tmp_path):

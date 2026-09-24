@@ -2082,6 +2082,55 @@ def friction_list(
 
 
 @app.command()
+def assess(
+    harness_dir: str = typer.Argument(..., help="Harness directory whose evolutions to assess."),
+    min_runs: int = typer.Option(
+        5, "--min-runs", min=1, help="Runs of a new version needed before judging it."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Check applied evolutions against what they predicted. Free: no model call.
+
+    Each applied evolution recorded the signal it aimed at and which way it
+    should move. This compares the old and new version's runs on that signal —
+    case by case when both ran the same eval — with the success rate as a
+    guard, and reports confirmed, refuted, regressed, inconclusive (with the
+    runs that would settle it) or pending.
+    """
+    from hiveloom import runner
+    from hiveloom.evolve.assess import assess_all
+    from hiveloom.logging.hive import Hive
+    from hiveloom.spec.loader import load_spec
+
+    with _guard(json_output):
+        spec = load_spec(harness_dir)
+        with Hive() as hive:
+            runner.resolve_and_ingest(harness_dir, hive)
+            assessments = assess_all(hive, spec.identity, min_runs=min_runs)
+        if json_output:
+            _emit_json(
+                {"ok": True, "assessments": [a.model_dump(mode="json") for a in assessments]}
+            )
+            return
+        if not assessments:
+            _console.print("no applied evolutions to assess")
+            return
+        colours = {
+            "confirmed": "green", "regressed": "red", "refuted": "red",
+            "inconclusive": "yellow", "pending": "cyan",
+        }
+        for item in assessments:
+            colour = colours[item.verdict]
+            decision = f" [{item.decision.get('action')}]" if item.decision else ""
+            _console.print(
+                f"#{item.counter} {item.old_version} -> {item.new_version}: "
+                f"[{colour}]{item.verdict}[/{colour}]{decision} — aimed at "
+                f"{item.target} ({item.expect})"
+            )
+            _console.print(f"    {item.summary}")
+
+
+@app.command()
 def signal(
     harness_dir: str = typer.Argument(..., help="Harness directory to locate signal for."),
     version: str | None = typer.Option(
@@ -2737,6 +2786,25 @@ def evolve(
     notes: list[str] | None = typer.Option(
         None, "--note", help="Operator finding to inform the proposal; repeatable."
     ),
+    experiment: str | None = typer.Option(
+        None,
+        "--experiment",
+        help="Eval document to measure each change with: apply, run the eval, keep "
+        "a confirmed change and revert the rest. Requires --yes.",
+    ),
+    rounds: int = typer.Option(
+        1, "--rounds", min=1, max=10, help="Experiment rounds (with --experiment)."
+    ),
+    keep_inconclusive: bool = typer.Option(
+        False,
+        "--keep-inconclusive",
+        help="With --experiment, keep a change the eval could not decide on.",
+    ),
+    remeasure_baseline: bool = typer.Option(
+        False,
+        "--remeasure-baseline",
+        help="With --experiment, re-run the eval on the current version every round.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
@@ -2752,6 +2820,12 @@ def evolve(
     motivated the fork are invisible at exactly the moment there is most to
     say. It reads the parent version out of ``fork.yaml`` and drafts against
     those failures, applying the result to the fork's own spec.
+
+    ``--experiment eval.yaml --yes`` turns evolution into a measured loop: each
+    round applies one targeted change, runs the eval on the new version,
+    assesses it case by case against the change's own prediction, and keeps it
+    only if confirmed (see ``hiveloom assess``). Code changes are never
+    applied in this mode.
     """
     from hiveloom import evolve as evolve_mod
     from hiveloom import runner
@@ -2768,7 +2842,53 @@ def evolve(
         # named by --model. Resolving the strong model before the spec made an
         # otherwise runnable local provider look unknown and fell back to Claude.
         spec = load_spec(harness_dir)
+        if experiment is not None and (propose or from_parent):
+            _fail(
+                "--experiment cannot be combined with --propose or --from-parent",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
+        if experiment is not None and not yes:
+            _fail(
+                "--experiment applies and reverts changes on its own; pass --yes to allow it",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
         model = build_strong_model(model_id, base)
+        if experiment is not None:
+            from hiveloom.evolve.experiment import run_experiment
+
+            def report_round(item: Any) -> None:
+                if json_output:
+                    return
+                colour = {"kept": "green", "reverted": "yellow"}.get(item.status, "cyan")
+                _console.print(
+                    f"[{colour}]round {item.round}: {item.status}[/{colour}] {item.reason}"
+                )
+
+            with Hive() as hive:
+                runner.resolve_and_ingest(harness_dir, hive)
+                results = run_experiment(
+                    harness_dir,
+                    experiment,
+                    model,
+                    rounds=rounds,
+                    keep_inconclusive=keep_inconclusive,
+                    remeasure_baseline=remeasure_baseline,
+                    notes=notes,
+                    hive=hive,
+                    approve_trust=_trust_prompt(json_output),
+                    on_round=report_round,
+                )
+            if json_output:
+                _emit_json(
+                    {
+                        "ok": True,
+                        "rounds": [item.model_dump(mode="json") for item in results],
+                        "kept": sum(1 for item in results if item.status == "kept"),
+                    }
+                )
+            return
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
             # Scoped to one version — see analyze().

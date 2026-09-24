@@ -103,7 +103,11 @@ CREATE TABLE IF NOT EXISTS evolutions (
     new_version_hash TEXT,
     counter INTEGER,
     rationale TEXT,
-    created_at TEXT
+    created_at TEXT,
+    proposal_id TEXT,
+    prediction_json TEXT,
+    changes_json TEXT,
+    decision_json TEXT
 );
 CREATE TABLE IF NOT EXISTS proposals (
     id TEXT PRIMARY KEY,
@@ -476,6 +480,18 @@ class Hive:
         }
         if "evidence_json" not in proposal_columns:
             self._conn.execute("ALTER TABLE proposals ADD COLUMN evidence_json TEXT")
+        # What an evolution predicted, what it changed, and what a measured
+        # experiment decided: the link from a proposal to its outcome.
+        evolution_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(evolutions)")
+        }
+        for column in ("proposal_id", "prediction_json", "changes_json", "decision_json"):
+            if column not in evolution_columns:
+                try:
+                    self._conn.execute(f"ALTER TABLE evolutions ADD COLUMN {column} TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc):
+                        raise
 
     def _alter_runs(self, clause: str, *, benign_error: str) -> None:
         """Apply one migration step, tolerating a concurrent connection winning it.
@@ -1794,22 +1810,153 @@ class Hive:
         counter: int,
         rationale: str,
         created_at: str,
-    ) -> None:
-        """Record an evolution (old/new version hashes + rationale)."""
-        self._conn.execute(
+        *,
+        proposal_id: str | None = None,
+        prediction: dict[str, Any] | None = None,
+        changes: dict[str, Any] | None = None,
+    ) -> int:
+        """Record an evolution (old/new version hashes + rationale).
+
+        ``prediction`` is what the change claimed it would move (its target
+        signal and objective expectations); ``changes`` the paths and diff it
+        applied. Together with the version hashes they are what lets a later
+        assessment say whether the claim held. Returns the evolution's rowid.
+        """
+        cursor = self._conn.execute(
             "INSERT INTO evolutions (harness_name, old_version_hash, new_version_hash, "
-            "counter, rationale, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (harness_name, old_version_hash, new_version_hash, counter, rationale, created_at),
+            "counter, rationale, created_at, proposal_id, prediction_json, changes_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                harness_name,
+                old_version_hash,
+                new_version_hash,
+                counter,
+                rationale,
+                created_at,
+                proposal_id,
+                json.dumps(prediction, sort_keys=True) if prediction is not None else None,
+                json.dumps(changes, sort_keys=True) if changes is not None else None,
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    def record_evolution_decision(self, evolution_id: int, decision: dict[str, Any]) -> None:
+        """Attach a measured keep/revert decision to one recorded evolution."""
+        self._conn.execute(
+            "UPDATE evolutions SET decision_json=? WHERE rowid=?",
+            (json.dumps(decision, sort_keys=True), evolution_id),
         )
         self._conn.commit()
 
     def evolutions(self, harness_name: str) -> list[dict[str, Any]]:
-        """Return the recorded evolutions for a harness, newest first."""
+        """Return the recorded evolutions for a harness, newest first.
+
+        Each row carries its ``evolution_id`` (the rowid) and the parsed
+        ``prediction``/``changes``/``decision`` objects, ``None`` for rows
+        recorded before they existed.
+        """
         rows = self._conn.execute(
-            "SELECT * FROM evolutions WHERE harness_name=? ORDER BY created_at DESC",
+            "SELECT rowid AS evolution_id, * FROM evolutions WHERE harness_name=? "
+            "ORDER BY created_at DESC, rowid DESC",
             (harness_name,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            entry = dict(row)
+            for column in ("prediction", "changes", "decision"):
+                raw = entry.pop(f"{column}_json", None)
+                try:
+                    entry[column] = json.loads(raw) if raw else None
+                except (TypeError, ValueError):
+                    entry[column] = None
+            result.append(entry)
+        return result
+
+    def runs_with_friction(
+        self, run_ids: list[str], category: str, component: str | None = None
+    ) -> set[str]:
+        """Which of ``run_ids`` recorded friction of ``category`` (at ``component``)."""
+        found: set[str] = set()
+        for start in range(0, len(run_ids), 500):
+            chunk = run_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            query = (
+                f"SELECT DISTINCT run_id FROM friction_events WHERE run_id IN ({placeholders}) "
+                "AND category=?"
+            )
+            params: list[Any] = [*chunk, category]
+            if component:
+                query += " AND component=?"
+                params.append(component)
+            found.update(row["run_id"] for row in self._conn.execute(query, params))
+        return found
+
+    def metric_values(self, run_ids: list[str], name: str) -> dict[str, float]:
+        """Each run's value of metric ``name`` (the mean, if recorded more than once)."""
+        values: dict[str, list[float]] = {}
+        for start in range(0, len(run_ids), 500):
+            chunk = run_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT run_id, value FROM run_metrics WHERE run_id IN ({placeholders}) "
+                "AND name=?",
+                [*chunk, name],
+            ):
+                values.setdefault(row["run_id"], []).append(float(row["value"]))
+        return {run_id: sum(v) / len(v) for run_id, v in values.items()}
+
+    def completed_eval_cells(self, harness_key: str, version: str, eval_id: str) -> int:
+        """How many completed cells of ``eval_id`` ran under this harness version."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM eval_cells c "
+            "JOIN eval_runs e ON e.eval_run_id = c.eval_run_id "
+            "JOIN runs r ON r.run_id = c.run_id "
+            "WHERE r.harness_key=? AND r.harness_version_hash=? AND e.eval_id=? "
+            "AND c.status='completed'",
+            (harness_key, version, eval_id),
+        ).fetchone()
+        return int(row["n"] or 0)
+
+    def eval_pairs(
+        self, harness_key: str, left_version: str, right_version: str
+    ) -> list[dict[str, Any]]:
+        """Eval cells of the same case run under both versions, matched up.
+
+        Pairs on ``(eval_id, case_key, repetition)``: the same case, the same
+        repetition index, the same eval definition, one run per version. When a
+        version ran the same cell more than once, its newest run is used. This
+        is what turns a before/after comparison from two noisy rates into
+        discordant pairs, which is the only comparison small evals can settle.
+        """
+        rows = self._conn.execute(
+            "SELECT e.eval_id, c.case_key, c.repetition, r.harness_version_hash AS version, "
+            "r.run_id, r.status, r.finished_at FROM eval_cells c "
+            "JOIN eval_runs e ON e.eval_run_id = c.eval_run_id "
+            "JOIN runs r ON r.run_id = c.run_id "
+            "WHERE r.harness_key=? AND r.harness_version_hash IN (?, ?) "
+            "AND c.status = 'completed' ORDER BY r.finished_at",
+            (harness_key, left_version, right_version),
+        ).fetchall()
+        sides: dict[str, dict[tuple[str, str, int], dict[str, Any]]] = {
+            left_version: {},
+            right_version: {},
+        }
+        for row in rows:
+            key = (row["eval_id"], row["case_key"], int(row["repetition"]))
+            sides[row["version"]][key] = dict(row)  # newest wins (ordered ascending)
+        pairs = []
+        for key in sorted(set(sides[left_version]) & set(sides[right_version])):
+            pairs.append(
+                {
+                    "eval_id": key[0],
+                    "case_key": key[1],
+                    "repetition": key[2],
+                    "left": sides[left_version][key],
+                    "right": sides[right_version][key],
+                }
+            )
+        return pairs
 
     def failure_count(
         self, harness_key: str, *, since: str | None = None, version: str | None = None

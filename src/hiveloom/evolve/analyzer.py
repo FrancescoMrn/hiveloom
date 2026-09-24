@@ -146,7 +146,9 @@ def analyze(
     thing worth carrying forward. A driver that measures its own mutations
     (the autoresearch loop) passes its ledger; everyone else gets the
     unmeasured record of applied and rejected proposals from the queue, which
-    is still enough to stop the proposer suggesting the same mutation twice.
+    is still enough to stop the proposer suggesting the same mutation twice —
+    with each applied evolution's measured verdict attached (see
+    :func:`hiveloom.evolve.assess.attempt_history`).
 
     ``evolution`` is the spec's evolution section: it tells the signal map
     which levers evolution may actually pull. Without it every located signal
@@ -216,11 +218,13 @@ def analyze(
         objectives=objectives or [],
         version=version,
     )
-    history = (
-        attempt_history
-        if attempt_history is not None
-        else queued_attempt_history(hive, harness_name)
-    )
+    if attempt_history is not None:
+        history = attempt_history
+    else:
+        # Imported here: assess builds on this module's AttemptRecord.
+        from .assess import attempt_history as measured_history
+
+        history = measured_history(hive, harness_name)
     signal_map = locate_signal(hive, harness_name, version=version, evolution=evolution)
     # A successful run's task and output are private run evidence like any
     # excerpt, so they travel only under the same frozen opt-in; without it the
@@ -264,55 +268,63 @@ def analyze(
 MAX_ATTEMPT_HISTORY = 12
 
 
+def queue_record(row: dict[str, Any]) -> AttemptRecord | None:
+    """One resolved proposal-queue row as an unmeasured attempt, or None if unresolved."""
+    status = str(row.get("status") or "")
+    if status not in ("applied", "rejected"):
+        return None
+
+    def object_json(value: Any) -> dict[str, Any]:
+        try:
+            decoded = json.loads(value or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    applied = object_json(row.get("apply_result_json"))
+    proposed = object_json(row.get("proposal_json"))
+    changes = (
+        applied.get("applied_yaml", []) if status == "applied"
+        else proposed.get("yaml_changes", [])
+    )
+    paths = [
+        change["path"] for change in changes if isinstance(change, dict)
+        and isinstance(change.get("path"), str)
+    ] if isinstance(changes, list) else []
+    code = (
+        applied.get("applied_code", []) if status == "applied"
+        else [item.get("file") for item in (proposed.get("code_changes") or [])
+              if isinstance(item, dict)]
+    )
+    if isinstance(code, list):
+        paths.extend(path for path in code if isinstance(path, str))
+    note = "from the proposal queue; no measured effect attached"
+    if applied.get("reason"):
+        note += f"; reason: {applied['reason']}"
+    return AttemptRecord(
+        outcome=status,
+        rationale=str(row.get("rationale") or ""),
+        changed_paths=list(dict.fromkeys(paths)),
+        version_hash=str(row.get("spec_version_hash") or ""),
+        note=note,
+    )
+
+
 def queued_attempt_history(hive: Hive, harness_name: str) -> list[AttemptRecord]:
     """Resolved proposals as search memory, newest first.
 
     These carry no measurement — the queue records that a mutation was applied
     or rejected, never whether it helped. Said plainly in ``note`` so the
-    proposer does not read "applied" as "worked": a driver with real numbers
-    passes them to :func:`analyze` instead.
+    proposer does not read "applied" as "worked". :func:`analyze` uses
+    :func:`hiveloom.evolve.assess.attempt_history` instead, which puts each
+    applied evolution's measured verdict beside these.
     """
     records: list[AttemptRecord] = []
     for row in hive.list_proposals(harness_name):
-        status = str(row.get("status") or "")
-        if status not in ("applied", "rejected"):
+        record = queue_record(row)
+        if record is None:
             continue
-        def object_json(value: Any) -> dict[str, Any]:
-            try:
-                decoded = json.loads(value or "{}")
-            except (TypeError, ValueError):
-                return {}
-            return decoded if isinstance(decoded, dict) else {}
-
-        applied = object_json(row.get("apply_result_json"))
-        proposed = object_json(row.get("proposal_json"))
-        changes = (
-            applied.get("applied_yaml", []) if status == "applied"
-            else proposed.get("yaml_changes", [])
-        )
-        paths = [
-            change["path"] for change in changes if isinstance(change, dict)
-            and isinstance(change.get("path"), str)
-        ] if isinstance(changes, list) else []
-        code = (
-            applied.get("applied_code", []) if status == "applied"
-            else [item.get("file") for item in (proposed.get("code_changes") or [])
-                  if isinstance(item, dict)]
-        )
-        if isinstance(code, list):
-            paths.extend(path for path in code if isinstance(path, str))
-        note = "from the proposal queue; no measured effect attached"
-        if applied.get("reason"):
-            note += f"; reason: {applied['reason']}"
-        records.append(
-            AttemptRecord(
-                outcome=status,
-                rationale=str(row.get("rationale") or ""),
-                changed_paths=list(dict.fromkeys(paths)),
-                version_hash=str(row.get("spec_version_hash") or ""),
-                note=note,
-            )
-        )
+        records.append(record)
         if len(records) >= MAX_ATTEMPT_HISTORY:
             break
     return records
