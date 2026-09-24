@@ -198,6 +198,14 @@ class MemoryLabProvider(ModelProvider):
         """
         proposal = {
             "rationale": "Operator finding: the digest is only ever on the last line.",
+            # Every run already succeeds, so this is an opportunity, not a fix:
+            # it is judged on keeping the success rate up, the implicit claim of
+            # any change, rather than on a failure signal the map cannot show.
+            "target": {
+                "signal": "success_rate",
+                "expect": "increase",
+                "rationale": "no failures to target; the lesson must not cost success",
+            },
             "yaml_changes": [
                 {
                     "path": "memory.entries.+",

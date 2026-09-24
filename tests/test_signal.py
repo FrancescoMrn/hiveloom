@@ -308,3 +308,62 @@ def test_signal_cli_is_free_and_reads_the_folder(tmp_path, monkeypatch):
     assert payload["signals"][0]["feature"] == "tool_error:t"
     plain = cli_runner.invoke(cli.app, ["signal", str(directory)])
     assert plain.exit_code == 0 and "tool_error:t" in plain.output
+
+
+# --------------------------------------------------------------------------- #
+# Aimed proposals
+# --------------------------------------------------------------------------- #
+def _aimed(target: dict | None, **extra) -> str:
+    body = {"rationale": "retry the fetch", **extra,
+            "yaml_changes": [{"path": "system_prompt", "value": "Retry a failed fetch."}]}
+    if target is not None:
+        body["target"] = target
+    return json.dumps(body)
+
+
+def test_the_prompt_carries_the_signal_map_as_its_own_section(tmp_path):
+    from hiveloom.evolve.evolver import build_evolve_prompt
+    from hiveloom.spec.schema import HarnessSpec
+
+    with _population(tmp_path, failing=6, passing=6) as hive:
+        report = analyze(hive, "h", version="v1", evolution=EvolutionConfig())
+    spec = HarnessSpec(name="h", description="d", system_prompt="p")
+    system, user = build_evolve_prompt(spec, report)
+    assert "Locate, then aim" in system
+    section = user.split("<signal_map>")[1].split("</signal_map>")[0]
+    assert "verdict: actionable" in section
+    assert "tool_error:http_get (same runs as: friction:tool_error@http_get" in section
+    assert '"tool_error:http_get"' in section.split("targets:")[1]
+    # Rendered once, not again inside the raw report JSON.
+    assert '"signal_map"' not in user
+
+
+def test_a_proposal_without_a_known_target_is_sent_back(tmp_path):
+    from hiveloom.evolve.evolver import ProposalError, propose
+    from hiveloom.generate.llm import FakeStrongModel
+    from hiveloom.spec.schema import HarnessSpec
+
+    with _population(tmp_path, failing=6, passing=6) as hive:
+        report = analyze(hive, "h", version="v1", evolution=EvolutionConfig())
+    spec = HarnessSpec(name="h", description="d", system_prompt="p")
+    model = FakeStrongModel(
+        [
+            _aimed(None),
+            _aimed({"signal": "tool_error:nonexistent", "expect": "decrease"}),
+            _aimed({"signal": "tool_error:http_get", "expect": "decrease", "by": 0.5}),
+        ]
+    )
+    proposal = propose(spec, report, model)
+    assert proposal.target.signal == "tool_error:http_get"
+    assert "has no `target`" in model.prompts[1]["user"]
+    assert "'tool_error:nonexistent' is not in the signal map" in model.prompts[2]["user"]
+    # A metric target must be a configured objective.
+    with pytest.raises(ProposalError, match="not a configured evolution objective"):
+        propose(spec, report, FakeStrongModel(
+            [_aimed({"signal": "metric:quality", "expect": "increase"})] * 3
+        ))
+    # An aliased name of the same signal is accepted as written.
+    alias = propose(spec, report, FakeStrongModel(
+        [_aimed({"signal": "friction:tool_error@http_get", "expect": "decrease"})]
+    ))
+    assert alias.target.signal == "friction:tool_error@http_get"

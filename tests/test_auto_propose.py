@@ -29,7 +29,11 @@ from hiveloom.spec.loader import load_spec
 _NEW_ISSUE = "brand new different issue"  # a signature the seeded proposal has not seen
 
 _PAYLOAD = json.dumps(
-    {"rationale": "seed", "yaml_changes": [{"path": "loop.max_turns", "value": 10}]}
+    {
+        "rationale": "seed",
+        "target": {"signal": "success_rate", "expect": "increase"},
+        "yaml_changes": [{"path": "loop.max_turns", "value": 10}],
+    }
 )
 
 
@@ -200,6 +204,7 @@ def test_ungateable_auto_proposal_records_attempt_and_is_not_repaid(tmp_path: Pa
     invalid_payload = json.dumps(
         {
             "rationale": "switch policy",
+            "target": {"signal": "success_rate", "expect": "increase"},
             "yaml_changes": [{"path": "loop.policy", "value": "sequential_steps"}],
         }
     )

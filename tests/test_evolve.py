@@ -867,7 +867,11 @@ def test_parse_proposal_still_rejects_prose_with_no_object():
 # CLI: evolve --propose (queues instead of applying)
 # --------------------------------------------------------------------------- #
 _PROPOSAL_PAYLOAD = json.dumps(
-    {"rationale": "clarify", "yaml_changes": [{"path": "loop.max_turns", "value": 25}]}
+    {
+        "rationale": "clarify",
+        "target": {"signal": "success_rate", "expect": "increase"},
+        "yaml_changes": [{"path": "loop.max_turns", "value": 25}],
+    }
 )
 
 
@@ -939,7 +943,8 @@ def hiveloom_extension(hive):
     hive.register_provider(
         "local_evolver",
         lambda _ctx: FakeModelProvider([text_response(
-            '{"rationale":"clarify","yaml_changes":'
+            '{"rationale":"clarify",'
+            '"target":{"signal":"success_rate","expect":"increase"},"yaml_changes":'
             '[{"path":"loop.max_turns","value":25}]}'
         )]),
         models=[{"id": "proposal-model", "provider": "local_evolver"}],
@@ -1088,6 +1093,7 @@ def _minimal_proposal_payload() -> str:
     return json.dumps(
         {
             "rationale": "tighten the answer contract",
+            "target": {"signal": "success_rate", "expect": "increase"},
             "yaml_changes": [{"path": "loop.max_turns", "value": 30}],
         }
     )
