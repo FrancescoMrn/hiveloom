@@ -7,19 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-24
+
+The collaboration and memory release. A harness can hand its task to a fitter
+peer — locally or over MCP — and still verify the answer itself. It can keep
+working notes outside the conversation, narrow large stored results in place,
+and accumulate durable lessons that reach `harness.yaml` only through a gated,
+human-applied proposal. Evolution remembers what it already tried, takes
+operator findings, and repairs its own malformed proposals; the runtime
+recovers truncated turns and transient provider failures within declared
+budgets.
+
 ### Added
 
-- Evolution attempt memory: recent applied/rejected proposals inform subsequent
-  proposals, and SDK callers can supply measured `AttemptRecord` histories.
-  Review decisions and inconclusive experiments are not treated as proof of
-  quality changes.
-- Operator findings through `evolve --note` (repeatable) and
-  `analyze(analyst_notes=...)`, including opportunities without failed runs.
-- Model capability metadata `max_output_tokens`, checked against
-  `model.max_tokens`, and configurable OpenAI-compatible `timeout_seconds`.
-- Frozen `model.params` for provider request fields, forwarded by the Claude and
-  OpenAI-compatible providers and preserved by runtime model overrides.
-- Durable harness memory: a `memory` spec section whose entries render as a
+- **Delegation between harnesses (`delegation`, off by default).** A run can
+  hand its task to a peer harness from the local registry that is more specific
+  or has better measured Hive fitness, and verify the answer with its own
+  validators. Three runtime-enforced modes (`on_start`, `on_verify_fail`,
+  `model_choice`, the last one registering a deferred `delegate__<peer>` tool
+  per eligible peer plus an active `list_peers`), fitness floors, depth and
+  cycle refusals, and a child cost cap carved out of the parent's remaining
+  budget. Peers that do not qualify come back as `referrals`. The model stays
+  frozen; `delegation` is tunable by evolution. See `docs/delegation.md`.
+- `RunResult`/`run --json` gain `delegations`, `referrals` and
+  `delegated_cost_usd`; `runs.lineage_kind` distinguishes a delegated child
+  from a fork, and `Hive.children(run_id)` lists both.
+- **Harness-to-harness delegation over MCP.** `hiveloom mcp serve` accepts a
+  caller's lineage in the request `_meta`, links the peer run to its parent in
+  the Hive, and refuses a chain deeper than `--max-depth` (default 3) or one
+  that revisits a harness — as `status: "error"` data, before any spend.
+- `hiveloom mcp serve --concurrency N` bounds concurrent runs per server
+  process (default unlimited); waiting is bounded by the caller's timeout.
+- A peer run's artifacts now cross the wire in the `_hiveloom` envelope and
+  land on the calling run's `RunResult.artifacts`.
+- `hiveloom add mcp-server` gained `--timeout-seconds` (default 30s, `0 <
+  t <= 600`) to raise the connect/tool-call timeout for a slower peer
+  harness or tool.
+- **Durable harness memory.** A `memory` spec section whose entries render as a
   `# Memory` system-prompt section every run, managed with
   `hiveloom memory list|show|add|forget`. The executor never writes it; entries
   reach `harness.yaml` only through that CLI or an applied evolution proposal,
@@ -33,41 +57,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list|show|apply|reject` handle unchanged. Identity and Hive path come from the
   run context, proposals dedup on the lesson's content, `max_per_run` bounds one
   run, and runs launched by `hiveloom eval` record the lesson without queueing.
-- Run-scoped notes: the opt-in `notes` builtin lets the executor write, read
+- **Run-scoped notes.** The opt-in `notes` builtin lets the executor write, read
   and delete named notes that live outside the conversation and so survive
   compaction. Only their index (name, size, first line) enters the system
   prompt. Notes are private to the run, redacted before the write, journaled as
   `note_written`/`note_deleted`, bounded by `max_notes`/`max_note_bytes`, and
   carried into a fork only through a hash-bound manifest replayed from the
   parent's verified journal.
-- `transform_result` reshapes a stored tool result in place — `lines`, `head`,
+- **`transform_result`** reshapes a stored tool result in place — `lines`, `head`,
   `tail`, `grep`, `json_path`, `count`, `sort`, `unique` and `concat` — so a
   large object can be narrowed without paging it through context. Output that
   still exceeds the inline budget becomes a derived object with its own handle.
   Every op is bounded in bytes scanned and emitted, and a pattern that repeats
   an unbounded quantifier is refused.
+  `grep` also takes `raw: true`: the bare matching lines, with no header and
+  no numbers, up to 10 000 of them, refused rather than truncated. Its derived
+  handle is therefore data, and can be passed to `file_write` `content` so an
+  export never passes through the model.
 - Handle-typed tool parameters: a tool may declare which string parameters
   accept a stored-result handle (`@tool(..., handles=["content"])`, or
   `handle_params` on a `Tool`; `file_write` declares `content`). The runtime
   expands the handle under the run's authority at dispatch, capped at 4 MiB,
   while the journal and the provider keep the handle. An unresolvable handle is
   a tool error, never a silent literal.
+- `context.compaction.max_tokens` caps the output of the summarize call alone.
+  It used to run with `model.max_tokens`, and a reasoning model given a 32k
+  budget spent 545 s on one summary.
 - `harnesses/memory-lab`: an offline worked example that puts the three memory
   layers on one task — a spilled log narrowed in place, findings kept in notes
   across compaction and a fork, a derived object handed to `file_write` by
   handle, a lesson the executor proposes, and a memory entry that reaches the
   spec only through `proposals apply`. Its scripted provider parses every value
   it reports out of a real tool result.
-- Experimental `best_of_n` loop policy on the ARC branch: collect multiple
-  attempts and select a plurality answer. General-purpose release limitations
-  are documented in `docs/evolution-migration.md`.
-- `context.compaction.max_tokens` caps the output of the summarize call alone.
-  It used to run with `model.max_tokens`, and a reasoning model given a 32k
-  budget spent 545 s on one summary.
-- `transform_result` `grep` takes `raw: true`: the bare matching lines, with no
-  header and no numbers, up to 10 000 of them, refused rather than truncated.
-  Its derived handle is therefore data, and can be passed to `file_write`
-  `content` so an export never passes through the model.
+- Evolution attempt memory: recent applied/rejected proposals inform subsequent
+  proposals, and SDK callers can supply measured `AttemptRecord` histories.
+  Review decisions and inconclusive experiments are not treated as proof of
+  quality changes.
+- Operator findings through `evolve --note` (repeatable) and
+  `analyze(analyst_notes=...)`, including opportunities without failed runs.
+- Model capability metadata `max_output_tokens`, checked against
+  `model.max_tokens`, and configurable OpenAI-compatible `timeout_seconds`.
+- Frozen `model.params` for provider request fields, forwarded by the Claude and
+  OpenAI-compatible providers and preserved by runtime model overrides.
+- Experimental `best_of_n` loop policy (with `loop.attempts`, default 3):
+  samples several independent attempts, rewinding the conversation between
+  them, and submits the plurality answer. Attempts share `loop.max_turns`, tool
+  state and the cost guardrail. Its open limitations (journal replay of the
+  rewind, answer equivalence, verification ownership) are listed in
+  `docs/evolution-migration.md`.
+
+### Changed
+
+- Truncated model turns receive continuation feedback within the declared
+  token budget. Three consecutive truncations or exhausted turns return
+  `truncated` (CLI exit 4), retaining partial output; passing verification can
+  still establish success. Truncation is indexed as evolution evidence.
+- `context.tool_results.transforms` (default on) offers `transform_result`
+  beside `read_tool_result`/`search_tool_result` once a result has spilled, so
+  an existing harness that spills now sees a third retrieval tool. Set it to
+  `false` for the pre-1.2 retrieval surface, e.g. as an eval's control arm.
+- Provider factories read a harness's `.env` instead of `load_dotenv`-ing it
+  into the process, so one process serving several harnesses can no longer
+  hand harness B the credentials it found in harness A. Only the provider's
+  key variable is read from `.env`; other variables in that file are no
+  longer adopted into the process environment.
 
 ### Fixed
 
@@ -108,33 +161,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `grep` says it stopped only when more lines actually match.
   - With `transforms: false`, an oversized handle argument no longer points
     at a tool the run does not have.
-
-- Evolution repairs malformed proposals and correctable objective omissions
-  within three total model calls. Inconsistent metric evidence fails before
-  any call. Prompt evidence, history, notes, and the current spec are redacted;
-  evidence sections have size limits. Updated findings/history invalidate stale
-  proposal deduplication keys.
-- Truncated model turns receive continuation feedback within the declared
-  token budget. Three consecutive truncations or exhausted turns return
-  `truncated` (CLI exit 4), retaining partial output; passing verification can
-  still establish success. Truncation is indexed as evolution evidence.
-- OpenAI-compatible calls retry interrupted HTTP reads and transient error
-  bodies returned with HTTP 200. Embedded context overflow remains recoverable.
-  Blank visible content no longer discards reasoning, and oversized reasoning
-  and provenance payloads are bounded without discarding useful answers.
-- Provider parameters cannot replace harness-controlled identity, transcript,
-  tools, output limits, streaming, or response count, and must be bounded JSON.
-- Code-hook validation no longer mistakes `**kwargs` for positional arguments.
-- Queued proposals survive review. `proposals apply` now leaves a proposal
-  `pending` when it applied nothing (YAML declined, no code change approved)
-  instead of marking it `applied` and refusing the retry as "already
-  applied"; `proposals apply --json` without `--yes` is a usage error (exit 3)
-  rather than a no-op that resolved the row. Memory proposals append with the
-  reserved path segment `memory.entries.+`, resolved when the proposal is
-  applied, so a queued lesson can no longer silently replace an entry added
-  since — and an append-only proposal may apply after the harness version
-  moved, so several lessons from one run all reach the spec. A negative list
-  index is refused with a clear message.
 - Memory-layer bookkeeping holds when a turn's tool calls run in parallel.
   `notes` could hold more than `max_notes` and `propose_memory` could queue
   more than `max_per_run`, because each read its limit before claiming the slot
@@ -146,29 +172,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes a derived object that can be narrowed again. `concat` reads under one
   running byte budget across the objects it joins rather than up to the scan
   ceiling for each.
-- **Delegation between harnesses (`delegation`, off by default).** A run can
-  hand its task to a peer harness from the local registry that is more specific
-  or has better measured Hive fitness, and verify the answer with its own
-  validators. Three runtime-enforced modes (`on_start`, `on_verify_fail`,
-  `model_choice`, the last one registering a deferred `delegate__<peer>` tool
-  per eligible peer plus an active `list_peers`), fitness floors, depth and
-  cycle refusals, and a child cost cap carved out of the parent's remaining
-  budget. Peers that do not qualify come back as `referrals`. The model stays
-  frozen; `delegation` is tunable by evolution. See `docs/delegation.md`.
-- `RunResult`/`run --json` gain `delegations`, `referrals` and
-  `delegated_cost_usd`; `runs.lineage_kind` distinguishes a delegated child
-  from a fork, and `Hive.children(run_id)` lists both.
-- **Harness-to-harness delegation over MCP.** `hiveloom mcp serve` accepts a
-  caller's lineage in the request `_meta`, links the peer run to its parent in
-  the Hive, and refuses a chain deeper than `--max-depth` (default 3) or one
-  that revisits a harness — as `status: "error"` data, before any spend.
-- `hiveloom mcp serve --concurrency N` bounds concurrent runs per server
-  process (default unlimited); waiting is bounded by the caller's timeout.
-- A peer run's artifacts now cross the wire in the `_hiveloom` envelope and
-  land on the calling run's `RunResult.artifacts`.
-
-### Fixed
-
+- Queued proposals survive review. `proposals apply` now leaves a proposal
+  `pending` when it applied nothing (YAML declined, no code change approved)
+  instead of marking it `applied` and refusing the retry as "already
+  applied"; `proposals apply --json` without `--yes` is a usage error (exit 3)
+  rather than a no-op that resolved the row. Memory proposals append with the
+  reserved path segment `memory.entries.+`, resolved when the proposal is
+  applied, so a queued lesson can no longer silently replace an entry added
+  since — and an append-only proposal may apply after the harness version
+  moved, so several lessons from one run all reach the spec. A negative list
+  index is refused with a clear message.
+- Evolution repairs malformed proposals and correctable objective omissions
+  within three total model calls. Inconsistent metric evidence fails before
+  any call. Prompt evidence, history, notes, and the current spec are redacted;
+  evidence sections have size limits. Updated findings/history invalidate stale
+  proposal deduplication keys.
+- OpenAI-compatible calls retry interrupted HTTP reads and transient error
+  bodies returned with HTTP 200. Embedded context overflow remains recoverable.
+  Blank visible content no longer discards reasoning, and oversized reasoning
+  and provenance payloads are bounded without discarding useful answers.
+- Provider parameters cannot replace harness-controlled identity, transcript,
+  tools, output limits, streaming, or response count, and must be bounded JSON.
+- Code-hook validation no longer mistakes `**kwargs` for positional arguments.
 - `hiveloom set`/`remove` can now address an existing list item by numeric
   path segment (e.g. `guardrails.0.value`, `mcp_servers.0.timeout_seconds`)
   instead of the dotted-path walker silently clobbering the list into a dict.
@@ -177,9 +202,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema field (e.g. `system_prompt`); it keeps the CLI text verbatim, so
   `": "` and similar can't be misread as a YAML mapping. A validation
   failure that still occurs now hints at `--file`.
-- `hiveloom add mcp-server` gained `--timeout-seconds` (default 30s, `0 <
-  t <= 600`) to raise the connect/tool-call timeout for a slower peer
-  harness or tool.
 - `hiveloom mcp serve`'s `run_*` tools return every failure as data
   (`status: "error"` with the reason); the traceback goes to stderr via
   `logging`, not to a caller that cannot read it.
@@ -189,11 +211,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A stdio MCP child now inherits `HIVELOOM_HOME`/`HIVELOOM_DB` (locations, not
   secrets), so a spawned `hiveloom mcp serve` shares the parent's Hive and
   trust store instead of writing to a different one.
-- Provider factories read a harness's `.env` instead of `load_dotenv`-ing it
-  into the process, so one process serving several harnesses can no longer
-  hand harness B the credentials it found in harness A. Only the provider's
-  key variable is read from `.env`; other variables in that file are no
-  longer adopted into the process environment.
 
 ### Removed
 
