@@ -167,6 +167,28 @@ def test_gate_rejects_dangerous_tool_changes(tmp_path: Path):
     )
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("tools.+", {"builtin": "shell"}),
+        ("tools.0", {"builtin": "shell"}),
+        ("tools.99", {"builtin": "shell"}),
+        ("tools.0.builtin", "shell"),
+    ],
+)
+def test_gate_rejects_dangerous_tools_on_every_list_path(tmp_path: Path, path, value):
+    """Appending or rewriting one entry must not be a way around the whole-list check."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(yaml_changes=[{"path": path, "value": value}])
+
+    result = gate(spec, proposal)
+
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == (
+        "dangerous tool changes require an explicit construct command"
+    )
+
+
 def test_gate_rejects_mcp_servers_regardless_of_harness_mutable_list(tmp_path: Path):
     """ALWAYS_FROZEN must win even if a harness declares mcp_servers mutable."""
     directory = _harness(tmp_path)

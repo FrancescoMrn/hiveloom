@@ -566,16 +566,31 @@ def _carries_playbook_hook(value: Any) -> bool:
 
 def _enables_dangerous_tool(change: YamlChange) -> bool:
     """Keep execution-capable tools out of unattended YAML evolution."""
-    if change.path != "tools" or not isinstance(change.value, list):
+    # Every path that can put a tool entry in the list counts, not only the
+    # whole-list replacement: `tools.+` appends one, `tools.<n>` replaces or
+    # appends one, and `tools.<n>.builtin` rewrites which builtin an existing
+    # entry names. Checking `tools` alone let the append path add `shell`.
+    parts = change.path.split(".")
+    if parts[0] != "tools":
         return False
     tools = CATALOGS["tools"]
-    return any(
-        isinstance(tool, dict)
-        and isinstance(tool.get("builtin"), str)
-        and (entry := tools.get(tool["builtin"])) is not None
-        and "dangerous" in entry.tags
-        for tool in change.value
-    )
+
+    def dangerous(name: Any) -> bool:
+        entry = tools.get(name) if isinstance(name, str) else None
+        return entry is not None and "dangerous" in entry.tags
+
+    def entry_is_dangerous(tool: Any) -> bool:
+        return isinstance(tool, dict) and dangerous(tool.get("builtin"))
+
+    if len(parts) == 1:
+        return isinstance(change.value, list) and any(
+            entry_is_dangerous(tool) for tool in change.value
+        )
+    if len(parts) == 2:
+        return entry_is_dangerous(change.value)
+    if len(parts) == 3 and parts[2] == "builtin":
+        return dangerous(change.value)
+    return False
 
 
 # --------------------------------------------------------------------------- #
