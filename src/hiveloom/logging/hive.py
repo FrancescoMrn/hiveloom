@@ -214,7 +214,13 @@ CREATE TABLE IF NOT EXISTS run_steps (
     violations_json TEXT NOT NULL,
     PRIMARY KEY (run_id, step_id)
 );
+CREATE TABLE IF NOT EXISTS run_features (
+    run_id TEXT NOT NULL,
+    feature TEXT NOT NULL,
+    PRIMARY KEY (run_id, feature)
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
+CREATE INDEX IF NOT EXISTS idx_run_features_feature ON run_features(feature);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
@@ -277,6 +283,109 @@ def _friction_filters(
         where.append("r.harness_version_hash=?")
         params.append(version)
     return where, params
+
+
+#: Marker every run indexed with features carries, so a population can tell a
+#: run that has no features from one ingested before features existed.
+FEATURES_INDEXED = "_indexed"
+#: Bound on one run's feature set: features are a vocabulary for contrast, and
+#: a run that calls hundreds of distinct tools must not grow the index without
+#: limit.
+_MAX_RUN_FEATURES = 200
+#: Friction categories that restate how a run ended rather than describe what
+#: happened on the way. As features they would "explain" failure by definition
+#: (every max_turns run hit the loop limit), so the contrast leaves them to the
+#: failure clusters, where they already are.
+OUTCOME_DEFINING_FRICTION = frozenset(
+    {"loop_limit", "guardrail_halt", "output_validation", "verifier_failure"}
+)
+# Task-size buckets. Coarse on purpose: a feature is a yes/no fact about a run,
+# and three buckets are enough to tell "fails on long inputs" from the rest.
+_INPUT_BUCKETS = ((400, "short"), (2000, "medium"))
+
+
+def _feature_token(value: Any) -> str:
+    """One feature name segment: short, single-line, no separators to forge."""
+    text = " ".join(str(value or "").split())[:80]
+    return text.replace(":", "_").replace("@", "_") or "?"
+
+
+def derive_features(
+    events: list[dict[str, Any]], friction: list[tuple[Any, ...]]
+) -> list[str]:
+    """Yes/no facts about one run, for contrasting runs that failed with runs that did not.
+
+    Each feature names something the harness did or met on the way — a tool
+    it called or that errored, a step it violated, a playbook it entered, a
+    memory entry it was shown, a peer it delegated to, the executor it ran on,
+    how long its task was — never the outcome itself (see
+    :data:`OUTCOME_DEFINING_FRICTION`). The names are namespaced
+    ``family:detail`` so the signal locator can map each one to the part of the
+    spec that could change it. Built from the already-redacted journal and the
+    friction rows, and holding names only: no tool input, output or model text.
+    """
+    features: set[str] = {FEATURES_INDEXED}
+    for event in events:
+        etype = event.get("type")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        if etype == "run_started":
+            task = payload.get("input")
+            if isinstance(task, str):
+                size = next(
+                    (label for limit, label in _INPUT_BUCKETS if len(task) < limit), "long"
+                )
+                features.add(f"input:{size}")
+        elif etype == "tool_call":
+            features.add(f"tool:{_feature_token(payload.get('name'))}")
+        elif etype == "tool_result" and payload.get("is_error"):
+            features.add(f"tool_error:{_feature_token(payload.get('name'))}")
+        elif etype == "tool_spilled":
+            features.add(f"spilled:{_feature_token(payload.get('name'))}")
+        elif etype == "playbook_switch" and payload.get("ok"):
+            features.add(f"playbook:{_feature_token(payload.get('to'))}")
+        elif etype == "note_written":
+            features.add("notes:written")
+        elif etype == "memory_proposed":
+            features.add("memory:proposed")
+        elif etype == "memory_selected":
+            for entry_id in payload.get("ids") or []:
+                features.add(f"memory:{_feature_token(entry_id)}")
+        elif etype == "run_finished":
+            execution = payload.get("execution")
+            if isinstance(execution, dict):
+                model = execution.get("effective_model") or execution.get("requested_model")
+                if model:
+                    features.add(f"model:{_feature_token(model)}")
+            for step in payload.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                step_id = _feature_token(step.get("id"))
+                if step.get("violations"):
+                    features.add(f"step_violation:{step_id}")
+                if step.get("status") in ("failed", "pending"):
+                    features.add(f"step:{step_id}:{_feature_token(step.get('status'))}")
+            for record in payload.get("delegations") or []:
+                if isinstance(record, dict):
+                    features.add(
+                        f"delegation:{_feature_token(record.get('harness'))}:"
+                        f"{_feature_token(record.get('status'))}"
+                    )
+            if payload.get("referrals"):
+                features.add("delegation:referral")
+    for row in friction:
+        category, component = row[2], row[5]
+        if category in OUTCOME_DEFINING_FRICTION:
+            continue
+        features.add(f"friction:{_feature_token(category)}")
+        if component:
+            features.add(f"friction:{_feature_token(category)}@{_feature_token(component)}")
+    ordered = sorted(features)
+    if len(ordered) > _MAX_RUN_FEATURES:
+        ordered = [FEATURES_INDEXED, *[f for f in ordered if f != FEATURES_INDEXED]]
+        ordered = ordered[:_MAX_RUN_FEATURES]
+    return ordered
 
 
 def default_db_path() -> Path:
@@ -675,6 +784,7 @@ class Hive:
         cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM friction_events WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM run_steps WHERE run_id=?", (run_id,))
+        cur.execute("DELETE FROM run_features WHERE run_id=?", (run_id,))
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
@@ -706,11 +816,16 @@ class Hive:
             "VALUES (?, ?, ?, ?, ?, ?)",
             visits,
         )
+        friction = self._derive_friction(run_id, events, row)
         cur.executemany(
             "INSERT INTO friction_events (run_id, seq, category, phase, attempt, "
             "component, fingerprint, recovered, timestamp, summary) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            self._derive_friction(run_id, events, row),
+            friction,
+        )
+        cur.executemany(
+            "INSERT OR IGNORE INTO run_features (run_id, feature) VALUES (?, ?)",
+            [(run_id, feature) for feature in derive_features(events, friction)],
         )
         cur.executemany(
             "INSERT INTO run_steps (run_id, step_id, step_index, instruction, status, "
@@ -1444,6 +1559,126 @@ class Hive:
     # ------------------------------------------------------------------ #
     # Comparison
     # ------------------------------------------------------------------ #
+    def feature_population(
+        self,
+        harness_key: str,
+        *,
+        version: str | None = None,
+        include_swapped: bool = False,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Every finished run of a harness with its outcome label and features.
+
+        The input to signal location: one row per run, newest first, carrying
+        ``failed`` — a non-success status, *or* a success the world later
+        labelled a failure (``hiveloom outcome``), because a run that passed
+        its validators and was wrong anyway is exactly the failure validators
+        cannot see — and the run's :func:`derive_features` set. Swapped-model
+        runs are held out by default for the reason :meth:`version_stats`
+        gives. ``indexed`` is False for a run ingested before features
+        existed, so a caller can report coverage instead of reading its empty
+        feature set as "did nothing".
+        """
+        query = (
+            "SELECT r.run_id, r.status, r.cost_usd, r.turns, r.harness_version_hash, "
+            "r.finished_at, o.outcome FROM runs r "
+            "LEFT JOIN run_outcomes o ON o.run_id = r.run_id "
+            "WHERE r.harness_key=? AND r.status != 'incomplete' AND r.finished_at IS NOT NULL"
+        )
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        if not include_swapped:
+            query += " AND (r.model_path IS NULL OR r.model_path NOT LIKE '%>%')"
+        query += " ORDER BY r.finished_at DESC LIMIT ?"
+        params.append(limit)
+        rows = [dict(row) for row in self._conn.execute(query, params)]
+        if not rows:
+            return []
+        features: dict[str, set[str]] = {row["run_id"]: set() for row in rows}
+        run_ids = list(features)
+        for start in range(0, len(run_ids), 500):
+            chunk = run_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            for item in self._conn.execute(
+                f"SELECT run_id, feature FROM run_features WHERE run_id IN ({placeholders})",
+                chunk,
+            ):
+                features[item["run_id"]].add(item["feature"])
+        population = []
+        for row in rows:
+            run_features = features[row["run_id"]]
+            population.append(
+                {
+                    "run_id": row["run_id"],
+                    "version": row["harness_version_hash"],
+                    "status": row["status"],
+                    "outcome": row["outcome"],
+                    "failed": row["status"] != "success" or row["outcome"] == "failure",
+                    "cost_usd": row["cost_usd"] or 0.0,
+                    "turns": row["turns"] or 0,
+                    "indexed": FEATURES_INDEXED in run_features,
+                    "features": run_features - {FEATURES_INDEXED},
+                }
+            )
+        return population
+
+    def friction_by_component(
+        self, harness_key: str, *, version: str | None = None, include_swapped: bool = False
+    ) -> list[dict[str, Any]]:
+        """Friction counted per ``(category, component)``: the countable mechanisms.
+
+        :meth:`friction_summary` answers "how much friction of each kind";
+        this answers "where": ``tool_error`` on ``http_get`` and ``tool_error``
+        on ``file_read`` are different problems with different fixes. Each row
+        counts events, distinct runs, and distinct *failed* runs (a non-success
+        status or an external failure label), which is what a change aimed at
+        the mechanism is judged by.
+        """
+        query = (
+            "SELECT f.category, COALESCE(f.component, '') AS component, "
+            "COUNT(*) AS events, COUNT(DISTINCT f.run_id) AS runs, "
+            "COUNT(DISTINCT CASE WHEN r.status != 'success' OR o.outcome = 'failure' "
+            "THEN f.run_id END) AS failed_runs, "
+            "SUM(CASE WHEN f.recovered THEN 1 ELSE 0 END) AS recovered "
+            "FROM friction_events f JOIN runs r ON r.run_id = f.run_id "
+            "LEFT JOIN run_outcomes o ON o.run_id = f.run_id "
+            "WHERE r.harness_key=?"
+        )
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        if not include_swapped:
+            query += " AND (r.model_path IS NULL OR r.model_path NOT LIKE '%>%')"
+        query += " GROUP BY f.category, component ORDER BY failed_runs DESC, events DESC"
+        return [dict(row) for row in self._conn.execute(query, params)]
+
+    def recent_successes(
+        self, harness_key: str, n: int = 2, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The newest successful runs (not later labelled failures), as worked examples.
+
+        A report built only from failures can say what went wrong but never
+        what right looks like; one or two passing runs of the same version are
+        the cheapest contrast there is. Task and output are the Hive's capped
+        copies, and callers cap them again for prompts.
+        """
+        query = (
+            "SELECT r.run_id, r.task, r.output, r.turns, r.cost_usd FROM runs r "
+            "LEFT JOIN run_outcomes o ON o.run_id = r.run_id "
+            "WHERE r.harness_key=? AND r.status='success' "
+            "AND (o.outcome IS NULL OR o.outcome != 'failure')"
+        )
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        query += " ORDER BY r.finished_at DESC LIMIT ?"
+        params.append(n)
+        return [dict(row) for row in self._conn.execute(query, params)]
+
     def compare_versions(self, harness_key: str, left: str, right: str) -> dict[str, Any]:
         """Two harness versions side by side, with the deltas spelled out.
 
@@ -1543,6 +1778,9 @@ class Hive:
         )
         self._conn.execute(
             f"DELETE FROM run_steps WHERE run_id IN ({placeholders})", run_ids
+        )
+        self._conn.execute(
+            f"DELETE FROM run_features WHERE run_id IN ({placeholders})", run_ids
         )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()

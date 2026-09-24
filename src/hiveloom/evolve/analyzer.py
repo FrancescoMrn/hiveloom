@@ -13,10 +13,16 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom.logging.hive import Hive
-from hiveloom.spec.schema import MetricObjective, RedactionConfig, TraceExcerptConfig
+from hiveloom.spec.schema import (
+    EvolutionConfig,
+    MetricObjective,
+    RedactionConfig,
+    TraceExcerptConfig,
+)
 
 from .evidence import IncidentEvidence, build_incident_evidence
 from .metric_evidence import MetricEvidence, build_metric_evidence
+from .signal import SignalMap, locate_signal
 
 
 class FailureCluster(BaseModel):
@@ -76,6 +82,13 @@ class FailureReport(BaseModel):
     # it is a consequence of building evidence out of failures, and the only
     # repair is a channel for what analysis found that failure never shows.
     analyst_notes: list[str] = Field(default_factory=list)
+    # Where the evidence points, located deterministically before any model
+    # sees it (see hiveloom.evolve.signal). The proposer aims at one of its
+    # targets instead of diagnosing the layer from raw counts.
+    signal_map: SignalMap | None = None
+    # One or two passing runs of the same version: what "right" looks like, so
+    # the report is not built from failures alone.
+    recent_successes: list[dict[str, Any]] = Field(default_factory=list)
 
     def is_empty(self) -> bool:
         return (
@@ -114,6 +127,7 @@ def analyze(
     objectives: list[MetricObjective] | None = None,
     attempt_history: list[AttemptRecord] | None = None,
     analyst_notes: list[str] | None = None,
+    evolution: EvolutionConfig | None = None,
 ) -> FailureReport:
     """Build a :class:`FailureReport` for ``harness_name`` from the Hive.
 
@@ -133,6 +147,10 @@ def analyze(
     (the autoresearch loop) passes its ledger; everyone else gets the
     unmeasured record of applied and rejected proposals from the queue, which
     is still enough to stop the proposer suggesting the same mutation twice.
+
+    ``evolution`` is the spec's evolution section: it tells the signal map
+    which levers evolution may actually pull. Without it every located signal
+    is reported as out of reach rather than guessed at.
     """
     sigs = hive.failure_signatures(harness_name, version=version)
 
@@ -203,6 +221,22 @@ def analyze(
         if attempt_history is not None
         else queued_attempt_history(hive, harness_name)
     )
+    signal_map = locate_signal(hive, harness_name, version=version, evolution=evolution)
+    # A successful run's task and output are private run evidence like any
+    # excerpt, so they travel only under the same frozen opt-in; without it the
+    # proposer still learns that passing runs exist and what they cost.
+    private_ok = excerpt_config is not None and excerpt_config.enabled
+    success_examples = []
+    for row in hive.recent_successes(harness_name, 2, version=version):
+        example: dict[str, Any] = {
+            "run_id": row["run_id"],
+            "turns": row.get("turns"),
+            "cost_usd": row.get("cost_usd"),
+        }
+        if private_ok:
+            example["task"] = (row.get("task") or "")[:1000]
+            example["output"] = (row.get("output") or "")[:1500]
+        success_examples.append(example)
 
     return FailureReport(
         harness_name=harness_name,
@@ -219,6 +253,8 @@ def analyze(
         metric_evidence=metric_evidence,
         attempt_history=history,
         analyst_notes=list(analyst_notes or []),
+        signal_map=signal_map,
+        recent_successes=success_examples,
     )
 
 

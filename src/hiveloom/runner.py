@@ -578,6 +578,7 @@ def _maybe_auto_propose(
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
                 objectives=spec.evolution.objectives,
+                evolution=spec.evolution,
             )
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —

@@ -2082,6 +2082,83 @@ def friction_list(
 
 
 @app.command()
+def signal(
+    harness_dir: str = typer.Argument(..., help="Harness directory to locate signal for."),
+    version: str | None = typer.Option(
+        None, "--version", help="Harness version hash to analyse (default: the spec on disk)."
+    ),
+    max_signals: int = typer.Option(12, "--max-signals", min=1, max=50),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Locate where a harness version's evidence points. Free: no model call.
+
+    Contrasts failing and successful runs feature by feature (tools called or
+    erroring, steps violated, playbooks, memory entries shown, peers, executor
+    model, task size), counts the friction mechanisms a change would be judged
+    by, attributes each failure to a loss class, and says how large a change
+    this many runs could detect at all. `evolve` receives the same map and must
+    aim its proposal at one of its targets.
+    """
+    from hiveloom import runner
+    from hiveloom.evolve.signal import locate_signal
+    from hiveloom.logging.hive import Hive
+    from hiveloom.logging.trace import spec_version_hash
+    from hiveloom.spec.loader import harness_path, load_spec
+
+    with _guard(json_output):
+        base = harness_path(harness_dir).parent
+        spec = load_spec(harness_dir)
+        with Hive() as hive:
+            key = runner.resolve_and_ingest(harness_dir, hive)
+            signal_map = locate_signal(
+                hive,
+                key,
+                version=version or spec_version_hash(spec, base),
+                evolution=spec.evolution,
+                max_signals=max_signals,
+            )
+        if json_output:
+            _emit_json({"ok": True, **signal_map.model_dump(mode="json")})
+            return
+        _console.print(
+            f"[bold]{spec.name}[/bold] @ {signal_map.version} — verdict "
+            f"[cyan]{signal_map.verdict}[/cyan]"
+        )
+        for line in signal_map.headline:
+            _console.print(f"  • {line}")
+        if signal_map.signals:
+            table = Table(title="features vs failure")
+            table.add_column("feature", style="cyan")
+            table.add_column("fail with", justify="right")
+            table.add_column("fail without", justify="right")
+            table.add_column("p", justify="right")
+            table.add_column("q", justify="right")
+            table.add_column("lever")
+            for item in signal_map.signals:
+                table.add_row(
+                    item.feature,
+                    f"{item.failures_with}/{item.failures_with + item.successes_with}",
+                    f"{item.failures_without}/{item.failures_without + item.successes_without}",
+                    f"{item.p_value:.3g}",
+                    f"{item.q_value:.3g}",
+                    (item.levers[0] if item.levers else "-")
+                    + ("" if item.addressable else " (frozen)"),
+                )
+            _console.print(table)
+        if signal_map.mechanisms:
+            table = Table(title="mechanisms")
+            table.add_column("target", style="cyan")
+            table.add_column("events", justify="right")
+            table.add_column("runs", justify="right")
+            table.add_column("failed runs", justify="right")
+            for item in signal_map.mechanisms:
+                table.add_row(
+                    item.target, str(item.events), str(item.runs), str(item.failed_runs)
+                )
+            _console.print(table)
+
+
+@app.command()
 def stats(
     target: str = typer.Argument(..., help="Harness name or harness directory."),
     include_friction: bool = typer.Option(
@@ -2703,6 +2780,7 @@ def evolve(
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
                 objectives=spec.evolution.objectives,
+                evolution=spec.evolution,
                 analyst_notes=notes,
             )
             if report.is_empty():
