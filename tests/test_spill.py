@@ -780,6 +780,98 @@ def test_a_line_without_newlines_is_still_bounded(tmp_path: Path):
     assert "2 lines" in out
 
 
+
+def test_line_splitting_is_linear_in_the_object(tmp_path: Path):
+    # Each line used to re-split the rest of its chunk, which made a chunk of
+    # short lines quadratic: seconds per megabyte. A generous bound, not a
+    # benchmark — the old code took roughly ten seconds here.
+    import time
+
+    store, handle = _stored(tmp_path, "0123456789\n" * (4 * 1024 * 1024 // 11))
+    began = time.perf_counter()
+    out = store.transform(handle, "count", {})
+    assert time.perf_counter() - began < 2
+    assert f"{4 * 1024 * 1024 // 11} lines" in out
+
+
+def test_an_over_long_line_across_a_chunk_boundary_is_kept_in_pieces(
+    tmp_path: Path, monkeypatch
+):
+    # The documented contract: a run past the line bound is split, and every
+    # piece counts as a line — not cut to its first piece with the rest lost
+    # when the run happens to cross a read chunk.
+    monkeypatch.setattr(spill, "_LINE_MAX_BYTES", 10)
+    monkeypatch.setattr(spill, "_SEARCH_CHUNK_BYTES", 8)
+    path = tmp_path / "long.txt"
+    path.write_bytes(b"A" * 25 + b"NEEDLE\nsecond\r\nthird")
+
+    lines = [text for _number, text in spill._iter_lines(path)]
+    assert "".join(lines[:-2]) == "A" * 25 + "NEEDLE"
+    assert all(len(line) <= 10 for line in lines)
+    assert lines[-2:] == ["second", "third"]
+    assert [number for number, _text in spill._iter_lines(path)] == list(
+        range(1, len(lines) + 1)
+    )
+
+
+def test_a_scan_past_the_ceiling_is_marked_partial(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(spill, "TRANSFORM_MAX_SCAN_BYTES", 70)
+    # The ceiling falls inside "line 004 ...": a half line must not pass for a
+    # whole one, and every answer must say it covers only a prefix.
+    store, handle = _stored(tmp_path, "\n".join(f"line {i:03d} filler" for i in range(20)))
+
+    counted = store.transform(handle, "count", {})
+    assert "4 lines" in counted
+    assert "partial: scanned the first 70 of" in counted
+    listed = store.transform(handle, "lines", {"start": 1, "count": 20})
+    assert "partial" in listed
+    assert "4: line 003 filler" in listed
+    assert "5:" not in listed
+    missed = store.transform(handle, "grep", {"pattern": "line 019"})
+    assert "no line matched" in missed and "partial" in missed
+
+
+def test_every_op_splits_lines_the_same_way(tmp_path: Path):
+    # A form feed or U+2028 is not a line break for lines/grep/count, so sort
+    # and unique must not treat it as one either; CRLF ends a line for all.
+    content = "b\x0cx\r\na\u2028y\r\nb\x0cx\r\n" + "pad\n" * 60
+    store, handle = _stored(tmp_path, content)
+
+    assert "63 lines" in store.transform(handle, "count", {})
+    ordered = store.transform(handle, "sort", {"unique": True}).split("\n")
+    assert ordered[1:] == ["a\u2028y", "b\x0cx", "pad"]
+    first_seen = store.transform(handle, "unique", {}).split("\n")
+    assert first_seen[1:] == ["b\x0cx", "a\u2028y", "pad"]
+
+
+def test_grep_says_it_stopped_only_when_more_lines_match(tmp_path: Path):
+    store, handle = _stored(tmp_path, "hit\n" + "miss\n" * 100)
+    exact = store.transform(handle, "grep", {"pattern": "hit", "max_matches": 1})
+    assert "1: hit" in exact
+    assert "stopped" not in exact
+
+    store, handle = _stored(tmp_path / "more", "hit\n" + "miss\n" * 100 + "hit\n")
+    capped = store.transform(handle, "grep", {"pattern": "hit", "max_matches": 1})
+    assert "stopped at 1 matches; more lines match." in capped
+    assert "102: hit" not in capped
+
+
+def test_an_oversized_argument_points_only_at_tools_the_run_has(tmp_path: Path):
+    producer = _store(tmp_path, max_inline_bytes=40)
+    record = producer.spill(tool="t", content="x" * 400)
+    with pytest.raises(SpillError, match="transform_result"):
+        producer.resolve_text(record.handle, 100)
+
+    config = ToolResultsConfig(
+        max_inline_bytes=40, preview_head_bytes=20, preview_tail_bytes=10, transforms=False
+    )
+    plain = SpillStore(tmp_path / "plain", run_id="run_1", config=config)
+    record = plain.spill(tool="t", content="x" * 400)
+    with pytest.raises(SpillError) as refused:
+        plain.resolve_text(record.handle, 100)
+    assert "transform_result" not in str(refused.value)
+    assert "read_tool_result" in str(refused.value)
+
 def test_the_model_can_transform_without_reading_into_context(tmp_path: Path):
     harness = _harness(tmp_path, BIG_TOOL, "report")
     provider = HandleAwareProvider(

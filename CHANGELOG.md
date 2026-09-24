@@ -95,6 +95,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inherited note no longer deletes the fork's only copy. Two parallel writes
   of one note name can no longer leave it unreadable, and a resume that is
   granted fewer notes than its manifest lists records the `missing` names.
+- `transform_result`:
+  - Line splitting is linear (it was quadratic: 88 s to `count` 35 MB).
+  - A line over 1 MiB is kept in pieces rather than cut short.
+  - A scan that stops at the 32 MB ceiling says so rather than reporting
+    partial counts as whole.
+  - `sort` and `unique` split lines on `\n` like every other op.
+  - `grep` says it stopped only when more lines actually match.
+  - With `transforms: false`, an oversized handle argument no longer points
+    at a tool the run does not have.
+
 - Evolution repairs malformed proposals and correctable objective omissions
   within three total model calls. Inconsistent metric evidence fails before
   any call. Prompt evidence, history, notes, and the current spec are redacted;

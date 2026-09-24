@@ -520,10 +520,17 @@ class SpillStore:
         path = self._resolve(handle)
         size = path.stat().st_size
         if size > max_bytes:
+            # Only point at transform_result when this run has it: with
+            # ``transforms`` off the registry never holds one, and advice to call
+            # a tool the model cannot see is a dead end dressed as a way out.
+            remedy = (
+                f"Narrow it first with {TRANSFORM_TOOL}."
+                if self._config.transforms
+                else f"Pass a smaller part instead, read with {READ_TOOL}."
+            )
             raise SpillError(
                 f"the stored result for '{handle}' is {size} bytes; at most "
-                f"{max_bytes} may be expanded into a tool argument. Narrow it first "
-                f"with {TRANSFORM_TOOL}."
+                f"{max_bytes} may be expanded into a tool argument. {remedy}"
             )
         return _decode(path.read_bytes())
 
@@ -579,34 +586,92 @@ def _arg_int(args: dict[str, Any], field: str, default: int, *, low: int, high: 
     return max(low, min(number, high))
 
 
-def _iter_lines(path: Path, max_bytes: int = TRANSFORM_MAX_SCAN_BYTES):
+def _iter_lines(path: Path, max_bytes: int | None = None):
     """Yield ``(number, text)`` per line, streaming and bounded both ways.
 
     Chunked rather than ``for line in file``: a stored object need not contain
     a newline at all, and one readline on a 500 MB object is not a bounded
     read. A run longer than ``_LINE_MAX_BYTES`` is split at that bound, and
-    each piece counts as a line.
+    each piece counts as a line — wherever the chunk boundaries fall.
+
+    Lines end at ``\n`` only (a trailing ``\r`` is dropped), the same rule
+    :func:`_split_lines` applies for the ops that read an object whole.
+
+    At most ``max_bytes`` (default: the scan ceiling) are read. When that
+    stops the scan short of the end, the line it cut is not yielded at all:
+    half a line passed off as a whole one is a wrong answer, where a missing
+    one is covered by the note :func:`_scan_note` adds.
     """
+    limit = TRANSFORM_MAX_SCAN_BYTES if max_bytes is None else max_bytes
+    line_max = _LINE_MAX_BYTES
     number = 0
     scanned = 0
     carry = b""
+    exhausted = False
     with path.open("rb") as stream:
-        while scanned < max_bytes:
-            block = stream.read(_SEARCH_CHUNK_BYTES)
+        while scanned < limit:
+            block = stream.read(min(_SEARCH_CHUNK_BYTES, limit - scanned))
             if not block:
+                exhausted = True
                 break
             scanned += len(block)
-            carry += block
-            while b"\n" in carry:
-                raw, carry = carry.split(b"\n", 1)
+            # ``carry`` never exceeds ``line_max`` here, so this copy is
+            # bounded; the lines themselves are found by index, never by
+            # re-splitting the remainder (which made a chunk quadratic).
+            buffer = carry + block
+            start = 0
+            while True:
+                end = buffer.find(b"\n", start)
+                if end < 0:
+                    break
+                while end - start > line_max:
+                    number += 1
+                    yield number, _decode(buffer[start : start + line_max])
+                    start += line_max
                 number += 1
-                yield number, _decode(raw[:_LINE_MAX_BYTES].rstrip(b"\r"))
-            while len(carry) > _LINE_MAX_BYTES:
+                yield number, _decode(buffer[start:end].rstrip(b"\r"))
+                start = end + 1
+            while len(buffer) - start > line_max:
                 number += 1
-                yield number, _decode(carry[:_LINE_MAX_BYTES])
-                carry = carry[_LINE_MAX_BYTES:]
-    if carry:
+                yield number, _decode(buffer[start : start + line_max])
+                start += line_max
+            carry = buffer[start:]
+        if not exhausted and not stream.read(1):
+            exhausted = True
+    if carry and exhausted:
         yield number + 1, _decode(carry.rstrip(b"\r"))
+
+
+def _scan_note(path: Path) -> str:
+    """The partial-coverage marker for an object past the scan ceiling, or "".
+
+    A streaming op over such an object answers for its first
+    ``TRANSFORM_MAX_SCAN_BYTES`` only; saying so is what keeps "no match" or
+    "N lines" from reading as a claim about the whole object.
+    """
+    size = path.stat().st_size
+    if size <= TRANSFORM_MAX_SCAN_BYTES:
+        return ""
+    return (
+        f"[{TRANSFORM_TOOL}] partial: scanned the first {TRANSFORM_MAX_SCAN_BYTES} "
+        f"of {size} bytes; results cover only that prefix (a line cut by that "
+        "bound is left out)."
+    )
+
+
+def _split_lines(text: str) -> list[str]:
+    """Lines as :func:`_iter_lines` sees them: ``\n`` only, trailing ``\r`` dropped.
+
+    Not ``str.splitlines``, which also breaks on form feeds, ``\x1c``-``\x1e``,
+    U+2028 and more — so ``sort`` would count and number different lines than
+    ``lines``/``grep``/``count`` for the same object.
+    """
+    if not text:
+        return []
+    parts = text.split("\n")
+    if parts[-1] == "":
+        parts.pop()
+    return [part[:-1] if part.endswith("\r") else part for part in parts]
 
 
 def _cut_utf8(data: bytes, limit: int) -> bytes:
@@ -697,6 +762,9 @@ def _op_lines(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     count = _arg_int(args, "count", TRANSFORM_DEFAULT_LINES, low=1, high=TRANSFORM_MAX_LINES)
     end = start + count
     out = [f"[{handle}] lines {start}-{end - 1}"]
+    note = _scan_note(path)
+    if note:
+        out.append(note)
     for number, text in _iter_lines(path):
         if number < start:
             continue
@@ -739,13 +807,25 @@ def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     around = _arg_int(args, "context_lines", 0, low=0, high=TRANSFORM_MAX_CONTEXT_LINES)
     out: list[str] = []
     matched = 0
+    more = False
     before: list[tuple[int, str]] = []
     after = 0
     for number, text in _iter_lines(path):
         # The pattern meets one bounded line at a time, never the whole
         # buffer: a match attempt's input is bounded even when the object is
         # hundreds of megabytes.
-        if matched < limit and expression.search(text):
+        hit = expression.search(text) is not None
+        if matched >= limit:
+            # Past the limit the scan goes on only to learn whether "stopped"
+            # is true: a further match must exist before it is claimed.
+            more = more or hit
+            if after:
+                out.append(f"{number}- {text}")
+                after -= 1
+            if more and not after:
+                break
+            continue
+        if hit:
             matched += 1
             for earlier_number, earlier in before:
                 out.append(f"{earlier_number}- {earlier}")
@@ -758,12 +838,15 @@ def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
         elif around:
             before.append((number, text))
             before = before[-around:]
-        if matched >= limit and not after:
-            out.append(f"[{TRANSFORM_TOOL}] stopped at {limit} matches.")
-            break
+    if more:
+        out.append(f"[{TRANSFORM_TOOL}] stopped at {limit} matches; more lines match.")
+    note = _scan_note(path)
     if not out:
-        return f"[{handle}] no line matched {args.get('pattern')!r}."
-    return _bounded([f"[{handle}] {matched} matching line(s)", *out])
+        return f"[{handle}] no line matched {args.get('pattern')!r}." + (
+            f"\n{note}" if note else ""
+        )
+    header = [f"[{handle}] {matched} matching line(s)", *([note] if note else [])]
+    return _bounded([*header, *out])
 
 
 def _op_json_path(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
@@ -799,12 +882,13 @@ def _op_count(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     report = f"[{handle}] {lines} lines, {path.stat().st_size} bytes"
     if expression is not None:
         report += f", {matches} lines matching {pattern!r}"
-    return report
+    note = _scan_note(path)
+    return f"{report}\n{note}" if note else report
 
 
 def _op_sort(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     raw = _read_whole(store._resolve(handle), handle)
-    lines = _decode(raw).splitlines()
+    lines = _split_lines(_decode(raw))
     unique = bool(args.get("unique"))
     ordered = sorted(set(lines)) if unique else sorted(lines)
     return _bounded([f"[{handle}] {len(ordered)} line(s) sorted", *ordered])
@@ -814,7 +898,7 @@ def _op_unique(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     raw = _read_whole(store._resolve(handle), handle)
     seen: set[str] = set()
     kept: list[str] = []
-    for line in _decode(raw).splitlines():
+    for line in _split_lines(_decode(raw)):
         if line not in seen:
             seen.add(line)
             kept.append(line)
