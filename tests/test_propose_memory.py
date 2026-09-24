@@ -403,3 +403,37 @@ def test_a_lesson_queues_on_a_harness_that_declares_objectives(tmp_path: Path):
         apply_proposal_by_id(hive, directory, record.id, apply_yaml=True)
 
     assert [e.id for e in load_spec(directory).memory.entries] == ["dates"]
+
+
+def test_two_queued_lessons_with_one_title_both_apply(tmp_path: Path):
+    directory = _harness(tmp_path)
+    spec = load_spec(directory)
+    first = MemoryEntry(id="dates", kind="rule", title="Dates", content="Use ISO dates.")
+    second = MemoryEntry(id="dates", kind="rule", title="Dates", content="Dates are UTC.")
+
+    with Hive() as hive:
+        one = create_memory_proposal(hive, spec, directory, first, run_id="run_a")
+        two = create_memory_proposal(hive, spec, directory, second, run_id="run_b")
+        apply_proposal_by_id(hive, directory, one.id, apply_yaml=True)
+        result = apply_proposal_by_id(hive, directory, two.id, apply_yaml=True)
+
+    assert result.changed
+    ids = [e.id for e in load_spec(directory).memory.entries]
+    assert ids[0] == "dates" and ids[1].startswith("dates-") and len(ids) == 2
+
+
+def test_a_lesson_already_in_memory_is_not_applied_twice(tmp_path: Path):
+    directory = _harness(tmp_path)
+    spec = load_spec(directory)
+    first = MemoryEntry(id="dates", kind="rule", title="Dates", content="Use ISO dates.")
+    again = MemoryEntry(id="iso", kind="rule", title="ISO", content="use  ISO dates.")
+
+    with Hive() as hive:
+        one = create_memory_proposal(hive, spec, directory, first, run_id="run_a")
+        apply_proposal_by_id(hive, directory, one.id, apply_yaml=True)
+        # Queued against the new version, so the pending-row dedup cannot see it.
+        two = create_memory_proposal(
+            hive, load_spec(directory), directory, again, run_id="run_b"
+        )
+        with pytest.raises(ProposalQueueError, match="already in memory as 'dates'"):
+            apply_proposal_by_id(hive, directory, two.id, apply_yaml=True)

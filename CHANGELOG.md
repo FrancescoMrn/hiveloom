@@ -83,6 +83,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   objective"). A lesson predicts no metric, so the gate exempts a proposal
   that only appends to `memory.entries`. The evolver's own proposals are still
   held to their objectives.
+- Two queued lessons with the same title got the same entry id, so the second
+  could never be applied. On apply, a memory append now takes a free id, and
+  one whose content is already in memory is refused instead of added twice.
 - Evolution repairs malformed proposals and correctable objective omissions
   within three total model calls. Inconsistent metric evidence fails before
   any call. Prompt evidence, history, notes, and the current spec are redacted;

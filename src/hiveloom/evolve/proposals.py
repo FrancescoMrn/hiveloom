@@ -376,6 +376,9 @@ def apply_proposal_by_id(
             f"({row['spec_version_hash']} -> {live_hash}); regenerate"
         )
 
+    if _appends_memory_only(proposal):
+        proposal = _rebase_memory_appends(spec, proposal, proposal_id)
+
     if confirm_apply_yaml is not None:
         apply_yaml = confirm_apply_yaml()
 
@@ -404,6 +407,47 @@ def apply_proposal_by_id(
         resolved_at=datetime.now(UTC).isoformat(),
     )
     return result
+
+
+def _rebase_memory_appends(
+    spec: HarnessSpec, proposal: MutationProposal, proposal_id: str
+) -> MutationProposal:
+    """Fit a queued lesson onto the entries the harness holds *now*.
+
+    A memory append skips the staleness check (it is position-free), so the
+    entries it was drafted against may have grown since. Two lessons queued
+    with the same title were both given the same free id, and the second then
+    failed the gate as a duplicate id forever. An id taken since drafting gets
+    a content-derived suffix here; a lesson whose content already landed
+    under another id is refused, so the same lesson cannot be applied twice.
+    """
+    live_ids = {entry.id for entry in spec.memory.entries}
+    live_content = {
+        " ".join(entry.content.split()).casefold(): entry.id for entry in spec.memory.entries
+    }
+    changes = []
+    for change in proposal.yaml_changes:
+        value = dict(change.value) if isinstance(change.value, dict) else change.value
+        if isinstance(value, dict):
+            content = " ".join(str(value.get("content", "")).split()).casefold()
+            if content in live_content:
+                raise ProposalQueueError(
+                    f"proposal '{proposal_id}' adds a lesson already in memory as "
+                    f"'{live_content[content]}'; reject it instead"
+                )
+            entry_id = str(value.get("id", ""))
+            if entry_id in live_ids:
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                for width in range(6, len(digest) + 1, 2):
+                    # Ids are at most 64 characters; the suffix wins the room.
+                    stem = entry_id[: 63 - width].rstrip("-")
+                    candidate = f"{stem}-{digest[:width]}"
+                    if candidate not in live_ids:
+                        break
+                value["id"] = candidate
+            live_ids.add(str(value.get("id", "")))
+        changes.append(change.model_copy(update={"value": value}))
+    return proposal.model_copy(update={"yaml_changes": changes})
 
 
 def proposal_payload(record: ProposalRecord) -> dict[str, Any]:
