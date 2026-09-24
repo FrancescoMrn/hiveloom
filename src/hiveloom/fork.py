@@ -347,6 +347,33 @@ def _verified_spill_bytes(path: Path, manifest: dict[str, Any]) -> bytes | None:
     return raw if hashlib.sha256(raw).hexdigest() == manifest["sha256"] else None
 
 
+def _note_manifest(payload: Any) -> dict[str, Any] | None:
+    """``{name, sha256, bytes, raw}`` from one journaled note, or None.
+
+    ``raw`` is the journaled content's bytes when they hash to the journaled
+    digest, else None — a note from a journal that predates carrying content
+    (or whose redaction changed it on the way in) can still be carried by its
+    file. The digest, never the content, is what authorizes.
+    """
+    if not isinstance(payload, dict):
+        return None
+    name = str(payload.get("name", ""))
+    digest = str(payload.get("sha256", ""))
+    size = payload.get("bytes")
+    if not (
+        NOTE_NAME_RE.fullmatch(name)
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+        and isinstance(size, int)
+        and size >= 0
+    ):
+        return None
+    content = payload.get("content")
+    raw = content.encode("utf-8") if isinstance(content, str) else None
+    if raw is not None and (len(raw) != size or hashlib.sha256(raw).hexdigest() != digest):
+        raw = None
+    return {"name": name, "sha256": digest, "bytes": size, "raw": raw}
+
+
 def _notes_in_journal(
     events: list[dict[str, Any]], until_seq: int
 ) -> dict[str, dict[str, Any]]:
@@ -354,25 +381,62 @@ def _notes_in_journal(
 
     Replayed rather than collected: a note written twice and then deleted is
     not a note the fork inherits, and only the journal (hash-chained, verified
-    before this runs) says which writes survived.
+    before this runs) says which writes survived. A run that was itself a
+    resumed fork starts out holding what it inherited (``notes_inherited``),
+    so a fork of a fork carries those too.
+
+    Each entry keeps the note's bytes *as of the fork point* when the journal
+    has them, since the store is rewritten in place and the file on disk may
+    already hold a later version, or nothing. An entry whose ``sha256`` is
+    None is a note an older journal recorded by name only; it is reported
+    rather than silently dropped.
     """
     held: dict[str, dict[str, Any]] = {}
     for event in events:
         kind = event.get("type")
-        if kind not in ("note_written", "note_deleted") or event.get("seq", 0) > until_seq:
+        if event.get("seq", 0) > until_seq:
             continue
         payload = event.get("payload", {})
+        if kind == "notes_inherited":
+            rows = {
+                row["name"]: row
+                for item in payload.get("notes") or []
+                if (row := _note_manifest(item)) is not None
+            }
+            granted = _granted_manifest(events) if not rows else {}
+            for name in payload.get("names") or []:
+                name = str(name)
+                if not NOTE_NAME_RE.fullmatch(name):
+                    continue
+                # Older journals named the grant without its digest; the
+                # run's own `run_started.lineage` still binds each name to one.
+                held[name] = rows.get(name) or granted.get(name) or {
+                    "name": name, "sha256": None, "bytes": None, "raw": None
+                }
+            continue
+        if kind not in ("note_written", "note_deleted"):
+            continue
         name = str(payload.get("name", ""))
         if not NOTE_NAME_RE.fullmatch(name):
             continue
         if kind == "note_deleted":
             held.pop(name, None)
             continue
-        digest = str(payload.get("sha256", ""))
-        size = payload.get("bytes")
-        if re.fullmatch(r"[0-9a-f]{64}", digest) and isinstance(size, int) and size >= 0:
-            held[name] = {"name": name, "sha256": digest, "bytes": size}
+        row = _note_manifest(payload)
+        if row is not None:
+            held[name] = row
     return held
+
+
+def _granted_manifest(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The ``notes_manifest`` a resumed fork's journal records it was started with."""
+    for event in events:
+        if event.get("type") != "run_started":
+            continue
+        lineage = event.get("payload", {}).get("lineage") or {}
+        rows = [_note_manifest(item) for item in lineage.get("notes_manifest") or []]
+        return {row["name"]: row for row in rows if row is not None}
+    return {}
 
 
 def _spill_root(snapshot: dict[str, Any], target: Path) -> Path:
@@ -402,9 +466,13 @@ def _carry_notes(
 
     One condition rather than the two spilled results need: a note is never
     quoted in the conversation (that is the point of it), so the parent's
-    verified journal is the only statement of what exists. Each copy is
-    verified against the digest the journal recorded before it is written into
-    the fork, and the fork's own run re-authorizes from the manifest.
+    verified journal is the only statement of what exists. The bytes come
+    from the journal too: notes are rewritten in place, so the parent's file
+    may hold a later version than the fork point's, or be gone. The file is
+    the fallback, for a journal that did not carry the content — the parent's
+    own notes, or what it inherited itself — and either way the copy is
+    verified against the journaled digest before it is written into the fork.
+    The fork's own run re-authorizes from the manifest.
     """
     if not held:
         return [], []
@@ -413,16 +481,26 @@ def _carry_notes(
 
     inherited: list[dict[str, Any]] = []
     missing: list[str] = []
-    for name, manifest in sorted(held.items()):
-        candidates = list(source.glob(f"*/notes/{name}.txt"))
-        verified = next(
-            (
-                raw
-                for path in candidates
-                if (raw := _verified_spill_bytes(path, manifest)) is not None
-            ),
-            None,
-        )
+    unbound: list[str] = []
+    for name, entry in sorted(held.items()):
+        if entry.get("sha256") is None:
+            unbound.append(name)
+            continue
+        manifest = {"name": name, "sha256": entry["sha256"], "bytes": entry["bytes"]}
+        verified = entry.get("raw")
+        if verified is None:
+            candidates = [
+                *source.glob(f"*/notes/{name}.txt"),
+                source / NOTES_INHERITED_DIR / f"{name}.txt",
+            ]
+            verified = next(
+                (
+                    raw
+                    for path in candidates
+                    if (raw := _verified_spill_bytes(path, manifest)) is not None
+                ),
+                None,
+            )
         if verified is None:
             missing.append(name)
             continue
@@ -438,6 +516,12 @@ def _carry_notes(
         warnings.append(
             f"{len(missing)} note(s) could not be carried into the fork "
             f"({', '.join(missing)}); the resumed run starts without them"
+        )
+    if unbound:
+        warnings.append(
+            f"{len(unbound)} inherited note(s) are recorded by name only in the "
+            f"parent's journal ({', '.join(unbound)}), with no digest to verify a "
+            "copy against; the resumed run starts without them"
         )
     return inherited, warnings
 

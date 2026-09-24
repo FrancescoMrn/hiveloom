@@ -88,6 +88,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one whose content is already in memory is refused instead of added twice.
 - A memory entry's title is collapsed to one line when rendered, so a title
   cannot open a new heading in the system prompt.
+- Fork carries each note as it was at the fork point, from the journaled
+  content, rather than re-reading the parent's current file. Notes the parent
+  rewrote or deleted later are no longer lost. A fork of a fork keeps what it
+  inherited (`notes_inherited` now journals the granted notes). Deleting an
+  inherited note no longer deletes the fork's only copy. Two parallel writes
+  of one note name can no longer leave it unreadable, and a resume that is
+  granted fewer notes than its manifest lists records the `missing` names.
 - Evolution repairs malformed proposals and correctable objective omissions
   within three total model calls. Inconsistent metric evidence fails before
   any call. Prompt evidence, history, notes, and the current spec are redacted;

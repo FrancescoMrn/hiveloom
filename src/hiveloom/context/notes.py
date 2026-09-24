@@ -188,6 +188,7 @@ class NotesStore:
             previous = self._authorized.get(name)
             reservation = (target, "", len(data))
             self._authorized[name] = reservation
+        digest = hashlib.sha256(data).hexdigest()
         try:
             _private_dir(self._root)
             _private_dir(self._root / self._run_id)
@@ -199,7 +200,24 @@ class NotesStore:
             staged = self._dir / f".{name}.{uuid.uuid4().hex}.tmp"
             try:
                 _write_private(staged, data)
-                os.replace(staged, target)
+                # The move, the record that authorizes it, and the journal
+                # line that describes it are one step. Apart, two parallel
+                # writes of one name can interleave so the file holds one
+                # write's bytes while the map expects the other's digest — a
+                # note refused forever — or so the journal's last word on a
+                # name is not what the store holds, and `fork` replays the
+                # journal. Only the staging stays outside the lock.
+                with self._lock:
+                    os.replace(staged, target)
+                    self._authorized[name] = (target, digest, len(data))
+                    self._emit(
+                        "note_written",
+                        name=name,
+                        bytes=len(data),
+                        sha256=digest,
+                        replaced=replaced,
+                        content=stored,
+                    )
             finally:
                 with suppress(OSError):
                     staged.unlink()
@@ -212,17 +230,6 @@ class NotesStore:
                     else:
                         self._authorized[name] = previous
             raise NotesError(f"could not store note '{name}': {exc}") from exc
-        digest = hashlib.sha256(data).hexdigest()
-        with self._lock:
-            self._authorized[name] = (target, digest, len(data))
-        self._emit(
-            "note_written",
-            name=name,
-            bytes=len(data),
-            sha256=digest,
-            replaced=replaced,
-            content=stored,
-        )
         return NoteRecord(
             name=name,
             content=stored,
@@ -237,14 +244,21 @@ class NotesStore:
         name = _check_name(name)
         with self._lock:
             record = self._authorized.pop(name, None)
-        if record is None:
-            return False
-        # Best effort: authority is the map, so a file that cannot be removed
-        # is already unreachable. Losing the bytes on disk is a cleanup
-        # failure, not a correctness one.
-        with suppress(OSError):
-            record[0].unlink()
-        self._emit("note_deleted", name=name)
+            if record is None:
+                return False
+            # Only this run's own copy is removed. An inherited note's file is
+            # the fork's single copy in `notes-inherited`, shared by every
+            # resume of that fork: deleting it here would leave the next
+            # `run --resume` nothing to inherit. Dropping the grant is enough.
+            # Under the lock, like a write's move, so a parallel rewrite of
+            # the name cannot land between the pop and the unlink.
+            if record[0].parent == self._dir:
+                # Best effort: authority is the map, so a file that cannot be
+                # removed is already unreachable. Losing the bytes on disk is
+                # a cleanup failure, not a correctness one.
+                with suppress(OSError):
+                    record[0].unlink()
+            self._emit("note_deleted", name=name)
         return True
 
     # ------------------------------------------------------------------ #
@@ -360,6 +374,34 @@ class NotesStore:
                 self._authorized[name] = (body, digest, expected_bytes)
             granted.append(name)
         return granted
+
+    def carried(self, names: list[str]) -> list[dict[str, Any]]:
+        """``{name, sha256, bytes, content}`` for notes this run inherited.
+
+        What the loop journals as ``notes_inherited``: with the content in the
+        event, a fork of this run can rebuild the inherited notes from its own
+        verified journal, exactly as it rebuilds the ones this run wrote. A
+        name whose bytes no longer match its grant is left out.
+        """
+        rows: list[dict[str, Any]] = []
+        for name in names:
+            with self._lock:
+                record = self._authorized.get(name)
+            if record is None:
+                continue
+            path, digest, size = record
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
+                continue
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            rows.append({"name": name, "sha256": digest, "bytes": size, "content": content})
+        return rows
 
     def _emit(self, event: str, **payload: Any) -> None:
         if self._journal is None:

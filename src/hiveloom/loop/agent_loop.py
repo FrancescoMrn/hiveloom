@@ -430,11 +430,25 @@ class AgentLoop:
             # Same rule for notes: `hiveloom fork` copied the notes the
             # parent's verified journal says it wrote, and the manifest in
             # fork.yaml — not the seeded transcript — is what authorizes them.
-            carried = self._notes.inherit(
-                self._lineage.get("notes_manifest") or [], self._notes.inherited_dir
-            )
-            if carried:
-                self._trace.emit("notes_inherited", names=carried)
+            manifest = self._lineage.get("notes_manifest") or []
+            carried = self._notes.inherit(manifest, self._notes.inherited_dir)
+            # A grant narrower than the record — a copy gone or changed on
+            # disk, a manifest past `max_notes` — is said, not swallowed: the
+            # resumed run would otherwise just lack notes its lineage claims.
+            missing = [
+                str(item.get("name", ""))
+                for item in manifest
+                if isinstance(item, dict) and str(item.get("name", "")) not in carried
+            ]
+            if carried or missing:
+                self._trace.emit(
+                    "notes_inherited",
+                    names=carried,
+                    # Content included, as `note_written` does, so a fork of
+                    # this fork can rebuild these from its own journal.
+                    notes=self._notes.carried(carried),
+                    **({"missing": missing} if missing else {}),
+                )
         self._context.seed_history(self._history)
         if not self._resume:
             self._context.add_user(self._run_input)

@@ -203,14 +203,19 @@ store (see [Notes](spec.md#notes)). Every change to it is an event:
 |---|---|
 | `note_written` | `{name, bytes, sha256, replaced, content}` |
 | `note_deleted` | `{name}` |
-| `notes_inherited` | the names a resumed fork was granted |
+| `notes_inherited` | `{names, notes: [{name, sha256, bytes, content}], missing?}` — what a resumed fork was granted, and any manifest name it was not |
 
 The content is in the event, so `hiveloom trace` shows what the model wrote
 down, and the fold reconstructs the store rather than guessing at it: `hiveloom
-fork` replays `note_written`/`note_deleted` up to the fork point, copies the
-notes still held, and writes them into `fork.yaml` as a hash-bound
-`notes_manifest`. A note written and then deleted is not a note the fork
-inherits, and a name mentioned in the transcript grants nothing.
+fork` replays `notes_inherited`, then `note_written`/`note_deleted`, up to the
+fork point, and writes the notes still held into `fork.yaml` as a hash-bound
+`notes_manifest`. The bytes it copies are the ones held *at the fork point*,
+taken from the journaled content and checked against its digest — so a note the
+parent rewrote or deleted later still reaches the fork as it was, and a fork of
+a fork carries what it inherited. A note written and then deleted before the
+fork point is not a note the fork inherits, and a name mentioned in the
+transcript grants nothing. Deleting an inherited note in a resumed fork drops
+the grant, not the fork's copy, so the next resume inherits it again.
 
 ### Proposed lessons
 
