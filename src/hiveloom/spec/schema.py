@@ -769,8 +769,11 @@ class MemoryConfig(BaseModel):
             "Lessons from earlier runs of this harness. Treat them as standing "
             "constraints on how you work, not as the current task.",
         ]
+        # Title and content are both collapsed to one line: an entry is always
+        # exactly one prompt line, so no title can open a heading of its own.
         lines.extend(
-            f"- [{entry.kind}] {entry.title}: {' '.join(entry.content.split())}"
+            f"- [{entry.kind}] {' '.join(entry.title.split())}: "
+            f"{' '.join(entry.content.split())}"
             for entry in self.entries
         )
         return "\n".join(lines)

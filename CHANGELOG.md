@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Two queued lessons with the same title got the same entry id, so the second
   could never be applied. On apply, a memory append now takes a free id, and
   one whose content is already in memory is refused instead of added twice.
+- A memory entry's title is collapsed to one line when rendered, so a title
+  cannot open a new heading in the system prompt.
 - Evolution repairs malformed proposals and correctable objective omissions
   within three total model calls. Inconsistent metric evidence fails before
   any call. Prompt evidence, history, notes, and the current spec are redacted;
