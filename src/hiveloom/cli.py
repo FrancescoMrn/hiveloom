@@ -2123,7 +2123,8 @@ def assess(
             colour = colours[item.verdict]
             decision = f" [{item.decision.get('action')}]" if item.decision else ""
             _console.print(
-                f"#{item.counter} {item.old_version} -> {item.new_version}: "
+                f"evolution {item.evolution_id} (#{item.counter}) "
+                f"{item.old_version} -> {item.new_version}: "
                 f"[{colour}]{item.verdict}[/{colour}]{decision} — aimed at "
                 f"{item.target} ({item.expect})"
             )

@@ -511,7 +511,8 @@ def _headline(signal_map: SignalMap) -> list[str]:
     if q.runs:
         low, high = q.success_rate_ci
         lines.append(
-            f"{q.runs} runs: {q.successes} succeeded ({q.success_rate:.0%}, 95% CI "
+            f"{q.runs} run{'s' if q.runs != 1 else ''}: {q.successes} succeeded "
+            f"({q.success_rate:.0%}, 95% CI "
             f"{low:.0%}-{high:.0%}). At this size only a success-rate change of about "
             f"{q.detectable_change:.0%} or more is detectable; "
             f"{q.runs_per_version_for_10_points} runs per version would detect 10 points."
