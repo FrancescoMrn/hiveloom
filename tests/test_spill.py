@@ -958,3 +958,21 @@ def test_a_stored_result_is_written_out_without_passing_through_context(tmp_path
     )
     assert HANDLE_RE.fullmatch(call["payload"]["input"]["content"])
     assert "NEEDLE the answer is 42" not in str(provider.calls[2]["messages"])
+
+
+def test_raw_grep_returns_the_lines_themselves(tmp_path):
+    body = "".join(f"{i} {'ERROR' if i % 3 == 0 else 'INFO'} line\n" for i in range(1, 601))
+    store, handle = _stored(tmp_path, body)
+
+    result = store.transform(handle, "grep", {"pattern": "ERROR", "raw": True})
+
+    expected = [line for line in body.splitlines() if "ERROR" in line]
+    # 200 lines is past the non-raw cap; raw returns them all, bare.
+    assert len(expected) == 200 and result.splitlines() == expected
+
+
+def test_raw_grep_refuses_rather_than_truncates(tmp_path):
+    store, handle = _stored(tmp_path, "".join(f"{i} ERROR line padding\n" for i in range(500)))
+
+    with pytest.raises(SpillError, match="matched more than 10 lines"):
+        store.transform(handle, "grep", {"pattern": "ERROR", "raw": True, "max_matches": 10})

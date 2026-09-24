@@ -801,8 +801,18 @@ def _op_tail(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
 def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     path = store._resolve(handle)
     expression = _compile(str(args.get("pattern") or ""))
+    # `raw` makes the result the data itself — bare lines, no header, no line
+    # numbers — so a derived handle to it can be passed on (to `file_write`,
+    # say) as exactly the matching lines. Data is only useful complete, so a
+    # raw grep takes up to TRANSFORM_MAX_LINES matches by default and refuses,
+    # rather than truncates, when it cannot return all of them.
+    raw = args.get("raw") is True
     limit = _arg_int(
-        args, "max_matches", TRANSFORM_DEFAULT_MATCHES, low=1, high=TRANSFORM_MAX_MATCHES
+        args,
+        "max_matches",
+        TRANSFORM_MAX_LINES if raw else TRANSFORM_DEFAULT_MATCHES,
+        low=1,
+        high=TRANSFORM_MAX_LINES if raw else TRANSFORM_MAX_MATCHES,
     )
     around = _arg_int(args, "context_lines", 0, low=0, high=TRANSFORM_MAX_CONTEXT_LINES)
     out: list[str] = []
@@ -810,6 +820,10 @@ def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     more = False
     before: list[tuple[int, str]] = []
     after = 0
+
+    def mark(number: int, text: str, sep: str) -> str:
+        return text if raw else f"{number}{sep} {text}"
+
     for number, text in _iter_lines(path):
         # The pattern meets one bounded line at a time, never the whole
         # buffer: a match attempt's input is bounded even when the object is
@@ -820,7 +834,7 @@ def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
             # is true: a further match must exist before it is claimed.
             more = more or hit
             if after:
-                out.append(f"{number}- {text}")
+                out.append(mark(number, text, "-"))
                 after -= 1
             if more and not after:
                 break
@@ -828,25 +842,48 @@ def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
         if hit:
             matched += 1
             for earlier_number, earlier in before:
-                out.append(f"{earlier_number}- {earlier}")
+                out.append(mark(earlier_number, earlier, "-"))
             before = []
-            out.append(f"{number}: {text}")
+            out.append(mark(number, text, ":"))
             after = around
         elif after:
-            out.append(f"{number}- {text}")
+            out.append(mark(number, text, "-"))
             after -= 1
         elif around:
             before.append((number, text))
             before = before[-around:]
+    note = _scan_note(path)
+    if raw and out:
+        return _raw_lines(out, handle, more=more, limit=limit, partial=bool(note))
     if more:
         out.append(f"[{TRANSFORM_TOOL}] stopped at {limit} matches; more lines match.")
-    note = _scan_note(path)
     if not out:
         return f"[{handle}] no line matched {args.get('pattern')!r}." + (
             f"\n{note}" if note else ""
         )
     header = [f"[{handle}] {matched} matching line(s)", *([note] if note else [])]
     return _bounded([*header, *out])
+
+
+def _raw_lines(out: list[str], handle: str, *, more: bool, limit: int, partial: bool) -> str:
+    """A raw grep's result: every matching line, or a refusal naming why not."""
+    if more:
+        raise SpillError(
+            f"raw grep on '{handle}' matched more than {limit} lines; raise "
+            f"max_matches (up to {TRANSFORM_MAX_LINES}) or narrow the pattern"
+        )
+    if partial:
+        raise SpillError(
+            f"'{handle}' is larger than the {TRANSFORM_MAX_SCAN_BYTES}-byte scan "
+            "ceiling, so a raw grep of it would be incomplete"
+        )
+    text = "\n".join(out)
+    if len(text.encode("utf-8")) > TRANSFORM_MAX_OUTPUT_BYTES:
+        raise SpillError(
+            f"raw grep on '{handle}' would return more than "
+            f"{TRANSFORM_MAX_OUTPUT_BYTES} bytes; narrow the pattern"
+        )
+    return text
 
 
 def _op_json_path(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
@@ -1183,6 +1220,13 @@ class TransformResultTool(_SpillTool):
                 "type": "integer",
                 "minimum": 1,
                 "description": f"grep: matching lines to return (max {TRANSFORM_MAX_MATCHES}).",
+            },
+            "raw": {
+                "type": "boolean",
+                "description": "grep: return only the matching lines themselves — no "
+                "header, no line numbers — so the result (or its handle) is the data. "
+                f"Takes up to {TRANSFORM_MAX_LINES} matches and fails rather than "
+                "return a partial set.",
             },
             "context_lines": {
                 "type": "integer",

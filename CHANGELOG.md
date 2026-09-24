@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `context.compaction.max_tokens` caps the output of the summarize call alone.
   It used to run with `model.max_tokens`, and a reasoning model given a 32k
   budget spent 545 s on one summary.
+- `transform_result` `grep` takes `raw: true`: the bare matching lines, with no
+  header and no numbers, up to 10 000 of them, refused rather than truncated.
+  Its derived handle is therefore data, and can be passed to `file_write`
+  `content` so an export never passes through the model.
 
 ### Fixed
 

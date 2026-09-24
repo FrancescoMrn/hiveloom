@@ -234,12 +234,17 @@ fixed set of ops against the *stored bytes* and returns only what they produced:
 |---|---|---|
 | `lines` | `start` (1-based), `count` | a numbered line range |
 | `head` / `tail` | `bytes` | the first/last bytes |
-| `grep` | `pattern`, `max_matches` (≤ 200), `context_lines` (≤ 5) | matching lines |
+| `grep` | `pattern`, `max_matches` (≤ 200), `context_lines` (≤ 5), `raw` | matching lines, numbered; with `raw: true`, the bare lines only (≤ 10 000, and refused rather than truncated) |
 | `json_path` | `path` | the selection, as JSON |
 | `count` | `pattern` (optional) | lines, bytes, matching lines |
 | `sort` | `unique` | the lines in order |
 | `unique` | — | distinct lines, first seen first |
 | `concat` | `handles` (≤ 8 objects in total) | the objects joined |
+
+`raw` exists so a result can be *data*: a raw grep's derived handle holds
+exactly the matching lines, so it can be passed straight to a handle-typed
+argument such as `file_write`'s `content` — an export whose bytes never pass
+through the model.
 
 If the output fits `max_inline_bytes` it comes back inline. If it does not, it
 is stored as a **derived object** with its own handle (the sidecar records
