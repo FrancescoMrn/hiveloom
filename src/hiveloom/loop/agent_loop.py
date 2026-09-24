@@ -471,6 +471,19 @@ class AgentLoop:
                     **({"missing": missing} if missing else {}),
                 )
         self._context.seed_history(self._history)
+        # Relevance-selected memory is chosen from the task before the first
+        # call and journaled, so the signal locator can contrast runs that were
+        # shown a lesson with runs that were not. Deterministic, so a resumed
+        # run rebuilds the same selection from the same input.
+        selection = self._context.select_memory(self._run_input)
+        if selection is not None:
+            ids, scores = selection
+            self._trace.emit(
+                "memory_selected",
+                ids=ids,
+                scores=scores,
+                stored=len(self._spec.memory.entries),
+            )
         if not self._resume:
             self._context.add_user(self._run_input)
         self._setup_delegation_tools()

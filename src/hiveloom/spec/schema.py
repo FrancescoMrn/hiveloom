@@ -674,6 +674,13 @@ class MemoryEntry(BaseModel):
         default=None,
         description="ISO 8601 timestamp recording when the entry was added.",
     )
+    pinned: bool = Field(
+        default=False,
+        description=(
+            "Always shown, even when memory.selection is 'relevant' and the entry "
+            "does not match the task. For the few rules every run must obey."
+        ),
+    )
 
     @field_validator("title", "content")
     @classmethod
@@ -745,6 +752,25 @@ class MemoryConfig(BaseModel):
             "Frozen from evolution."
         ),
     )
+    selection: Literal["all", "relevant"] = Field(
+        default="all",
+        description=(
+            "Which entries a run is shown. 'all' renders every entry, every run. "
+            "'relevant' ranks entries against the run's task and shows the pinned "
+            "ones plus the best matches, up to max_selected; the rest stay "
+            "reachable through the search_memory tool. Chosen once per run, so the "
+            "prompt is identical on every turn of it. Frozen from evolution."
+        ),
+    )
+    max_selected: int = Field(
+        default=8,
+        ge=1,
+        le=MEMORY_MAX_ENTRIES_CAP,
+        description=(
+            "With selection 'relevant', the most entries one run is shown, pinned "
+            "ones included. Frozen from evolution."
+        ),
+    )
     entries: list[MemoryEntry] = Field(
         default_factory=list,
         description=(
@@ -756,13 +782,16 @@ class MemoryConfig(BaseModel):
         ),
     )
 
-    def render(self) -> str:
+    def render(self, entries: list[MemoryEntry] | None = None) -> str:
         """The ``# Memory`` system-prompt section, or ``""`` when there is none.
 
         One renderer for the prompt and for the budget check below, so what is
-        validated is exactly what the model is shown.
+        validated is exactly what the model is shown. ``entries`` renders a
+        selection (see ``memory.selection``) instead of the whole store, in
+        declaration order, and says how many more are stored.
         """
-        if not self.entries:
+        shown = self.entries if entries is None else entries
+        if not shown:
             return ""
         lines = [
             "# Memory",
@@ -774,8 +803,14 @@ class MemoryConfig(BaseModel):
         lines.extend(
             f"- [{entry.kind}] {' '.join(entry.title.split())}: "
             f"{' '.join(entry.content.split())}"
-            for entry in self.entries
+            for entry in shown
         )
+        hidden = len(self.entries) - len(shown)
+        if hidden > 0:
+            lines.append(
+                f"{hidden} more lesson(s) are stored but did not match this task; "
+                "search_memory looks them up."
+            )
         return "\n".join(lines)
 
     @model_validator(mode="after")
@@ -790,6 +825,12 @@ class MemoryConfig(BaseModel):
                     f"memory entry '{entry.id}' content is {len(entry.content)} "
                     f"characters; memory.max_entry_chars is {self.max_entry_chars}"
                 )
+        pinned = sum(1 for entry in self.entries if entry.pinned)
+        if self.selection == "relevant" and pinned > self.max_selected:
+            raise ValueError(
+                f"{pinned} memory entries are pinned but memory.max_selected is "
+                f"{self.max_selected}; unpin one or raise the limit"
+            )
         if len(self.entries) > self.max_entries:
             raise ValueError(
                 f"memory holds {len(self.entries)} entries; memory.max_entries is "
@@ -1686,6 +1727,8 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "memory.max_entries",
     "memory.max_entry_chars",
     "memory.prompt_budget_chars",
+    "memory.selection",
+    "memory.max_selected",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They

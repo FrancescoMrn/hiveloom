@@ -141,6 +141,7 @@ class ContextManager:
         self._system_prompt = spec.system_prompt
         # Snapshotted once: the spec cannot change mid-run, and a section that
         # is rebuilt per assembly would be a needless prompt-cache risk.
+        self._memory = spec.memory
         self._memory_section = spec.memory.render() if spec.memory.enabled else ""
         self.provider = provider
         self._trace = trace
@@ -189,6 +190,23 @@ class ContextManager:
         for message in messages:
             self._append(message)
         self._history_count += len(messages)
+
+    def select_memory(self, task: str) -> tuple[list[str], dict[str, float]] | None:
+        """Narrow the memory section to what matches ``task`` (``selection: relevant``).
+
+        Returns the selected entry ids and their match scores, or ``None`` when
+        the harness shows every entry. Called once, before the first model call:
+        the section is then fixed for the whole run, like the rest of the
+        system prompt, so every turn after the first still hits the cache.
+        """
+        memory = self._memory
+        if not memory.enabled or memory.selection != "relevant" or not memory.entries:
+            return None
+        from hiveloom.context.memory_select import select_entries
+
+        selected, scores = select_entries(memory, task)
+        self._memory_section = memory.render(selected)
+        return [entry.id for entry in selected], scores
 
     def set_compaction_model_call(
         self, callback: Callable[[str, list[dict[str, Any]]], Any]

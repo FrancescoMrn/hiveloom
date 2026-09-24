@@ -557,4 +557,12 @@ def build_registry(
         registry.register(
             SwitchPlaybookTool([(p.name, p.description) for p in spec.playbooks])
         )
+    memory = spec.memory
+    if memory.enabled and memory.selection == "relevant" and memory.entries:
+        # With relevance selection a run sees only part of the store; this is
+        # the read-only way back to the rest. Runtime machinery like the spill
+        # readers, so it is registered here rather than declared in `tools`.
+        from hiveloom.context.memory_select import SearchMemoryTool  # avoid cycles
+
+        registry.register(SearchMemoryTool(memory))
     return registry
