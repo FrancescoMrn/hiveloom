@@ -422,7 +422,7 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
     schema-valid spec; otherwise every provisionally accepted change is
     rejected as part of that invalid batch.
     """
-    objective_problem = _objective_expectation_problem(spec, proposal)
+    objective_problem = _objective_expectation_problem(spec, proposal, lessons_exempt=True)
     if objective_problem is not None:
         return GateResult(
             rejected=[
@@ -487,7 +487,7 @@ def gate(spec: HarnessSpec, proposal: MutationProposal) -> GateResult:
 
 
 def _objective_expectation_problem(
-    spec: HarnessSpec, proposal: MutationProposal
+    spec: HarnessSpec, proposal: MutationProposal, *, lessons_exempt: bool = False
 ) -> str | None:
     """Keep proposals accountable to configured, evaluator-owned objectives."""
     objectives = {objective.metric: objective for objective in spec.evolution.objectives}
@@ -496,6 +496,8 @@ def _objective_expectation_problem(
             return "harness declares no metric objectives"
         return None
     if not proposal.objective_expectations:
+        if lessons_exempt and _is_lesson_only(proposal):
+            return None
         return "proposal must name at least one configured metric objective"
     seen: set[str] = set()
     for expectation in proposal.objective_expectations:
@@ -512,6 +514,23 @@ def _objective_expectation_problem(
                 f"must be '{expected}'"
             )
     return None
+
+
+def _is_lesson_only(proposal: MutationProposal) -> bool:
+    """A proposal that only appends to ``memory.entries`` and changes no code.
+
+    That is the shape ``propose_memory`` queues: a lesson the executor offered
+    in its own words, reviewed by a human before it applies. It predicts no
+    metric movement, and requiring one would have the tool invent a claim —
+    or, as it did, refuse every lesson on a harness that declares objectives.
+    The evolver's own proposals are still held to their objectives before
+    they reach the gate (:func:`_check_proposal` does not exempt lessons).
+    """
+    return (
+        bool(proposal.yaml_changes)
+        and not proposal.code_changes
+        and all(change.path == MEMORY_APPEND_PATH for change in proposal.yaml_changes)
+    )
 
 
 def _outside_memory_entries(change: YamlChange) -> bool:

@@ -78,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Evolution could add a dangerous tool (`shell`) by appending one entry
   (`tools.+`, `tools.<n>`) or by renaming one (`tools.<n>.builtin`); only
   whole-list replacement was checked. Every path under `tools` is now gated.
+- `propose_memory` was refused on every harness that declares
+  `evolution.objectives` ("proposal must name at least one configured metric
+  objective"). A lesson predicts no metric, so the gate exempts a proposal
+  that only appends to `memory.entries`. The evolver's own proposals are still
+  held to their objectives.
 - Evolution repairs malformed proposals and correctable objective omissions
   within three total model calls. Inconsistent metric evidence fails before
   any call. Prompt evidence, history, notes, and the current spec are redacted;

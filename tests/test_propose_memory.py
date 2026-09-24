@@ -386,3 +386,20 @@ def test_the_eval_runner_marks_its_cells(tmp_path: Path, monkeypatch):
     )
 
     assert seen["context"] == {"eval_run_id": "eval_abc", "eval_cell_id": "cell_0"}
+
+
+
+def test_a_lesson_queues_on_a_harness_that_declares_objectives(tmp_path: Path):
+    """A lesson predicts no metric, so objectives must not refuse every one."""
+    directory = _harness(tmp_path)
+    construct.set_value(
+        directory, "evolution.objectives", [{"metric": "score", "direction": "maximize"}]
+    )
+    spec = load_spec(directory)
+    entry = MemoryEntry(id="dates", kind="rule", title="Dates", content="Use ISO dates.")
+
+    with Hive() as hive:
+        record = create_memory_proposal(hive, spec, directory, entry, run_id="r")
+        apply_proposal_by_id(hive, directory, record.id, apply_yaml=True)
+
+    assert [e.id for e in load_spec(directory).memory.entries] == ["dates"]
