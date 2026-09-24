@@ -251,7 +251,11 @@ def test_history_carries_measurements_and_skips_the_linked_queue_row(tmp_path):
                 {
                     "id": pid, "harness_name": "h", "spec_version_hash": "v1",
                     "dedup_key": pid, "status": status, "trigger": "manual",
-                    "rationale": pid, "proposal_json": "{}", "gate_json": "{}",
+                    "rationale": pid,
+                    "proposal_json": json.dumps(
+                        {"yaml_changes": [{"path": "loop.max_turns", "value": 9}]}
+                    ),
+                    "gate_json": "{}",
                     "evidence_json": None,
                     "apply_result_json": json.dumps({"reason": "no"}),
                     "created_at": "2026-01-01T00:00:00+00:00",

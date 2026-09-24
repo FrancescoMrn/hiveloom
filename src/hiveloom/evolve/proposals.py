@@ -195,6 +195,7 @@ def create_memory_proposal(
     entry: MemoryEntry,
     *,
     run_id: str,
+    trigger: str = "executor",
 ) -> ProposalRecord:
     """Queue an append to ``memory.entries`` — no model call, no spec write.
 
@@ -222,7 +223,11 @@ def create_memory_proposal(
     if existing is not None:
         return ProposalRecord.model_validate(existing)
 
-    rationale = f"the executor proposed a durable lesson during run {run_id}"
+    rationale = (
+        f"the executor proposed a durable lesson during run {run_id}"
+        if trigger == "executor"
+        else f"reflection on run {run_id} drafted a durable lesson"
+    )
     proposal = MutationProposal(
         rationale=rationale,
         yaml_changes=[
@@ -252,7 +257,7 @@ def create_memory_proposal(
         "spec_version_hash": version_hash,
         "dedup_key": dedup_key,
         "status": "pending",
-        "trigger": "executor",
+        "trigger": trigger,
         "rationale": rationale,
         "proposal_json": proposal.model_dump_json(),
         "gate_json": gate_result.model_dump_json(),

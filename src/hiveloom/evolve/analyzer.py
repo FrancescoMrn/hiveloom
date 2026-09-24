@@ -283,6 +283,9 @@ def queue_record(row: dict[str, Any]) -> AttemptRecord | None:
 
     applied = object_json(row.get("apply_result_json"))
     proposed = object_json(row.get("proposal_json"))
+    if not proposed.get("yaml_changes") and not proposed.get("code_changes"):
+        # A marker row (a reflection that found nothing) tried no mutation.
+        return None
     changes = (
         applied.get("applied_yaml", []) if status == "applied"
         else proposed.get("yaml_changes", [])

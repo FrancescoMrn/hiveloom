@@ -479,6 +479,17 @@ def run_harness(
         if indexed:
             # Auto-propose needs this run ingested before it can count the failure.
             _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+            from hiveloom.evolve.reflect import maybe_reflect
+
+            maybe_reflect(
+                spec,
+                base,
+                result.run_id,
+                result.status,
+                hive_path,
+                context=context,
+                strong_model=strong_model,
+            )
             _apply_trace_retention(spec, trace.path, hive_path)
     return result
 

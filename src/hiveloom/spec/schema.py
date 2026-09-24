@@ -1539,6 +1539,39 @@ class AutoProposeConfig(BaseModel):
     )
 
 
+class ReflectConfig(BaseModel):
+    """Opt-in: after a run, draft durable lessons from it into the review queue.
+
+    The executor's own ``propose_memory`` only fires when the model thinks to
+    call it. Reflection is the other half: a strong model reads one finished
+    run — its task, outcome, verifier feedback and friction — next to the
+    lessons the harness already holds, and drafts at most ``max_lessons`` new
+    ones. They are queued exactly like an executor's (``trigger: reflect``):
+    gated, deduplicated on content, applied only by a human. Frozen from
+    evolution, like ``auto_propose``: it is a paid post-run trigger.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="Draft lessons after runs.")
+    on: Literal["failure", "any"] = Field(
+        default="failure",
+        description="Reflect after failed runs only, or after every run.",
+    )
+    max_lessons: int = Field(
+        default=1, ge=1, le=3, description="Most lessons one reflection may queue."
+    )
+    cooldown_minutes: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Minimum gap between reflections for this harness; a spend guard.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Strong-model override for reflection; else the CLI/env default.",
+    )
+
+
 class TraceExcerptConfig(BaseModel):
     """Bounded, redacted incident evidence supplied to the proposing model."""
 
@@ -1659,6 +1692,13 @@ class EvolutionConfig(BaseModel):
         default_factory=AutoProposeConfig,
         description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
+    reflect: ReflectConfig = Field(
+        default_factory=ReflectConfig,
+        description=(
+            "Post-run lesson drafting into the proposal queue (opt-in; drafts only, "
+            "never applies). Frozen from evolution."
+        ),
+    )
     trace_excerpts: TraceExcerptConfig = Field(
         default_factory=TraceExcerptConfig,
         description=(
@@ -1719,6 +1759,7 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "hooks",
     "mcp_servers",
     "evolution.auto_propose",
+    "evolution.reflect",
     "evolution.trace_excerpts",
     "evolution.objectives",
     "confinement",
