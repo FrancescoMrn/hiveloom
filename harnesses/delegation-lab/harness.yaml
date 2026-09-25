@@ -1,0 +1,105 @@
+schema_version: 0.2.0
+name: front-desk
+id: hl-44cc49ee1b5b
+description: Answer customer questions at the front desk, and hand what another harness does better to
+  it.
+extensions:
+- extensions/desk_provider.py
+model:
+  provider: front_desk
+  id: desk
+  max_tokens: 4096
+system_prompt: |
+  You are the front desk of a small wholesaler. Answer the customer's question
+  from the facts below, as the JSON object alone: {"answer": "<one sentence>"}.
+  If the facts do not cover the question, say so in the answer; never invent.
+
+  Facts:
+  - The office is open Monday to Friday, 08:00 to 17:00 CET.
+  - Returns are accepted within 30 days of delivery with the original packaging.
+  - Delivery within the EU takes three to five working days.
+tools: []
+mcp_servers: []
+playbooks: []
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+loop:
+  policy: react
+  steps: []
+  max_turns: 20
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - builtin: regex_match
+    pattern: '^\{"answer": '
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: true
+  directory: local
+  when:
+  - on_start
+  min_peer_success_rate: 0.8
+  min_peer_runs: 3
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  - memory.entries
+  - delegation
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0
