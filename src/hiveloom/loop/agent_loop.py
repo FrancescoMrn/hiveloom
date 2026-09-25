@@ -1,9 +1,10 @@
 """The synchronous agent loop engine.
 
 The loop's *strategy* is a pluggable :class:`~hiveloom.loop.policies.LoopPolicy`
-(``react``/``plan_then_act`` builtin, more via extensions). The loop drives
-guardrail hooks, the lifecycle event bus, the tool registry, context assembly,
-and the verify step, emitting a trace event at every step. Designed so an
+(``react``/``plan_then_act``/``sequential_steps``/``best_of_n`` builtin, more
+via extensions). The loop drives guardrail hooks, the lifecycle event bus, the
+tool registry, context assembly, and the verify step, emitting a trace event at
+every step. Designed so an
 async version is possible later.
 
 Guardrails and event hooks compose: guardrails are the frozen safety layer
@@ -22,10 +23,15 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from hiveloom import confine
+from hiveloom import confine, delegation
 from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
-from hiveloom.context.spill import SpillStore
+from hiveloom.context.notes import (
+    FALLBACK_MAX_NOTE_BYTES as FALLBACK_NOTE_BYTES,
+)
+from hiveloom.context.notes import NOTES_TOOL, NotesStore, NotesTool
+from hiveloom.context.spill import SpillError, SpillStore
+from hiveloom.delegation import DelegationRecord, PeerCandidate
 from hiveloom.egress import EgressFilter
 from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
@@ -36,6 +42,7 @@ from hiveloom.execution import (
     execution_fingerprint,
 )
 from hiveloom.guardrails.base import Guardrail, RunState
+from hiveloom.guardrails.builtin import MaxCostGuardrail
 from hiveloom.logging.trace import TraceWriter, harness_snapshot, payload_hash
 from hiveloom.loop.control import RunControl
 from hiveloom.loop.policies import LoopPolicy, StepPolicyHalt, build_policy
@@ -50,7 +57,8 @@ from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.private import RunBoundary
 from hiveloom.spec.schema import HarnessSpec
-from hiveloom.tools.registry import ToolRegistry, ToolResult
+from hiveloom.tools.builtin import PROPOSE_MEMORY_TOOL, ProposeMemoryTool
+from hiveloom.tools.registry import SearchToolsTool, ToolError, ToolRegistry, ToolResult
 from hiveloom.verify.base import (
     ToolEvidenceRecord,
     VerdictResult,
@@ -98,7 +106,8 @@ def _bound_evidence(value: Any, depth: int = 0) -> tuple[Any, bool]:
 class RunResult(BaseModel):
     """The outcome of a harness run."""
 
-    # success | verify_failed | guardrail_halt | step_failed | max_turns | stopped | error
+    # success | verify_failed | guardrail_halt | step_failed | max_turns
+    # truncated | stopped | error
     status: str
     output: str = ""
     turns: int = 0
@@ -120,6 +129,14 @@ class RunResult(BaseModel):
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     execution: RunExecutionEnvelope | None = None
     steps: list[StepExecutionRecord] = Field(default_factory=list)
+    # Peer harnesses this run actually handed work to, in order. `cost_usd`
+    # above INCLUDES what they spent — the parent's budget is the user's total
+    # budget — and `delegated_cost_usd` is that share, so the split is visible.
+    delegations: list[DelegationRecord] = Field(default_factory=list)
+    # Peers that fit but were not used automatically: who they are, how they
+    # measure, and why. This is what lets a run tell the user "ask X instead".
+    referrals: list[dict[str, Any]] = Field(default_factory=list)
+    delegated_cost_usd: float = 0.0
 
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
@@ -143,6 +160,13 @@ def _terminate_output(dispatched: list[Any], results: list[dict[str, Any]]) -> s
     if dispatched and len(dispatched) == len(results) and all(r.terminate for r in dispatched):
         return dispatched[-1].content
     return None
+
+
+# How many consecutive turns may hit the output ceiling without producing an
+# answer or a tool call before the run stops. One is a long thought; a third in
+# a row means the budget cannot fit this model's answer and more turns will not
+# change that.
+_MAX_TRUNCATED_TURNS = 2
 
 
 class AgentLoop:
@@ -209,8 +233,12 @@ class AgentLoop:
             if switch_tool is not None:
                 switch_tool.bind(self._handle_switch_playbook)
         self._events = events if events is not None else EventBus(trace=trace)
+        self._pending_output: str | None = None
+        # The reason the newest output was blocked by an output guardrail, so a
+        # run that exhausts its turns can say why without returning that output.
+        self._last_output_block: str | None = None
         self._policy = policy if policy is not None else build_policy(
-            spec.loop.policy, {"steps": spec.loop.steps}
+            spec.loop.policy, {"steps": spec.loop.steps, "attempts": spec.loop.attempts}
         )
         self._router = router if router is not None else ModelRouter.create(
             self._base,
@@ -219,6 +247,7 @@ class AgentLoop:
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
                 provider=spec.model.provider,
+                params=spec.model.params,
             ),
             provider,
         )
@@ -239,6 +268,17 @@ class AgentLoop:
         self._egress = EgressFilter(spec.egress, spec.logging.redact)
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
+        # Delegation bookkeeping. `depth`/`chain` come from the lineage this
+        # run was started with, so an inherited chain is what depth and cycle
+        # refusals are judged against — not something this run can restate.
+        self._delegation = spec.delegation
+        self._delegation_depth = int((lineage or {}).get("depth") or 0)
+        self._delegation_chain = list((lineage or {}).get("chain") or [])
+        self._delegations: list[DelegationRecord] = []
+        self._referrals: list[dict[str, Any]] = []
+        self._referred: set[str] = set()
+        self._candidate_cache: list[PeerCandidate] | None = None
+        self._verify_fail_delegated = False
         self._usage = Usage()
         self._verification_attempts = 0
         self._tool_evidence: list[ToolEvidenceRecord] = []
@@ -256,10 +296,40 @@ class AgentLoop:
                 config=spec.context.tool_results,
                 redact=trace.redact_text,
             )
+            self._spill.set_on_derived(self._journal_derived_object)
             for name in spill.TOOL_NAMES:
                 tool = registry.get(name)
                 if tool is not None:
                     tool.bind(self._spill)
+        # `notes` is opt-in and spec-declared, so it is built by the registry
+        # and bound here: the loop owns the run directory it writes into, the
+        # redaction applied on the way in, and the journal that records it.
+        self._notes: NotesStore | None = None
+        notes_tool = registry.get(NOTES_TOOL)
+        if isinstance(notes_tool, NotesTool):
+            inline_budget = spec.context.tool_results.max_inline_bytes
+            self._notes = NotesStore(
+                self._run_boundary.spill_dir,
+                run_id=run_id,
+                max_notes=notes_tool.max_notes,
+                max_note_bytes=notes_tool.max_note_bytes or inline_budget or FALLBACK_NOTE_BYTES,
+                max_read_bytes=inline_budget or FALLBACK_NOTE_BYTES,
+                redact=trace.redact_text,
+                journal=self._trace.emit,
+            )
+            notes_tool.bind(self._notes)
+            # A callable, not a snapshot: the index has to reflect what the
+            # model has written by *this* turn, and it is re-rendered on every
+            # assembly like the playbook fragment.
+            self._context.set_notes_index(self._notes.index_text)
+        # `propose_memory` is opt-in too, and is bound here rather than built
+        # with what it needs: the running spec (whose memory budgets bound a
+        # proposal, and whose identity scopes it), this run's redaction, and
+        # its journal all belong to the loop, and none of them may come from a
+        # tool argument.
+        propose_memory = registry.get(PROPOSE_MEMORY_TOOL)
+        if isinstance(propose_memory, ProposeMemoryTool):
+            propose_memory.bind(spec, redact=trace.redact_text, journal=self._trace.emit)
 
     # ------------------------------------------------------------------ #
     # Public surface for policies and hooks
@@ -283,6 +353,17 @@ class AgentLoop:
     def emit_step_event(self, event: str, **payload: Any) -> None:
         """Emit a policy-owned step event through the run's trace."""
         self._trace.emit(event, **payload)
+
+    @property
+    def pending_output(self) -> str | None:
+        """The answer a terminating tool produced, while the policy may refuse it.
+
+        Set immediately before ``wants_continue_after_tools`` and read only
+        there. A tool that ends the run carries the answer in its result, not
+        in the model's text, so a policy handed only the ``ModelResponse``
+        would see an empty completion and treat a finished attempt as nothing.
+        """
+        return self._pending_output
 
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
@@ -369,9 +450,53 @@ class AgentLoop:
             if inherited:
                 self._registry.activate(list(spill.TOOL_NAMES))
                 self._trace.emit("spill_inherited", handles=inherited)
+        if self._notes is not None and self._lineage:
+            # Same rule for notes: `hiveloom fork` copied the notes the
+            # parent's verified journal says it wrote, and the manifest in
+            # fork.yaml — not the seeded transcript — is what authorizes them.
+            manifest = self._lineage.get("notes_manifest") or []
+            carried = self._notes.inherit(manifest, self._notes.inherited_dir)
+            # A grant narrower than the record — a copy gone or changed on
+            # disk, a manifest past `max_notes` — is said, not swallowed: the
+            # resumed run would otherwise just lack notes its lineage claims.
+            missing = [
+                str(item.get("name", ""))
+                for item in manifest
+                if isinstance(item, dict) and str(item.get("name", "")) not in carried
+            ]
+            if carried or missing:
+                self._trace.emit(
+                    "notes_inherited",
+                    names=carried,
+                    # Content included, as `note_written` does, so a fork of
+                    # this fork can rebuild these from its own journal.
+                    notes=self._notes.carried(carried),
+                    **({"missing": missing} if missing else {}),
+                )
         self._context.seed_history(self._history)
+        # Relevance-selected memory is chosen from the task before the first
+        # call and journaled, so the signal locator can contrast runs that were
+        # shown a lesson with runs that were not. Deterministic, so a resumed
+        # run rebuilds the same selection from the same input.
+        selection = self._context.select_memory(self._run_input)
+        if selection is not None:
+            ids, scores = selection
+            self._trace.emit(
+                "memory_selected",
+                ids=ids,
+                scores=scores,
+                stored=len(self._spec.memory.entries),
+            )
         if not self._resume:
             self._context.add_user(self._run_input)
+        self._setup_delegation_tools()
+        if self._delegation_mode("on_start"):
+            try:
+                delegated = self._delegate_whole_task(mode="on_start")
+            except GuardrailHalt as exc:
+                return self._finish("guardrail_halt", reason=str(exc))
+            if delegated is not None:
+                return delegated
         try:
             self._policy.on_run_start(self)
         except StepPolicyHalt as exc:
@@ -403,6 +528,8 @@ class AgentLoop:
                     self._switch_model(**request)
                 for request in self._control.drain_playbook_switches():
                     self._switch_playbook_from_operator(**request)
+            truncation_exhausted = False
+            policy_incomplete = False
             try:
                 self._policy.before_model_turn(self)
                 response = self.model_turn()
@@ -426,12 +553,16 @@ class AgentLoop:
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
+                # A turn that reached a tool is productive: the truncation
+                # streak is about turns that produce nothing at all.
+                self._state.truncated_turns = 0
                 if terminate_output is None:
                     nudge = self._policy.after_tool_turn(self, response)
                     if nudge is not None:
                         self._context.add_user(nudge)
                         self._state.policy_nudges += 1
                     continue
+                self._pending_output = terminate_output
                 nudge = self._policy.wants_continue_after_tools(self, response)
                 if nudge is not None:
                     self._context.add_user(nudge)
@@ -440,7 +571,39 @@ class AgentLoop:
                 # Every tool result in the batch asked to terminate: treat the
                 # last result as the final output, skipping a model turn.
                 output = terminate_output
+            elif response.stop_reason == "max_tokens":
+                # A turn cut off at the ceiling is not a completion signal. A
+                # reasoning model can spend a whole budget thinking and emit no
+                # answer and no tool call; treating that partial text as the
+                # final output scores a thought as if it were a result. Feed
+                # the truncation back instead — the same failure-as-feedback
+                # rule the tool path already applies (see _dispatch_tools).
+                self._state.truncated_turns += 1
+                self._trace.emit(
+                    "turn_truncated",
+                    consecutive=self._state.truncated_turns,
+                    text_chars=len(response.text or ""),
+                    output_tokens=response.usage.output_tokens,
+                )
+                # Escalation only means something while a turn remains to act on
+                # it. Out of turns — a one-turn harness, a loop at its limit, or
+                # a model truncating every time — feeding back would discard
+                # what the model *did* produce in favour of nothing. Hand the
+                # partial text on and let the verifiers rule on it: an answer
+                # that parses beats a withheld one, and the run status still
+                # records why the turn ended.
+                truncation_exhausted = (
+                    self._state.truncated_turns > _MAX_TRUNCATED_TURNS
+                    or self._state.model_calls >= loop.max_turns
+                )
+                if not truncation_exhausted and self._state.model_calls < loop.max_turns:
+                    self._context.add_user(self._truncation_feedback())
+                    continue
+                output = response.text
+                # Salvaging a partial answer cannot bypass required phases/tools.
+                policy_incomplete = self._policy.wants_continue(self, response) is not None
             else:
+                self._state.truncated_turns = 0
                 nudge = self._policy.wants_continue(self, response)
                 if nudge is not None:
                     self._context.add_user(nudge)
@@ -449,25 +612,36 @@ class AgentLoop:
                 # No tool calls -> the model is signalling completion.
                 output = response.text
 
+            output = self._policy.select_output(self, output)
             output = self._transform_output(output)
-            self._state.output = output
 
+            # Output guardrails run before the output is recorded as the run's
+            # answer: a blocked output must never become what a stopped or
+            # turn-exhausted run hands back to its caller.
             block = self._on_output(output)
             if block is not None:
                 if block.startswith("HALT:"):
                     return self._finish("guardrail_halt", reason=block[5:])
+                self._last_output_block = block
                 self._context.add_user(
                     f"Your output was blocked ({block}). Produce a compliant result."
                 )
                 continue
+            self._last_output_block = None
+            self._state.output = output
 
             if loop.require_verification:
                 verdicts = self._verify(output)
                 last_verdicts = verdicts
-                if all(v.passed for v in verdicts):
+                if (
+                    all(v.passed for v in verdicts)
+                    and not policy_incomplete
+                    and (not truncation_exhausted or verdicts)
+                ):
                     return self._finish("success", output=output, verdicts=verdicts)
                 if (
-                    self._spec.verify.on_fail.action == "retry_with_feedback"
+                    not truncation_exhausted
+                    and self._spec.verify.on_fail.action == "retry_with_feedback"
                     and retries < self._spec.verify.on_fail.max_retries
                 ):
                     retries += 1
@@ -477,12 +651,38 @@ class AgentLoop:
                         f"Verification failed:\n{feedback}\nRevise your answer and try again."
                     )
                     continue
+                escalated = self._escalate_on_verify_fail()
+                if escalated is not None:
+                    return escalated
+                if truncation_exhausted:
+                    return self._finish(
+                        "truncated",
+                        output=output,
+                        verdicts=verdicts,
+                        reason=(
+                            self._truncation_reason() + "; loop policy requires further work"
+                            if policy_incomplete else self._truncation_reason(verified=False)
+                        ),
+                    )
                 return self._finish("verify_failed", output=output, verdicts=verdicts)
 
+            if truncation_exhausted:
+                # Nothing verified this output, and the loop ended on the
+                # pathology rather than on the model finishing. Say so.
+                return self._finish(
+                    "truncated", output=output, reason=self._truncation_reason()
+                )
             return self._finish("success", output=output)
 
         return self._finish(
-            "max_turns", output=self._state.output or "", verdicts=last_verdicts
+            "max_turns",
+            output=self._policy.fallback_output(self, self._state.output or ""),
+            verdicts=last_verdicts,
+            reason=(
+                f"last output blocked: {self._last_output_block}"
+                if self._last_output_block
+                else ""
+            ),
         )
 
     # ------------------------------------------------------------------ #
@@ -617,8 +817,14 @@ class AgentLoop:
         input_tokens = self._router.provider.count_tokens(
             system=system, messages=messages, tools=tools
         )
+        config = self._router.config
+        compaction_cap = self._spec.context.compaction.max_tokens
+        if phase == "compaction" and compaction_cap is not None:
+            config = config.model_copy(
+                update={"max_tokens": min(config.max_tokens, compaction_cap)}
+            )
         self._state.pending_cost_usd = self._router.provider.estimated_cost(
-            Usage(input_tokens=input_tokens, output_tokens=self._router.config.max_tokens),
+            Usage(input_tokens=input_tokens, output_tokens=config.max_tokens),
             self._router.config.id,
             self._router.config.provider,
         )
@@ -659,7 +865,7 @@ class AgentLoop:
             system=system,
             messages=messages,
             tools=tools,
-            config=self._router.config,
+            config=config,
         )
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
@@ -770,6 +976,37 @@ class AgentLoop:
         )
         return verdict.system, verdict.messages, verdict.tools
 
+    def _truncation_reason(self, *, verified: bool | None = None) -> str:
+        tail = "; the last one's partial output did not verify" if verified is False else ""
+        return (
+            f"{self._state.truncated_turns} consecutive turns hit the "
+            f"{self._router.config.max_tokens}-token output ceiling{tail}"
+        )
+
+    def _truncation_feedback(self) -> str:
+        """What to tell a model that thought until it ran out of room.
+
+        Escalates: the first message names the budget and asks for the shortest
+        action that makes progress; a repeat says plainly that thinking longer
+        is what is failing, because a model that is losing to its own verbosity
+        will otherwise re-read the same instruction and do the same thing.
+        """
+        ceiling = self._router.config.max_tokens
+        if self._state.truncated_turns == 1:
+            return (
+                f"Your last turn reached the {ceiling}-token output limit while still working, "
+                "so it produced no answer and no tool call. What you wrote is above and still "
+                "counts — do not restate it. Take the single smallest next action that makes "
+                "progress from there: one tool call with your current best guess, however "
+                "rough, or the final answer if you already have one."
+            )
+        return (
+            f"Again cut off at {ceiling} tokens before producing anything "
+            f"({self._state.truncated_turns} turns in a row). Thinking longer is what is "
+            "failing here, not the problem being hard. Emit a tool call or the final answer "
+            "as the very first thing in your next turn, before any explanation."
+        )
+
     def _dispatch_tools(self, response: ModelResponse) -> tuple[str | None, str | None]:
         """Dispatch a turn's tool calls.
 
@@ -877,6 +1114,24 @@ class AgentLoop:
             results.append(self._result_block(call, result))
         self._context.add_tool_results(results)
         return None, _terminate_output(dispatched, results)
+
+    def _journal_derived_object(self, record: Any, source: str, op: str) -> None:
+        """Record an object ``transform_result`` minted inside a tool call.
+
+        Emitted as ``tool_spilled`` rather than an event of its own so the fork
+        path — which reads minted handles off the verified journal — sees a
+        derived object exactly as it sees a spilled one, and can carry it.
+        """
+        self._trace.emit(
+            "tool_spilled",
+            name=spill.TRANSFORM_TOOL,
+            handle=record.handle,
+            bytes=record.total_bytes,
+            sha256=record.sha256,
+            omitted_bytes=record.omitted_bytes,
+            derived_from=source,
+            op=op,
+        )
 
     def _result_block(self, call: Any, result: Any) -> dict[str, Any]:
         """The context-facing form of a finalized result, spilled if oversized.
@@ -1007,7 +1262,12 @@ class AgentLoop:
             self._trace.emit("tool_update", id=_call.id, name=_call.name, content=progress)
 
         run_context = self._run_context()
-        result = self._registry.dispatch(call, on_update=on_update, run_context=run_context)
+        result = self._registry.dispatch(
+            call,
+            on_update=on_update,
+            run_context=run_context,
+            resolve_handle=self._resolve_handle_arg,
+        )
         if (
             result.is_error
             and result.retryable
@@ -1015,11 +1275,32 @@ class AgentLoop:
         ):
             self._trace.emit("tool_retry", id=call.id, name=call.name)
             result = self._registry.dispatch(
-                call, on_update=on_update, run_context=run_context
+                call,
+                on_update=on_update,
+                run_context=run_context,
+                resolve_handle=self._resolve_handle_arg,
             )
         if result.is_error and self._spec.loop.on_tool_error == "abort":
             raise ToolAbort(f"tool '{call.name}' failed: {result.content}")
         return result
+
+    def _resolve_handle_arg(self, handle: str, max_bytes: int) -> str:
+        """Expand a handle-typed tool argument under this run's authority.
+
+        Passed to every dispatch, consulted only for the parameters a tool
+        declares as handle-capable. A run with no store resolves nothing —
+        there is no object to reach — and the refusal reaches the model as a
+        tool error.
+        """
+        if self._spill is None:
+            raise ToolError(
+                "this harness stores no oversized tool results, so there is no "
+                f"handle to expand ('{handle}')"
+            )
+        try:
+            return self._spill.resolve_text(handle, max_bytes)
+        except SpillError as exc:
+            raise ToolError(str(exc)) from exc
 
     def _finalize_call(self, call: Any, result: Any) -> str | None:
         """After-hooks and after-guardrails for one call. Returns a halt reason."""
@@ -1286,6 +1567,331 @@ class AgentLoop:
         self._context.add_user(" ".join(note))
         return True
 
+    # ------------------------------------------------------------------ #
+    # Delegation — the phone line
+    # ------------------------------------------------------------------ #
+    # The decision to hand a task over is enforced here, by the runtime, and
+    # not asked of the model in the system prompt: a prompt-only "look for a
+    # specialist first" instruction is skipped by exactly the small executor
+    # models this exists to help. What the model *may* still do is choose
+    # (`model_choice`), because choosing is a judgement; whether the choice is
+    # allowed, how deep it may go, and what it may spend are not.
+    #
+    # Note on guardrails: the parent's wall-clock and turn guardrails are
+    # evaluated at turn boundaries only, so a long child run is not interrupted
+    # mid-flight. Cost is the exception — the child carries its own cap and its
+    # spend is charged back to the parent as soon as it finishes.
+
+    def _delegation_mode(self, mode: str) -> bool:
+        return self._delegation.enabled and mode in self._delegation.when
+
+    def _chain(self) -> list[str]:
+        """Harness ids root -> this run, the ancestry a child inherits."""
+        return [*self._delegation_chain, self._spec.identity]
+
+    def _cost_limit(self) -> float | None:
+        """This run's total cost ceiling, from its own max_cost guardrail."""
+        limits = [g.limit for g in self._guardrails if isinstance(g, MaxCostGuardrail)]
+        return min(limits) if limits else None
+
+    def _child_cost_cap(self) -> float | None:
+        limit = self._cost_limit()
+        if limit is None:
+            return None
+        return delegation.child_cost_cap(
+            limit - self._state.cost_usd, self._delegation.budget_share
+        )
+
+    def _peer_candidates(self) -> list[PeerCandidate]:
+        """The peer directory for this run, discovered at most once."""
+        if self._candidate_cache is None:
+            try:
+                self._candidate_cache = delegation.discover_candidates(
+                    self._spec, self._base, hive_path=self._hive_path
+                )
+            except Exception as exc:  # noqa: BLE001 - a directory fault is not a run failure
+                self._candidate_cache = []
+                self._trace.emit(
+                    "delegation_skipped",
+                    mode="directory",
+                    reason="directory_error",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        return self._candidate_cache
+
+    def _record_referrals(
+        self, candidates: list[PeerCandidate], reason: str
+    ) -> None:
+        for candidate in candidates:
+            if candidate.harness_id in self._referred:
+                continue
+            self._referred.add(candidate.harness_id)
+            self._referrals.append(candidate.referral(reason))
+
+    def _setup_delegation_tools(self) -> None:
+        """Register ``list_peers`` and the deferred ``delegate__*`` tools.
+
+        ``list_peers`` is registered whenever delegation is enabled in
+        ``model_choice`` mode even if nothing is currently delegable: it is one
+        cheap active tool, and being able to *name* the harness that fits is
+        useful to the user even when the runtime will not spend on it.
+        """
+        if not self._delegation_mode("model_choice"):
+            return
+        candidates = self._peer_candidates()
+        list_tool = delegation.ListPeersTool(candidates)
+        list_tool.bind(self._handle_list_peers)
+        self._registry.register(list_tool, active=True)
+        self._initial_active_tools.add(list_tool.name)
+
+        child_depth = self._delegation_depth + 1
+        if child_depth > self._delegation.max_depth:
+            self._trace.emit(
+                "delegation_skipped", mode="model_choice", reason=delegation.DEPTH
+            )
+            self._sync_tool_names()
+            return
+        chain = set(self._chain())
+        peers = [
+            candidate
+            for candidate in delegation.eligible(candidates, self._delegation)
+            if candidate.harness_id not in chain
+        ]
+        for candidate in peers:
+            tool = delegation.DelegateTool(candidate)
+            tool.bind(self._handle_delegate)
+            self._registry.register(tool, active=False)
+        if peers and self._registry.get("search_tools") is None:
+            # Deferred tools are only discoverable through search_tools, and a
+            # harness that defers nothing of its own has none registered yet.
+            self._registry.register(SearchToolsTool(self._registry))
+        if not peers:
+            self._trace.emit(
+                "delegation_skipped",
+                mode="model_choice",
+                reason=delegation.BELOW_FITNESS if candidates else delegation.NO_CANDIDATES,
+            )
+        self._sync_tool_names()
+
+    def _sync_tool_names(self) -> None:
+        """Keep the allowlist guardrail aware of tools registered after init."""
+        self._state.tool_names = set(self._registry.names())
+
+    def _select_peer(self, task: str, *, mode: str) -> PeerCandidate | None:
+        candidates = self._peer_candidates()
+        if not candidates:
+            self._trace.emit(
+                "delegation_skipped", mode=mode, reason=delegation.NO_CANDIDATES
+            )
+            return None
+        selection = delegation.select_peer(
+            self._router.provider,
+            self._router.config,
+            task,
+            candidates,
+            self._delegation,
+            screen=lambda system, messages, tools: self._screen_egress(
+                system, messages, tools, f"delegation_{mode}"
+            ),
+        )
+        # The selection call is the parent's own model on the parent's own
+        # budget, so it is charged like any other turn.
+        self._state.cost_usd += selection.cost_usd
+        if selection.candidate is None:
+            self._trace.emit(
+                "delegation_skipped",
+                mode=mode,
+                reason=selection.reason,
+                candidates=[c.name for c in candidates],
+                cost_usd=selection.cost_usd,
+            )
+            self._record_referrals(candidates, selection.reason)
+            return None
+        chosen = selection.candidate
+        self._trace.emit(
+            "delegation_selected",
+            mode=mode,
+            harness=chosen.name,
+            harness_id=chosen.harness_id,
+            success_rate=round(chosen.success_rate, 3),
+            total_runs=chosen.total_runs,
+            cost_usd=selection.cost_usd,
+        )
+        return chosen
+
+    def _run_delegation(
+        self, candidate: PeerCandidate, task: str, *, mode: str
+    ) -> DelegationRecord | None:
+        """Refuse or perform one hand-off, charging what it spent to this run."""
+        child_depth = self._delegation_depth + 1
+        chain = self._chain()
+        refused = delegation.refusal(
+            candidate,
+            child_depth=child_depth,
+            chain=chain,
+            max_depth=self._delegation.max_depth,
+        )
+        if refused is not None:
+            self._trace.emit(
+                "delegation_skipped", mode=mode, reason=refused, harness=candidate.name
+            )
+            self._record_referrals([candidate], refused)
+            return None
+        cap = self._child_cost_cap()
+        if cap is not None and cap <= 0:
+            self._trace.emit(
+                "delegation_skipped",
+                mode=mode,
+                reason=delegation.BUDGET,
+                harness=candidate.name,
+            )
+            self._record_referrals([candidate], delegation.BUDGET)
+            return None
+        self._trace.emit(
+            "delegation_started",
+            mode=mode,
+            harness=candidate.name,
+            harness_id=candidate.harness_id,
+            depth=child_depth,
+            chain=chain,
+            cost_cap_usd=cap,
+        )
+        try:
+            record = delegation.delegate(
+                candidate,
+                task,
+                lineage=delegation.build_lineage(
+                    parent_run_id=self._run_id,
+                    parent_harness_id=self._spec.identity,
+                    depth=child_depth,
+                    chain=chain,
+                ),
+                cost_cap_usd=cap,
+                hive_path=self._hive_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - a peer's failure is not a crash here
+            self._trace.emit(
+                "delegation_finished",
+                mode=mode,
+                harness=candidate.name,
+                status="error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        # The parent's cap is the user's total budget, so the child's spend is
+        # the parent's spend — visible separately as `delegated_cost_usd`.
+        self._state.cost_usd += record.cost_usd
+        self._state.delegated_cost_usd += record.cost_usd
+        self._delegations.append(record)
+        self._trace.emit(
+            "delegation_finished",
+            mode=mode,
+            harness=record.harness,
+            run_id=record.run_id,
+            status=record.status,
+            cost_usd=record.cost_usd,
+            turns=record.turns,
+            reason=record.reason,
+        )
+        return record
+
+    def _delegate_whole_task(
+        self, *, mode: str, task: str | None = None
+    ) -> RunResult | None:
+        """Select, hand over, and finish this run on the child's answer."""
+        statement = task if task is not None else self._run_input
+        candidate = self._select_peer(statement, mode=mode)
+        if candidate is None:
+            return None
+        record = self._run_delegation(candidate, statement, mode=mode)
+        if record is None:
+            return None
+        return self._finish_delegated(record)
+
+    def _finish_delegated(self, record: DelegationRecord) -> RunResult:
+        """Adopt a child's output — and grade it with *this* harness's validators.
+
+        Verification never travels with the task. The peer ran its own
+        validators on its own contract; this harness still owes its caller the
+        contract it promised, so the answer is re-verified here before it
+        counts as a success.
+        """
+        output = self._transform_output(record.output)
+        block = self._on_output(output)
+        if block is not None:
+            reason = block[5:] if block.startswith("HALT:") else block
+            # The blocked answer is not handed back: the guardrail is the
+            # last line between a peer's output and this harness's caller.
+            return self._finish(
+                "guardrail_halt",
+                output="",
+                reason=f"delegated output blocked: {reason}",
+            )
+        self._state.output = output
+        verdicts: list[VerdictResult] = []
+        if self._spec.loop.require_verification:
+            verdicts = self._verify(output)
+        if verdicts and not all(v.passed for v in verdicts):
+            status = "verify_failed"
+        elif record.status != "success":
+            # A peer that did not succeed cannot be laundered into a success by
+            # this harness's validators passing on a partial answer.
+            status = record.status
+        else:
+            status = "success"
+        reason = (
+            ""
+            if status == "success"
+            else (
+                f"delegated to '{record.harness}' (run {record.run_id}): "
+                f"{record.reason or record.status}"
+            )
+        )
+        return self._finish(status, output=output, reason=reason, verdicts=verdicts)
+
+    def _escalate_on_verify_fail(self) -> RunResult | None:
+        """One last hand-off after this harness has exhausted its own retries."""
+        if not self._delegation_mode("on_verify_fail") or self._verify_fail_delegated:
+            return None
+        self._verify_fail_delegated = True
+        try:
+            return self._delegate_whole_task(mode="on_verify_fail")
+        except GuardrailHalt as exc:
+            return self._finish("guardrail_halt", reason=str(exc))
+
+    def _handle_delegate(
+        self, candidate: PeerCandidate, task: str
+    ) -> ToolResult:
+        """Back one ``delegate__<peer>`` tool call."""
+        record = self._run_delegation(
+            candidate, task or self._run_input, mode="model_choice"
+        )
+        if record is None:
+            return ToolResult(
+                content=(
+                    f"delegation to '{candidate.name}' was refused by the runtime "
+                    "(depth, cycle, budget, or the peer could not run). Continue "
+                    "the task yourself, or tell the user which harness would fit."
+                ),
+                is_error=True,
+                retryable=False,
+            )
+        header = (
+            f"[{record.harness} run {record.run_id} finished: {record.status}, "
+            f"{record.turns} turn(s), ${record.cost_usd:.4f}]"
+        )
+        body = record.output or record.reason or "(no output)"
+        return ToolResult(
+            content=f"{header}\n{body}",
+            is_error=record.status != "success",
+            # Never retried automatically: a repeat is a second paid child run.
+            retryable=False,
+        )
+
+    def _handle_list_peers(self, candidates: list[PeerCandidate]) -> ToolResult:
+        self._record_referrals(list(candidates), delegation.LISTED)
+        return ToolResult(content=delegation.render_peers(candidates))
+
     def _run_context(self, **extra: Any) -> dict[str, Any]:
         """The per-run dict handed to code tools and validators.
 
@@ -1307,6 +1913,10 @@ class AgentLoop:
             "harness_name": self._spec.name,
             "harness_version_hash": self._trace.version_hash,
             "hive_path": str(self._hive_path) if self._hive_path else None,
+            # Where this run came from (a fork's parent, or the harness that
+            # delegated to it). A tool that delegates onward extends this
+            # chain, which is what bounds the depth and catches a cycle.
+            "lineage": self._lineage,
             "context": self._context_values,
             # A snapshot of what the run has produced so far. This is what
             # makes a playbook exit gate expressible ("you entered targeting
@@ -1501,6 +2111,12 @@ class AgentLoop:
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
             duration_seconds=duration_seconds,
+            # The split between what this run spent itself and what it paid a
+            # peer to do. `cost_usd` above is the total, which is what the
+            # user's budget is about.
+            delegated_cost_usd=self._state.delegated_cost_usd,
+            delegations=[record.model_dump(mode="json") for record in self._delegations],
+            referrals=self._referrals,
             execution=execution.model_dump(mode="json"),
             # The answer and the judgements on it. A journal that reports a
             # run's status but not what it produced is not a complete record
@@ -1541,6 +2157,9 @@ class AgentLoop:
             runtime_config=self._runtime_config,
             execution=execution,
             steps=step_records,
+            delegations=list(self._delegations),
+            referrals=list(self._referrals),
+            delegated_cost_usd=self._state.delegated_cost_usd,
         )
 
     def _verification_summary(self, status: str) -> VerificationSummary:

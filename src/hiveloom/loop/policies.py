@@ -17,6 +17,7 @@ Policies are catalog entries: builtins here, more via
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 from hiveloom import ext
@@ -66,6 +67,27 @@ class LoopPolicy:
     def after_tool_turn(self, loop: AgentLoop, response: ModelResponse) -> str | None:
         """Optionally advance after a non-terminating tool batch."""
         return None
+
+    def select_output(self, loop: AgentLoop, output: str) -> str:
+        """Choose the run's final output from a finished attempt.
+
+        The default accepts what the loop arrived at. A policy that samples the
+        task more than once overrides this: it is holding the other attempts,
+        so it is the only thing that can say which one is the answer.
+        """
+        del loop
+        return output
+
+    def fallback_output(self, loop: AgentLoop, output: str) -> str:
+        """The best answer the policy holds when the loop ran out of turns.
+
+        Distinct from :meth:`select_output`, which only ever sees a *finished*
+        attempt. This is the exhausted path, where a policy mid-way through
+        something may still be holding a usable answer that would otherwise be
+        thrown away for a partial one.
+        """
+        del loop
+        return output
 
     def execution_records(self) -> list[StepExecutionRecord]:
         """Return bounded public policy receipts for RunResult and the Hive."""
@@ -282,6 +304,170 @@ class SequentialStepsPolicy(LoopPolicy):
         return "\n".join(lines)
 
 
+class BestOfNPolicy(LoopPolicy):
+    """Solve the task ``attempts`` times independently, then submit the consensus.
+
+    Every other policy here shapes a *single* line of reasoning. This one
+    changes how many there are, which is the only lever a harness has against
+    a model that is simply wrong: prompts, tools and limits cannot make a bad
+    inference good, but drawing the inference several times and keeping what
+    the draws agree on can. On any task where the answer is checkable and the
+    model is right more often than it is wrong in the same *way*, independent
+    samples concentrate on the truth and scatter on the errors.
+
+    Independence is the whole mechanism, and it is easy to lose by accident:
+    an attempt that can read the previous one is not a second sample, it is a
+    continuation, and it will anchor on the answer it can see. So each attempt
+    rewinds the context to the pinned prefix — the system prompt and the task
+    statement — and starts again with no memory of its predecessors. What a
+    later attempt does see is one restart instruction, which names neither the
+    attempt number nor how many remain: a model told it has tries left can
+    spend less on the current one, and a cheaper draw is not the same draw.
+
+    Selection is a plurality vote over normalized output text, first-seen
+    order breaking ties. No extra model call, nothing to mis-transcribe, and a
+    deterministic answer to "which one?" — an agreement count is evidence, and
+    asking a model to pick its own favourite is not. ``attempts`` that all
+    disagree fall back to the first, because with no agreement the samples are
+    interchangeable and the first is the only one not chosen after the fact.
+
+    Budget: every attempt spends from the same ``loop.max_turns``, so N
+    attempts need roughly N times the turns a single attempt needed. Set it
+    accordingly — a policy that runs out of turns mid-sweep submits whatever it
+    is holding, which is a worse answer than one honest attempt.
+    """
+
+    name = "best_of_n"
+
+    def __init__(self, attempts: int = 3) -> None:
+        if attempts < 1:
+            raise ValueError("best_of_n requires attempts >= 1")
+        self._target = attempts
+        self._prefix = 0
+        self._candidates: list[str] = []
+        self._selected = False
+
+    def on_run_start(self, loop: AgentLoop) -> None:
+        # Whatever is on the context now is the shared preamble: the system
+        # prompt, the task statement, and any seeded history from a fork or a
+        # resume. Measuring it rather than assuming "one pinned message" is
+        # what makes the rewind correct for those runs too.
+        self._prefix = len(loop.context.messages)
+
+    def _restart(self, loop: AgentLoop, candidate: str) -> str | None:
+        """Bank the finished attempt and set up the next independent one."""
+        if self._selected:
+            # Selection already happened; this is a verification retry
+            # revising the chosen answer, not a fresh sample.
+            return None
+        self._candidates.append(candidate or "")
+        loop.emit_step_event(
+            "attempt_recorded",
+            policy=self.name,
+            attempt=len(self._candidates),
+            attempts=self._target,
+            output_chars=len(candidate or ""),
+            # Which attempts agreed is the whole claim this policy makes, and a
+            # length is not an identity — two different answers of the same size
+            # look identical in the trace. A short digest of the normalized text
+            # makes the vote reconstructable afterwards without storing the
+            # answers themselves, which on some harnesses are enormous.
+            fingerprint=_fingerprint(candidate or ""),
+        )
+        if len(self._candidates) >= self._target:
+            return None
+        loop.context.rewind_to(self._prefix)
+        # Deliberately says neither which attempt this is nor how many remain.
+        # A model told it has two more tries can spend less on this one, and an
+        # attempt sampled at lower effort is not the same draw as the others —
+        # it would bias the vote it is supposed to be an independent member of.
+        return (
+            "Your answer has been recorded. Now solve the task again from the "
+            "beginning, working independently: do not assume any earlier answer "
+            "was right."
+        )
+
+    def wants_continue(self, loop: AgentLoop, response: ModelResponse) -> str | None:
+        return self._restart(loop, response.text)
+
+    def wants_continue_after_tools(
+        self, loop: AgentLoop, response: ModelResponse
+    ) -> str | None:
+        # A `submit_answer`-style tool ends the run from inside a tool result,
+        # so this — not `wants_continue` — is where an attempt finishes on the
+        # harnesses most likely to want more than one of them. The answer is on
+        # the loop rather than in `response`, whose text is empty here.
+        return self._restart(loop, loop.pending_output or response.text)
+
+    def select_output(self, loop: AgentLoop, output: str) -> str:
+        if self._selected:
+            return output
+        if not self._candidates or self._candidates[-1] != output:
+            # The terminating-tool path, and the final attempt of the
+            # no-tool-call path, both arrive here with an unbanked answer.
+            if len(self._candidates) < self._target:
+                self._candidates.append(output)
+        if len(self._candidates) < self._target:
+            return output
+        self._selected = True
+        winner, votes = _plurality(self._candidates)
+        loop.emit_step_event(
+            "attempts_selected",
+            policy=self.name,
+            attempts=len(self._candidates),
+            votes=votes,
+            distinct=len({_normalize(c) for c in self._candidates}),
+            unanimous=votes == len(self._candidates),
+            winner=_fingerprint(winner),
+        )
+        return winner
+
+    def fallback_output(self, loop: AgentLoop, output: str) -> str:
+        """Out of turns mid-sweep: submit the best of what was finished.
+
+        Running out of turns with two attempts banked and one in flight used to
+        submit whatever partial text the loop was holding — usually nothing at
+        all. Two completed answers are strictly better evidence than that, and
+        discarding them turns a budget mistake into a zero.
+        """
+        if self._selected or not self._candidates:
+            return output
+        winner, votes = _plurality(self._candidates)
+        loop.emit_step_event(
+            "attempts_truncated",
+            policy=self.name,
+            attempts=len(self._candidates),
+            target=self._target,
+            votes=votes,
+        )
+        return winner
+
+    def execution_records(self) -> list[StepExecutionRecord]:
+        return []
+
+
+def _normalize(text: str) -> str:
+    """Compare answers on content, not on how they were spaced."""
+    return " ".join((text or "").split())
+
+
+def _fingerprint(text: str) -> str:
+    """A short, stable digest of an answer, for counting agreement in traces."""
+    return hashlib.sha256(_normalize(text).encode("utf-8")).hexdigest()[:12]
+
+
+def _plurality(candidates: list[str]) -> tuple[str, int]:
+    """The most-agreed candidate and its vote count, first-seen breaking ties."""
+    counts: dict[str, int] = {}
+    first: dict[str, str] = {}
+    for candidate in candidates:
+        key = _normalize(candidate)
+        counts[key] = counts.get(key, 0) + 1
+        first.setdefault(key, candidate)
+    best = max(counts, key=lambda key: counts[key])
+    return first[best], counts[best]
+
+
 def build_policy(name: str, params: dict[str, Any] | None = None) -> LoopPolicy:
     """Construct the policy registered under ``name`` (builtin or extension)."""
     return ext.build("policies", name, params or {}, ext.BuildContext())
@@ -296,6 +482,11 @@ def _register_factories() -> None:
         "policies",
         "sequential_steps",
         lambda p, _c: SequentialStepsPolicy(p.get("steps", [])),
+    )
+    ext.register_builtin_factory(
+        "policies",
+        "best_of_n",
+        lambda p, _c: BestOfNPolicy(int(p.get("attempts", 3))),
     )
 
 

@@ -14,6 +14,7 @@ for harnesses with many tools.
 from __future__ import annotations
 
 import inspect
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
@@ -37,6 +38,18 @@ class ToolError(HiveloomError):
 # having the model supply it. Same name the validator contract already uses
 # (``validate(run_output, run_context)``), so one word means one thing.
 RUN_CONTEXT_PARAM = "run_context"
+
+#: A handle-typed argument expands to the whole stored object, which is large
+#: by definition — that is why it was stored. This is the ceiling on one such
+#: expansion. Above it the call is refused with a tool error rather than
+#: half-expanded: handing a tool the first 4 MB of what the model asked for
+#: would be worse than saying no.
+MAX_HANDLE_ARG_BYTES = 4 * 1024 * 1024
+
+#: The shape of a spill handle, duplicated here rather than imported: the
+#: spill module imports this one, so the dependency may only run one way.
+#: :data:`hiveloom.context.spill.HANDLE_RE` is the same pattern.
+_HANDLE_ARG_RE = re.compile(r"tr_[0-9a-f]{16}")
 
 
 class Artifact(BaseModel):
@@ -109,6 +122,13 @@ class Tool(ABC):
     # Set by tools that declare a ``run_context`` parameter; the registry then
     # injects the run context at dispatch (see :data:`RUN_CONTEXT_PARAM`).
     wants_run_context: bool = False
+    # String parameters that accept a spill handle in place of a literal. At
+    # dispatch the registry swaps such a value for the stored object's full
+    # text, so a large result can be handed to another tool without ever
+    # passing through the model's context. Declared per tool because expanding
+    # every string that *looks* like a handle would make the shape of an
+    # opaque token change a call's meaning.
+    handle_params: tuple[str, ...] = ()
 
     @abstractmethod
     def run(self, **kwargs: Any) -> str | ToolResult:
@@ -137,6 +157,15 @@ class FunctionTool(Tool):
         self.guidelines = guidelines
         self.input_schema = schema_from_function(func)
         self.wants_run_context = RUN_CONTEXT_PARAM in inspect.signature(func).parameters
+        # Read off the decorator rather than taken as a constructor argument,
+        # so ``@tool(handles=[...])`` means the same thing whether the hook is
+        # registered from a spec or by an extension pack.
+        meta = getattr(func, "__hiveloom_tool__", {})
+        self.handle_params = tuple(
+            name for name in meta.get("handles", ()) if name in self.input_schema.get(
+                "properties", {}
+            )
+        )
 
     def run(self, **kwargs: Any) -> str | ToolResult:
         result = self._func(**kwargs)
@@ -272,8 +301,14 @@ class ToolRegistry:
         call: ToolCall,
         on_update: Callable[[str], None] | None = None,
         run_context: dict[str, Any] | None = None,
+        resolve_handle: Callable[[str, int], str] | None = None,
     ) -> ToolResult:
-        """Run a tool call, converting failures into error results (never crash)."""
+        """Run a tool call, converting failures into error results (never crash).
+
+        ``resolve_handle`` is the run's spill resolver (the agent loop passes
+        it). It is consulted only for the parameters a tool declares in
+        ``handle_params`` — see :meth:`_expand_handles`.
+        """
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult(content=f"unknown tool '{call.name}'", is_error=True)
@@ -281,6 +316,12 @@ class ToolRegistry:
             return ToolResult(content=f"tool '{call.name}' is inactive", is_error=True)
         try:
             kwargs = tool.prepare(dict(call.input))
+            if tool.handle_params:
+                # After prepare() and before the call: the tool sees the bytes,
+                # while ``call.input`` — which the journal records and the
+                # provider echoed — keeps the handle. The expansion exists only
+                # for the duration of the call.
+                kwargs = self._expand_handles(tool, kwargs, resolve_handle)
             if tool.wants_run_context:
                 # Injected after prepare() so a model-supplied key of the same
                 # name can never reach the tool in its place.
@@ -296,6 +337,33 @@ class ToolRegistry:
             return ToolResult(content=f"tool error: {exc}", is_error=True)
         except Exception as exc:  # noqa: BLE001 - tools must never crash the loop
             return ToolResult(content=f"tool raised {type(exc).__name__}: {exc}", is_error=True)
+
+    @staticmethod
+    def _expand_handles(
+        tool: Tool,
+        kwargs: dict[str, Any],
+        resolve_handle: Callable[[str, int], str] | None,
+    ) -> dict[str, Any]:
+        """Swap handle-shaped values in declared parameters for the stored text.
+
+        Only a value that matches the handle pattern *in full* is expanded;
+        anything else is a literal and passes through untouched. A handle that
+        this run cannot resolve is a tool error, never a silent literal —
+        writing the string ``tr_1a2b…`` into a file because the object behind
+        it could not be read is the one outcome that would be indistinguishable
+        from success.
+        """
+        for name in tool.handle_params:
+            value = kwargs.get(name)
+            if not isinstance(value, str) or not _HANDLE_ARG_RE.fullmatch(value.strip()):
+                continue
+            if resolve_handle is None:
+                raise ToolError(
+                    f"{name} looks like a stored-result handle, but this run has no "
+                    "stored results to resolve it against"
+                )
+            kwargs[name] = resolve_handle(value.strip(), MAX_HANDLE_ARG_BYTES)
+        return kwargs
 
 
 class SwitchPlaybookTool(Tool):
@@ -463,7 +531,9 @@ def build_registry(
             for server_ref in spec.mcp_servers:
                 active = not server_ref.deferred
                 has_deferred = has_deferred or not active
-                for adapter in connect_mcp_server(server_ref, base, bridge):
+                # `spec.identity` is the Hive key: a peer hiveloom MCP server
+                # uses it to link the delegated run and to refuse a cycle.
+                for adapter in connect_mcp_server(server_ref, base, bridge, spec.identity):
                     registry.register(adapter, active=active)
         except Exception:
             # A later server failing to connect must not leak an earlier
@@ -481,10 +551,18 @@ def build_registry(
         # never spills never pays for them in its tool payload.
         from hiveloom.context.spill import spill_tools  # local import to avoid cycles
 
-        for tool in spill_tools():
+        for tool in spill_tools(transforms=spec.context.tool_results.transforms):
             registry.register(tool, active=False)
     if spec.playbooks:
         registry.register(
             SwitchPlaybookTool([(p.name, p.description) for p in spec.playbooks])
         )
+    memory = spec.memory
+    if memory.enabled and memory.selection == "relevant" and memory.entries:
+        # With relevance selection a run sees only part of the store; this is
+        # the read-only way back to the rest. Runtime machinery like the spill
+        # readers, so it is registered here rather than declared in `tools`.
+        from hiveloom.context.memory_select import SearchMemoryTool  # avoid cycles
+
+        registry.register(SearchMemoryTool(memory))
     return registry

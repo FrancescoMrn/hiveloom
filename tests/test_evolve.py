@@ -31,6 +31,7 @@ from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.spec.loader import load_spec
+from hiveloom.spec.schema import HarnessSpec
 
 cli_runner = CliRunner()
 
@@ -39,6 +40,13 @@ def _harness(tmp_path: Path) -> Path:
     directory = tmp_path / "h"
     construct.init_harness(directory, name="demo", task="Do a thing.")
     return directory
+
+
+def _spec_for_prompt() -> HarnessSpec:
+    """A minimal valid spec; these tests are about the prompt, not the harness."""
+    return HarnessSpec(
+        name="demo", description="Do a thing.", system_prompt="Do the thing."
+    )
 
 
 def _report() -> FailureReport:
@@ -150,6 +158,28 @@ def test_gate_rejects_parent_of_frozen_leaf(tmp_path: Path):
 def test_gate_rejects_dangerous_tool_changes(tmp_path: Path):
     spec = load_spec(_harness(tmp_path))
     proposal = MutationProposal(yaml_changes=[{"path": "tools", "value": [{"builtin": "shell"}]}])
+
+    result = gate(spec, proposal)
+
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == (
+        "dangerous tool changes require an explicit construct command"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("tools.+", {"builtin": "shell"}),
+        ("tools.0", {"builtin": "shell"}),
+        ("tools.99", {"builtin": "shell"}),
+        ("tools.0.builtin", "shell"),
+    ],
+)
+def test_gate_rejects_dangerous_tools_on_every_list_path(tmp_path: Path, path, value):
+    """Appending or rewriting one entry must not be a way around the whole-list check."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(yaml_changes=[{"path": path, "value": value}])
 
     result = gate(spec, proposal)
 
@@ -313,6 +343,238 @@ def test_gate_rejects_case_variant_frozen_paths(tmp_path: Path):
     assert not result.accepted
     assert all(r["reason"] == "frozen path" for r in result.rejected)
     assert len(result.rejected) == 3
+
+
+def test_gate_rejects_the_memory_budgets_but_accepts_an_entry(tmp_path: Path):
+    """Evolution may add a lesson; it may never widen the store that holds it."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[
+            {"path": "memory.max_entries", "value": 200},
+            {"path": "memory.enabled", "value": False},
+            {"path": "memory", "value": {"max_entry_chars": 4000}},
+            {
+                "path": "memory.entries.0",
+                "value": {
+                    "id": "iso-dates",
+                    "kind": "rule",
+                    "title": "Dates in ISO 8601",
+                    "content": "Emit dates as YYYY-MM-DD.",
+                },
+            },
+        ]
+    )
+
+    result = gate(spec, proposal)
+
+    assert [change.path for change in result.accepted] == ["memory.entries.0"]
+    assert {r["path"] for r in result.rejected} == {
+        "memory.max_entries",
+        "memory.enabled",
+        "memory",
+    }
+    assert all(r["reason"] == "frozen path" for r in result.rejected)
+
+
+def test_gate_rejects_memory_paths_that_are_not_entries(tmp_path: Path):
+    """The positive statement of the same rule, independent of ALWAYS_FROZEN:
+    the only thing under `memory` evolution may write is an entry."""
+    harness = _harness(tmp_path)
+    construct.set_field(harness, "evolution.mutable", '["memory"]')
+    spec = load_spec(harness)
+
+    result = gate(spec, MutationProposal(yaml_changes=[{"path": "memory.notes", "value": 1}]))
+
+    assert not result.accepted
+    assert result.rejected[0]["reason"] == (
+        "only memory.entries is evolvable; the memory budgets are frozen"
+    )
+
+
+def test_applying_a_memory_entry_appends_at_the_list_length(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    result = apply_proposal(
+        harness,
+        MutationProposal(
+            yaml_changes=[
+                {
+                    "path": "memory.entries.1",
+                    "value": {
+                        "id": "iso-dates",
+                        "kind": "rule",
+                        "title": "Dates in ISO 8601",
+                        "content": "Emit dates as YYYY-MM-DD.",
+                        "source": "evolve",
+                    },
+                }
+            ]
+        ),
+        apply_yaml=True,
+    )
+
+    assert result.changed is True
+    entries = load_spec(harness).memory.entries
+    assert [entry.id for entry in entries] == ["nulls", "iso-dates"]
+    assert "# Memory" in _spec_system_prompt(harness)
+
+
+def test_applying_the_first_memory_entry_creates_the_list(tmp_path: Path):
+    """A harness that has learned nothing omits the section entirely, so the
+    first append has to create a list — not a mapping with a "0" key."""
+    harness = _harness(tmp_path)
+    assert "memory:" not in (harness / "harness.yaml").read_text()
+
+    result = apply_proposal(
+        harness,
+        MutationProposal(
+            yaml_changes=[
+                {
+                    "path": "memory.entries.0",
+                    "value": {
+                        "id": "iso-dates",
+                        "kind": "rule",
+                        "title": "Dates in ISO 8601",
+                        "content": "Emit dates as YYYY-MM-DD.",
+                    },
+                }
+            ]
+        ),
+    )
+
+    assert result.changed is True
+    assert [entry.id for entry in load_spec(harness).memory.entries] == ["iso-dates"]
+
+
+def test_an_over_budget_memory_entry_is_rejected_and_nothing_is_written(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "memory.prompt_budget_chars", 200)
+    before = (harness / "harness.yaml").read_text()
+
+    result = apply_proposal(
+        harness,
+        MutationProposal(
+            yaml_changes=[
+                {
+                    "path": "memory.entries.0",
+                    "value": {
+                        "id": "too-long",
+                        "kind": "fact",
+                        "title": "Too long",
+                        "content": "x" * 400,
+                    },
+                }
+            ]
+        ),
+        apply_yaml=True,
+    )
+
+    assert result.changed is False
+    assert "prompt_budget_chars" in result.rejected[0]["reason"]
+    assert (harness / "harness.yaml").read_text() == before
+
+
+def test_a_memory_index_past_the_end_is_a_clear_error(tmp_path: Path):
+    """Append is exactly one past the end; anything beyond is a mistake, and
+    silently extending the list would leave a hole the schema cannot describe."""
+    spec = load_spec(_harness(tmp_path))
+    proposal = MutationProposal(
+        yaml_changes=[{"path": "memory.entries.3", "value": {"id": "x"}}]
+    )
+
+    result = gate(spec, proposal)
+
+    assert not result.accepted
+    assert "out of range" in result.rejected[0]["reason"]
+    assert "'+' appends" in result.rejected[0]["reason"]
+
+
+def test_a_negative_memory_index_is_rejected_at_the_gate(tmp_path: Path):
+    """`-1` names a different entry after every append, so it never describes
+    the change a reviewer read. Append is spelled `+`."""
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+    before = (harness / "harness.yaml").read_text()
+    spec = load_spec(harness)
+
+    result = gate(
+        spec, MutationProposal(yaml_changes=[{"path": "memory.entries.-1", "value": {"id": "x"}}])
+    )
+
+    assert not result.accepted
+    assert "negative" in result.rejected[0]["reason"]
+    assert "'+' to append" in result.rejected[0]["reason"]
+    assert (harness / "harness.yaml").read_text() == before
+
+
+def test_the_append_segment_adds_an_entry_without_replacing_one(tmp_path: Path):
+    """`memory.entries.+` resolves against the list on disk, so two appends in
+    a row add two entries — where two identical numeric indices would have
+    replaced the first."""
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    def _append(entry_id: str) -> None:
+        apply_proposal(
+            harness,
+            MutationProposal(
+                yaml_changes=[
+                    {
+                        "path": "memory.entries.+",
+                        "value": {
+                            "id": entry_id,
+                            "kind": "rule",
+                            "title": entry_id,
+                            "content": f"Remember {entry_id}.",
+                        },
+                    }
+                ]
+            ),
+            apply_yaml=True,
+        )
+
+    _append("iso-dates")
+    _append("trim-whitespace")
+
+    assert [entry.id for entry in load_spec(harness).memory.entries] == [
+        "nulls",
+        "iso-dates",
+        "trim-whitespace",
+    ]
+
+
+def test_the_append_segment_is_only_valid_as_the_last_segment(tmp_path: Path):
+    """`+` means "add one"; there is nothing to traverse into."""
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    result = gate(
+        load_spec(harness),
+        MutationProposal(yaml_changes=[{"path": "memory.entries.+.content", "value": "x"}]),
+    )
+
+    assert not result.accepted
+    assert "only valid as the last segment" in result.rejected[0]["reason"]
+
+
+def test_evolve_prompt_tells_the_proposer_where_memory_lives(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+
+    system, user = build_evolve_prompt(load_spec(harness), _report())
+
+    assert "memory.entries" in system
+    assert "Durable memory: 1 entry of at most 24" in user
+    assert "`memory.entries.+`" in user
+
+
+def _spec_system_prompt(harness: Path) -> str:
+    """What the executor would be shown for this harness, memory included."""
+    from hiveloom.context.manager import ContextManager
+    from hiveloom.models.fake import FakeModelProvider
+
+    return ContextManager(load_spec(harness), FakeModelProvider([])).system()
 
 
 def test_evolve_prompt_delimits_failure_report_as_untrusted_data(tmp_path: Path):
@@ -605,7 +867,11 @@ def test_parse_proposal_still_rejects_prose_with_no_object():
 # CLI: evolve --propose (queues instead of applying)
 # --------------------------------------------------------------------------- #
 _PROPOSAL_PAYLOAD = json.dumps(
-    {"rationale": "clarify", "yaml_changes": [{"path": "loop.max_turns", "value": 25}]}
+    {
+        "rationale": "clarify",
+        "target": {"signal": "success_rate", "expect": "increase"},
+        "yaml_changes": [{"path": "loop.max_turns", "value": 25}],
+    }
 )
 
 
@@ -677,7 +943,8 @@ def hiveloom_extension(hive):
     hive.register_provider(
         "local_evolver",
         lambda _ctx: FakeModelProvider([text_response(
-            '{"rationale":"clarify","yaml_changes":'
+            '{"rationale":"clarify",'
+            '"target":{"signal":"success_rate","expect":"increase"},"yaml_changes":'
             '[{"path":"loop.max_turns","value":25}]}'
         )]),
         models=[{"id": "proposal-model", "provider": "local_evolver"}],
@@ -817,3 +1084,229 @@ def test_from_parent_needs_a_fork_directory(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == ExitCode.SPEC_ERROR
     assert "fork" in json.loads(result.stdout)["error"]
+
+
+# --------------------------------------------------------------------------- #
+# A researcher is a model too: a malformed proposal is feedback, not a dead end
+# --------------------------------------------------------------------------- #
+def _minimal_proposal_payload() -> str:
+    return json.dumps(
+        {
+            "rationale": "tighten the answer contract",
+            "target": {"signal": "success_rate", "expect": "increase"},
+            "yaml_changes": [{"path": "loop.max_turns", "value": 30}],
+        }
+    )
+
+
+def test_a_malformed_proposal_is_retried_with_the_parse_error(tmp_path):
+    """Failing the step on the first bad reply throws away the analysis behind it."""
+    spec = load_spec(_harness(tmp_path))
+    model = FakeStrongModel(
+        ["I think we should... (prose, no object)", _minimal_proposal_payload()]
+    )
+
+    proposal = propose(spec, _report(), model)
+
+    assert proposal.rationale == "tighten the answer contract"
+
+
+def test_the_retry_tells_the_researcher_what_was_wrong(tmp_path):
+    spec = load_spec(_harness(tmp_path))
+    model = FakeStrongModel(["not json at all", _minimal_proposal_payload()])
+
+    propose(spec, _report(), model)
+
+    # The second prompt must carry the failure, or the model repeats itself.
+    assert len(model.prompts) == 2
+    second = model.prompts[-1]["user"]
+    assert "could not be used" in second
+    assert "JSON object and nothing else" in second
+    # ...and the original analysis is still there, not replaced by the complaint.
+    assert model.prompts[0]["user"] in second
+
+
+def test_a_researcher_that_never_complies_still_fails_loudly(tmp_path):
+    spec = load_spec(_harness(tmp_path))
+    model = FakeStrongModel(["prose", "more prose", "still prose"])
+
+    with pytest.raises(ProposalError, match="after 3 attempts"):
+        propose(spec, _report(), model)
+
+
+# --------------------------------------------------------------------------- #
+# Search memory: what was already tried
+# --------------------------------------------------------------------------- #
+def test_the_prompt_carries_what_was_already_tried_and_refuted(tmp_path: Path):
+    """A memoryless proposer re-proposes the same mutation forever.
+
+    This is the defect that stalled the ARC-AGI-2 autoresearch loop: the
+    prompt was the spec plus a failure report, and the driver only advanced its
+    evidence pointer on a *keep*. So after a revert the researcher saw
+    byte-identical input and produced the same idea again — a fixed point
+    wearing the costume of a search.
+    """
+    from hiveloom.evolve.analyzer import AttemptRecord
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    spec = load_spec(_harness(tmp_path))
+    report = FailureReport(
+        harness_name="h",
+        total_runs=10,
+        success_rate=0.4,
+        clusters=[FailureCluster(kind="verdict", signature="bad answer", count=6)],
+        attempt_history=[
+            AttemptRecord(
+                outcome="reverted",
+                rationale="clarify the answer format in the system prompt",
+                changed_paths=["system_prompt"],
+                yaml_diff="-old prompt\n+new prompt\n",
+                measured={"tasks_improved": 3, "tasks_regressed": 6, "p_improved": 0.9},
+                note="primary regressed",
+            )
+        ],
+    )
+    _, user = build_evolve_prompt(spec, report)
+
+    assert "outcome=reverted" in user
+    assert "clarify the answer format in the system prompt" in user
+    assert "tasks_regressed" in user
+    assert "already tried" in user
+    # Rendered once, not twice: the history is stripped from the report JSON so
+    # a long diff does not spend the prompt budget on both copies.
+    assert user.count("clarify the answer format in the system prompt") == 1
+    assert '"attempt_history"' not in user
+
+
+def test_a_history_diff_is_truncated_so_one_attempt_cannot_eat_the_prompt(tmp_path: Path):
+    """77k characters of prompt is how the proposer stopped emitting JSON.
+
+    One rewritten system_prompt is thousands of lines of diff; a dozen of them
+    crowd out the failures the proposal is supposed to address.
+    """
+    from hiveloom.evolve.analyzer import AttemptRecord
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    report = FailureReport(
+        harness_name="h",
+        total_runs=1,
+        success_rate=0.0,
+        attempt_history=[
+            AttemptRecord(outcome="reverted", yaml_diff="+" + ("x" * 50_000))
+        ],
+    )
+    _, user = build_evolve_prompt(load_spec(_harness(tmp_path)), report)
+    assert "(diff truncated)" in user
+    assert len(user) < 20_000
+
+
+def test_an_empty_history_adds_nothing_to_the_prompt(tmp_path: Path):
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    _, user = build_evolve_prompt(
+        load_spec(_harness(tmp_path)),
+        FailureReport(harness_name="h", total_runs=1, success_rate=0.0),
+    )
+    assert "already tried" not in user
+
+
+# --------------------------------------------------------------------------- #
+# The researcher's own output budget
+# --------------------------------------------------------------------------- #
+def test_a_strong_model_budget_follows_the_declared_ceiling(monkeypatch):
+    """A reasoning researcher starved of output tokens narrates and never answers.
+
+    Measured on the ARC-AGI-2 evolve prompt: at the old flat 4096 the researcher
+    returned 17,698 characters of reasoning prose and no proposal, three times
+    in a row; at 65,536 it returned valid JSON first try. This is the same
+    defect the executor had — a flat ceiling far below what the model allows —
+    and it gets the same answer: ask the registry.
+    """
+    from hiveloom import ext
+    from hiveloom.generate import llm
+
+    class _Info:
+        max_output_tokens = 8192
+
+    # An explicit request always wins.
+    assert llm.strong_max_tokens("anything", 123) == 123
+    # A declared ceiling below the default caps the ask, so we never request
+    # more room than the provider will give (a 400 ends the call outright).
+    monkeypatch.setattr(ext, "model_info", lambda _id: _Info())
+    assert llm.strong_max_tokens("small-model") == 8192
+    # Unknown capabilities retain the compatible historical fallback.
+    monkeypatch.setattr(ext, "model_info", lambda _id: None)
+    assert llm.strong_max_tokens("unknown") == llm.FALLBACK_STRONG_MAX_TOKENS
+    assert llm.DEFAULT_STRONG_MAX_TOKENS > 4096
+
+
+def test_unbounded_failure_records_cannot_swamp_the_evolve_prompt():
+    """Every sibling evidence section has a configured cap; this one had none.
+
+    `recent_failures` carried whole run records — task statement, output, and
+    every failed verification — so on a harness with a large task statement
+    five of them were 55k characters of a 129k prompt, burying the clusters the
+    proposal is supposed to address.
+    """
+    from hiveloom.evolve.evolver import _MAX_EVIDENCE_STRING_CHARS, build_evolve_prompt
+
+    huge = "G" * 40_000
+    report = FailureReport(
+        harness_name="h",
+        total_runs=5,
+        success_rate=0.0,
+        clusters=[FailureCluster(kind="verdict", signature="bad answer", count=6)],
+        recent_failures=[{"run_id": "r1", "task": huge, "output": huge}],
+    )
+    _, user = build_evolve_prompt(_spec_for_prompt(), report)
+
+    assert "truncated]" in user
+    assert huge not in user
+    assert len(user) < 20_000
+    # The signal survives the cut: the proposer still sees what went wrong.
+    assert "bad answer" in user
+    assert "G" * _MAX_EVIDENCE_STRING_CHARS in user
+
+
+def test_operator_findings_reach_the_proposer_as_trusted_guidance():
+    """Evidence built from failures cannot contain an opportunity.
+
+    A harness that samples a task once, and would have been right had it
+    sampled three times, produces a clean run with no failure signature at all.
+    No amount of better clustering surfaces that, so findings from analysis need
+    their own channel — and they are operator-authored, so unlike run data they
+    are presented as something to act on.
+    """
+    from hiveloom.evolve.evolver import build_evolve_prompt
+
+    report = FailureReport(
+        harness_name="h",
+        total_runs=20,
+        success_rate=1.0,
+        analyst_notes=[
+            "Output formatting is 0% of loss; that work is finished.",
+            "Independent samples disagree on 22.2% of pairs.",
+        ],
+    )
+    _, user = build_evolve_prompt(_spec_for_prompt(), report)
+
+    assert "Independent samples disagree on 22.2% of pairs." in user
+    assert "trusted" in user
+    # Rendered once, in its own section — not buried inside the report JSON.
+    assert '"analyst_notes"' not in user
+    assert user.count("Output formatting is 0% of loss") == 1
+
+
+def test_findings_alone_make_a_report_worth_evolving():
+    """A harness with no failures can still have work worth doing.
+
+    `is_empty` gates the whole evolve step. Without this, an arm that fails
+    nothing — the reproduced ARC-AGI-2 reference, for instance — reports
+    "nothing to evolve" even when analysis has found where its remaining loss
+    is and how to reach it.
+    """
+    assert FailureReport(harness_name="h", total_runs=9, success_rate=1.0).is_empty()
+    assert not FailureReport(
+        harness_name="h", total_runs=9, success_rate=1.0,
+        analyst_notes=["wrong_content is 47.9% of loss and sampling is the lever"],
+    ).is_empty()

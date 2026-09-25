@@ -183,9 +183,52 @@ records the handle, the total size, and how many bytes the model did not see —
 so a trace shows both what the tool produced and what the run actually reasoned
 over. Redaction is applied to spill objects exactly as it is to the journal.
 
+`transform_result` can create a further object *inside* a tool call — the
+narrowed result of an op that was itself too large to inline. Those are
+journaled as `tool_spilled` too, with `name: transform_result` plus
+`derived_from` and `op`, so the fork path (which reads minted handles off the
+verified journal) treats a derived object exactly as it treats a spilled one.
+
 `hiveloom fork` copies the objects a fork's context still quotes into the
 fork's own trace directory, so a resumed fork can read them back rather than
-inheriting previews it can never expand.
+inheriting previews it can never expand. `spill_inherited` records what the
+resumed run was granted.
+
+### Notes
+
+A harness that declares the `notes` tool gives the executor a small run-private
+store (see [Notes](spec.md#notes)). Every change to it is an event:
+
+| Event | Records |
+|---|---|
+| `note_written` | `{name, bytes, sha256, replaced, content}` |
+| `note_deleted` | `{name}` |
+| `notes_inherited` | `{names, notes: [{name, sha256, bytes, content}], missing?}` — what a resumed fork was granted, and any manifest name it was not |
+
+The content is in the event, so `hiveloom trace` shows what the model wrote
+down, and the fold reconstructs the store rather than guessing at it: `hiveloom
+fork` replays `notes_inherited`, then `note_written`/`note_deleted`, up to the
+fork point, and writes the notes still held into `fork.yaml` as a hash-bound
+`notes_manifest`. The bytes it copies are the ones held *at the fork point*,
+taken from the journaled content and checked against its digest — so a note the
+parent rewrote or deleted later still reaches the fork as it was, and a fork of
+a fork carries what it inherited. A note written and then deleted before the
+fork point is not a note the fork inherits, and a name mentioned in the
+transcript grants nothing. Deleting an inherited note in a resumed fork drops
+the grant, not the fork's copy, so the next resume inherits it again.
+
+### Proposed lessons
+
+A harness that declares the `propose_memory` tool (see
+[Memory](spec.md#letting-the-executor-propose-a-lesson)) emits one
+`memory_proposed` event per call, carrying `{id, kind, title, content,
+evidence, outcome, proposal_id}` — the redacted lesson plus what became of it
+(`queued`, `already_pending`, `already_known`, `cap_reached`, `memory_disabled`,
+`eval_run`, `refused`, `queue_unavailable`). One event with the outcome rather
+than one per stage, so a run that proposed something and did *not* queue it —
+an eval cell, a spent cap — still leaves the lesson behind for a reader. The
+spec itself never changes here: `proposal_id` is what `hiveloom proposals show`
+takes.
 
 ## Forking a run
 

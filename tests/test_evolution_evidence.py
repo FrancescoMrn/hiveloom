@@ -17,6 +17,7 @@ from hiveloom.spec.loader import load_spec
 _PROPOSAL = json.dumps(
     {
         "rationale": "Make the output contract explicit.",
+        "target": {"signal": "success_rate", "expect": "increase"},
         "yaml_changes": [
             {
                 "path": "system_prompt",

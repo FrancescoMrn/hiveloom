@@ -121,6 +121,22 @@ evidence seen by another verifier. The context is not rebuilt from a trace and
 never includes a prior run. `grounded_references` uses this view to compare
 selected scalar output references with configured tool-result paths.
 
+### Truncated turns
+
+A no-tool response ending at `max_tokens` is incomplete. While turns remain,
+the loop keeps the partial response in context and feeds back the truncation.
+It preserves the operator's configured output budget. Three consecutive
+truncations, or exhaustion of `loop.max_turns`, end recovery. The partial output
+still passes through output hooks, guardrails, and verification; passing
+verification establishes success, otherwise the run reports `truncated`
+(CLI exit 4). Runs without verification also report `truncated` in this case.
+
+The journal records `turn_truncated`, and the Hive indexes `output_truncated`
+friction for evolution. An operator can raise the configured budget through
+`hiveloom set model.max_tokens VALUE --dir HARNESS --json` when appropriate;
+the model's registered output limit is a capability, not permission for the
+runtime to increase that budget automatically.
+
 A run's identity is the `run_id`, and it is the *only* execution identity across
 the CLI, the API, the Hive, the journal, and the workbench. Branching a run
 always produces a derived run rather than a grouping above it.
@@ -239,8 +255,8 @@ and selection receipt, never a second copy of the selected payloads.
 minimal mutation, then **gates it in code**:
 
 - `guardrails`, `model`, `logging.redact`, `extensions`, `hooks`,
-  `mcp_servers`, `evolution.auto_propose`, `evolution.trace_excerpts`, and
-  `evolution.objectives`
+  `mcp_servers`, `confinement`, `egress`, `evolution.auto_propose`,
+  `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`, and the `memory` budgets
   (`schema.ALWAYS_FROZEN`) — plus
   any path the harness lists as `frozen` — can **never** be changed;
 - accepted changes must fall within the harness's `mutable` set;

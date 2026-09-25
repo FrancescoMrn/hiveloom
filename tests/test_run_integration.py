@@ -206,7 +206,11 @@ def test_invalid_custom_run_id_cannot_escape_trace_dir(tmp_path: Path):
 # The post-run auto-propose trigger (opt-in `evolution.auto_propose`)
 # --------------------------------------------------------------------------- #
 _AUTO_PROPOSAL_PAYLOAD = json.dumps(
-    {"rationale": "tighten", "yaml_changes": [{"path": "loop.max_turns", "value": 10}]}
+    {
+        "rationale": "tighten",
+        "target": {"signal": "success_rate", "expect": "increase"},
+        "yaml_changes": [{"path": "loop.max_turns", "value": 10}],
+    }
 )
 
 

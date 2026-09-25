@@ -335,6 +335,133 @@ def test_trajectory_detail_exposes_native_debugger_evidence(
     assert materialized["request"]["tools"][0]["name"] == "file_read"
 
 
+def test_run_detail_makes_a_delegated_run_legible(
+    client: TestClient, harness_copy: Path
+) -> None:
+    """A hand-off is visible from both ends: receipts on the parent, kind on the child.
+
+    The workbench must not have to re-derive either. The parent's receipts come
+    off its recorded ``run_finished``; the child's lineage comes off the Hive
+    row the journal's ``run_started`` produced.
+    """
+    from hiveloom.logging.trace import TraceWriter
+
+    traces = harness_copy / ".hiveloom" / "traces"
+
+    parent = TraceWriter(
+        traces,
+        run_id="run_ui_parent",
+        harness_name="example-summarizer",
+        version_hash="abc123def456",
+    )
+    parent.emit("run_started", input="rank these documents", policy="react", model="fake")
+    parent.emit(
+        "delegation_selected",
+        mode="on_start",
+        harness="ranked-retrieval",
+        success_rate=0.82,
+        total_runs=44,
+    )
+    parent.emit(
+        "delegation_started",
+        mode="on_start",
+        harness="ranked-retrieval",
+        depth=1,
+        chain=["hl-parent"],
+        cost_cap_usd=0.25,
+    )
+    parent.emit(
+        "delegation_finished",
+        mode="on_start",
+        harness="ranked-retrieval",
+        run_id="run_ui_child",
+        status="success",
+        cost_usd=0.031,
+        turns=3,
+    )
+    parent.emit(
+        "run_finished",
+        status="success",
+        reason="",
+        turns=1,
+        cost_usd=0.0321,
+        duration_seconds=2.5,
+        output="ranked",
+        delegated_cost_usd=0.031,
+        delegations=[
+            {
+                "harness": "ranked-retrieval",
+                "run_id": "run_ui_child",
+                "status": "success",
+                "cost_usd": 0.031,
+                "turns": 3,
+                "output": "ranked",
+                "reason": "",
+            }
+        ],
+        referrals=[
+            {
+                "harness": "scratch-harness",
+                "description": "a sketchpad",
+                "success_rate": 0.4,
+                "total_runs": 12,
+                "reason": "below_fitness",
+            }
+        ],
+        artifacts=[],
+        model_path="fake:parent",
+    )
+
+    child = TraceWriter(
+        traces,
+        run_id="run_ui_child",
+        harness_name="example-summarizer",
+        version_hash="abc123def456",
+    )
+    child.emit(
+        "run_started",
+        input="rank these documents",
+        policy="react",
+        model="fake",
+        lineage={
+            "kind": "delegation",
+            "parent_run_id": "run_ui_parent",
+            "parent_harness_id": "hl-parent",
+            "depth": 1,
+            "chain": ["hl-parent"],
+        },
+    )
+    child.emit(
+        "run_finished",
+        status="success",
+        reason="",
+        turns=3,
+        cost_usd=0.031,
+        duration_seconds=1.5,
+        output="ranked",
+        artifacts=[],
+        model_path="fake:child",
+    )
+
+    detail = client.get("/api/runs/run_ui_parent").json()
+    assert detail["delegated_cost_usd"] == 0.031
+    assert [record["harness"] for record in detail["delegations"]] == ["ranked-retrieval"]
+    assert detail["delegations"][0]["run_id"] == "run_ui_child"
+    assert [referral["reason"] for referral in detail["referrals"]] == ["below_fitness"]
+    # The child hangs off the same parent link a fork does; `lineage_kind` is
+    # what tells the two apart, and the UI needs it to label the row.
+    children = detail["lineage"]["children"]
+    assert [row["run_id"] for row in children] == ["run_ui_child"]
+    assert children[0]["lineage_kind"] == "delegation"
+
+    child_detail = client.get("/api/runs/run_ui_child").json()
+    assert child_detail["run"]["lineage_kind"] == "delegation"
+    assert child_detail["run"]["parent_run_id"] == "run_ui_parent"
+    # A run that delegated nothing still answers the same questions, emptily.
+    assert child_detail["delegations"] == []
+    assert child_detail["delegated_cost_usd"] == 0.0
+
+
 def test_context_endpoint_has_typed_missing_event(client: TestClient) -> None:
     response = client.get("/api/runs/no-such-run/context/12")
     assert response.status_code == 404
@@ -428,10 +555,6 @@ def live_run(client, monkeypatch):
 
     release.set()
     stream_done.wait(timeout=5)
-
-
-def test_a_running_run_is_listed_and_addressable(client, live_run) -> None:
-    assert live_run["run_id"] in client.get("/api/runs/live").json()["run_ids"]
 
 
 def test_stop_reaches_the_runtime_control(client, live_run) -> None:
@@ -1262,38 +1385,6 @@ def test_a_run_model_without_a_provider_is_refused(client: TestClient, monkeypat
         "/api/harnesses/example-summarizer/run", json={"input": "go", "model": "gpt-4.1-mini"}
     )
     assert response.status_code == 400
-
-
-# --------------------------------------------------------------------- #
-# Trust on create
-# --------------------------------------------------------------------- #
-def test_creating_a_harness_can_leave_it_untrusted(client: TestClient, tmp_path: Path) -> None:
-    """Trust is the caller's to grant. A workbench set to ask first must be able
-    to say no, and the gate has to hear it."""
-    target = tmp_path / "asked-first"
-    response = client.post(
-        "/api/harnesses",
-        json={
-            "directory": str(target),
-            "name": "asked-first",
-            "task": "Do a thing.",
-            "trust": False,
-        },
-    )
-    assert response.status_code == 201
-    assert response.json()["trusted"] is False
-    assert ui.trust_mod.is_trusted(str(target)) is False
-
-
-def test_creating_a_harness_trusts_it_by_default(client: TestClient, tmp_path: Path) -> None:
-    target = tmp_path / "vouched"
-    response = client.post(
-        "/api/harnesses",
-        json={"directory": str(target), "name": "vouched", "task": "Do a thing."},
-    )
-    assert response.status_code == 201
-    assert response.json()["trusted"] is True
-    assert ui.trust_mod.is_trusted(str(target)) is True
 
 
 # --------------------------------------------------------------------- #

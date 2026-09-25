@@ -53,12 +53,24 @@ class TruncateOldestCompaction(CompactionMethod):
     name = "truncate_oldest"
 
     def compact(self, manager: ContextManager, budget: int) -> None:
-        # Keep configured pinned history plus the newest message.
+        # Keep configured pinned history plus the newest exchange. Dropping the
+        # oldest message one at a time used to stop at "the newest message",
+        # which for a tool turn is the results with their tool_use already
+        # gone — the orphan repair then removed them too, so the freshest tool
+        # output was the first casualty rather than the last.
+        pinned = manager.pinned_message_count
         while (
-            len(manager.messages) > manager.pinned_message_count + 1
+            manager.retained_tail_start() > pinned
             and manager.estimated_input_tokens() > budget
         ):
-            del manager.messages[manager.pinned_message_count]
+            del manager.messages[pinned]
+        # The newest exchange alone is over budget: fall back to keeping only
+        # the newest message, as before, rather than sending an overflow.
+        while (
+            len(manager.messages) > pinned + 1
+            and manager.estimated_input_tokens() > budget
+        ):
+            del manager.messages[pinned]
 
 
 # A structured summary keeps the model oriented after history is dropped:
@@ -82,22 +94,93 @@ Verbatim fragments that must survive: identifiers, tool outputs still needed, \
 constraints, error messages."""
 
 
+_SUMMARY_PREFIX = "[summary of earlier turns]\n"
+# A second compaction must not re-summarize the first summary as if it were one
+# more transcript line: that is how an identifier or a ruled-out approach from
+# the first half of a long run quietly drops out by the third compaction.
+_UPDATE_INSTRUCTION = """An earlier summary of this run is given in \
+<previous-summary>. Produce the updated summary: keep every item in it that is \
+still true, move finished next steps into Progress, and add what the new \
+transcript contributes. Never drop an identifier, value or ruled-out approach \
+from the previous summary unless the new transcript shows it is wrong."""
+_ANCHOR_CHARS = 2000
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        str(block.get("text") or "") for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _summary_prompt(
+    older: list[dict[str, Any]], recent: list[dict[str, Any]]
+) -> str:
+    """The summarize request: format, previous summary, transcript, recency anchor."""
+    previous = [
+        _message_text(message)[len(_SUMMARY_PREFIX):]
+        for message in older
+        if message.get("role") == "user"
+        and _message_text(message).startswith(_SUMMARY_PREFIX)
+    ]
+    transcript = _render_for_summary(
+        [
+            message for message in older
+            if not (
+                message.get("role") == "user"
+                and _message_text(message).startswith(_SUMMARY_PREFIX)
+            )
+        ]
+    )
+    parts = [_SUMMARY_FORMAT]
+    if previous:
+        parts.append(_UPDATE_INSTRUCTION)
+        parts.append("<previous-summary>\n" + "\n\n".join(previous) + "\n</previous-summary>")
+    parts.append(transcript)
+    # The newest thing the agent said, which stays in context verbatim: the
+    # summary must agree with it rather than describe a state already left.
+    latest = next(
+        (
+            _message_text(message) for message in reversed([*older, *recent])
+            if message.get("role") == "assistant" and _message_text(message).strip()
+        ),
+        "",
+    )
+    if latest:
+        parts.append(
+            "<recent-state>\nThe agent's most recent statement; make the summary "
+            "consistent with it and do not describe an earlier state as current:\n"
+            f"{latest[-_ANCHOR_CHARS:]}\n</recent-state>"
+        )
+    return "\n\n".join(parts)
+
+
 class SummarizeCompaction(CompactionMethod):
     name = "summarize"
 
     def compact(self, manager: ContextManager, budget: int) -> None:
         if len(manager.messages) <= manager.pinned_message_count + 1:
             return
-        older = manager.messages[manager.pinned_message_count : -1]
-        transcript = _render_for_summary(older)
+        keep_from = manager.retained_tail_start(budget)
+        if keep_from <= manager.pinned_message_count:
+            # Nothing precedes the newest exchange: summarize its call half
+            # rather than make no progress (an overflow retry depends on it).
+            keep_from = len(manager.messages) - 1
+        older = manager.messages[manager.pinned_message_count : keep_from]
         summary_prompt = [
-            {"role": "user", "content": f"{_SUMMARY_FORMAT}\n\n{transcript}"}
+            {
+                "role": "user",
+                "content": _summary_prompt(older, manager.messages[keep_from:]),
+            }
         ]
         response = manager.complete_compaction(
             system="You compress agent transcripts into durable, structured notes.",
             messages=summary_prompt,
         )
-        manager.apply_summary(response.text)
+        manager.apply_summary(response.text, keep_from=keep_from)
 
 
 class ContextManager:
@@ -122,6 +205,10 @@ class ContextManager:
             provider=spec.model.provider,
         )
         self._system_prompt = spec.system_prompt
+        # Snapshotted once: the spec cannot change mid-run, and a section that
+        # is rebuilt per assembly would be a needless prompt-cache risk.
+        self._memory = spec.memory
+        self._memory_section = spec.memory.render() if spec.memory.enabled else ""
         self.provider = provider
         self._trace = trace
         self._events = events
@@ -137,6 +224,7 @@ class ContextManager:
         self._compaction_model_call: Callable[[str, list[dict[str, Any]]], Any] | None = None
         self._plan: str | None = None
         self._playbooks: Any = None
+        self._notes_index: Callable[[], str | None] | None = None
         self.messages: list[dict[str, Any]] = []
         self._history_count = 0
 
@@ -168,6 +256,23 @@ class ContextManager:
         for message in messages:
             self._append(message)
         self._history_count += len(messages)
+
+    def select_memory(self, task: str) -> tuple[list[str], dict[str, float]] | None:
+        """Narrow the memory section to what matches ``task`` (``selection: relevant``).
+
+        Returns the selected entry ids and their match scores, or ``None`` when
+        the harness shows every entry. Called once, before the first model call:
+        the section is then fixed for the whole run, like the rest of the
+        system prompt, so every turn after the first still hits the cache.
+        """
+        memory = self._memory
+        if not memory.enabled or memory.selection != "relevant" or not memory.entries:
+            return None
+        from hiveloom.context.memory_select import select_entries
+
+        selected, scores = select_entries(memory, task)
+        self._memory_section = memory.render(selected)
+        return [entry.id for entry in selected], scores
 
     def set_compaction_model_call(
         self, callback: Callable[[str, list[dict[str, Any]]], Any]
@@ -233,6 +338,16 @@ class ContextManager:
         """
         self._playbooks = manager
 
+    def set_notes_index(self, index: Callable[[], str | None]) -> None:
+        """Attach the run's note index (see :mod:`hiveloom.context.notes`).
+
+        A callable rather than a rendered string: notes are written during the
+        run, so what the model is told it has must be re-read on every
+        assembly. Returning None means the store is empty and no section is
+        rendered at all.
+        """
+        self._notes_index = index
+
     # ------------------------------------------------------------------ #
     # Assembly & budgeting
     # ------------------------------------------------------------------ #
@@ -263,6 +378,18 @@ class ContextManager:
                     self._skills, loader="load_skill" if has_load_skill else "file_read"
                 )
             )
+        # Durable lessons (spec `memory`), after the skills index and before the
+        # tool guidelines: standing constraints on how to work, in declaration
+        # order and identical on every turn, so the prefix stays cacheable.
+        if self._memory_section:
+            parts.append(self._memory_section)
+        # What this run has written down, listed by name in a stable order. The
+        # notes themselves stay out of context — this is the table of contents
+        # that tells the model what it can read back after compaction.
+        if self._notes_index is not None:
+            index = self._notes_index()
+            if index:
+                parts.append(index)
         if self._registry is not None:
             guidelines = self._registry.guidelines()
             if guidelines:
@@ -285,13 +412,72 @@ class ContextManager:
     def estimated_input_tokens(self) -> int:
         return self.provider.count_tokens(system=self.system(), messages=self.messages)
 
-    def apply_summary(self, summary: str) -> None:
-        """Replace compactible history with a summary while retaining pinned messages."""
+    def rewind_to(self, count: int) -> int:
+        """Drop every message after the first ``count``. Returns how many went.
+
+        Compaction *summarises* history because the run still depends on it.
+        This discards it outright, which is what an independent retry needs: a
+        second attempt that can see the first is not a second sample, it is a
+        continuation, and averaging it with the first would be averaging a
+        thing with its own echo. The pinned prefix (system prompt and task
+        statement) is what ``count`` is normally set to.
+        """
+        count = max(0, min(count, len(self.messages)))
+        dropped = len(self.messages) - count
+        if not dropped:
+            return 0
+        self.messages = self.messages[:count]
+        if self._trace is not None:
+            self._trace.emit("context_rewound", kept=count, dropped=dropped)
+        return dropped
+
+    def retained_tail_start(self, budget: int | None = None) -> int:
+        """Index of the first message compaction keeps verbatim at the end.
+
+        The newest *exchange* survives compaction whole: when the last message
+        answers tool calls, the assistant message that made those calls stays
+        with it. Keeping only the last message instead orphans its results,
+        and the orphan repair then drops them — so the output the model had
+        just asked for vanished unread, neither summarized nor kept, and the
+        model re-ran the same calls after every compaction.
+
+        If that exchange alone would take more than half of ``budget``, only
+        the last message is kept (as before) and the rest is compacted, so a
+        turn of large results cannot pin the context above its trigger.
+        """
+        messages = self.messages
+        floor = self.pinned_message_count
+        last = len(messages) - 1
+        if last < floor:
+            return len(messages)
+        start = last
+        if (
+            last - 1 >= floor
+            and _has_block(messages[last], "tool_result")
+            and messages[last - 1].get("role") == "assistant"
+            and _has_block(messages[last - 1], "tool_use")
+        ):
+            start = last - 1
+        if start < last and budget is not None:
+            tail_tokens = self.provider.count_tokens(system="", messages=messages[start:])
+            if tail_tokens > budget // 2:
+                start = last
+        return start
+
+    def apply_summary(self, summary: str, *, keep_from: int | None = None) -> None:
+        """Replace compactible history with a summary while retaining pinned messages.
+
+        ``keep_from`` is where the verbatim tail starts (see
+        :meth:`retained_tail_start`); by default the newest exchange is kept.
+        """
         pinned = self.messages[: self.pinned_message_count]
-        recent = self.messages[-1:] if len(self.messages) > 1 else []
+        if keep_from is None:
+            keep_from = self.retained_tail_start(self._config.max_input_tokens)
+        keep_from = max(self.pinned_message_count, min(keep_from, len(self.messages)))
+        recent = self.messages[keep_from:] if len(self.messages) > 1 else []
         summary_block = {
             "role": "user",
-            "content": f"[summary of earlier turns]\n{summary}",
+            "content": f"{_SUMMARY_PREFIX}{summary}",
         }
         self.messages = [*pinned, summary_block, *recent]
 
@@ -398,6 +584,13 @@ def _drop_orphan_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, 
             continue
         repaired.append(message if len(kept) == len(content) else {**message, "content": kept})
     return repaired
+
+
+def _has_block(message: dict[str, Any], kind: str) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == kind for block in content
+    )
 
 
 def _render_for_summary(messages: list[dict[str, Any]]) -> str:

@@ -1,0 +1,5 @@
+.env
+.venv/
+.hiveloom/
+__pycache__/
+out/

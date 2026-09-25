@@ -218,6 +218,15 @@ hiveloom add mcp-server --name jira --url https://mcp.acme.com/mcp \
 hiveloom mcp list-tools --dir ./h   # see what a declared server actually exposes
 ```
 
+A stdio server is spawned with a **minimal environment** (`HOME`, `PATH`,
+`SHELL`, `TERM`, `USER`, `LOGNAME`), plus `HIVELOOM_HOME`/`HIVELOOM_DB` when
+this process has them — locations, so a child `hiveloom mcp serve` shares this
+machine's Hive and trust store. Credentials are never forwarded implicitly:
+name each one in `--env-from-host` (`env_from_host_env`), or give the server's
+own folder a `.env`. The same applies to a `hiveloom mcp serve` launched by an
+agent host (Claude Code, Claude Desktop): configure the key in the host's
+server entry.
+
 A stdio server (`--stdio-command`) is **arbitrary local exec** — the same
 trust boundary as any other code hook. `mcp_servers` is **always frozen** from
 evolution, the same risk class as `extensions`. A remote tool's own
@@ -268,6 +277,30 @@ active), `prepare(kwargs)` (normalize model-mangled args before validation),
 progress as `tool_update` trace events, and `ToolResult(terminate=True)` to
 end the run without a final model call (honored when every result in the batch
 terminates).
+
+### Handle-typed parameters
+
+A large tool result is stored whole and reaches the model as a preview plus a
+handle (see [Large tool results](spec.md#large-tool-results)). A tool that
+consumes such a result should not make the model retype it. Name the string
+parameters that may be given a handle instead of a literal:
+
+```python
+from hiveloom.tools import tool
+
+
+@tool(description="Index a document for retrieval.", handles=["text"])
+def index_document(text: str, label: str = "") -> str:
+    return f"indexed {len(text)} characters as {label}"
+```
+
+At dispatch the runtime replaces a value matching the handle pattern *in full*
+with the stored object's text, resolved under the run's authority; anything
+else is passed through unchanged. An unresolvable handle is a tool error rather
+than a literal, one expansion is capped at 4 MiB, and the journal and the
+provider both keep the handle — the tool sees the bytes, the transcript does
+not. A `Tool` subclass declares the same thing as `handle_params = ("text",)`;
+the builtin `file_write` declares `content` that way.
 
 ## Blueprints (generator house style)
 

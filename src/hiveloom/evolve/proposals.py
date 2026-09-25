@@ -28,12 +28,19 @@ from hiveloom import trust as trust_mod
 from hiveloom.errors import ProposalQueueError
 from hiveloom.evolve import evolver
 from hiveloom.evolve.analyzer import FailureReport
-from hiveloom.evolve.evolver import ApplyResult, CodeChange, GateResult, MutationProposal
+from hiveloom.evolve.evolver import (
+    MEMORY_APPEND_PATH,
+    ApplyResult,
+    CodeChange,
+    GateResult,
+    MutationProposal,
+    YamlChange,
+)
 from hiveloom.generate.llm import StrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.spec.loader import harness_path, load_spec
-from hiveloom.spec.schema import HarnessSpec
+from hiveloom.spec.schema import HarnessSpec, MemoryEntry
 
 
 class ProposalRecord(BaseModel):
@@ -77,13 +84,18 @@ class ProposalRecord(BaseModel):
 def _dedup_key(report: FailureReport) -> str:
     """Deterministic key over a failure report's cluster signatures.
 
-    Same failure state (same clusters) against the same spec version always
-    dedups to the same pending proposal, regardless of cluster ordering.
+    Identical clusters, evidence, operator findings, and attempt history against
+    the same spec version reuse a pending proposal, regardless of cluster order.
     """
     signatures = sorted(f"{cluster.kind}:{cluster.signature}" for cluster in report.clusters)
     evidence = report.evidence_receipt() or {}
     material = json.dumps(
-        {"signatures": signatures, "evidence": evidence},
+        {
+            "signatures": signatures,
+            "evidence": evidence,
+            "analyst_notes": report.analyst_notes,
+            "attempt_history": [item.model_dump(mode="json") for item in report.attempt_history],
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -162,6 +174,107 @@ def create_proposal(
     return ProposalRecord.model_validate(stored)
 
 
+def _memory_dedup_key(entry: MemoryEntry) -> str:
+    """Deterministic key over a proposed lesson's *content*.
+
+    Keyed on the lesson rather than the whole entry so a run that rediscovers
+    something it already proposed — under a different title, with fresher
+    evidence — reuses the pending row instead of queueing a near-duplicate for
+    a reviewer to deduplicate by hand. Whitespace and case are normalized for
+    the same reason. The ``mem:`` prefix keeps this key space disjoint from
+    :func:`_dedup_key`'s failure-cluster keys in the same dedup slot.
+    """
+    material = " ".join(entry.content.split()).casefold()
+    return f"mem:{hashlib.sha256(material.encode('utf-8')).hexdigest()[:12]}"
+
+
+def create_memory_proposal(
+    hive: Hive,
+    spec: HarnessSpec,
+    harness_dir: str | Path,
+    entry: MemoryEntry,
+    *,
+    run_id: str,
+    trigger: str = "executor",
+) -> ProposalRecord:
+    """Queue an append to ``memory.entries`` — no model call, no spec write.
+
+    The executor-side counterpart to :func:`create_proposal`: the running model
+    offers a durable lesson through the ``propose_memory`` tool and this turns
+    it into an ordinary queued :class:`MutationProposal`. Everything after this
+    point is the existing review path — ``proposals list/show/apply/reject``,
+    the gate, full re-validation, and rollback — so a lesson the executor
+    proposed reaches ``harness.yaml`` by exactly the route an evolved one does,
+    and only when a human says so.
+
+    No strong model is involved: the change is one deterministic YAML append at
+    ``memory.entries.+``, gated by :func:`evolver.gate` like any other. A
+    gate that accepts nothing (a harness that declares a narrower
+    ``evolution.mutable``, or an entry that would break a memory budget) raises
+    :class:`ProposalQueueError` rather than queueing a row that can never
+    apply.
+    """
+    trust_mod.ensure_trusted(harness_dir)
+    base = harness_path(harness_dir).parent
+    version_hash = spec_version_hash(spec, base)
+    dedup_key = _memory_dedup_key(entry)
+
+    existing = hive.find_pending_proposal(spec.identity, version_hash, dedup_key)
+    if existing is not None:
+        return ProposalRecord.model_validate(existing)
+
+    rationale = (
+        f"the executor proposed a durable lesson during run {run_id}"
+        if trigger == "executor"
+        else f"reflection on run {run_id} drafted a durable lesson"
+    )
+    proposal = MutationProposal(
+        rationale=rationale,
+        yaml_changes=[
+            YamlChange(
+                # `+` appends, resolved against the live list at apply time —
+                # never the position the list happened to have when this run
+                # proposed, which would replace an entry once the list grows.
+                path=MEMORY_APPEND_PATH,
+                value=entry.model_dump(mode="json", exclude_none=True),
+                rationale=entry.evidence or entry.title,
+            )
+        ],
+    )
+    gate_result = evolver.gate(spec, proposal)
+    if not gate_result.accepted:
+        reason = (
+            gate_result.rejected[0]["reason"]
+            if gate_result.rejected
+            else "no applicable changes after gating"
+        )
+        raise ProposalQueueError(f"the proposed lesson was refused by the gate: {reason}")
+
+    now = datetime.now(UTC).isoformat()
+    row = {
+        "id": f"prop_{uuid4().hex[:16]}",
+        "harness_name": spec.identity,
+        "spec_version_hash": version_hash,
+        "dedup_key": dedup_key,
+        "status": "pending",
+        "trigger": trigger,
+        "rationale": rationale,
+        "proposal_json": proposal.model_dump_json(),
+        "gate_json": gate_result.model_dump_json(),
+        # A receipt for the reviewer: which run offered this, and which entry
+        # it becomes. Never the run's transcript — the lesson is the evidence.
+        "evidence_json": json.dumps(
+            {"run_id": run_id, "entry_id": entry.id, "kind": entry.kind},
+            sort_keys=True,
+        ),
+        "apply_result_json": None,
+        "created_at": now,
+        "resolved_at": None,
+    }
+    stored = hive.insert_proposal(row)
+    return ProposalRecord.model_validate(stored)
+
+
 def list_proposals(
     hive: Hive, harness_name: str | None = None, status: str | None = None
 ) -> list[ProposalRecord]:
@@ -197,6 +310,29 @@ def _require_pending(hive: Hive, proposal_id: str) -> dict[str, Any]:
     return row
 
 
+def _appends_memory_only(proposal: MutationProposal) -> bool:
+    """True when every change this proposal carries is a memory append.
+
+    Such a proposal says nothing about the harness version it was drafted
+    against: ``memory.entries.+`` resolves against the list on disk at apply
+    time and adds an entry without touching one already there. Applying it to a
+    newer version is therefore exactly the change that was reviewed — which is
+    what lets several lessons from one run reach the same harness. Without this,
+    the first applied memory proposal moved the spec version hash and left every
+    other queued one permanently unappliable.
+
+    Code changes are excluded deliberately: regenerated source is written
+    against a spec the harness may no longer have. The gate, full re-validation,
+    and rollback still run at apply, so an append that would break a budget is
+    refused there like any other.
+    """
+    return (
+        bool(proposal.yaml_changes)
+        and not proposal.code_changes
+        and all(change.path == MEMORY_APPEND_PATH for change in proposal.yaml_changes)
+    )
+
+
 def apply_proposal_by_id(
     hive: Hive,
     harness_dir: str | Path,
@@ -213,12 +349,19 @@ def apply_proposal_by_id(
     :class:`ProposalQueueError` without touching disk. A matching hash means
     the harness is byte-identical to what was gated, so re-gating inside
     ``evolver.apply_proposal`` reproduces the same accepted/rejected split.
+    A proposal that only appends durable memory is the one exception — see
+    :func:`_appends_memory_only`.
 
     ``confirm_apply_yaml``, when given, is called *after* the trust/existence/
     staleness checks above pass — and overrides ``apply_yaml`` with its
     result — so an interactive caller's confirmation prompt (like
     ``approve_code``'s, per code change) never fires for a proposal that was
     going to be rejected anyway.
+
+    A call that applies *nothing* — the YAML was declined and no code change
+    approved — leaves the row ``pending`` and releases the claim, so the
+    proposal is still there to apply, not silently resolved as though the
+    lesson had landed.
     """
     trust_mod.ensure_trusted(harness_dir)
     row = _require_pending(hive, proposal_id)
@@ -229,13 +372,17 @@ def apply_proposal_by_id(
             f"proposal '{proposal_id}' belongs to harness '{row['harness_name']}', "
             f"not '{spec.identity}'"
         )
+    proposal = MutationProposal.model_validate_json(row["proposal_json"])
     base = harness_path(harness_dir).parent
     live_hash = spec_version_hash(spec, base)
-    if live_hash != row["spec_version_hash"]:
+    if live_hash != row["spec_version_hash"] and not _appends_memory_only(proposal):
         raise ProposalQueueError(
             f"harness has changed since proposal '{proposal_id}' was drafted "
             f"({row['spec_version_hash']} -> {live_hash}); regenerate"
         )
+
+    if _appends_memory_only(proposal):
+        proposal = _rebase_memory_appends(spec, proposal, proposal_id)
 
     if confirm_apply_yaml is not None:
         apply_yaml = confirm_apply_yaml()
@@ -246,14 +393,22 @@ def apply_proposal_by_id(
             raise ProposalQueueError(f"no proposal with id '{proposal_id}'")
         raise ProposalQueueError(f"proposal '{proposal_id}' is already {current['status']}")
 
-    proposal = MutationProposal.model_validate_json(row["proposal_json"])
     try:
         result = evolver.apply_proposal(
-            harness_dir, proposal, hive=hive, approve_code=approve_code, apply_yaml=apply_yaml
+            harness_dir,
+            proposal,
+            hive=hive,
+            approve_code=approve_code,
+            apply_yaml=apply_yaml,
+            proposal_id=proposal_id,
         )
     except BaseException:
         hive.release_proposal_claim(proposal_id)
         raise
+
+    if not result.changed:
+        hive.release_proposal_claim(proposal_id)
+        return result
 
     hive.update_proposal(
         proposal_id,
@@ -262,6 +417,47 @@ def apply_proposal_by_id(
         resolved_at=datetime.now(UTC).isoformat(),
     )
     return result
+
+
+def _rebase_memory_appends(
+    spec: HarnessSpec, proposal: MutationProposal, proposal_id: str
+) -> MutationProposal:
+    """Fit a queued lesson onto the entries the harness holds *now*.
+
+    A memory append skips the staleness check (it is position-free), so the
+    entries it was drafted against may have grown since. Two lessons queued
+    with the same title were both given the same free id, and the second then
+    failed the gate as a duplicate id forever. An id taken since drafting gets
+    a content-derived suffix here; a lesson whose content already landed
+    under another id is refused, so the same lesson cannot be applied twice.
+    """
+    live_ids = {entry.id for entry in spec.memory.entries}
+    live_content = {
+        " ".join(entry.content.split()).casefold(): entry.id for entry in spec.memory.entries
+    }
+    changes = []
+    for change in proposal.yaml_changes:
+        value = dict(change.value) if isinstance(change.value, dict) else change.value
+        if isinstance(value, dict):
+            content = " ".join(str(value.get("content", "")).split()).casefold()
+            if content in live_content:
+                raise ProposalQueueError(
+                    f"proposal '{proposal_id}' adds a lesson already in memory as "
+                    f"'{live_content[content]}'; reject it instead"
+                )
+            entry_id = str(value.get("id", ""))
+            if entry_id in live_ids:
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                for width in range(6, len(digest) + 1, 2):
+                    # Ids are at most 64 characters; the suffix wins the room.
+                    stem = entry_id[: 63 - width].rstrip("-")
+                    candidate = f"{stem}-{digest[:width]}"
+                    if candidate not in live_ids:
+                        break
+                value["id"] = candidate
+            live_ids.add(str(value.get("id", "")))
+        changes.append(change.model_copy(update={"value": value}))
+    return proposal.model_copy(update={"yaml_changes": changes})
 
 
 def proposal_payload(record: ProposalRecord) -> dict[str, Any]:

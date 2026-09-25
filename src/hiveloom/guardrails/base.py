@@ -47,11 +47,18 @@ class RunState:
 
     cost_usd: float = 0.0
     pending_cost_usd: float = 0.0
+    # The part of ``cost_usd`` that a delegated child run spent. Counted into
+    # the total on purpose: the parent's cost guardrail is the user's whole
+    # budget, so work handed to a peer is not a way around it.
+    delegated_cost_usd: float = 0.0
     turns: int = 0
     model_calls: int = 0
     tool_turns: int = 0
     verify_retries: int = 0
     policy_nudges: int = 0
+    # Turns that hit the output ceiling before producing anything actionable —
+    # a reasoning model can spend a whole budget thinking and emit nothing.
+    truncated_turns: int = 0
     tool_names: set[str] = field(default_factory=set)
     started_at: float = field(default_factory=time.monotonic)
     output: str | None = None

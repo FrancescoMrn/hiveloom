@@ -12,7 +12,15 @@
  */
 import type { TraceEvent } from './types'
 
-export type EventCategory = 'run' | 'model' | 'tool' | 'context' | 'verify' | 'safety' | 'control'
+export type EventCategory =
+  | 'run'
+  | 'model'
+  | 'tool'
+  | 'context'
+  | 'verify'
+  | 'safety'
+  | 'delegation'
+  | 'control'
 
 export type Lane = 'model' | 'tool' | 'verify'
 
@@ -51,6 +59,42 @@ export interface Turn {
   firstSeq: number
 }
 
+/**
+ * One hand-off attempt, projected from the `delegation_*` events.
+ *
+ * The four events are four moments of the same decision — a peer was chosen,
+ * the child started, the child finished, or nothing happened and here is why —
+ * so they read as one step rather than four unrelated rows. A step that never
+ * started is not an error: `delegation_skipped` alone is the whole story.
+ */
+export interface DelegationStep {
+  /** The opening event's seq — stable within one run, like a span id. */
+  id: number
+  /** The mode that fired it: `on_start`, `on_verify_fail`, `model_choice`. */
+  mode: string
+  harness: string
+  /** 'skipped' until a peer is chosen; 'started' until the child comes back. */
+  phase: 'selected' | 'started' | 'finished' | 'skipped'
+  /** The child run, once one exists — what makes the hand-off openable. */
+  runId: string
+  /** The child's own status, or '' while it is still running. */
+  status: string
+  /** Why nothing was handed over, or why the child ended as it did. */
+  reason: string
+  costUsd: number | null
+  turns: number | null
+  successRate: number | null
+  totalRuns: number | null
+  depth: number | null
+  chain: string[]
+  costCapUsd: number | null
+  /** Every seq that belongs to this step, in order. */
+  seqs: number[]
+  startMs: number
+  endMs: number | null
+  durationMs: number | null
+}
+
 export interface Totals {
   turns: number
   modelCalls: number
@@ -65,6 +109,8 @@ export interface Totals {
 
 export interface Trajectory {
   spans: Span[]
+  /** Hand-offs, in the order they were attempted. Empty for most runs. */
+  delegations: DelegationStep[]
   /** Every seq that belongs to a span, opening and closing alike. */
   spanBySeq: Map<number, Span>
   turnBySeq: Map<number, number>
@@ -85,6 +131,9 @@ const EMPTY_USAGE: Usage = {
 }
 
 export function categoryOf(type: string): EventCategory {
+  // Before `tool_`: nothing here starts with it, but the delegation family is
+  // its own category rather than a flavour of anything else.
+  if (type.startsWith('delegation_')) return 'delegation'
   if (type.startsWith('tool_')) return 'tool'
   if (type.startsWith('model_')) return 'model'
   if (type.startsWith('context_') || type === 'user_steer') return 'context'
@@ -104,6 +153,11 @@ export function projectTrajectory(events: TraceEvent[]): Trajectory {
   const openModel = new Map<string, Span>()
   const openTool = new Map<string, Span>()
   const seenTurns = new Set<number>()
+  const delegations: DelegationStep[] = []
+  // Keyed on the peer's name, falling back to the mode: `on_start` and
+  // `on_verify_fail` hand off at most once each, and `model_choice` names a
+  // different peer per call, so the name is the identifying half.
+  const openDelegation = new Map<string, DelegationStep>()
 
   let currentTurn: number | null = null
 
@@ -201,6 +255,77 @@ export function projectTrajectory(events: TraceEvent[]): Trajectory {
         }
         break
       }
+      case 'delegation_selected':
+      case 'delegation_started':
+      case 'delegation_finished':
+      case 'delegation_skipped': {
+        const mode = String(payload.mode ?? '')
+        const harness = String(payload.harness ?? '')
+        const key = harness || mode || 'delegation'
+        const existing =
+          event.type === 'delegation_selected' ? undefined : openDelegation.get(key)
+        const step: DelegationStep = existing ?? {
+          id: event.seq,
+          mode,
+          harness,
+          phase: 'skipped',
+          runId: '',
+          status: '',
+          reason: '',
+          costUsd: null,
+          turns: null,
+          successRate: null,
+          totalRuns: null,
+          depth: null,
+          chain: [],
+          costCapUsd: null,
+          seqs: [],
+          startMs: at,
+          endMs: null,
+          durationMs: null,
+        }
+        if (!existing) {
+          delegations.push(step)
+          if (event.type !== 'delegation_skipped') openDelegation.set(key, step)
+        }
+        step.seqs.push(event.seq)
+        if (harness) step.harness = harness
+        if (mode) step.mode = mode
+
+        if (event.type === 'delegation_selected') {
+          step.phase = 'selected'
+          step.successRate = numberOrNull(payload.success_rate)
+          step.totalRuns = numberOrNull(payload.total_runs)
+          step.costUsd = numberOrNull(payload.cost_usd)
+        } else if (event.type === 'delegation_started') {
+          step.phase = 'started'
+          step.depth = numberOrNull(payload.depth)
+          step.chain = stringList(payload.chain)
+          step.costCapUsd = numberOrNull(payload.cost_cap_usd)
+        } else if (event.type === 'delegation_finished') {
+          step.phase = 'finished'
+          step.runId = String(payload.run_id ?? '')
+          step.status = String(payload.status ?? '')
+          // The selection call's own cost is superseded by what the hand-off
+          // actually cost; a failed hand-off reports no cost at all.
+          step.costUsd = numberOrNull(payload.cost_usd) ?? step.costUsd
+          step.turns = numberOrNull(payload.turns)
+          step.reason = String(payload.reason ?? payload.error ?? '')
+          step.endMs = at
+          step.durationMs = Number.isFinite(at) && Number.isFinite(step.startMs)
+            ? Math.max(0, at - step.startMs)
+            : null
+          openDelegation.delete(key)
+        } else {
+          step.phase = 'skipped'
+          step.reason = String(payload.reason ?? '')
+          step.costUsd = numberOrNull(payload.cost_usd) ?? step.costUsd
+          step.endMs = at
+          step.durationMs = 0
+          openDelegation.delete(key)
+        }
+        break
+      }
       case 'verification_result': {
         const span: Span = {
           id: event.seq,
@@ -237,6 +362,7 @@ export function projectTrajectory(events: TraceEvent[]): Trajectory {
 
   return {
     spans,
+    delegations,
     spanBySeq,
     turnBySeq,
     turns,
@@ -357,6 +483,10 @@ function numberOrNull(value: unknown): number | null {
     return Number(value)
   }
   return null
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)) : []
 }
 
 function isTrue(value: unknown): boolean {

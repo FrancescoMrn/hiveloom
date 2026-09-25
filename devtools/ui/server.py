@@ -252,10 +252,6 @@ class _LiveRuns:
         with self._lock:
             return self._controls.get(run_id)
 
-    def ids(self) -> list[str]:
-        with self._lock:
-            return sorted(self._controls)
-
 
 _LIVE = _LiveRuns()
 
@@ -1213,12 +1209,22 @@ class _CopilotWorkbench:
                         "detail": payload.get("content"),
                     }
                 )
+        finished = next(
+            (event for event in reversed(events) if event.get("type") == "run_finished"),
+            None,
+        )
+        finish_payload = (finished or {}).get("payload") or {}
         return {
             "run": run,
             "evidence": evidence,
             "lineage": lineage,
             "integrity": verify_chain(trace_path).summary() if trace_path.is_file() else None,
             "event_count": len(events),
+            # What this run handed to a peer, and which peers it could only
+            # name. The copilot answers "why did this cost that much" with it.
+            "delegations": finish_payload.get("delegations") or [],
+            "referrals": finish_payload.get("referrals") or [],
+            "delegated_cost_usd": finish_payload.get("delegated_cost_usd") or 0.0,
         }
 
     def list_runs(self, harness_id: str = "", limit: int = 10) -> dict[str, Any]:
@@ -1654,41 +1660,6 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         return JSONResponse({"harnesses": await asyncio.to_thread(decorate)})
 
     @_guarded
-    async def create_harness(request: Request) -> Response:
-        body = json.loads(await request.body() or b"{}")
-        directory = body.get("directory")
-        name = body.get("name")
-        task = body.get("task")
-        # Trust is the caller's to grant, not this endpoint's to assume. It
-        # defaults to on because creating a harness here *is* the act of
-        # vouching for the directory — the user named it — but a workbench set
-        # to ask first must be able to say no, and the gate has to be told.
-        trust = body.get("trust", True)
-        if not (directory and name and task):
-            raise ValueError("directory, name, and task are all required")
-
-        def work() -> dict[str, Any]:
-            spec = construct.init_harness(directory, name=name, task=task)
-            # Registering is what puts it in the rail; trusting is the separate
-            # thing you would otherwise do at a terminal before it could run.
-            registry_mod.register(directory)
-            # `init_harness` trusts what it creates as a convenience of its own.
-            # A workbench set to ask first has to undo that rather than merely
-            # decline to add it, or "ask first" would silently mean "always".
-            if trust:
-                trust_mod.record_trust(directory)
-            else:
-                trust_mod.revoke_trust(directory)
-            return {
-                "id": _slug(spec.name),
-                "name": spec.name,
-                "directory": directory,
-                "trusted": bool(trust),
-            }
-
-        return JSONResponse(await asyncio.to_thread(work), status_code=201)
-
-    @_guarded
     async def get_harness(request: Request) -> Response:
         entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
 
@@ -1915,12 +1886,6 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
 
         return JSONResponse(await asyncio.to_thread(work))
 
-    @_guarded
-    async def trust_endpoint(request: Request) -> Response:
-        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
-        await asyncio.to_thread(trust_mod.record_trust, entry["path"])
-        return JSONResponse({"ok": True, "trusted": True})
-
     # ---------------- running ---------------- #
     @_guarded
     async def run_endpoint(request: Request) -> Response:
@@ -2024,11 +1989,6 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         if control is None:
             raise LookupError(f"run {run_id!r} is not running in this process")
         return control
-
-    @_guarded
-    async def list_live_runs(request: Request) -> Response:
-        """Runs executing right now — what a reconnecting UI re-attaches to."""
-        return JSONResponse({"run_ids": _LIVE.ids()})
 
     @_guarded
     async def stop_run(request: Request) -> Response:
@@ -2211,6 +2171,13 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                     for point in fork_points(events)
                 ],
                 "artifacts": finish_payload.get("artifacts") or [],
+                # Delegation receipts, read back off the same recorded
+                # `run_finished` event the artifacts come from. `lineage`
+                # already carries `children`, so a delegated child is
+                # reachable from its parent without a second query.
+                "delegations": finish_payload.get("delegations") or [],
+                "referrals": finish_payload.get("referrals") or [],
+                "delegated_cost_usd": finish_payload.get("delegated_cost_usd") or 0.0,
             }
 
         return JSONResponse(await asyncio.to_thread(work))
@@ -2742,14 +2709,12 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
             methods=["DELETE"],
         ),
         Route("/api/harnesses", list_harnesses, methods=["GET"]),
-        Route("/api/harnesses", create_harness, methods=["POST"]),
         Route("/api/catalog", get_catalog, methods=["GET"]),
         Route("/api/providers", list_providers, methods=["GET"]),
         Route("/api/harnesses/{harness_id}", get_harness, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/spec", put_spec, methods=["PUT"]),
         Route("/api/harnesses/{harness_id}/model", put_model, methods=["PUT"]),
         Route("/api/harnesses/{harness_id}/validate", validate_endpoint, methods=["POST"]),
-        Route("/api/harnesses/{harness_id}/trust", trust_endpoint, methods=["POST"]),
         Route("/api/harnesses/{harness_id}/run", run_endpoint, methods=["POST"]),
         Route("/api/harnesses/{harness_id}/interface", get_interface, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/runs", list_runs, methods=["GET"]),
@@ -2772,7 +2737,6 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
             methods=["POST"],
         ),
         Route("/api/proposals/{proposal_id}/reject", reject_proposal, methods=["POST"]),
-        Route("/api/runs/live", list_live_runs, methods=["GET"]),
         Route("/api/runs/{run_id}", get_run, methods=["GET"]),
         Route("/api/runs/{run_id}/context/{seq:int}", materialize_context, methods=["GET"]),
         Route("/api/runs/{run_id}/export", export_run, methods=["GET"]),

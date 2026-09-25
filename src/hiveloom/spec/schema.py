@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
@@ -396,12 +397,51 @@ class ModelConfig(BaseModel):
     )
     id: str = Field(default="claude-haiku-4-5", description="Model id to execute with.")
     max_tokens: int = Field(
-        default=4096, gt=0, le=32768, description="Max output tokens per call."
+        default=4096,
+        gt=0,
+        le=1_000_000,
+        description=(
+            "Max output tokens per call. The absolute bound here is a typo guard, "
+            "not a capability claim: what a model may actually emit differs by "
+            "orders of magnitude between models, so a registered model's declared "
+            "`max_output_tokens` is what this is checked against when one exists. "
+            "The runtime retains this per-call budget during recovery."
+        ),
     )
     temperature: float | None = Field(
         default=None, ge=0.0, le=1.0,
         description="Sampling temperature. None omits it — required for models that deprecate it.",
     )
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Provider-specific request-body fields, limited to 64 KiB of JSON. "
+            "Cannot override harness-controlled identity, transcript, tools, "
+            "output budgets, temperature, streaming, or response count. "
+            "Unknown fields may be ignored or rejected by the provider."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_max_tokens_against_the_model(self) -> ModelConfig:
+        """Reject budgets above the registered model capability, when known."""
+        from hiveloom import ext
+
+        info = ext.model_info(self.id)
+        declared = getattr(info, "max_output_tokens", None) if info else None
+        if declared is not None and self.max_tokens > declared:
+            raise ValueError(
+                f"model.max_tokens {self.max_tokens} exceeds what {self.id} can emit "
+                f"({declared}); lower it or correct the model's max_output_tokens"
+            )
+        return self
+
+    @field_validator("params")
+    @classmethod
+    def _check_params(cls, value: dict[str, Any]) -> dict[str, Any]:
+        from hiveloom.models.provider import validate_model_params
+
+        return validate_model_params(value)
 
     @field_validator("provider")
     @classmethod
@@ -458,6 +498,14 @@ class CompactionConfig(BaseModel):
             "(builtins plus extension-registered methods)."
         ),
     )
+    max_tokens: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Output-token ceiling for the summarize call only (default: "
+            "model.max_tokens). A summary is short; a reasoning model given the "
+            "executor's whole output budget can spend minutes on one."
+        ),
+    )
 
     @field_validator("method")
     @classmethod
@@ -506,6 +554,16 @@ class ToolResultsConfig(BaseModel):
             "summary lines, totals, and error tails live at the end."
         ),
     )
+    transforms: bool = Field(
+        default=True,
+        description=(
+            "Offer `transform_result` beside the two readers once something has "
+            "spilled, so a stored result can be narrowed in place (grep, count, "
+            "json_path, ...) instead of paged through context. Off leaves only "
+            "read_tool_result/search_tool_result — the pre-1.2 surface, and the "
+            "control arm when measuring what the transforms are worth."
+        ),
+    )
 
     @model_validator(mode="after")
     def _preview_fits(self) -> ToolResultsConfig:
@@ -543,6 +601,248 @@ class ContextConfig(BaseModel):
         default_factory=ToolResultsConfig,
         description="Inline budget for tool results, and where the rest goes.",
     )
+
+
+# Hard ceilings on the memory budgets. The configured value is what a harness
+# uses; these are the limits an operator cannot raise, so "durable memory" can
+# never become an unbounded prompt prefix paid for on every model call.
+MEMORY_MAX_ENTRIES_CAP = 200
+MEMORY_MAX_ENTRY_CHARS_CAP = 4_000
+MEMORY_PROMPT_BUDGET_CAP = 40_000
+
+
+class MemoryEntry(BaseModel):
+    """One durable lesson this harness carries into every run.
+
+    Entries are learned state, not configuration: they come from an operator
+    (``hiveloom memory add``) or from a reviewed evolution proposal, and they
+    are rendered verbatim into the system prompt. Keeping them in
+    ``harness.yaml`` is deliberate — a memory change is a behavior change, so
+    it moves the spec version hash and lands in its own fitness bucket like any
+    other mutation, instead of silently changing what a measured harness does.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9-]{0,63}$",
+        description=(
+            "Stable slug identifying this lesson (a-z, 0-9, dashes). Unique "
+            "within the harness: it is what `hiveloom memory forget` and a "
+            "replacing proposal address."
+        ),
+    )
+    kind: Literal["fact", "rule", "example"] = Field(
+        description=(
+            "What the entry is: a 'fact' about the domain or the data, a 'rule' "
+            "the work must obey, or an 'example' of the expected shape. Shown to "
+            "the model so it can tell a constraint from background."
+        ),
+    )
+    title: str = Field(
+        min_length=1,
+        max_length=200,
+        description="Short label for the lesson; what an operator scans in `memory list`.",
+    )
+    content: str = Field(
+        min_length=1,
+        max_length=MEMORY_MAX_ENTRY_CHARS_CAP,
+        description=(
+            "The lesson itself, in the imperative. Bounded by "
+            "memory.max_entry_chars; whitespace is collapsed when rendered, so "
+            "one entry is always one line of prompt."
+        ),
+    )
+    source: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Free-text provenance: a proposal id, 'operator', or a run id. "
+            "Review evidence, never authority — nothing is trusted because of it."
+        ),
+    )
+    evidence: str | None = Field(
+        default=None,
+        max_length=1_000,
+        description=(
+            "Why this was learned (failing runs, a validator verdict). Kept out "
+            "of the prompt: it justifies the entry to a reviewer, it is not "
+            "something the executor needs to re-read every run."
+        ),
+    )
+    created_at: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp recording when the entry was added.",
+    )
+    pinned: bool = Field(
+        default=False,
+        description=(
+            "Always shown, even when memory.selection is 'relevant' and the entry "
+            "does not match the task. For the few rules every run must obey."
+        ),
+    )
+
+    @field_validator("title", "content")
+    @classmethod
+    def _not_blank(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"memory entry {info.field_name} must not be blank")
+        return value
+
+    @field_validator("created_at")
+    @classmethod
+    def _iso_timestamp(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            raise ValueError(
+                f"memory entry created_at must be an ISO 8601 timestamp (got {value!r})"
+            ) from None
+        return value
+
+
+class MemoryConfig(BaseModel):
+    """Durable, bounded lessons rendered into the system prompt every run.
+
+    The layer above context (what the model sees this run) and run-scoped
+    storage (what survives compaction): what the harness has learned *across*
+    runs. The executor never writes here — entries reach ``harness.yaml`` only
+    through the operator CLI or the gated proposals queue — and every budget
+    below is frozen from evolution, so a harness can never grow its own prompt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Render the memory section into the system prompt. Off keeps the "
+            "entries in the spec but shows the executor none of them, which is "
+            "how to measure whether memory helps. Frozen from evolution."
+        ),
+    )
+    max_entries: int = Field(
+        default=24,
+        ge=0,
+        le=MEMORY_MAX_ENTRIES_CAP,
+        description=(
+            "How many entries this harness may hold. A full store is a "
+            "validation error, never a silent eviction: which lesson to drop is "
+            "a review decision, not a runtime surprise. Frozen from evolution."
+        ),
+    )
+    max_entry_chars: int = Field(
+        default=600,
+        ge=1,
+        le=MEMORY_MAX_ENTRY_CHARS_CAP,
+        description=(
+            "Longest a single entry's content may be, so one lesson cannot "
+            "spend the whole prompt budget. Frozen from evolution."
+        ),
+    )
+    prompt_budget_chars: int = Field(
+        default=6_000,
+        ge=1,
+        le=MEMORY_PROMPT_BUDGET_CAP,
+        description=(
+            "Ceiling on the rendered '# Memory' section, checked when the spec "
+            "is validated so a run can never discover that its prompt grew. "
+            "Frozen from evolution."
+        ),
+    )
+    selection: Literal["all", "relevant"] = Field(
+        default="all",
+        description=(
+            "Which entries a run is shown. 'all' renders every entry, every run. "
+            "'relevant' ranks entries against the run's task and shows the pinned "
+            "ones plus the best matches, up to max_selected; the rest stay "
+            "reachable through the search_memory tool. Chosen once per run, so the "
+            "prompt is identical on every turn of it. Frozen from evolution."
+        ),
+    )
+    max_selected: int = Field(
+        default=8,
+        ge=1,
+        le=MEMORY_MAX_ENTRIES_CAP,
+        description=(
+            "With selection 'relevant', the most entries one run is shown, pinned "
+            "ones included. Frozen from evolution."
+        ),
+    )
+    entries: list[MemoryEntry] = Field(
+        default_factory=list,
+        description=(
+            "The lessons themselves, in declaration order — which is also render "
+            "order, so the prompt prefix stays cacheable across runs. The one "
+            "part of this section evolution may change, by appending an entry at "
+            "memory.entries.+ (resolved when the proposal is applied) or "
+            "replacing one by index."
+        ),
+    )
+
+    def render(self, entries: list[MemoryEntry] | None = None) -> str:
+        """The ``# Memory`` system-prompt section, or ``""`` when there is none.
+
+        One renderer for the prompt and for the budget check below, so what is
+        validated is exactly what the model is shown. ``entries`` renders a
+        selection (see ``memory.selection``) instead of the whole store, in
+        declaration order, and says how many more are stored.
+        """
+        shown = self.entries if entries is None else entries
+        if not shown:
+            return ""
+        lines = [
+            "# Memory",
+            "Lessons from earlier runs of this harness. Treat them as standing "
+            "constraints on how you work, not as the current task.",
+        ]
+        # Title and content are both collapsed to one line: an entry is always
+        # exactly one prompt line, so no title can open a heading of its own.
+        lines.extend(
+            f"- [{entry.kind}] {' '.join(entry.title.split())}: "
+            f"{' '.join(entry.content.split())}"
+            for entry in shown
+        )
+        hidden = len(self.entries) - len(shown)
+        if hidden > 0:
+            lines.append(
+                f"{hidden} more lesson(s) are stored but did not match this task; "
+                "search_memory looks them up."
+            )
+        return "\n".join(lines)
+
+    @model_validator(mode="after")
+    def _check_entries(self) -> MemoryConfig:
+        seen: set[str] = set()
+        for entry in self.entries:
+            if entry.id in seen:
+                raise ValueError(f"duplicate memory entry id '{entry.id}'")
+            seen.add(entry.id)
+            if len(entry.content) > self.max_entry_chars:
+                raise ValueError(
+                    f"memory entry '{entry.id}' content is {len(entry.content)} "
+                    f"characters; memory.max_entry_chars is {self.max_entry_chars}"
+                )
+        pinned = sum(1 for entry in self.entries if entry.pinned)
+        if self.selection == "relevant" and pinned > self.max_selected:
+            raise ValueError(
+                f"{pinned} memory entries are pinned but memory.max_selected is "
+                f"{self.max_selected}; unpin one or raise the limit"
+            )
+        if len(self.entries) > self.max_entries:
+            raise ValueError(
+                f"memory holds {len(self.entries)} entries; memory.max_entries is "
+                f"{self.max_entries}. Forget one before adding another."
+            )
+        rendered = len(self.render())
+        if rendered > self.prompt_budget_chars:
+            raise ValueError(
+                f"the rendered memory section is {rendered} characters; "
+                f"memory.prompt_budget_chars is {self.prompt_budget_chars}"
+            )
+        return self
 
 
 class SequentialStep(BaseModel):
@@ -641,6 +941,18 @@ class LoopConfig(BaseModel):
             "Ordered objectives for sequential_steps. Legacy strings keep their current "
             "instruction-only behavior. Objects can constrain tools, required successful "
             "calls, and per-step model/tool call limits. Ignored by other policies."
+        ),
+    )
+
+    attempts: int = Field(
+        default=3,
+        ge=1,
+        le=16,
+        description=(
+            "How many independent attempts best_of_n samples before submitting the "
+            "consensus answer. Every attempt spends from the same max_turns, so raise "
+            "that alongside it. 1 is a deliberate control (one attempt, no vote). "
+            "Ignored by other policies."
         ),
     )
 
@@ -1025,6 +1337,86 @@ class EgressConfig(BaseModel):
     )
 
 
+class DelegationConfig(BaseModel):
+    """A phone line for every harness: hand a task to a fitter peer.
+
+    The harness's ``model`` is the user's choice and never changes (it is in
+    :data:`ALWAYS_FROZEN`). Delegation is the other axis: at run time a harness
+    may look for a peer that is *more specific* or has *better measured odds*
+    on the Hive, hand the task to it, and verify the answer with its own
+    validators — or, when nothing qualifies automatically, refer the user to
+    the peer that would fit.
+
+    Enforcement lives in the runtime, not in the prompt: a model asked nicely
+    to "look for a specialist first" will skip it. The ``when`` modes are
+    executed by the loop.
+
+    Not frozen from evolution: which peers a harness reaches for, and how
+    strict it is about their fitness, is exactly the kind of tuning evidence
+    should drive. What evolution can never do is change the model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether this harness may hand work to peer harnesses at all.",
+    )
+    directory: Literal["local"] = Field(
+        default="local",
+        description=(
+            "Where peers are discovered. 'local' is this machine's harness "
+            "registry (`hiveloom registry add`). A remote MCP switchboard is a "
+            "documented follow-up, not implemented."
+        ),
+    )
+    when: list[Literal["on_start", "on_verify_fail", "model_choice"]] = Field(
+        default_factory=lambda: ["model_choice"],
+        description=(
+            "Modes: 'on_start' selects a peer before the first model turn; "
+            "'on_verify_fail' tries the best peer once after verification has "
+            "exhausted its retries; 'model_choice' offers a delegate__<peer> "
+            "tool per eligible peer so the model can hand off mid-run."
+        ),
+    )
+    min_peer_success_rate: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Measured Hive success rate a peer must reach to be chosen "
+            "automatically. Peers below it are never auto-selected, but may "
+            "still be reported as referrals."
+        ),
+    )
+    min_peer_runs: int = Field(
+        default=0, ge=0,
+        description=(
+            "Hive runs a peer needs before its fitness counts. A peer with "
+            "fewer is treated as unmeasured, never as good."
+        ),
+    )
+    max_depth: int = Field(
+        default=2, ge=1, le=5,
+        description="How many delegation hops a chain may take before it is refused.",
+    )
+    budget_share: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description=(
+            "Fraction of the parent's REMAINING max_cost_usd budget a child "
+            "run may spend. The child's cost counts against the parent's cap."
+        ),
+    )
+    exclude: list[str] = Field(
+        default_factory=list,
+        description="Harness names this harness must never delegate to.",
+    )
+
+    @model_validator(mode="after")
+    def _unique_modes(self) -> DelegationConfig:
+        if len(set(self.when)) != len(self.when):
+            raise ValueError("delegation.when must not repeat a mode")
+        return self
+
+
 class LoggingConfig(BaseModel):
     """Trace persistence policy. ``redact`` is frozen from evolution."""
 
@@ -1092,6 +1484,14 @@ def _default_mutable() -> list[str]:
         "loop.policy",
         "context.strategy",
         "tools",
+        # Durable lessons are the cheapest useful mutation there is: appending
+        # one changes what the model is told without touching a capability, and
+        # the budgets around it stay frozen (see ALWAYS_FROZEN below).
+        "memory.entries",
+        # Which peers this harness reaches for, and how strict it is about
+        # their measured fitness, is evidence-driven tuning. The executor
+        # model stays frozen (ALWAYS_FROZEN) either way.
+        "delegation",
     ]
 
 
@@ -1136,6 +1536,39 @@ class AutoProposeConfig(BaseModel):
     model: str | None = Field(
         default=None,
         description="Strong-model override for auto-drafted proposals; else the CLI/env default.",
+    )
+
+
+class ReflectConfig(BaseModel):
+    """Opt-in: after a run, draft durable lessons from it into the review queue.
+
+    The executor's own ``propose_memory`` only fires when the model thinks to
+    call it. Reflection is the other half: a strong model reads one finished
+    run — its task, outcome, verifier feedback and friction — next to the
+    lessons the harness already holds, and drafts at most ``max_lessons`` new
+    ones. They are queued exactly like an executor's (``trigger: reflect``):
+    gated, deduplicated on content, applied only by a human. Frozen from
+    evolution, like ``auto_propose``: it is a paid post-run trigger.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="Draft lessons after runs.")
+    on: Literal["failure", "any"] = Field(
+        default="failure",
+        description="Reflect after failed runs only, or after every run.",
+    )
+    max_lessons: int = Field(
+        default=1, ge=1, le=3, description="Most lessons one reflection may queue."
+    )
+    cooldown_minutes: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Minimum gap between reflections for this harness; a spend guard.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Strong-model override for reflection; else the CLI/env default.",
     )
 
 
@@ -1259,6 +1692,13 @@ class EvolutionConfig(BaseModel):
         default_factory=AutoProposeConfig,
         description="Automatic post-run proposal drafting (opt-in; drafts only, never applies).",
     )
+    reflect: ReflectConfig = Field(
+        default_factory=ReflectConfig,
+        description=(
+            "Post-run lesson drafting into the proposal queue (opt-in; drafts only, "
+            "never applies). Frozen from evolution."
+        ),
+    )
     trace_excerpts: TraceExcerptConfig = Field(
         default_factory=TraceExcerptConfig,
         description=(
@@ -1304,6 +1744,12 @@ class EvolutionConfig(BaseModel):
 # rewrite it would detach a harness from its own accumulated evidence.
 # `confinement` bounds what a spawned process may do; a harness that could
 # widen its own containment does not have one.
+# The `memory` budgets are the same shape of promise one level down: evolution
+# may append a lesson (`memory.entries`, in the default mutable set), but it
+# can never raise the ceiling on how many lessons there are, how long one may
+# be, or how much prompt they may occupy — nor switch the section off to hide
+# what it already wrote. Writing the `memory` mapping itself is an ancestor of
+# all four and is refused by `touches_frozen` for that reason.
 ALWAYS_FROZEN: tuple[str, ...] = (
     "id",
     "guardrails",
@@ -1313,10 +1759,17 @@ ALWAYS_FROZEN: tuple[str, ...] = (
     "hooks",
     "mcp_servers",
     "evolution.auto_propose",
+    "evolution.reflect",
     "evolution.trace_excerpts",
     "evolution.objectives",
     "confinement",
     "egress",
+    "memory.enabled",
+    "memory.max_entries",
+    "memory.max_entry_chars",
+    "memory.prompt_budget_chars",
+    "memory.selection",
+    "memory.max_selected",
 )
 
 # Playbook fields that execute code, and so share the boundary above. They
@@ -1417,6 +1870,15 @@ class HarnessSpec(BaseModel):
     context: ContextConfig = Field(
         default_factory=ContextConfig, description="Context management policy."
     )
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig,
+        description=(
+            "Durable lessons carried across runs and rendered into the system "
+            "prompt. Budgets are frozen from evolution; `memory.entries` is "
+            "evolvable and is written only by `hiveloom memory` or an applied "
+            "proposal, never by the executor."
+        ),
+    )
     guardrails: list[GuardrailRef] = Field(
         default_factory=list, description="Guardrails (frozen from evolution by design)."
     )
@@ -1432,6 +1894,13 @@ class HarnessSpec(BaseModel):
     egress: EgressConfig = Field(
         default_factory=EgressConfig,
         description="What may leave in a model request (frozen from evolution).",
+    )
+    delegation: DelegationConfig = Field(
+        default_factory=DelegationConfig,
+        description=(
+            "Whether and how this harness may hand a task to a peer harness "
+            "(disabled by default). Tunable by evolution; the model is not."
+        ),
     )
     evolution: EvolutionConfig = Field(
         default_factory=EvolutionConfig, description="Evolution policy."

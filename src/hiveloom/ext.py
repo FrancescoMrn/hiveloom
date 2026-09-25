@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from hiveloom import catalog, paths
 from hiveloom.errors import CatalogError, HiveloomError, SpecError
@@ -90,6 +90,10 @@ class ModelInfo(BaseModel):
     input_cost_per_mtok: float = 0.0
     output_cost_per_mtok: float = 0.0
     context_window: int | None = None
+    # What the provider will let this model emit in one response. Absent means
+    # "not declared", which is the common case for an open-catalog provider
+    # serving ids nobody enumerated; the spec then falls back to its own bound.
+    max_output_tokens: int | None = Field(default=None, gt=0)
     supports_tool_calling: bool | None = None
     supports_structured_output: bool | None = None
     supports_reasoning_replay: bool | None = None
@@ -722,24 +726,45 @@ _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
 }
 
 
-def _claude_factory(ctx: BuildContext) -> Any:
-    """Build the Claude provider, loading a harness-local .env if present."""
-    if ctx.base is not None:
-        env_file = ctx.base / ".env"
-        if env_file.exists():
-            try:
-                from dotenv import load_dotenv
+def _env_file_values(base: Path | None) -> dict[str, str]:
+    """Read ``<harness>/.env`` WITHOUT touching ``os.environ``.
 
-                load_dotenv(env_file)
-            except ImportError:  # pragma: no cover - dotenv is a declared dependency
-                pass
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    ``load_dotenv`` would adopt the first harness's credentials into the
+    process for every harness built after it — and one process now hosts many
+    harnesses (``hiveloom mcp serve --registered``, the workbench), so the
+    second harness would silently run on the first one's key. Reading the file
+    and handing the value straight to the provider keeps each harness's
+    credential its own.
+    """
+    if base is None:
+        return {}
+    env_file = Path(base) / ".env"
+    if not env_file.exists():
+        return {}
+    try:
+        from dotenv import dotenv_values
+    except ImportError:  # pragma: no cover - dotenv is a declared dependency
+        return {}
+    return {key: value for key, value in dotenv_values(env_file).items() if value}
+
+
+def _claude_factory(ctx: BuildContext) -> Any:
+    """Build the Claude provider, reading a harness-local .env if present.
+
+    Precedence is unchanged: the process environment wins over the harness
+    ``.env``. What changed is that the ``.env`` is *read*, not *loaded* — see
+    :func:`_env_file_values`.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or _env_file_values(ctx.base).get(
+        "ANTHROPIC_API_KEY"
+    )
+    if not api_key:
         raise SpecError(
             "ANTHROPIC_API_KEY is not set. Add it to the harness .env or the environment."
         )
     from hiveloom.models.claude import ClaudeProvider
 
-    return ClaudeProvider()
+    return ClaudeProvider(api_key=api_key)
 
 
 # Every other lab hiveloom ships with speaks the OpenAI chat-completions API,
@@ -889,6 +914,7 @@ class _YamlModelEntry(BaseModel):
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
     context_window: int | None = None
+    max_output_tokens: int | None = Field(default=None, gt=0)
     supports_tool_calling: bool | None = None
     supports_structured_output: bool | None = None
     supports_reasoning_replay: bool | None = None
@@ -901,6 +927,10 @@ class _YamlProviderEntry(BaseModel):
     base_url: str | None = None
     api_key_env: str | None = None
     open_catalog: bool | None = None
+    # Seconds to wait for a single HTTP response. The default suits hosted
+    # frontier APIs; a queued trial endpoint or a local server generating at a
+    # few tokens a second needs more, or every call fails as "unreachable".
+    timeout_seconds: int | None = Field(default=None, gt=0)
     models: list[_YamlModelEntry] = []
 
 
@@ -914,6 +944,7 @@ def _load_models_yaml() -> None:
             api: openai_compat          # the only custom api kind in v0
             base_url: http://localhost:11434/v1
             api_key_env: OLLAMA_API_KEY # optional
+            timeout_seconds: 600        # optional, per-request read timeout
             models:
               - id: qwen3:8b
                 input_cost_per_mtok: 0
@@ -952,7 +983,9 @@ def _load_models_yaml() -> None:
                 continue
             api.register_provider(
                 name,
-                _openai_compat_factory(entry.base_url, entry.api_key_env),
+                _openai_compat_factory(
+                    entry.base_url, entry.api_key_env, entry.timeout_seconds
+                ),
                 base_url=entry.base_url,
                 api_key_env=entry.api_key_env or "",
                 label=builtin.label if builtin else name,
@@ -998,29 +1031,32 @@ def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) ->
             else fallback_output
         ),
         context_window=entry.context_window,
+        max_output_tokens=entry.max_output_tokens,
         supports_tool_calling=entry.supports_tool_calling,
         supports_structured_output=entry.supports_structured_output,
         supports_reasoning_replay=entry.supports_reasoning_replay,
     )
 
 
-def _openai_compat_factory(base_url: str, api_key_env: str | None) -> ProviderFactory:
+def _openai_compat_factory(
+    base_url: str, api_key_env: str | None, timeout: int | None = None
+) -> ProviderFactory:
     def factory(ctx: BuildContext) -> Any:
-        if ctx.base is not None and (ctx.base / ".env").exists():
-            try:
-                from dotenv import load_dotenv
-
-                load_dotenv(ctx.base / ".env")
-            except ImportError:  # pragma: no cover
-                pass
+        # Same precedence as before (process environment first), same
+        # no-mutation rule as `_claude_factory`: one process serving several
+        # harnesses must not hand harness B the key it found in harness A.
         api_key = os.environ.get(api_key_env) if api_key_env else None
+        if api_key_env and not api_key:
+            api_key = _env_file_values(ctx.base).get(api_key_env)
         if api_key_env and not api_key:
             raise SpecError(
                 f"{api_key_env} is not set (required by this provider's models.yaml entry)."
             )
         from hiveloom.models.openai_compat import OpenAICompatProvider
 
-        return OpenAICompatProvider(base_url, api_key=api_key)
+        if timeout is None:
+            return OpenAICompatProvider(base_url, api_key=api_key)
+        return OpenAICompatProvider(base_url, api_key=api_key, timeout=timeout)
 
     return factory
 

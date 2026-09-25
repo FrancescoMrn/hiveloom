@@ -1,0 +1,152 @@
+# General-purpose evolution migration
+
+hiveloom 1.2.0 carries the reusable parts of the ARC-AGI-2 benchmark work into
+the library. This note records what generalized, what was corrected on the
+way, and what was deliberately left out. The ARC dataset, scorer, harness
+assets, experiment outputs, and autoresearch scripts are not part of the
+package.
+
+## Included in 1.2.0
+
+| Improvement | Why it generalizes | Release behavior |
+|---|---|---|
+| Attempt memory | Any iterative search can repeat a rejected or reverted experiment when feedback is missing. | Recent resolved queue proposals become history; SDK drivers can supply measured histories across versions. |
+| Operator findings | Passing validators do not reveal every opportunity, and old clusters may no longer describe the bottleneck. | `evolve --note` and `analyze(analyst_notes=...)` support findings even without failed runs. |
+| Proposal repair | Models can violate output schemas or omit objective expectations on any task. | Up to three calls, with bounded feedback; invalid evidence fails before a call. |
+| Bounded evidence | Documents, logs, retrieval results, and code can overwhelm a proposing prompt. | Redaction precedes truncation; history, findings, and failure evidence have section limits. |
+| Model capabilities and provider parameters | Output limits and request controls vary by endpoint, independently of benchmark. | Positive registered output limits, validated `model.max_tokens`, bounded frozen `model.params`, and configurable transport timeouts. |
+| Truncation recovery | A length-limited reply is not reliable evidence of a completed answer. | Continue within configured budgets; preserve partial output; enforce policy and verification; report `truncated` and indexed friction. |
+| Provider normalization and retries | Interrupted reads, HTTP-200 error envelopes, blank content, and large reasoning payloads are transport concerns. | Transient failures retry; overflow remains classifiable; useful output survives bounded metadata/reasoning handling. |
+| Hook signature validation | A callback accepting `**kwargs` cannot consume a second positional argument. | Reject that mismatch during validation instead of discovering it during a run. |
+
+The evolution improvements apply to extraction, retrieval, triage, code tasks,
+and other domains with measurable outcomes. Transport fixes improve execution
+reliability. Neither category by itself establishes a task-quality gain; that
+requires evaluation against an appropriate baseline.
+
+## Corrections made during extraction
+
+- Redact history, operator findings, and the current spec as well as failure
+  records. Preserve key/path redaction by applying it before separating sections.
+- Bound caller-supplied histories and wide collections, not only individual diffs.
+- Preserve rejected paths and rejection reasons. Treat queue decisions as
+  unmeasured, and inconclusive experiments as uncertain rather than refuted.
+- Remove prompt claims that two failed prompt edits disprove all prompt changes,
+  or that sampling is the only way to address a wrong answer.
+- Include findings and histories in proposal deduplication, so new evidence
+  cannot silently return an older pending proposal.
+- Reject inconsistent metric directions before paying for proposal retries.
+  Schema-repair feedback does not echo invalid values into the next prompt.
+- Preserve the configured executor token budget. A provider's capability is
+  not authorization to double the runtime budget after truncation.
+- Report exhausted truncation as a failure unless actual verification succeeds;
+  required phases cannot be bypassed. Productive policy turns reset the streak.
+- Block request aliases and controls that could bypass identity, transcript,
+  tool, output-budget, streaming, or response-count handling. Validate parameters
+  as bounded JSON and forward them through both built-in provider families.
+- Bound reasoning when it is the visible-text fallback, not just when attached
+  beside a normal answer. Ignore malformed nonscalar routing metadata.
+- Keep the historical strong-model output default for unknown capabilities;
+  a guessed large request can be rejected by smaller endpoints.
+
+## General-purpose work deferred
+
+### Multiple-attempt consensus (`best_of_n`)
+
+`best_of_n` ships in 1.2.0 as an experimental policy. The concept is reusable,
+especially for tasks with canonical, short answers, but these limitations are
+open and should be weighed before relying on it:
+
+1. `context_rewound` is emitted by the new context operation but is not handled
+   by journal replay. Forks/materialization can reconstruct a different context.
+2. Rewinding messages does not isolate tool side effects, artifacts, or mutable
+   tool state. Independence is not guaranteed for arbitrary harnesses.
+3. The saved prefix is a message count; compaction can change the messages at
+   those positions. Store the intended prefix or define a compatible reset.
+4. Whitespace normalization can equate distinct string or code outputs. Answer
+   equivalence needs an explicit contract, not a universal whitespace rule.
+5. Verification sees accumulated run evidence, while the selected answer may
+   come from a different attempt. Define evidence ownership, retries, and
+   budget-exhaustion behavior before claiming the chosen answer is verified.
+
+Follow-up work: a consensus-policy release pass.
+
+### Evaluation-driven keep/revert decisions
+
+*Landed in 1.2.0 as `hiveloom assess` and `evolve --experiment`* — see
+[signal-driven-evolution.md](signal-driven-evolution.md). The contract below is
+what shaped it: McNemar only for paired binary outcomes and the sign test for
+paired metrics; a target stated before measuring; the success rate as a guard
+that no target win overrides; inconclusive kept distinct from refuted and
+reverted by default; the incumbent re-measurable each round. Confirmation on
+held-out evidence remains the operator's job.
+
+The ARC scripts contain reusable ideas: paired per-case comparisons, repeated
+measurements, re-measuring the incumbent, recording inconclusive results,
+tracking diagnostic metrics, and avoiding task selection based on unusually low
+baseline scores. These belong near generic eval comparison/experiment APIs.
+
+Do not move `scripts/decide.py` into the library unchanged. Its sign counts
+support a directional sign test for general numeric scores; calling it McNemar
+is specific to binary paired outcomes. It also permits a diagnostic-metric win
+to keep a candidate when primary quality is inconclusive. Failure to detect a
+regression is not proof that quality was preserved. A general decision contract
+needs explicit metric directions and constraints, case/repetition coverage,
+effect-size requirements, missing-data handling, and an approach to repeated
+searches and multiple metric comparisons. Confirm selected candidates on fresh
+or held-out evidence before making release-quality claims.
+
+
+### Opt-in adaptive output budgets
+
+Automatic budget growth may be useful, but should have an operator-owned,
+frozen ceiling and explicit accounting/replay semantics. It is deliberately
+excluded from this release; users can raise `model.max_tokens` through the CLI.
+
+## ARC-specific work kept out of the package
+
+`evals/arc-agi-2/`, its grid parser, official attempt scoring, dataset fetching,
+training-pair hypothesis tools, validators, protocol arms, and benchmark test
+module stay with the benchmark work, outside the library. The experiment scripts keep their
+benchmark-specific metric names; the generic contract they motivated ships as
+`hiveloom assess` and `evolve --experiment`.
+
+## Compatibility and release notes
+
+- No `harness.yaml` was hand-edited. Frozen evolution paths and approval gates
+  remain enforced.
+- Empty `model.params` is omitted from canonical serialization, preserving
+  existing harness hashes and evidence cohorts.
+- New `model.params` and capability fields are additive. Configurations with
+  invalid capabilities or reserved request fields now fail validation.
+- Callers should recognize the new `truncated` run status; CLI exit code is 4.
+- Known strong-model capabilities can increase generation/evolution output
+  allowances, and proposal repair can make up to three model calls. Executor
+  output budgets remain unchanged.
+- Attempt memory covers every applied evolution — queued or applied directly
+  with `evolve --yes` — each with its measured verdict from `hiveloom assess`
+  or the keep/revert decision of `evolve --experiment`, plus rejected
+  proposals. SDK drivers may still pass their own ledger. History is advice to
+  the proposer, not a guarantee against duplicates or an automatic acceptance
+  decision.
+- Provider-specific parameters are retained by model overrides; switching to a
+  provider with a different request contract may require an operator update.
+- These changes are included in 1.2.0. The complete
+  release notes are in `CHANGELOG.md` under `1.2.0`.
+
+The validation below records the original migration work, not the full 1.2.0
+release validation. No paid provider calls or ARC benchmark runs were made
+during that migration.
+
+### Validation performed
+
+- `uv run pytest --cov --cov-report=term:skip-covered`: 1,274 passed,
+  85.47% coverage (repository threshold: 85%).
+- After the final default-parameter serialization compatibility fix:
+  `uv run pytest tests/test_loader.py tests/test_evolution_reliability.py tests/test_truncated_turns.py`:
+  54 passed.
+- `uv run ruff check .` and `git diff --check` passed.
+- `uv build` produced both sdist and wheel; the wheel includes the evolution
+  contract and guidance, and contains no ARC assets.
+- Isolated-home JSON CLI checks passed: schema emission, validation of
+  `harnesses/example-summarizer`, and its `run --dry-run`.

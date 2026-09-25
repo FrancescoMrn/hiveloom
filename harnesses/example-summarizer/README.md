@@ -1,24 +1,30 @@
 # example-summarizer
 
-Summarizes a text file into a structured JSON object with `title`, `summary`
-and `key_points`.
+> **Proves:** a harness can hold a model to a contract — shape, content and a
+> house style it loads on demand — and send it back with actionable feedback
+> until the output earns a success, rather than accepting the first reply.
 
-This is the harness to read first if you want to see verification working. The
-model gets two builtin tools and a cost ceiling, and its output has to survive
-two independent checks before the run is allowed to succeed:
+Summarizes a text into one JSON object with `title`, `summary` and
+`key_points`, written in the house style.
 
-- **`schemas/output.json`** — a JSON-schema check on the *shape*: the three
-  keys, the right types, no extras.
-- **`validators/check_summary.py`** — a code check on the *content*: the
-  fields carry something, and the summary is genuinely shorter than the source
-  it summarised. A schema cannot express that second one.
+## Capabilities
 
-When either fails, `retry_with_feedback` puts the validator's own message back
-into the conversation and the loop goes again — up to twice. The feedback
-strings are written to be read by a model, which is why they say what to
-change rather than what was wrong.
+- **Two independent verifications** — `schemas/output.json` checks the
+  *shape*; `validators/check_summary.py` checks the *content*: fields carry
+  something, the summary is shorter than its source, and the house style's
+  countable rules hold. ([spec.md](../../docs/spec.md))
+- **Retry with feedback** — a failed check puts the validator's own message
+  back into the conversation, up to twice. The messages say what to change.
+- **Skills, loaded on demand** — `skills/house-style/SKILL.md` stays out of the
+  prompt; only its one-line description is indexed, and the model reads it with
+  the `load_skill` tool when it needs it.
+- **Builtin tools and a tool allowlist** — `file_read`, `file_write`,
+  `load_skill`; `tool_allowlist` refuses anything else.
 
 ## Run it
+
+Live: needs `ANTHROPIC_API_KEY` in `.env` (or any provider via
+`--provider/--model`). A run costs well under a cent.
 
 ```bash
 uv sync                       # install the pinned runtime
@@ -27,19 +33,22 @@ hiveloom validate .
 hiveloom run . --input notes.txt --json
 ```
 
-`notes.txt` ships with the harness, so the command above works as written.
+## What to look for
 
-## Watch verification bite
+- **The skill is read, not pasted.** The trace's first `tool_call` is
+  `load_skill` for `house-style`; the system prompt carries only the skill's
+  description.
+- **Verification that bites.** Each `verification_result` is journalled;
+  when one fails, the next user turn is its feedback, and the model's next
+  answer fixes exactly that.
+- **The output** — a title of at most 8 words and at most 5 key points. Checked live
+  on a small model (Ministral 8B): it loaded the skill and passed both checks
+  first time.
 
-Loosen the prompt and the checks start failing where before they passed:
+## Try this
 
-```bash
-hiveloom set system_prompt "Summarize the file." && hiveloom run . --input notes.txt
-hiveloom stats .              # the two versions, side by side
-```
-
-## Changing it
-
-Do not hand-edit `harness.yaml`. Make changes through the CLI — `hiveloom
-set`, `hiveloom add`, `hiveloom remove` — which validates every mutation and
-rolls back on error.
+- Loosen the prompt and watch the checks catch it:
+  `hiveloom set system_prompt "Summarize the file."`, run again, then
+  `hiveloom stats .` — the two versions side by side.
+- Change a house rule (say, "at most 3 key points") in the skill and the
+  validator, and see the retry loop teach it.

@@ -18,7 +18,9 @@ from hiveloom.evolve.evolver import ApplyResult, MutationProposal
 from hiveloom.evolve.evolver import apply_proposal as evolver_apply_proposal
 from hiveloom.evolve.proposals import (
     _dedup_key,
+    _memory_dedup_key,
     apply_proposal_by_id,
+    create_memory_proposal,
     create_proposal,
     get_proposal,
     list_proposals,
@@ -28,6 +30,7 @@ from hiveloom.generate.llm import FakeStrongModel
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import spec_version_hash
 from hiveloom.spec.loader import load_spec
+from hiveloom.spec.schema import MemoryEntry
 
 
 # --------------------------------------------------------------------------- #
@@ -250,10 +253,10 @@ def test_apply_claim_blocks_a_second_caller_after_both_observed_pending(
         def fake_apply(*_args, **_kwargs):
             apply_calls.append(created.id)
             return ApplyResult(
-                changed=False,
+                changed=True,
                 old_version_hash=created.spec_version_hash,
-                new_version_hash=created.spec_version_hash,
-                counter=0,
+                new_version_hash="deadbeefcafe",
+                counter=1,
             )
 
         monkeypatch.setattr(hive, "get_proposal", stale_get)
@@ -298,6 +301,104 @@ def test_apply_failure_releases_claim_for_retry(tmp_path: Path, monkeypatch):
         assert hive.get_proposal(created.id)["status"] == "pending"
 
 
+def test_an_apply_that_changes_nothing_leaves_the_proposal_pending(tmp_path: Path):
+    """Declining the YAML applies nothing, so the row is not resolved: the
+    lesson stays in the queue to apply, instead of being marked `applied` and
+    then refused as "already applied" on the retry."""
+    harness = _harness(tmp_path)
+    yaml_path = harness / "harness.yaml"
+    before = yaml_path.read_text()
+
+    with Hive(tmp_path / "hive.db") as hive:
+        created = create_proposal(
+            hive,
+            load_spec(harness),
+            harness,
+            _report(),
+            FakeStrongModel([_PROPOSAL_PAYLOAD]),
+            trigger="manual",
+        )
+
+        declined = apply_proposal_by_id(hive, harness, created.id, apply_yaml=False)
+        assert declined.changed is False
+        assert get_proposal(hive, created.id).status == "pending"
+        assert yaml_path.read_text() == before
+
+        # The retry is an ordinary apply, not "already applied".
+        applied = apply_proposal_by_id(hive, harness, created.id, apply_yaml=True)
+        assert applied.changed is True
+        assert get_proposal(hive, created.id).status == "applied"
+
+    assert load_spec(harness).loop.max_turns == 25
+
+
+def test_json_apply_without_yes_refuses_instead_of_resolving_the_row(tmp_path: Path):
+    """`--json` cannot prompt, so applying gated YAML without `--yes` is a
+    usage error (exit 3) — the proposal is still there afterwards."""
+    harness = _harness(tmp_path)
+    yaml_path = harness / "harness.yaml"
+    before = yaml_path.read_text()
+    with Hive() as hive:
+        created = create_proposal(
+            hive,
+            load_spec(harness),
+            harness,
+            _report(),
+            FakeStrongModel([_PROPOSAL_PAYLOAD]),
+            trigger="manual",
+        )
+
+    refused = cli_runner.invoke(
+        cli.app, ["proposals", "apply", str(harness), created.id, "--json"]
+    )
+
+    assert refused.exit_code == ExitCode.SPEC_ERROR
+    payload = json.loads(refused.stdout)
+    assert payload["ok"] is False
+    assert "--yes" in payload["error"]
+    assert yaml_path.read_text() == before
+    with Hive() as hive:
+        assert get_proposal(hive, created.id).status == "pending"
+
+    applied = cli_runner.invoke(
+        cli.app, ["proposals", "apply", str(harness), created.id, "--yes", "--json"]
+    )
+    assert applied.exit_code == ExitCode.OK, applied.stdout
+    with Hive() as hive:
+        assert get_proposal(hive, created.id).status == "applied"
+
+
+def test_interactive_apply_still_asks_and_a_no_keeps_the_proposal(tmp_path: Path):
+    """The prompt path is untouched: answering "n" applies nothing and leaves
+    the row pending for a later yes."""
+    harness = _harness(tmp_path)
+    with Hive() as hive:
+        created = create_proposal(
+            hive,
+            load_spec(harness),
+            harness,
+            _report(),
+            FakeStrongModel([_PROPOSAL_PAYLOAD]),
+            trigger="manual",
+        )
+
+    declined = cli_runner.invoke(
+        cli.app, ["proposals", "apply", str(harness), created.id], input="n\n"
+    )
+    assert declined.exit_code == ExitCode.OK, declined.stdout
+    assert "still pending" in declined.stdout
+    with Hive() as hive:
+        assert get_proposal(hive, created.id).status == "pending"
+
+    accepted = cli_runner.invoke(
+        cli.app, ["proposals", "apply", str(harness), created.id], input="y\n"
+    )
+    assert accepted.exit_code == ExitCode.OK, accepted.stdout
+    assert load_spec(harness).loop.max_turns == 25
+    with Hive() as hive:
+        assert get_proposal(hive, created.id).status == "applied"
+
+
 # --------------------------------------------------------------------------- #
 # reject_proposal
 # --------------------------------------------------------------------------- #
@@ -323,6 +424,112 @@ def test_reject_unknown_id_raises(tmp_path: Path):
     with Hive(tmp_path / "hive.db") as hive:
         with pytest.raises(ProposalQueueError, match="no proposal"):
             reject_proposal(hive, "prop_does_not_exist", "why not")
+
+
+# --------------------------------------------------------------------------- #
+# create_memory_proposal: the executor's model-free path into the same queue
+# --------------------------------------------------------------------------- #
+def _lesson(**overrides) -> MemoryEntry:
+    fields = {
+        "id": "iso-dates",
+        "kind": "rule",
+        "title": "Dates in ISO 8601",
+        "content": "Emit dates as YYYY-MM-DD.",
+    }
+    return MemoryEntry(**{**fields, **overrides})
+
+
+def test_create_memory_proposal_queues_an_append_without_a_model(tmp_path: Path):
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+
+    with Hive(tmp_path / "hive.db") as hive:
+        record = create_memory_proposal(hive, spec, harness, _lesson(), run_id="run_1")
+
+    assert record.status == "pending"
+    assert record.trigger == "executor"
+    assert record.spec_version_hash == spec_version_hash(spec, harness)
+    (change,) = record.proposal.yaml_changes
+    assert change.path == "memory.entries.+"
+    assert change.value["id"] == "iso-dates"
+    assert record.gate.accepted[0].path == "memory.entries.+"
+    assert record.evidence == {"run_id": "run_1", "entry_id": "iso-dates", "kind": "rule"}
+
+
+def test_memory_proposals_dedup_on_the_lesson_not_its_wording(tmp_path: Path):
+    """The dedup slot is keyed on normalized content, so the same lesson under
+    a different id, title or evidence reuses the pending row a reviewer is
+    already looking at."""
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+
+    with Hive(tmp_path / "hive.db") as hive:
+        first = create_memory_proposal(hive, spec, harness, _lesson(), run_id="run_1")
+        second = create_memory_proposal(
+            hive,
+            spec,
+            harness,
+            _lesson(id="dates", title="Use ISO", content="  Emit dates as   YYYY-MM-DD. "),
+            run_id="run_2",
+        )
+        assert len(list_proposals(hive, spec.identity)) == 1
+
+    assert second.id == first.id
+    assert _memory_dedup_key(_lesson()).startswith("mem:")
+
+
+def test_a_memory_proposal_the_gate_refuses_is_never_queued(tmp_path: Path):
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "evolution.mutable", ["system_prompt"])
+    spec = load_spec(harness)
+
+    with Hive(tmp_path / "hive.db") as hive:
+        with pytest.raises(ProposalQueueError, match="refused by the gate"):
+            create_memory_proposal(hive, spec, harness, _lesson(), run_id="run_1")
+        assert list_proposals(hive, spec.identity) == []
+
+
+def test_an_executor_row_is_reviewed_and_applied_like_any_other(tmp_path: Path):
+    """`proposals list/show/apply` take no notice of the trigger: an executor
+    row goes through the same gate, validation and rollback as an evolved one.
+    """
+    harness = _harness(tmp_path)
+    with Hive() as hive:
+        record = create_memory_proposal(
+            hive, load_spec(harness), harness, _lesson(), run_id="run_1"
+        )
+
+    listed = cli_runner.invoke(cli.app, ["proposals", "list", str(harness), "--json"])
+    assert [p["trigger"] for p in json.loads(listed.stdout)["proposals"]] == ["executor"]
+    shown = cli_runner.invoke(
+        cli.app, ["proposals", "show", str(harness), record.id, "--json"]
+    )
+    assert json.loads(shown.stdout)["proposal"]["yaml_changes"][0]["path"] == (
+        "memory.entries.+"
+    )
+    applied = cli_runner.invoke(
+        cli.app, ["proposals", "apply", str(harness), record.id, "--yes", "--json"]
+    )
+    assert applied.exit_code == ExitCode.OK, applied.stdout
+    assert [e.id for e in load_spec(harness).memory.entries] == ["iso-dates"]
+
+
+def test_an_executor_row_can_be_rejected_and_nothing_is_written(tmp_path: Path):
+    harness = _harness(tmp_path)
+    before = (harness / "harness.yaml").read_text()
+    with Hive() as hive:
+        record = create_memory_proposal(
+            hive, load_spec(harness), harness, _lesson(), run_id="run_1"
+        )
+
+    rejected = cli_runner.invoke(
+        cli.app,
+        ["proposals", "reject", str(harness), record.id, "--reason", "not durable", "--json"],
+    )
+
+    assert rejected.exit_code == ExitCode.OK, rejected.stdout
+    assert json.loads(rejected.stdout)["status"] == "rejected"
+    assert (harness / "harness.yaml").read_text() == before
 
 
 # --------------------------------------------------------------------------- #
@@ -529,3 +736,107 @@ def test_cli_approve_code_strips_whitespace_and_drops_empty_entries(
 
     assert result.exit_code == ExitCode.SPEC_ERROR
     assert captured == [{"a.py", "b.py"}]
+
+
+# --------------------------------------------------------------------------- #
+# Appending memory: `memory.entries.+` and the staleness guard around it
+# --------------------------------------------------------------------------- #
+def _append_payload(entry_id: str) -> str:
+    """A proposing model's answer: one lesson appended with `+`."""
+    return json.dumps(
+        {
+            "rationale": f"remember {entry_id}",
+            "yaml_changes": [
+                {
+                    "path": "memory.entries.+",
+                    "value": {
+                        "id": entry_id,
+                        "kind": "rule",
+                        "title": entry_id,
+                        "content": f"Remember {entry_id}.",
+                        "source": "evolve",
+                    },
+                }
+            ],
+        }
+    )
+
+
+def _distinct_report(note: str):
+    """The same failure state under a different operator finding — a different
+    dedup key, so two proposals queue against one spec version."""
+    return _report().model_copy(update={"analyst_notes": [note]})
+
+
+def test_two_memory_appends_queued_against_one_version_both_apply(tmp_path: Path):
+    """The first apply moves the version hash. An append says *what* it does,
+    not where it lands, so the second still applies — and composes with the
+    first instead of replacing it."""
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+    model = FakeStrongModel([_append_payload("iso-dates"), _append_payload("trim-space")])
+
+    with Hive(tmp_path / "hive.db") as hive:
+        first = create_proposal(
+            hive, spec, harness, _distinct_report("dates"), model, trigger="manual"
+        )
+        second = create_proposal(
+            hive, spec, harness, _distinct_report("whitespace"), model, trigger="manual"
+        )
+        assert first.spec_version_hash == second.spec_version_hash
+
+        assert apply_proposal_by_id(hive, harness, first.id, apply_yaml=True).changed
+        assert apply_proposal_by_id(hive, harness, second.id, apply_yaml=True).changed
+        assert [get_proposal(hive, r.id).status for r in (first, second)] == [
+            "applied",
+            "applied",
+        ]
+
+    assert [e.id for e in load_spec(harness).memory.entries] == ["iso-dates", "trim-space"]
+
+
+def test_a_non_append_proposal_is_still_refused_once_the_harness_moves(tmp_path: Path):
+    """The exemption is exactly as wide as the reason for it: anything that is
+    not a pure memory append still has to be regenerated."""
+    harness = _harness(tmp_path)
+    spec = load_spec(harness)
+    model = FakeStrongModel([_append_payload("iso-dates"), _PROPOSAL_PAYLOAD])
+
+    with Hive(tmp_path / "hive.db") as hive:
+        lesson = create_proposal(
+            hive, spec, harness, _distinct_report("dates"), model, trigger="manual"
+        )
+        turns = create_proposal(hive, spec, harness, _report(), model, trigger="manual")
+        apply_proposal_by_id(hive, harness, lesson.id, apply_yaml=True)
+
+        with pytest.raises(ProposalQueueError, match="regenerate"):
+            apply_proposal_by_id(hive, harness, turns.id, apply_yaml=True)
+        assert get_proposal(hive, turns.id).status == "pending"
+
+    assert load_spec(harness).loop.max_turns != 25
+
+
+def test_an_append_that_no_longer_fits_is_refused_at_apply(tmp_path: Path):
+    """Applying against a newer version is not applying unchecked: the gate and
+    full re-validation run at apply, so a store that filled up in the meantime
+    refuses the append and leaves `harness.yaml` untouched."""
+    harness = _harness(tmp_path)
+    construct.set_value(harness, "memory.max_entries", 1)
+
+    with Hive(tmp_path / "hive.db") as hive:
+        record = create_memory_proposal(
+            hive, load_spec(harness), harness, _lesson(), run_id="run_1"
+        )
+        # Out-of-band: a reviewer adds the one entry this harness may hold.
+        construct.add_memory_entry(harness, kind="fact", title="Nulls", content="Null is null.")
+        before = (harness / "harness.yaml").read_text()
+
+        result = apply_proposal_by_id(hive, harness, record.id, apply_yaml=True)
+
+        assert result.changed is False
+        assert "max_entries" in result.rejected[0]["reason"]
+        # Nothing landed, so the row is still there to reject or re-queue.
+        assert get_proposal(hive, record.id).status == "pending"
+
+    assert (harness / "harness.yaml").read_text() == before
+    assert [e.id for e in load_spec(harness).memory.entries] == ["nulls"]

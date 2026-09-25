@@ -181,6 +181,9 @@ def test_run_sync_success_matches_run_result_payload(tmp_path: Path):
         "provider_calls",
         "execution",
         "steps",
+        "delegations",
+        "referrals",
+        "delegated_cost_usd",
     }
 
 
@@ -211,6 +214,9 @@ def test_run_sync_verify_failed_is_still_200(tmp_path: Path):
         "provider_calls",
         "execution",
         "steps",
+        "delegations",
+        "referrals",
+        "delegated_cost_usd",
     }
 
 
@@ -694,6 +700,55 @@ def test_set_ordinary_path_still_succeeds(tmp_path: Path):
         )
     assert r.status_code == 200
     assert load_spec(harness).system_prompt == "Be helpful."
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["memory", "memory.enabled", "memory.max_entries", "memory.max_entry_chars",
+     "memory.prompt_budget_chars"],
+)
+def test_set_refuses_the_memory_budgets_over_http(tmp_path: Path, path: str):
+    """The memory budgets are in ALWAYS_FROZEN, so `_FROZEN_ROOTS` picks them
+    up for free: a `mutate` token cannot raise the ceiling on how much prompt
+    a harness's remembered lessons occupy, or hide them by disabling the
+    section, any more than evolution can. `memory` itself is refused because
+    rewriting the parent mapping would replace those frozen children."""
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    with TestClient(app) as client:
+        r = client.post("/set", json={"path": path, "value": 4}, headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["ok"] is False
+
+
+def test_set_allows_curating_memory_entries_over_http(tmp_path: Path):
+    """`memory.entries` is deliberately NOT frozen over the control plane.
+
+    It is content, not code: a remembered lesson is prose rendered into the
+    system prompt, the same class of thing as `system_prompt` itself, which a
+    `mutate` token may already set. Operators legitimately curate memory on a
+    deployed harness — drop a lesson that stopped paying, add one a review
+    concluded — and the schema still bounds the result, so the worst a token
+    can do here is what it could already do through `system_prompt`. This test
+    pins the boundary so widening or narrowing it is a deliberate edit.
+    """
+    harness = _harness(tmp_path)
+    app = create_app(harness)
+    _, token = _authorize(harness, ["mutate"])
+    entry = {
+        "id": "iso-dates",
+        "kind": "rule",
+        "title": "Dates in ISO 8601",
+        "content": "Emit dates as YYYY-MM-DD.",
+    }
+    with TestClient(app) as client:
+        r = client.post(
+            "/set", json={"path": "memory.entries", "value": [entry]},
+            headers=_bearer(token),
+        )
+    assert r.status_code == 200
+    assert [e.id for e in load_spec(harness).memory.entries] == ["iso-dates"]
 
 
 # --------------------------------------------------------------------------- #

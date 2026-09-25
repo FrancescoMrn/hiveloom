@@ -298,6 +298,7 @@ def test_build_registry_from_spec(tmp_path: Path):
         "http_get",
         "read_tool_result",
         "search_tool_result",
+        "transform_result",
     }
     payload = registry.anthropic_payload()
     assert all("input_schema" in t for t in payload)
@@ -346,3 +347,150 @@ def test_no_network_write_tag_present_on_builtins(tmp_path: Path):
 def test_builtin_tool_ref_direct():
     ref = BuiltinToolRef(builtin="file_read")
     assert ref.params() == {}
+
+
+# --------------------------------------------------------------------------- #
+# Handle-typed tool parameters
+# --------------------------------------------------------------------------- #
+_HANDLE = "tr_0123456789abcdef"
+
+
+def _handle_registry(tmp_path: Path) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(FileWriteTool(tmp_path))
+    return registry
+
+
+def _resolver(text: str = "the whole stored object"):
+    def resolve(handle: str, max_bytes: int) -> str:
+        assert handle == _HANDLE
+        if len(text.encode("utf-8")) > max_bytes:
+            raise ToolError(f"'{handle}' is too large to expand")
+        return text
+
+    return resolve
+
+
+def test_file_write_declares_content_as_handle_capable(tmp_path: Path):
+    assert FileWriteTool(tmp_path).handle_params == ("content",)
+
+
+def test_a_handle_argument_is_expanded_from_private_storage(tmp_path: Path):
+    registry = _handle_registry(tmp_path)
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_write", input={"path": "out.txt", "content": _HANDLE}),
+        resolve_handle=_resolver(),
+    )
+
+    assert not result.is_error
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "the whole stored object"
+
+
+def test_a_value_that_is_not_a_handle_is_written_literally(tmp_path: Path):
+    registry = _handle_registry(tmp_path)
+    registry.dispatch(
+        ToolCall(
+            id="1",
+            name="file_write",
+            input={"path": "out.txt", "content": "tr_notahandle and prose"},
+        ),
+        resolve_handle=_resolver(),
+    )
+
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "tr_notahandle and prose"
+
+
+def test_an_unresolvable_handle_is_an_error_not_a_literal(tmp_path: Path):
+    # Writing the token itself because the object behind it could not be read
+    # is the one outcome indistinguishable from success.
+    def refuse(handle: str, _max_bytes: int) -> str:
+        raise ToolError(f"unknown handle '{handle}'")
+
+    registry = _handle_registry(tmp_path)
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_write", input={"path": "out.txt", "content": _HANDLE}),
+        resolve_handle=refuse,
+    )
+
+    assert result.is_error
+    assert "unknown handle" in result.content
+    assert not (tmp_path / "out.txt").exists()
+
+
+def test_a_handle_without_a_store_is_refused(tmp_path: Path):
+    registry = _handle_registry(tmp_path)
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_write", input={"path": "out.txt", "content": _HANDLE})
+    )
+
+    assert result.is_error
+    assert "no stored results" in result.content
+
+
+def test_an_expansion_is_capped(tmp_path: Path):
+    from hiveloom.tools.registry import MAX_HANDLE_ARG_BYTES
+
+    registry = _handle_registry(tmp_path)
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_write", input={"path": "out.txt", "content": _HANDLE}),
+        resolve_handle=_resolver("x" * (MAX_HANDLE_ARG_BYTES + 1)),
+    )
+
+    assert result.is_error
+    assert "too large to expand" in result.content
+
+
+def test_a_code_tool_declares_handle_parameters_on_the_decorator():
+    from hiveloom.tools import tool
+
+    @tool(description="Index a document.", handles=["text", "missing"])
+    def index(text: str, label: str = "") -> str:
+        return f"{label}:{len(text)}"
+
+    wrapped = FunctionTool(index, name="index", description="d", tags=[])
+    # Only declared parameters that actually exist become handle-capable.
+    assert wrapped.handle_params == ("text",)
+
+    registry = ToolRegistry()
+    registry.register(wrapped)
+    result = registry.dispatch(
+        ToolCall(id="1", name="index", input={"text": _HANDLE, "label": _HANDLE}),
+        resolve_handle=_resolver("abcde"),
+    )
+    # ...and an undeclared parameter keeps the literal it was given.
+    assert result.content == f"{_HANDLE}:5"
+
+
+def test_a_tool_without_handle_parameters_is_untouched(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.register(FileReadTool(tmp_path))
+
+    def explode(_handle: str, _max_bytes: int) -> str:
+        raise AssertionError("no parameter declares a handle")
+
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_read", input={"path": _HANDLE}), resolve_handle=explode
+    )
+    assert result.is_error  # no such file — but the resolver was never consulted
+
+
+def test_transforms_can_be_switched_off_for_a_control_arm(tmp_path: Path):
+    """`tool_results.transforms: false` leaves only the two readers registered.
+
+    The loop activates the spill tools by name, so a tool that was never
+    registered is never offered — no loop-side switch is needed.
+    """
+    from hiveloom import construct
+    from hiveloom.spec.loader import load_spec
+
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="ctl", task="T")
+    construct.add_tool(directory, builtin="file_read")
+    construct.set_value(directory, "context.tool_results.transforms", False)
+    registry = build_registry(load_spec(directory), directory)
+    assert "transform_result" not in registry.names()
+    assert {"read_tool_result", "search_tool_result"} <= set(registry.names())
+    assert registry.activate(["read_tool_result", "search_tool_result", "transform_result"]) == [
+        "read_tool_result",
+        "search_tool_result",
+    ]

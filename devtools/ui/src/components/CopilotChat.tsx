@@ -5,7 +5,7 @@ import { api } from '../api'
 import { runLabel } from '../runs'
 import type { Artifact, Attachment, CopilotInfo, Harness, RunRow } from '../types'
 import type { CopilotWorkspace } from '../useCopilot'
-import { MessageBody } from './Chat'
+import { DelegationTrail, MessageBody } from './messages'
 import { StatusPill } from './common'
 
 const ARTIFACT_LABELS: Record<string, { icon: string; title: string }> = {
@@ -38,6 +38,7 @@ export function CopilotChat({
   onModel,
   onArtifact,
   onDetachRun,
+  onOpenRun,
 }: {
   info: CopilotInfo | null
   harness: Harness | null
@@ -48,6 +49,8 @@ export function CopilotChat({
   onModel: (model: string) => void
   onArtifact: (artifact: Artifact) => void
   onDetachRun: () => void
+  /** Navigate to a run id (a delegated child run); the trail is hidden without it. */
+  onOpenRun?: (runId: string) => void
 }) {
   const empty = workspace.messages.length === 0
   const [draft, setDraft] = useState('')
@@ -145,11 +148,19 @@ export function CopilotChat({
                     ))}
                   </div>
                 )}
+                {message.result && onOpenRun && (
+                  <DelegationTrail result={message.result} onOpenRun={onOpenRun} />
+                )}
                 {message.result && (
                   <div className="copilot-run-meta mono">
                     <StatusPill status={message.result.status} />
                     <span>{message.result.turns} turns</span>
                     <span>${message.result.cost_usd.toFixed(4)}</span>
+                    {(message.result.delegated_cost_usd ?? 0) > 0 && (
+                      <span className="delegated-cost">
+                        incl. ${message.result.delegated_cost_usd!.toFixed(4)} delegated
+                      </span>
+                    )}
                     <span>{message.result.duration_seconds.toFixed(1)}s</span>
                   </div>
                 )}

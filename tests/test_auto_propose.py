@@ -29,7 +29,11 @@ from hiveloom.spec.loader import load_spec
 _NEW_ISSUE = "brand new different issue"  # a signature the seeded proposal has not seen
 
 _PAYLOAD = json.dumps(
-    {"rationale": "seed", "yaml_changes": [{"path": "loop.max_turns", "value": 10}]}
+    {
+        "rationale": "seed",
+        "target": {"signal": "success_rate", "expect": "increase"},
+        "yaml_changes": [{"path": "loop.max_turns", "value": 10}],
+    }
 )
 
 
@@ -200,6 +204,7 @@ def test_ungateable_auto_proposal_records_attempt_and_is_not_repaid(tmp_path: Pa
     invalid_payload = json.dumps(
         {
             "rationale": "switch policy",
+            "target": {"signal": "success_rate", "expect": "increase"},
             "yaml_changes": [{"path": "loop.policy", "value": "sequential_steps"}],
         }
     )
@@ -221,3 +226,30 @@ def test_ungateable_auto_proposal_records_attempt_and_is_not_repaid(tmp_path: Pa
     _write_failure(hive_path, tmp_path, harness, "run_bad2", "same issue", now)
     _maybe_auto_propose(spec, harness, _fail_result(), hive_path, strong_model=model)
     assert len(model.prompts) == 1
+
+
+def test_a_run_inside_an_eval_batch_never_drafts(tmp_path: Path):
+    """An eval batch is a measurement in progress; no paid draft from its cells."""
+    harness = _harness(tmp_path, min_failures=1)
+    hive_path = tmp_path / "hive.db"
+    now_iso = datetime.now(UTC).isoformat()
+    for i in range(3):
+        _write_failure(hive_path, tmp_path, harness, f"run_{i}", _NEW_ISSUE, now_iso)
+
+    model = FakeStrongModel([_PAYLOAD])
+    _maybe_auto_propose(
+        load_spec(harness),
+        harness,
+        _fail_result(),
+        hive_path,
+        strong_model=model,
+        context={"eval_run_id": "eval_x", "eval_cell_id": "cell_1"},
+    )
+    with Hive(hive_path) as hive:
+        assert hive.list_proposals(harness_name=load_spec(harness).identity) == []
+    assert model.prompts == []
+
+    # The same failures outside an eval batch do draft: the guard, not the setup.
+    _maybe_auto_propose(load_spec(harness), harness, _fail_result(), hive_path, strong_model=model)
+    with Hive(hive_path) as hive:
+        assert len(hive.list_proposals(harness_name=load_spec(harness).identity)) == 1

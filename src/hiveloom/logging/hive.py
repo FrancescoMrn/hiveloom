@@ -76,8 +76,10 @@ CREATE TABLE IF NOT EXISTS runs (
     trace_path TEXT,
     trace_pruned_at TEXT,
     parent_run_id TEXT,
+    lineage_kind TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
+    off_spec_swap INTEGER,
     task TEXT,
     output TEXT
 );
@@ -102,7 +104,11 @@ CREATE TABLE IF NOT EXISTS evolutions (
     new_version_hash TEXT,
     counter INTEGER,
     rationale TEXT,
-    created_at TEXT
+    created_at TEXT,
+    proposal_id TEXT,
+    prediction_json TEXT,
+    changes_json TEXT,
+    decision_json TEXT
 );
 CREATE TABLE IF NOT EXISTS proposals (
     id TEXT PRIMARY KEY,
@@ -213,7 +219,13 @@ CREATE TABLE IF NOT EXISTS run_steps (
     violations_json TEXT NOT NULL,
     PRIMARY KEY (run_id, step_id)
 );
+CREATE TABLE IF NOT EXISTS run_features (
+    run_id TEXT NOT NULL,
+    feature TEXT NOT NULL,
+    PRIMARY KEY (run_id, feature)
+);
 CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(harness_name);
+CREATE INDEX IF NOT EXISTS idx_run_features_feature ON run_features(feature);
 CREATE INDEX IF NOT EXISTS idx_verifications_run ON verifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_guardrail_run ON guardrail_triggers(run_id);
 CREATE INDEX IF NOT EXISTS idx_playbook_visits_run ON playbook_visits(run_id);
@@ -233,6 +245,17 @@ CREATE INDEX IF NOT EXISTS idx_friction_fingerprint ON friction_events(fingerpri
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
     ON proposals(harness_name, spec_version_hash, dedup_key) WHERE status='pending';
 """
+
+
+#: A run that executed the harness as declared: no model swap from outside the
+#: spec. Declared playbook routing (a playbook with its own model) is the spec,
+#: not a swap. Rows ingested before ``off_spec_swap`` existed fall back to the
+#: model-path test, which cannot tell routing from a swap. ``{t}`` is the table
+#: alias prefix ("" or "r.").
+_ON_SPEC_SQL = (
+    "({t}off_spec_swap = 0 OR ({t}off_spec_swap IS NULL AND "
+    "({t}model_path IS NULL OR {t}model_path NOT LIKE '%>%')))"
+)
 
 
 def _friction_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -276,6 +299,109 @@ def _friction_filters(
         where.append("r.harness_version_hash=?")
         params.append(version)
     return where, params
+
+
+#: Marker every run indexed with features carries, so a population can tell a
+#: run that has no features from one ingested before features existed.
+FEATURES_INDEXED = "_indexed"
+#: Bound on one run's feature set: features are a vocabulary for contrast, and
+#: a run that calls hundreds of distinct tools must not grow the index without
+#: limit.
+_MAX_RUN_FEATURES = 200
+#: Friction categories that restate how a run ended rather than describe what
+#: happened on the way. As features they would "explain" failure by definition
+#: (every max_turns run hit the loop limit), so the contrast leaves them to the
+#: failure clusters, where they already are.
+OUTCOME_DEFINING_FRICTION = frozenset(
+    {"loop_limit", "guardrail_halt", "output_validation", "verifier_failure"}
+)
+# Task-size buckets. Coarse on purpose: a feature is a yes/no fact about a run,
+# and three buckets are enough to tell "fails on long inputs" from the rest.
+_INPUT_BUCKETS = ((400, "short"), (2000, "medium"))
+
+
+def _feature_token(value: Any) -> str:
+    """One feature name segment: short, single-line, no separators to forge."""
+    text = " ".join(str(value or "").split())[:80]
+    return text.replace(":", "_").replace("@", "_") or "?"
+
+
+def derive_features(
+    events: list[dict[str, Any]], friction: list[tuple[Any, ...]]
+) -> list[str]:
+    """Yes/no facts about one run, for contrasting runs that failed with runs that did not.
+
+    Each feature names something the harness did or met on the way — a tool
+    it called or that errored, a step it violated, a playbook it entered, a
+    memory entry it was shown, a peer it delegated to, the executor it ran on,
+    how long its task was — never the outcome itself (see
+    :data:`OUTCOME_DEFINING_FRICTION`). The names are namespaced
+    ``family:detail`` so the signal locator can map each one to the part of the
+    spec that could change it. Built from the already-redacted journal and the
+    friction rows, and holding names only: no tool input, output or model text.
+    """
+    features: set[str] = {FEATURES_INDEXED}
+    for event in events:
+        etype = event.get("type")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        if etype == "run_started":
+            task = payload.get("input")
+            if isinstance(task, str):
+                size = next(
+                    (label for limit, label in _INPUT_BUCKETS if len(task) < limit), "long"
+                )
+                features.add(f"input:{size}")
+        elif etype == "tool_call":
+            features.add(f"tool:{_feature_token(payload.get('name'))}")
+        elif etype == "tool_result" and payload.get("is_error"):
+            features.add(f"tool_error:{_feature_token(payload.get('name'))}")
+        elif etype == "tool_spilled":
+            features.add(f"spilled:{_feature_token(payload.get('name'))}")
+        elif etype == "playbook_switch" and payload.get("ok"):
+            features.add(f"playbook:{_feature_token(payload.get('to'))}")
+        elif etype == "note_written":
+            features.add("notes:written")
+        elif etype == "memory_proposed":
+            features.add("memory:proposed")
+        elif etype == "memory_selected":
+            for entry_id in payload.get("ids") or []:
+                features.add(f"memory:{_feature_token(entry_id)}")
+        elif etype == "run_finished":
+            execution = payload.get("execution")
+            if isinstance(execution, dict):
+                model = execution.get("effective_model") or execution.get("requested_model")
+                if model:
+                    features.add(f"model:{_feature_token(model)}")
+            for step in payload.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                step_id = _feature_token(step.get("id"))
+                if step.get("violations"):
+                    features.add(f"step_violation:{step_id}")
+                if step.get("status") in ("failed", "pending"):
+                    features.add(f"step:{step_id}:{_feature_token(step.get('status'))}")
+            for record in payload.get("delegations") or []:
+                if isinstance(record, dict):
+                    features.add(
+                        f"delegation:{_feature_token(record.get('harness'))}:"
+                        f"{_feature_token(record.get('status'))}"
+                    )
+            if payload.get("referrals"):
+                features.add("delegation:referral")
+    for row in friction:
+        category, component = row[2], row[5]
+        if category in OUTCOME_DEFINING_FRICTION:
+            continue
+        features.add(f"friction:{_feature_token(category)}")
+        if component:
+            features.add(f"friction:{_feature_token(category)}@{_feature_token(component)}")
+    ordered = sorted(features)
+    if len(ordered) > _MAX_RUN_FEATURES:
+        ordered = [FEATURES_INDEXED, *[f for f in ordered if f != FEATURES_INDEXED]]
+        ordered = ordered[:_MAX_RUN_FEATURES]
+    return ordered
 
 
 def default_db_path() -> Path:
@@ -322,8 +448,16 @@ class Hive:
             existing.remove("session_id")
         for column, decl in (
             ("parent_run_id", "TEXT"),
+            # What kind of child this run is: "fork" (re-entered a parent's
+            # journal) or "delegation" (a peer harness ran it). Both hang off
+            # parent_run_id, and telling them apart is the whole point.
+            ("lineage_kind", "TEXT"),
             ("forked_at_seq", "INTEGER"),
             ("model_path", "TEXT"),
+            # 1 when the executor changed mid-run by something other than the
+            # spec's own playbook routing; NULL for rows ingested before this
+            # was recorded (queries then fall back to the model-path test).
+            ("off_spec_swap", "INTEGER"),
             ("task", "TEXT"),
             ("harness_id", "TEXT"),
             ("harness_key", "TEXT"),
@@ -362,6 +496,18 @@ class Hive:
         }
         if "evidence_json" not in proposal_columns:
             self._conn.execute("ALTER TABLE proposals ADD COLUMN evidence_json TEXT")
+        # What an evolution predicted, what it changed, and what a measured
+        # experiment decided: the link from a proposal to its outcome.
+        evolution_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(evolutions)")
+        }
+        for column in ("proposal_id", "prediction_json", "changes_json", "decision_json"):
+            if column not in evolution_columns:
+                try:
+                    self._conn.execute(f"ALTER TABLE evolutions ADD COLUMN {column} TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc):
+                        raise
 
     def _alter_runs(self, clause: str, *, benign_error: str) -> None:
         """Apply one migration step, tolerating a concurrent connection winning it.
@@ -558,8 +704,10 @@ class Hive:
             "trace_path": trace_path,
             "trace_pruned_at": None,
             "parent_run_id": None,
+            "lineage_kind": None,
             "forked_at_seq": None,
             "model_path": "",
+            "off_spec_swap": 0,
             "task": None,
             "requested_provider": "",
             "requested_model": "",
@@ -587,6 +735,11 @@ class Hive:
                 if isinstance(lineage, dict):
                     row["parent_run_id"] = lineage.get("parent_run_id") or None
                     row["forked_at_seq"] = lineage.get("forked_at_seq")
+                    kind = lineage.get("kind")
+                    if not kind and row["parent_run_id"]:
+                        # Pre-delegation journals only ever recorded forks.
+                        kind = "fork"
+                    row["lineage_kind"] = kind or None
             elif etype == "run_finished":
                 row["status"] = payload.get("status", "incomplete")
                 row["turns"] = payload.get("turns", 0)
@@ -645,6 +798,8 @@ class Hive:
                         payload.get("hook", ""),
                     )
                 )
+            elif etype == "model_swap" and payload.get("source") != "playbook":
+                row["off_spec_swap"] = 1
             elif etype == "playbook_switch":
                 visits.append(
                     (
@@ -664,17 +819,20 @@ class Hive:
         cur.execute("DELETE FROM playbook_visits WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM friction_events WHERE run_id=?", (run_id,))
         cur.execute("DELETE FROM run_steps WHERE run_id=?", (run_id,))
+        cur.execute("DELETE FROM run_features WHERE run_id=?", (run_id,))
         cur.execute(
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "parent_run_id, forked_at_seq, model_path, task, requested_provider, "
+            "parent_run_id, lineage_kind, forked_at_seq, model_path, off_spec_swap, task, "
+            "requested_provider, "
             "requested_model, effective_provider, effective_model, execution_fingerprint, "
             "trace_pruned_at, output) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":parent_run_id, :forked_at_seq, :model_path, :task, :requested_provider, "
+            ":parent_run_id, :lineage_kind, :forked_at_seq, :model_path, :off_spec_swap, :task, "
+            ":requested_provider, "
             ":requested_model, :effective_provider, :effective_model, "
             ":execution_fingerprint, :trace_pruned_at, :output)",
             row,
@@ -694,11 +852,16 @@ class Hive:
             "VALUES (?, ?, ?, ?, ?, ?)",
             visits,
         )
+        friction = self._derive_friction(run_id, events, row)
         cur.executemany(
             "INSERT INTO friction_events (run_id, seq, category, phase, attempt, "
             "component, fingerprint, recovered, timestamp, summary) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            self._derive_friction(run_id, events, row),
+            friction,
+        )
+        cur.executemany(
+            "INSERT OR IGNORE INTO run_features (run_id, feature) VALUES (?, ?)",
+            [(run_id, feature) for feature in derive_features(events, friction)],
         )
         cur.executemany(
             "INSERT INTO run_steps (run_id, step_id, step_index, instruction, status, "
@@ -819,6 +982,18 @@ class Hive:
                     component=str(payload.get("name") or "tool"),
                     summary="tool call was not executed because its arguments were truncated",
                 )
+            elif etype == "turn_truncated":
+                add(
+                    event,
+                    "output_truncated",
+                    component="max_tokens",
+                    summary=(
+                        "turn hit the output ceiling with no answer and no tool call"
+                    ),
+                    # A later turn is not proof of recovery; only a successful
+                    # final result establishes it for the indexed evidence.
+                    recovered=run["status"] == "success",
+                )
             elif etype == "context_overflow_recovery":
                 add(
                     event,
@@ -863,6 +1038,14 @@ class Hive:
             previous_type = etype
 
         finished = ordered[-1] if ordered else {"seq": 0, "timestamp": None}
+        if run["status"] == "truncated":
+            add(
+                finished,
+                "output_truncated",
+                component="max_tokens",
+                summary=str(run.get("reason") or "run stopped: repeated truncated turns"),
+                recovered=False,
+            )
         if run["status"] == "max_turns":
             add(
                 finished,
@@ -901,9 +1084,12 @@ class Hive:
 
         A ``model_path`` naming exactly one model is not a swap — that is
         every ordinary run, including every run recorded before 1.0 (whose
-        ``model_path`` is empty).
+        ``model_path`` is empty). Nor is declared playbook routing: a playbook
+        that names its own model is part of the spec, so its ``model_swap``
+        (``source: playbook``) leaves the run in its bucket. Only a swap from
+        outside the spec (an operator, a control request) holds a run out.
         """
-        clause = "" if include_swapped else " AND (model_path IS NULL OR model_path NOT LIKE '%>%')"
+        clause = "" if include_swapped else f" AND {_ON_SPEC_SQL.format(t='')}"
         rows = self._conn.execute(
             "SELECT harness_version_hash AS version, "
             "COUNT(*) AS runs, "
@@ -918,7 +1104,7 @@ class Hive:
             row["version"]: row["n"]
             for row in self._conn.execute(
                 "SELECT harness_version_hash AS version, COUNT(*) AS n FROM runs "
-                "WHERE harness_key=? AND model_path LIKE '%>%' "
+                f"WHERE harness_key=? AND NOT {_ON_SPEC_SQL.format(t='')} "
                 "GROUP BY harness_version_hash",
                 (harness_key,),
             )
@@ -1354,13 +1540,32 @@ class Hive:
             ancestors.append(parent)
             cursor = parent.get("parent_run_id")
 
-        forks = [
+        children = self.children(run_id)
+        return {
+            "run": run,
+            "ancestors": ancestors,
+            # Historically forks only; a delegated child hangs off the same
+            # parent link, so it belongs in the same tree. `lineage_kind` on
+            # each row says which kind it is.
+            "forks": children,
+            "children": children,
+        }
+
+    def children(self, run_id: str, *, kind: str | None = None) -> list[dict[str, Any]]:
+        """Runs started from this one: forks, delegated peer runs, or both.
+
+        One indexed lookup on ``parent_run_id`` — cheap enough for a trace
+        summary to ask on every display.
+        """
+        sql = "SELECT * FROM runs WHERE parent_run_id=?"
+        params: list[Any] = [run_id]
+        if kind is not None:
+            sql += " AND lineage_kind=?"
+            params.append(kind)
+        return [
             dict(row)
-            for row in self._conn.execute(
-                "SELECT * FROM runs WHERE parent_run_id=? ORDER BY started_at", (run_id,)
-            )
+            for row in self._conn.execute(sql + " ORDER BY started_at", params)
         ]
-        return {"run": run, "ancestors": ancestors, "forks": forks}
 
     def search_runs(
         self, query: str, *, harness_key: str | None = None, limit: int = 50
@@ -1393,6 +1598,126 @@ class Hive:
     # ------------------------------------------------------------------ #
     # Comparison
     # ------------------------------------------------------------------ #
+    def feature_population(
+        self,
+        harness_key: str,
+        *,
+        version: str | None = None,
+        include_swapped: bool = False,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Every finished run of a harness with its outcome label and features.
+
+        The input to signal location: one row per run, newest first, carrying
+        ``failed`` — a non-success status, *or* a success the world later
+        labelled a failure (``hiveloom outcome``), because a run that passed
+        its validators and was wrong anyway is exactly the failure validators
+        cannot see — and the run's :func:`derive_features` set. Swapped-model
+        runs are held out by default for the reason :meth:`version_stats`
+        gives. ``indexed`` is False for a run ingested before features
+        existed, so a caller can report coverage instead of reading its empty
+        feature set as "did nothing".
+        """
+        query = (
+            "SELECT r.run_id, r.status, r.cost_usd, r.turns, r.harness_version_hash, "
+            "r.finished_at, o.outcome FROM runs r "
+            "LEFT JOIN run_outcomes o ON o.run_id = r.run_id "
+            "WHERE r.harness_key=? AND r.status != 'incomplete' AND r.finished_at IS NOT NULL"
+        )
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        if not include_swapped:
+            query += f" AND {_ON_SPEC_SQL.format(t='r.')}"
+        query += " ORDER BY r.finished_at DESC LIMIT ?"
+        params.append(limit)
+        rows = [dict(row) for row in self._conn.execute(query, params)]
+        if not rows:
+            return []
+        features: dict[str, set[str]] = {row["run_id"]: set() for row in rows}
+        run_ids = list(features)
+        for start in range(0, len(run_ids), 500):
+            chunk = run_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            for item in self._conn.execute(
+                f"SELECT run_id, feature FROM run_features WHERE run_id IN ({placeholders})",
+                chunk,
+            ):
+                features[item["run_id"]].add(item["feature"])
+        population = []
+        for row in rows:
+            run_features = features[row["run_id"]]
+            population.append(
+                {
+                    "run_id": row["run_id"],
+                    "version": row["harness_version_hash"],
+                    "status": row["status"],
+                    "outcome": row["outcome"],
+                    "failed": row["status"] != "success" or row["outcome"] == "failure",
+                    "cost_usd": row["cost_usd"] or 0.0,
+                    "turns": row["turns"] or 0,
+                    "indexed": FEATURES_INDEXED in run_features,
+                    "features": run_features - {FEATURES_INDEXED},
+                }
+            )
+        return population
+
+    def friction_by_component(
+        self, harness_key: str, *, version: str | None = None, include_swapped: bool = False
+    ) -> list[dict[str, Any]]:
+        """Friction counted per ``(category, component)``: the countable mechanisms.
+
+        :meth:`friction_summary` answers "how much friction of each kind";
+        this answers "where": ``tool_error`` on ``http_get`` and ``tool_error``
+        on ``file_read`` are different problems with different fixes. Each row
+        counts events, distinct runs, and distinct *failed* runs (a non-success
+        status or an external failure label), which is what a change aimed at
+        the mechanism is judged by.
+        """
+        query = (
+            "SELECT f.category, COALESCE(f.component, '') AS component, "
+            "COUNT(*) AS events, COUNT(DISTINCT f.run_id) AS runs, "
+            "COUNT(DISTINCT CASE WHEN r.status != 'success' OR o.outcome = 'failure' "
+            "THEN f.run_id END) AS failed_runs, "
+            "SUM(CASE WHEN f.recovered THEN 1 ELSE 0 END) AS recovered "
+            "FROM friction_events f JOIN runs r ON r.run_id = f.run_id "
+            "LEFT JOIN run_outcomes o ON o.run_id = f.run_id "
+            "WHERE r.harness_key=?"
+        )
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        if not include_swapped:
+            query += f" AND {_ON_SPEC_SQL.format(t='r.')}"
+        query += " GROUP BY f.category, component ORDER BY failed_runs DESC, events DESC"
+        return [dict(row) for row in self._conn.execute(query, params)]
+
+    def recent_successes(
+        self, harness_key: str, n: int = 2, *, version: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The newest successful runs (not later labelled failures), as worked examples.
+
+        A report built only from failures can say what went wrong but never
+        what right looks like; one or two passing runs of the same version are
+        the cheapest contrast there is. Task and output are the Hive's capped
+        copies, and callers cap them again for prompts.
+        """
+        query = (
+            "SELECT r.run_id, r.task, r.output, r.turns, r.cost_usd FROM runs r "
+            "LEFT JOIN run_outcomes o ON o.run_id = r.run_id "
+            "WHERE r.harness_key=? AND r.status='success' "
+            "AND (o.outcome IS NULL OR o.outcome != 'failure')"
+        )
+        params: list[Any] = [harness_key]
+        if version is not None:
+            query += " AND r.harness_version_hash=?"
+            params.append(version)
+        query += " ORDER BY r.finished_at DESC LIMIT ?"
+        params.append(n)
+        return [dict(row) for row in self._conn.execute(query, params)]
+
     def compare_versions(self, harness_key: str, left: str, right: str) -> dict[str, Any]:
         """Two harness versions side by side, with the deltas spelled out.
 
@@ -1493,6 +1818,9 @@ class Hive:
         self._conn.execute(
             f"DELETE FROM run_steps WHERE run_id IN ({placeholders})", run_ids
         )
+        self._conn.execute(
+            f"DELETE FROM run_features WHERE run_id IN ({placeholders})", run_ids
+        )
         self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
         self._conn.commit()
         return len(run_ids)
@@ -1505,22 +1833,153 @@ class Hive:
         counter: int,
         rationale: str,
         created_at: str,
-    ) -> None:
-        """Record an evolution (old/new version hashes + rationale)."""
-        self._conn.execute(
+        *,
+        proposal_id: str | None = None,
+        prediction: dict[str, Any] | None = None,
+        changes: dict[str, Any] | None = None,
+    ) -> int:
+        """Record an evolution (old/new version hashes + rationale).
+
+        ``prediction`` is what the change claimed it would move (its target
+        signal and objective expectations); ``changes`` the paths and diff it
+        applied. Together with the version hashes they are what lets a later
+        assessment say whether the claim held. Returns the evolution's rowid.
+        """
+        cursor = self._conn.execute(
             "INSERT INTO evolutions (harness_name, old_version_hash, new_version_hash, "
-            "counter, rationale, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (harness_name, old_version_hash, new_version_hash, counter, rationale, created_at),
+            "counter, rationale, created_at, proposal_id, prediction_json, changes_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                harness_name,
+                old_version_hash,
+                new_version_hash,
+                counter,
+                rationale,
+                created_at,
+                proposal_id,
+                json.dumps(prediction, sort_keys=True) if prediction is not None else None,
+                json.dumps(changes, sort_keys=True) if changes is not None else None,
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    def record_evolution_decision(self, evolution_id: int, decision: dict[str, Any]) -> None:
+        """Attach a measured keep/revert decision to one recorded evolution."""
+        self._conn.execute(
+            "UPDATE evolutions SET decision_json=? WHERE rowid=?",
+            (json.dumps(decision, sort_keys=True), evolution_id),
         )
         self._conn.commit()
 
     def evolutions(self, harness_name: str) -> list[dict[str, Any]]:
-        """Return the recorded evolutions for a harness, newest first."""
+        """Return the recorded evolutions for a harness, newest first.
+
+        Each row carries its ``evolution_id`` (the rowid) and the parsed
+        ``prediction``/``changes``/``decision`` objects, ``None`` for rows
+        recorded before they existed.
+        """
         rows = self._conn.execute(
-            "SELECT * FROM evolutions WHERE harness_name=? ORDER BY created_at DESC",
+            "SELECT rowid AS evolution_id, * FROM evolutions WHERE harness_name=? "
+            "ORDER BY created_at DESC, rowid DESC",
             (harness_name,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            entry = dict(row)
+            for column in ("prediction", "changes", "decision"):
+                raw = entry.pop(f"{column}_json", None)
+                try:
+                    entry[column] = json.loads(raw) if raw else None
+                except (TypeError, ValueError):
+                    entry[column] = None
+            result.append(entry)
+        return result
+
+    def runs_with_friction(
+        self, run_ids: list[str], category: str, component: str | None = None
+    ) -> set[str]:
+        """Which of ``run_ids`` recorded friction of ``category`` (at ``component``)."""
+        found: set[str] = set()
+        for start in range(0, len(run_ids), 500):
+            chunk = run_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            query = (
+                f"SELECT DISTINCT run_id FROM friction_events WHERE run_id IN ({placeholders}) "
+                "AND category=?"
+            )
+            params: list[Any] = [*chunk, category]
+            if component:
+                query += " AND component=?"
+                params.append(component)
+            found.update(row["run_id"] for row in self._conn.execute(query, params))
+        return found
+
+    def metric_values(self, run_ids: list[str], name: str) -> dict[str, float]:
+        """Each run's value of metric ``name`` (the mean, if recorded more than once)."""
+        values: dict[str, list[float]] = {}
+        for start in range(0, len(run_ids), 500):
+            chunk = run_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT run_id, value FROM run_metrics WHERE run_id IN ({placeholders}) "
+                "AND name=?",
+                [*chunk, name],
+            ):
+                values.setdefault(row["run_id"], []).append(float(row["value"]))
+        return {run_id: sum(v) / len(v) for run_id, v in values.items()}
+
+    def completed_eval_cells(self, harness_key: str, version: str, eval_id: str) -> int:
+        """How many completed cells of ``eval_id`` ran under this harness version."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM eval_cells c "
+            "JOIN eval_runs e ON e.eval_run_id = c.eval_run_id "
+            "JOIN runs r ON r.run_id = c.run_id "
+            "WHERE r.harness_key=? AND r.harness_version_hash=? AND e.eval_id=? "
+            "AND c.status='completed'",
+            (harness_key, version, eval_id),
+        ).fetchone()
+        return int(row["n"] or 0)
+
+    def eval_pairs(
+        self, harness_key: str, left_version: str, right_version: str
+    ) -> list[dict[str, Any]]:
+        """Eval cells of the same case run under both versions, matched up.
+
+        Pairs on ``(eval_id, case_key, repetition)``: the same case, the same
+        repetition index, the same eval definition, one run per version. When a
+        version ran the same cell more than once, its newest run is used. This
+        is what turns a before/after comparison from two noisy rates into
+        discordant pairs, which is the only comparison small evals can settle.
+        """
+        rows = self._conn.execute(
+            "SELECT e.eval_id, c.case_key, c.repetition, r.harness_version_hash AS version, "
+            "r.run_id, r.status, r.finished_at FROM eval_cells c "
+            "JOIN eval_runs e ON e.eval_run_id = c.eval_run_id "
+            "JOIN runs r ON r.run_id = c.run_id "
+            "WHERE r.harness_key=? AND r.harness_version_hash IN (?, ?) "
+            "AND c.status = 'completed' ORDER BY r.finished_at",
+            (harness_key, left_version, right_version),
+        ).fetchall()
+        sides: dict[str, dict[tuple[str, str, int], dict[str, Any]]] = {
+            left_version: {},
+            right_version: {},
+        }
+        for row in rows:
+            key = (row["eval_id"], row["case_key"], int(row["repetition"]))
+            sides[row["version"]][key] = dict(row)  # newest wins (ordered ascending)
+        pairs = []
+        for key in sorted(set(sides[left_version]) & set(sides[right_version])):
+            pairs.append(
+                {
+                    "eval_id": key[0],
+                    "case_key": key[1],
+                    "repetition": key[2],
+                    "left": sides[left_version][key],
+                    "right": sides[right_version][key],
+                }
+            )
+        return pairs
 
     def failure_count(
         self, harness_key: str, *, since: str | None = None, version: str | None = None

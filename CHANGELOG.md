@@ -7,6 +7,327 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-24
+
+The signal, memory and collaboration release. Evolution now finds where a
+harness's evidence points before any model is asked — contrasting failing and
+successful runs feature by feature, counting mechanisms, and saying how much the
+sample can show — makes every proposal a prediction about that place, checks the
+prediction against the runs that follow, and can run a measured keep-or-revert
+loop on an eval. Memory scales and learns: a run sees the lessons that match its
+task, finished runs are reflected into reviewed lessons, and compaction keeps
+what earlier summaries established. A harness can hand its task to a fitter
+peer — locally or over MCP — and still verify the answer itself. It keeps
+working notes outside the conversation and narrows large stored results in
+place. The runtime recovers truncated turns and transient provider failures
+within declared budgets.
+
+### Added
+
+- **Signal location (`hiveloom signal`, free).** Every ingested run is indexed
+  with features — tools called or erroring, spills, steps violated, playbooks,
+  memory entries shown, notes, lessons proposed, delegations, the executor
+  model, task size, friction per component — never how it ended. The signal map
+  contrasts failing and successful runs of one version feature by feature
+  (Fisher exact, Benjamini-Hochberg across features), collapses features that
+  mark the same runs, maps each to the spec levers that could change it and
+  whether evolution may pull them, lists what failures share when nothing
+  succeeded, counts friction mechanisms per component, attributes each failure
+  to a loss class, and states the success-rate interval and the smallest change
+  the sample could detect. An external failure label counts as a failure. The
+  evolution report carries the map and one or two passing runs (their task and
+  output only under the `trace_excerpts` opt-in).
+- **Aimed proposals.** The proposing prompt receives the signal map as its own
+  section, and the contract gains "Locate, then aim". A proposal carries a
+  `target` — one of the map's targets or `metric:<objective>`, the direction it
+  will move, optionally by how much — which is stored with the evolution.
+- **Assessment (`hiveloom assess`, free).** Every applied evolution is checked
+  against its own prediction on the runs of the new version, with the success
+  rate as a guard: pair by pair when both versions ran the same eval cases
+  (McNemar exact, sign test), unpaired otherwise (Fisher, Welch). Verdicts are
+  `confirmed`, `refuted`, `regressed`, `inconclusive` (with the runs that would
+  settle it) and `pending`. Evolution records keep the proposal id, prediction,
+  changed paths and a bounded diff.
+- **Measured evolution (`evolve --experiment eval.yaml --yes`).** Each round
+  measures the current version on the eval, applies one aimed YAML change, runs
+  the eval on the new version, assesses it pair by pair, and keeps a confirmed
+  change or reverts it byte for byte (`--rounds`, `--keep-inconclusive`,
+  `--remeasure-baseline`). Decisions are stored and reach the next round's
+  history. Code changes are never applied in this mode.
+- **Relevance-selected memory (`memory.selection: relevant`).** A run is shown
+  its pinned entries plus the entries that best match its task, up to
+  `memory.max_selected`, chosen deterministically once per run; the read-only
+  `search_memory` tool finds the rest. The selection is journalled as
+  `memory_selected` and indexed, so the signal map shows whether a lesson helps.
+  `selection` and `max_selected` are frozen from evolution; entries gain
+  `pinned`.
+- **Post-run reflection (`evolution.reflect`, off by default).** After a failed
+  run (or any, with `on: any`) a strong model drafts at most `max_lessons`
+  durable lessons from the run, preferring none to a speculative one; they are
+  queued with `trigger: reflect` through the `propose_memory` path and applied
+  only by a human. Eval runs never reflect, and a cooldown bounds spend. Frozen
+  from evolution.
+- `harnesses/signal-lab`: an offline worked example of signal-driven
+  evolution. Its scripted clerk fails on lowercase invoice ids; `signal`
+  locates the failing tool, reflection drafts a lesson for review, and
+  `evolve --experiment` reverts a refuted retry idea before keeping the
+  uppercase rule the eval confirms (8 improved pairs, none worse). The learned
+  rule is then shown only to the runs it matches.
+- `harnesses/delegation-lab`: an offline worked example of delegation. A front
+  desk with no ledger refers a `ledger-desk` peer (`below_fitness`) until the
+  peer has earned a measured record, then hands the invoice question to it on
+  start, re-verifies the answer with its own validator, and records the child
+  in `hiveloom lineage`; a general question is routed to no one (`none_fit`).
+- **Every demo harness now states what it proves**: each README opens with a
+  one-line claim and a capabilities list, and ends with the evidence to look
+  for and what to try; `harnesses/README.md` is a gallery indexed by
+  capability. The demos gained, through the CLI: `regex_output_filter`,
+  `max_turns_hard_cap` and `logging.redact` plus a "Ship it" section
+  (quickstart); a house-style skill loaded with `load_skill`
+  (example-summarizer); `plan_then_act` and an aimed evolution walkthrough
+  (routing-lab); `file_exists` and `command_succeeds` on the exported artifact
+  (memory-lab); parallel tool execution (ticket-triage); auto-propose with
+  trace excerpts (signal-lab). `scripts/package_e2e.py` drives every offline
+  demo end to end against the installed wheel.
+- `hiveloom guide signal`: the signal-driven evolution reference
+  (`docs/signal-driven-evolution.md`).
+
+- **Delegation between harnesses (`delegation`, off by default).** A run can
+  hand its task to a peer harness from the local registry that is more specific
+  or has better measured Hive fitness, and verify the answer with its own
+  validators. Three runtime-enforced modes (`on_start`, `on_verify_fail`,
+  `model_choice`, the last one registering a deferred `delegate__<peer>` tool
+  per eligible peer plus an active `list_peers`), fitness floors, depth and
+  cycle refusals, and a child cost cap carved out of the parent's remaining
+  budget. Peers that do not qualify come back as `referrals`. The model stays
+  frozen; `delegation` is tunable by evolution. See `docs/delegation.md`.
+- `RunResult`/`run --json` gain `delegations`, `referrals` and
+  `delegated_cost_usd`; `runs.lineage_kind` distinguishes a delegated child
+  from a fork, and `Hive.children(run_id)` lists both.
+- **Harness-to-harness delegation over MCP.** `hiveloom mcp serve` accepts a
+  caller's lineage in the request `_meta`, links the peer run to its parent in
+  the Hive, and refuses a chain deeper than `--max-depth` (default 3) or one
+  that revisits a harness — as `status: "error"` data, before any spend.
+- `hiveloom mcp serve --concurrency N` bounds concurrent runs per server
+  process (default unlimited); waiting is bounded by the caller's timeout.
+- A peer run's artifacts now cross the wire in the `_hiveloom` envelope and
+  land on the calling run's `RunResult.artifacts`.
+- `hiveloom add mcp-server` gained `--timeout-seconds` (default 30s, `0 <
+  t <= 600`) to raise the connect/tool-call timeout for a slower peer
+  harness or tool.
+- **Durable harness memory.** A `memory` spec section whose entries render as a
+  `# Memory` system-prompt section every run, managed with
+  `hiveloom memory list|show|add|forget`. The executor never writes it; entries
+  reach `harness.yaml` only through that CLI or an applied evolution proposal,
+  which may append or replace one entry at a time. `memory.enabled` and the
+  entry/character/prompt budgets are frozen from evolution and hard-capped, and
+  an over-budget entry is a validation error rather than a silent eviction.
+- The opt-in `propose_memory` builtin lets the executor offer a durable lesson
+  from inside a run. It writes nothing: the lesson is redacted, checked against
+  the harness's memory budgets, journaled as `memory_proposed`, and queued as a
+  gated `MutationProposal` with `trigger: executor` that `proposals
+  list|show|apply|reject` handle unchanged. Identity and Hive path come from the
+  run context, proposals dedup on the lesson's content, `max_per_run` bounds one
+  run, and runs launched by `hiveloom eval` record the lesson without queueing.
+- **Run-scoped notes.** The opt-in `notes` builtin lets the executor write, read
+  and delete named notes that live outside the conversation and so survive
+  compaction. Only their index (name, size, first line) enters the system
+  prompt. Notes are private to the run, redacted before the write, journaled as
+  `note_written`/`note_deleted`, bounded by `max_notes`/`max_note_bytes`, and
+  carried into a fork only through a hash-bound manifest replayed from the
+  parent's verified journal.
+- **`transform_result`** reshapes a stored tool result in place — `lines`, `head`,
+  `tail`, `grep`, `json_path`, `count`, `sort`, `unique` and `concat` — so a
+  large object can be narrowed without paging it through context. Output that
+  still exceeds the inline budget becomes a derived object with its own handle.
+  Every op is bounded in bytes scanned and emitted, and a pattern that repeats
+  an unbounded quantifier is refused.
+  `grep` also takes `raw: true`: the bare matching lines, with no header and
+  no numbers, up to 10 000 of them, refused rather than truncated. Its derived
+  handle is therefore data, and can be passed to `file_write` `content` so an
+  export never passes through the model.
+- Handle-typed tool parameters: a tool may declare which string parameters
+  accept a stored-result handle (`@tool(..., handles=["content"])`, or
+  `handle_params` on a `Tool`; `file_write` declares `content`). The runtime
+  expands the handle under the run's authority at dispatch, capped at 4 MiB,
+  while the journal and the provider keep the handle. An unresolvable handle is
+  a tool error, never a silent literal.
+- `context.compaction.max_tokens` caps the output of the summarize call alone.
+  It used to run with `model.max_tokens`, and a reasoning model given a 32k
+  budget spent 545 s on one summary.
+- `harnesses/memory-lab`: an offline worked example that puts the three memory
+  layers on one task — a spilled log narrowed in place, findings kept in notes
+  across compaction and a fork, a derived object handed to `file_write` by
+  handle, a lesson the executor proposes, and a memory entry that reaches the
+  spec only through `proposals apply`. Its scripted provider parses every value
+  it reports out of a real tool result.
+- Evolution attempt memory: recent applied/rejected proposals inform subsequent
+  proposals, and SDK callers can supply measured `AttemptRecord` histories.
+  Review decisions and inconclusive experiments are not treated as proof of
+  quality changes.
+- Operator findings through `evolve --note` (repeatable) and
+  `analyze(analyst_notes=...)`, including opportunities without failed runs.
+- Model capability metadata `max_output_tokens`, checked against
+  `model.max_tokens`, and configurable OpenAI-compatible `timeout_seconds`.
+- Frozen `model.params` for provider request fields, forwarded by the Claude and
+  OpenAI-compatible providers and preserved by runtime model overrides.
+- Experimental `best_of_n` loop policy (with `loop.attempts`, default 3):
+  samples several independent attempts, rewinding the conversation between
+  them, and submits the plurality answer. Attempts share `loop.max_turns`, tool
+  state and the cost guardrail. Its open limitations (journal replay of the
+  rewind, answer equivalence, verification ownership) are listed in
+  `docs/evolution-migration.md`.
+
+### Changed
+
+- A proposal from `evolve`, `evolve --propose`, auto-propose or the HTTP control
+  plane must name a `target` from the signal map (or state
+  `objective_expectations`); one without is sent back for repair within the
+  existing three-call budget. A model or script that emitted the pre-1.2.0
+  proposal shape needs the field.
+- Evolution's default attempt history is measured: each applied evolution with
+  its assessment verdict or experiment decision, plus rejected proposals,
+  instead of the unmeasured applied/rejected queue ledger.
+- Summarize-compaction carries the previous summary forward in
+  `<previous-summary>` with an instruction to keep what is still true, and
+  anchors the summary to the agent's newest statement, instead of
+  re-summarizing the earlier summary as transcript.
+
+- Truncated model turns receive continuation feedback within the declared
+  token budget. Three consecutive truncations or exhausted turns return
+  `truncated` (CLI exit 4), retaining partial output; passing verification can
+  still establish success. Truncation is indexed as evolution evidence.
+- `context.tool_results.transforms` (default on) offers `transform_result`
+  beside `read_tool_result`/`search_tool_result` once a result has spilled, so
+  an existing harness that spills now sees a third retrieval tool. Set it to
+  `false` for the pre-1.2 retrieval surface, e.g. as an eval's control arm.
+- Provider factories read a harness's `.env` instead of `load_dotenv`-ing it
+  into the process, so one process serving several harnesses can no longer
+  hand harness B the credentials it found in harness A. Only the provider's
+  key variable is read from `.env`; other variables in that file are no
+  longer adopted into the process environment.
+
+### Fixed
+
+- **A blocked output is no longer handed back.** When `regex_output_filter`
+  (or any output guardrail) blocked an answer and the model never produced a
+  compliant one before `loop.max_turns`, the run returned the blocked text as
+  its `output`; a blocked delegated answer was returned with `guardrail_halt`
+  the same way. An output is now recorded as the run's answer only after the
+  output guardrails pass; a turn-exhausted run returns no output and says
+  `last output blocked: …` in its reason, and a blocked delegated answer is
+  dropped. Found by the quickstart demo, where a generated AWS-style key id
+  was blocked twice and still returned.
+- Auto-propose no longer drafts from runs inside an eval batch. A batch is a
+  measurement in progress, and each failing cell past `min_failures` could
+  spend a strong-model call on partial evidence; `propose_memory` and
+  reflection already skipped eval runs.
+- Runs routed through their own playbooks (a playbook with its own model) are
+  no longer held out of their version's fitness bucket as "swapped": only a
+  model swap from outside the spec is.
+- Compaction no longer discards the newest tool results. Summarize-compaction
+  kept only the last message, which for a tool turn is results whose calls had
+  just been summarized away. The orphan repair then dropped them too, so the
+  output the model had just asked for was neither summarized nor kept, and
+  runs re-issued the same calls after every compaction. The newest exchange
+  (the calls and their results) is now kept whole. It is folded into the
+  summary only when it alone exceeds half the budget. `truncate_oldest` keeps
+  it the same way.
+- Evolution could add a dangerous tool (`shell`) by appending one entry
+  (`tools.+`, `tools.<n>`) or by renaming one (`tools.<n>.builtin`); only
+  whole-list replacement was checked. Every path under `tools` is now gated.
+- `propose_memory` was refused on every harness that declares
+  `evolution.objectives` ("proposal must name at least one configured metric
+  objective"). A lesson predicts no metric, so the gate exempts a proposal
+  that only appends to `memory.entries`. The evolver's own proposals are still
+  held to their objectives.
+- Two queued lessons with the same title got the same entry id, so the second
+  could never be applied. On apply, a memory append now takes a free id, and
+  one whose content is already in memory is refused instead of added twice.
+- A memory entry's title is collapsed to one line when rendered, so a title
+  cannot open a new heading in the system prompt.
+- Fork carries each note as it was at the fork point, from the journaled
+  content, rather than re-reading the parent's current file. Notes the parent
+  rewrote or deleted later are no longer lost. A fork of a fork keeps what it
+  inherited (`notes_inherited` now journals the granted notes). Deleting an
+  inherited note no longer deletes the fork's only copy. Two parallel writes
+  of one note name can no longer leave it unreadable, and a resume that is
+  granted fewer notes than its manifest lists records the `missing` names.
+- `transform_result`:
+  - Line splitting is linear (it was quadratic: 88 s to `count` 35 MB).
+  - A line over 1 MiB is kept in pieces rather than cut short.
+  - A scan that stops at the 32 MB ceiling says so rather than reporting
+    partial counts as whole.
+  - `sort` and `unique` split lines on `\n` like every other op.
+  - `grep` says it stopped only when more lines actually match.
+  - With `transforms: false`, an oversized handle argument no longer points
+    at a tool the run does not have.
+- Memory-layer bookkeeping holds when a turn's tool calls run in parallel.
+  `notes` could hold more than `max_notes` and `propose_memory` could queue
+  more than `max_per_run`, because each read its limit before claiming the slot
+  it was about to fill; the check and the reservation are now one step under
+  one lock, and a note is staged and moved into place rather than unlinked and
+  recreated. `transform_result` no longer answers an oversized single-element
+  result — a `json_path` selection, a `concat` — with the truncation marker and
+  no data at all: the element is cut at the output ceiling, so the result still
+  becomes a derived object that can be narrowed again. `concat` reads under one
+  running byte budget across the objects it joins rather than up to the scan
+  ceiling for each.
+- Queued proposals survive review. `proposals apply` now leaves a proposal
+  `pending` when it applied nothing (YAML declined, no code change approved)
+  instead of marking it `applied` and refusing the retry as "already
+  applied"; `proposals apply --json` without `--yes` is a usage error (exit 3)
+  rather than a no-op that resolved the row. Memory proposals append with the
+  reserved path segment `memory.entries.+`, resolved when the proposal is
+  applied, so a queued lesson can no longer silently replace an entry added
+  since — and an append-only proposal may apply after the harness version
+  moved, so several lessons from one run all reach the spec. A negative list
+  index is refused with a clear message.
+- Evolution repairs malformed proposals and correctable objective omissions
+  within three total model calls. Inconsistent metric evidence fails before
+  any call. Prompt evidence, history, notes, and the current spec are redacted;
+  evidence sections have size limits. Updated findings/history invalidate stale
+  proposal deduplication keys.
+- OpenAI-compatible calls retry interrupted HTTP reads and transient error
+  bodies returned with HTTP 200. Embedded context overflow remains recoverable.
+  Blank visible content no longer discards reasoning, and oversized reasoning
+  and provenance payloads are bounded without discarding useful answers.
+- Provider parameters cannot replace harness-controlled identity, transcript,
+  tools, output limits, streaming, or response count, and must be bounded JSON.
+- Code-hook validation no longer mistakes `**kwargs` for positional arguments.
+- `hiveloom set`/`remove` can now address an existing list item by numeric
+  path segment (e.g. `guardrails.0.value`, `mcp_servers.0.timeout_seconds`)
+  instead of the dotted-path walker silently clobbering the list into a dict.
+  An out-of-range index is a clear `SpecError` naming the list's length.
+- `hiveloom set` no longer YAML-parses a value going into a plain `str`
+  schema field (e.g. `system_prompt`); it keeps the CLI text verbatim, so
+  `": "` and similar can't be misread as a YAML mapping. A validation
+  failure that still occurs now hints at `--file`.
+- `hiveloom mcp serve`'s `run_*` tools return every failure as data
+  (`status: "error"` with the reason); the traceback goes to stderr via
+  `logging`, not to a caller that cannot read it.
+- `hiveloom mcp serve` startup errors go to stderr with the proper exit code
+  instead of writing JSON into stdout — the MCP protocol channel — which
+  reached the caller as nothing but "Connection closed".
+- A stdio MCP child now inherits `HIVELOOM_HOME`/`HIVELOOM_DB` (locations, not
+  secrets), so a spawned `hiveloom mcp serve` shares the parent's Hive and
+  trust store instead of writing to a different one.
+
+### Removed
+
+- **The workbench's first-generation direct-run chat.** The copilot-first
+  design replaced it and nothing reached it from the app entry any more: the
+  `Chat` thread, `Composer`, `NewRun`, `NewHarness`, `HarnessList`,
+  `BranchDialog`, the `useRun` workspace hook, `taskGuide` and `harnesses`
+  grouping, and their tests are gone. `MessageBody` and `DelegationTrail` —
+  the only live exports of that thread — moved to
+  `devtools/ui/src/components/messages.tsx`.
+- The API routes that only that UI reached: `POST /api/harnesses` (harness
+  creation now goes through the copilot's `create_harness` tool and
+  `hiveloom.construct`), `POST /api/harnesses/{id}/trust`, and
+  `GET /api/runs/live`. The live-run control surface (`stop`, `messages`,
+  `model`, `playbook`, `fork`, `export`, `resume`) is unchanged.
+
 ## [1.1.0] - 2026-09-09
 
 The containment and evidence release. Large tool results stay retrievable
