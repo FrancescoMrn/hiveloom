@@ -28,8 +28,10 @@ assumed.
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
 > serving surfaces are implemented, along with playbooks, structured artifacts,
 > run control, delegation between harnesses, run-scoped notes and durable
-> memory, and a tamper-evident run journal you can fork from, replay, and read
-> in [the workbench](#the-workbench).
+> memory that is selected per task and learned through reviewed reflection,
+> signal-driven evolution that locates where failures concentrate and checks
+> every change against its own prediction, and a tamper-evident run journal you
+> can fork from, replay, and read in [the workbench](#the-workbench).
 
 ## Why hiveloom: task confinement
 
@@ -233,7 +235,9 @@ hiveloom metrics record ./summarizer --run-id eval-case-01 \
 hiveloom metrics list ./summarizer --name recall_at_5 --json
 hiveloom eval run eval.yaml --provider openai --model gpt-4.1-mini \
   --repetitions 3 --concurrency 2 --json
+hiveloom signal ./summarizer --json      # free: where failures concentrate
 hiveloom evolve ./summarizer --propose --json
+hiveloom assess ./summarizer --json      # free: did each change do what it predicted?
 ```
 
 Prefer model-driven construction?
@@ -428,9 +432,14 @@ hiveloom run ./my-harness/.hiveloom/forks/probe --resume
 hiveloom lineage <run-id> --json
 
 # Improve with a human gate
+hiveloom signal ./my-harness --json
 hiveloom evolve ./my-harness --propose --json
 hiveloom proposals list ./my-harness --json
 hiveloom proposals apply ./my-harness <proposal-id> --yes --json
+hiveloom assess ./my-harness --json
+
+# Or measure each change on an eval and keep only what it confirms
+hiveloom evolve ./my-harness --experiment eval.yaml --yes --rounds 3 --json
 
 # Extend and ship
 hiveloom extensions --json

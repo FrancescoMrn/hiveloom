@@ -107,9 +107,9 @@ excluded from this release; users can raise `model.max_tokens` through the CLI.
 
 `evals/arc-agi-2/`, its grid parser, official attempt scoring, dataset fetching,
 training-pair hypothesis tools, validators, protocol arms, and benchmark test
-module stay with the benchmark work, outside the library. The experiment scripts retain their
-benchmark-specific metric names and workflow until the generic experiment
-contract above is designed.
+module stay with the benchmark work, outside the library. The experiment scripts keep their
+benchmark-specific metric names; the generic contract they motivated ships as
+`hiveloom assess` and `evolve --experiment`.
 
 ## Compatibility and release notes
 
@@ -123,18 +123,20 @@ contract above is designed.
 - Known strong-model capabilities can increase generation/evolution output
   allowances, and proposal repair can make up to three model calls. Executor
   output budgets remain unchanged.
-- Automatic attempt memory covers resolved proposal-queue entries. Direct
-  `evolve --yes` applications are not queue entries; measurement drivers should
-  supply their own ledger. History is advice to the proposer, not a guarantee
-  against duplicates or an automatic acceptance decision.
+- Attempt memory covers every applied evolution — queued or applied directly
+  with `evolve --yes` — each with its measured verdict from `hiveloom assess`
+  or the keep/revert decision of `evolve --experiment`, plus rejected
+  proposals. SDK drivers may still pass their own ledger. History is advice to
+  the proposer, not a guarantee against duplicates or an automatic acceptance
+  decision.
 - Provider-specific parameters are retained by model overrides; switching to a
   provider with a different request contract may require an operator update.
-- Changelog entries remain under `Unreleased`; the version is unchanged.
-  This additive feature set is a candidate for the next minor release.
+- These changes are included in 1.2.0. The complete
+  release notes are in `CHANGELOG.md` under `1.2.0`.
 
-Offline validation is recorded in the change handoff. Live provider QA and a
-held-out quality evaluation remain separate release checks: no paid provider
-calls or ARC benchmark runs were made during this extraction.
+The validation below records the original migration work, not the full 1.2.0
+release validation. No paid provider calls or ARC benchmark runs were made
+during that migration.
 
 ### Validation performed
 
