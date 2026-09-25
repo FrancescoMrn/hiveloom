@@ -95,3 +95,21 @@ def test_the_measured_loop_reverts_the_refuted_idea_and_keeps_the_lesson(lab: Pa
                 if e["type"] == "memory_selected"]
     assert selected[0]["ids"] == ["amounts-are-in-eur", "invoice-ids-are-uppercase"]
     assert selected[0]["stored"] == 3
+
+
+def test_repeated_failures_draft_an_aimed_proposal_with_excerpts(lab: Path):
+    for invoice in ("inv-1001", "inv-1002", "inv-1005"):
+        CliRunner().invoke(
+            app, ["run", str(lab), "--input-text", f"Look up invoice {invoice}.", "--json"]
+        )
+    proposals = _invoke("proposals", "list", str(lab))["proposals"]
+    [auto] = [p for p in proposals if p["trigger"] == "auto"]
+    assert auto["status"] == "pending"
+    # Nothing succeeded, so the evolver aimed at what every failure shares.
+    target = auto["proposal"]["target"]
+    assert (target["signal"], target["expect"]) == ("tool_error:lookup_invoice", "decrease")
+    assert "nothing succeeded" in target["rationale"]
+    # trace_excerpts: the draft was made from journal windows, not counts alone.
+    assert auto["evidence"]["incident_ids"]
+    # Drafted, never applied: the two operator entries are all memory holds.
+    assert len(_invoke("memory", "list", str(lab))["entries"]) == 2

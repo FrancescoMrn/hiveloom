@@ -119,12 +119,21 @@ evolution:
   - guardrails
   - model
   auto_propose:
-    enabled: false
-    min_failures: 5
-    cooldown_hours: 24.0
+    enabled: true
+    min_failures: 3
+    cooldown_hours: 1.0
+    model: signal_lab/qa-evolver
   reflect:
     enabled: true
     'on': failure
     max_lessons: 1
     cooldown_minutes: 1.0
     model: signal_lab/qa-evolver
+  trace_excerpts:
+    enabled: true
+    max_incidents: 5
+    before_events: 2
+    after_events: 2
+    max_event_bytes: 2048
+    max_bytes: 32768
+    max_tokens: 8192

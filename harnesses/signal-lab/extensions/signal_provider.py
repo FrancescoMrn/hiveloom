@@ -31,6 +31,9 @@ _UPPERCASE_RULE = re.compile(
     r"invoice ids?\b[^\n]*uppercase|uppercase[^\n]*invoice ids?", re.IGNORECASE
 )
 _RETRY_RULE = re.compile(r"call (?:it|lookup_invoice) once more", re.IGNORECASE)
+_PREVALENT_LINE = re.compile(
+    r"^\s+(tool_error:[\w.-]+): (\d+), (\d+)%", re.MULTILINE
+)
 _SIGNAL_LINE = re.compile(
     r"^\s+(tool_error:[\w.-]+)(?: \(same runs as:[^)]*\))?: "
     r"(\d+)/(\d+) vs (\d+)/(\d+), risk",
@@ -140,22 +143,34 @@ class SignalLabProvider(ModelProvider):
         )
 
         match = _SIGNAL_LINE.search(signal_map)
-        if match is None:
-            return text_response(json.dumps({
-                "rationale": "no tool_error signal to aim at",
-                "target": {"signal": "success_rate", "expect": "increase"},
-                "yaml_changes": [],
-            }))
-        feature = match.group(1)
-        with_rate = int(match.group(2)) / int(match.group(3))
-        without_rate = int(match.group(4)) / int(match.group(5))
+        if match is not None:
+            feature = match.group(1)
+            with_rate = int(match.group(2)) / int(match.group(3))
+            without_rate = int(match.group(4)) / int(match.group(5))
+            evidence = (
+                f"failure rate {with_rate:.0%} with {feature} vs {without_rate:.0%} without"
+            )
+        else:
+            # Nothing succeeded, so nothing to contrast: the map's failure
+            # features (what every failure shares) are the evidence left.
+            prevalent = _PREVALENT_LINE.search(signal_map)
+            if prevalent is None:
+                return text_response(json.dumps({
+                    "rationale": "no tool_error signal to aim at",
+                    "target": {"signal": "success_rate", "expect": "increase"},
+                    "yaml_changes": [],
+                }))
+            feature = prevalent.group(1)
+            with_rate, without_rate = int(prevalent.group(3)) / 100, 0.0
+            evidence = (
+                f"{feature} in {with_rate:.0%} of failed runs; nothing succeeded to "
+                "contrast against"
+            )
         target = {
             "signal": feature,
             "expect": "decrease",
             "by": round(with_rate - without_rate, 2),
-            "rationale": (
-                f"failure rate {with_rate:.0%} with {feature} vs {without_rate:.0%} without"
-            ),
+            "rationale": evidence,
         }
 
         # First idea: the error looks transient, so retry it. Only once the
