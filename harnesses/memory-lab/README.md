@@ -1,6 +1,11 @@
 # memory-lab
 
-Three layers of memory around one small executor — and no API key required.
+> **Proves:** a small executor can work over far more data than its context
+> holds — narrowing it in place, keeping findings outside the conversation,
+> exporting results the model never reads — and learn across runs, with
+> nothing it learns reaching the harness except through human review.
+
+Offline, no API key.
 
 `extensions/memory_provider.py` registers a scripted provider, so every command
 below is deterministic and offline. The script carries no answers: every value
@@ -17,6 +22,23 @@ The task is the one from `log-forensics`: a 77 KB service log, three facts to
 report, one of them on the last line. The difference is how the executor holds
 what it learns.
 
+## Capabilities
+
+- **Spill and handles** — an oversized result is stored whole and returned as
+  a preview plus a handle. ([spec.md](../../docs/spec.md))
+- **`transform_result`** — `count`, `grep`, `tail` and friends over a handle,
+  in place; oversized output becomes a *derived* handle.
+- **`notes`** — run-scoped findings outside the conversation, indexed in the
+  system prompt, carried into a fork through a verified manifest.
+- **Handle-typed parameters** — `file_write` takes a handle as its content;
+  the runtime expands it, the model never sees the bytes.
+- **Artifact verification** — `file_exists` proves the export was written and
+  `command_succeeds` (a confined process) proves it holds the dominant failure
+  code the answer reports.
+- **Durable memory (L3)** — `memory.entries`, grown only through reviewed
+  proposals: `propose_memory` from the executor, `evolve --propose` from the
+  evolver. ([signal-driven-evolution.md](../../docs/signal-driven-evolution.md))
+
 ## Run it
 
 ```bash
@@ -26,7 +48,9 @@ hiveloom run . --input-text "Investigate data/service.log and report the three f
 hiveloom trace <run_id>
 ```
 
-What to look for in the trace, in order:
+## What to look for
+
+In the trace, in order:
 
 1. `tool_spilled` — `file_read` came back as a preview and a handle.
 2. Three `transform_result` calls on that handle: `count` for the ERROR total,
@@ -44,6 +68,9 @@ What to look for in the trace, in order:
    the harness changes. It waits in `hiveloom proposals list .` with
    `trigger: executor` for a human.
 7. The final JSON, built from the note rather than from the turns above.
+8. Three `verification_result` events: the output schema, then `file_exists`
+   and `command_succeeds` on `out/error-context.txt` — the export is checked,
+   not assumed.
 
 The `# Memory` section at the top of every system prompt is L3: the one entry
 seeded below was added by an operator and is frozen in place until the operator
@@ -61,7 +88,7 @@ parent's verified journal, never because the transcript mentions them.
 
 ```bash
 hiveloom fork <run_id> --list                    # the model calls you may re-enter
-hiveloom fork <run_id> --at 46 --name probe      # after the note was written
+hiveloom fork <run_id> --at <seq> --name probe   # a model call after note_written
 grep -A4 notes_manifest .hiveloom/forks/probe/fork.yaml
 hiveloom run .hiveloom/forks/probe --resume --json
 hiveloom trace <resumed_run_id>                  # notes_inherited, then the note read
@@ -108,3 +135,12 @@ hiveloom proposals list .                        # trigger: executor
 hiveloom proposals show . <proposal_id>
 hiveloom proposals apply . <proposal_id> --yes   # or: proposals reject
 ```
+
+## Try this
+
+- `hiveloom set memory.selection relevant` and add a few lessons about other
+  tasks with `hiveloom memory add`: each run is shown only the ones that match
+  its task (`memory_selected` in the trace), and `search_memory` finds the rest.
+- `hiveloom set context.tool_results.transforms false` removes
+  `transform_result`: the control arm for measuring what the transforms are
+  worth.

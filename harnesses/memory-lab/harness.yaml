@@ -56,11 +56,14 @@ context:
     max_inline_bytes: 16384
     preview_head_bytes: 2048
     preview_tail_bytes: 1024
+    transforms: true
 memory:
   enabled: true
   max_entries: 24
   max_entry_chars: 600
   prompt_budget_chars: 6000
+  selection: all
+  max_selected: 8
   entries:
   - id: never-guess-an-omitted-byte
     kind: rule
@@ -70,6 +73,7 @@ memory:
     source: operator
     evidence: seeded by the walkthrough
     created_at: '2026-09-21T20:53:00.146810+00:00'
+    pinned: false
 guardrails:
 - builtin: max_cost_usd
   value: 1.0
@@ -84,6 +88,10 @@ verify:
   validators:
   - builtin: output_schema
     schema_file: ./schemas/output.json
+  - builtin: file_exists
+    path: out/error-context.txt
+  - builtin: command_succeeds
+    command: grep -q code=POOL_EXHAUSTED out/error-context.txt
   on_fail:
     action: retry_with_feedback
     max_retries: 2
@@ -106,6 +114,16 @@ egress:
   mode: redact
   detect_credentials: true
   patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
 evolution:
   enabled: true
   mutable:
@@ -122,3 +140,8 @@ evolution:
     enabled: false
     min_failures: 5
     cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0
