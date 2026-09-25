@@ -73,6 +73,22 @@ within declared budgets.
   `evolve --experiment` reverts a refuted retry idea before keeping the
   uppercase rule the eval confirms (8 improved pairs, none worse). The learned
   rule is then shown only to the runs it matches.
+- `harnesses/delegation-lab`: an offline worked example of delegation. A front
+  desk with no ledger refers a `ledger-desk` peer (`below_fitness`) until the
+  peer has earned a measured record, then hands the invoice question to it on
+  start, re-verifies the answer with its own validator, and records the child
+  in `hiveloom lineage`; a general question is routed to no one (`none_fit`).
+- **Every demo harness now states what it proves**: each README opens with a
+  one-line claim and a capabilities list, and ends with the evidence to look
+  for and what to try; `harnesses/README.md` is a gallery indexed by
+  capability. The demos gained, through the CLI: `regex_output_filter`,
+  `max_turns_hard_cap` and `logging.redact` plus a "Ship it" section
+  (quickstart); a house-style skill loaded with `load_skill`
+  (example-summarizer); `plan_then_act` and an aimed evolution walkthrough
+  (routing-lab); `file_exists` and `command_succeeds` on the exported artifact
+  (memory-lab); parallel tool execution (ticket-triage); auto-propose with
+  trace excerpts (signal-lab). `scripts/package_e2e.py` drives every offline
+  demo end to end against the installed wheel.
 - `hiveloom guide signal`: the signal-driven evolution reference
   (`docs/signal-driven-evolution.md`).
 

@@ -293,20 +293,24 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Nine worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
-each the smallest thing that shows one layer of the runtime:
+Ten worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
+each the smallest thing that shows one layer of the runtime, with a README that
+states what it proves and the evidence to look for. The
+[gallery](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses#by-capability)
+indexes them by capability.
 
 | harness | what it shows |
 |---|---|
-| [`quickstart`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/quickstart) | a harness with no tools at all — prompt, guardrails, a run, a trace |
-| [`example-summarizer`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/example-summarizer) | builtin tools, schema *and* code verification, retry-with-feedback |
+| [`quickstart`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/quickstart) | a harness with no tools — journal, hashed spec, cost and hard turn ceilings, and a safety layer that keeps a credential out of the request, the trace and the answer; how to package and serve it |
+| [`example-summarizer`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/example-summarizer) | builtin tools, schema *and* code verification, retry-with-feedback, and a house-style skill loaded on demand with `load_skill` |
 | [`article-extractor`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/article-extractor) | a custom `@tool`, an output hook, a validator that re-fetches to catch invention |
-| [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run — offline, so forking and evolution need no API key |
-| [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*` |
+| [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run on a `plan_then_act` plan; forking; an aimed evolution confirmed by `assess` — offline, no API key |
+| [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*`, read in parallel |
 | [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | structured tool phases, a deterministic search-and-verify tool, grounded IDs, and local ranked metrics over synthetic data |
 | [`log-forensics`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/log-forensics) | OS confinement around an allowlisted shell, a 77 KB tool result spilled and read back by handle, and `recall_runs` scoped to one harness version |
 | [`memory-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/memory-lab) | the three memory layers on one task: a spilled log narrowed in place with `transform_result`, findings kept in `notes` across compaction and a fork, a derived object handed to `file_write` by handle, and `memory.entries` that grow only through an applied proposal — offline, no API key |
 | [`signal-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/signal-lab) | signal-driven evolution: `hiveloom signal` locates the failing tool, reflection drafts a lesson for review, `evolve --experiment` reverts a refuted change and keeps the confirmed one pair by pair, `assess` reports both, and relevance-selected memory shows the learned rule only where it applies — offline, no API key |
+| [`delegation-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/delegation-lab) | a front desk refers a ledger specialist until the peer has earned a measured record, then hands it the task, re-verifies the answer, and records the lineage — offline, no API key |
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone

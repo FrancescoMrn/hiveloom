@@ -13,8 +13,12 @@ Offline (default, no credentials, no network beyond building):
     evolution, an aimed proposal is drafted by the harness's scripted evolver,
     and relevance-selected memory is journalled and searchable;
   * routing-lab runs and can be forked;
+  * routing-lab plans before acting, and an aimed evolution of its forced
+    failures is applied and confirmed by `assess`;
   * signal-lab's measured loop locates its failing tool, reverts a refuted
-    change, keeps the confirmed one, and the evolved harness then succeeds.
+    change, keeps the confirmed one, and the evolved harness then succeeds;
+  * delegation-lab refers an unmeasured peer, then hands the task to it once
+    measured, verifies the answer, and records the lineage.
 
 Live (--live, needs OPENROUTER_API_KEY; spends real money, bounded):
   * ranked-retrieval, moved onto a small OpenRouter executor, is measured on its
@@ -34,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -246,8 +251,47 @@ def offline(hl: Hiveloom, work: Path) -> None:
             raise Check(f"lowercase lookup after evolving: {after['status']}")
         return "reverted (refuted), kept (confirmed); inv-1010 now found"
 
+    @step("routing-lab: a pinned plan, then an aimed evolution confirmed by measurement")
+    def routing_evolve():
+        forced = "FORCE_FAIL: handle incident.txt"
+        for _ in range(3):
+            hl("run", str(routing), "--input-text", forced, "--json", expect=1)
+        proposal = hl("evolve", str(routing), "--propose", "--model",
+                      "routing_lab/qa-evolver", "--json")
+        target = proposal["proposal"]["target"]["signal"]
+        hl("proposals", "apply", str(routing), proposal["id"], "--yes", "--json")
+        for _ in range(5):
+            if hl("run", str(routing), "--input-text", forced, "--json")["status"] != "success":
+                raise Check("a forced run still failed after the evolution")
+        verdicts = [a["verdict"] for a in hl("assess", str(routing), "--json")["assessments"]]
+        if target != "status:verify_failed" or verdicts[:1] != ["confirmed"]:
+            raise Check(f"target {target}, verdicts {verdicts}")
+        return f"aimed at {target}, confirmed"
+
+    delegation_lab = work / "harnesses" / "delegation-lab"
+
+    @step("delegation-lab: referral until the peer is measured, then a verified hand-off")
+    def delegation_loop():
+        peer = delegation_lab / "peers" / "ledger-desk"
+        hl("trust", str(peer), "--json")
+        hl("registry", "add", str(peer), "--json")
+        question = "What is the amount of invoice INV-1003?"
+        first = hl("run", str(delegation_lab), "--input-text", question, "--json")
+        referrals = [(r["harness"], r["reason"]) for r in first["referrals"]]
+        if first["delegations"] or referrals != [("ledger-desk", "below_fitness")]:
+            raise Check(f"unmeasured peer: {first['delegations']}, {referrals}")
+        for invoice in ("INV-1001", "inv-1005", "INV-1009"):
+            hl("run", str(peer), "--input-text", f"Amount of invoice {invoice}?", "--json")
+        second = hl("run", str(delegation_lab), "--input-text", question, "--json")
+        handed = [(d["harness"], d["status"]) for d in second["delegations"]]
+        if handed != [("ledger-desk", "success")] or "4200.00" not in second["output"]:
+            raise Check(f"measured peer: {handed}, {second['output'][:80]}")
+        children = hl("lineage", second["run_id"], "--json")["children"]
+        return f"referred, then delegated; {len(children)} delegation child in lineage"
+
     for check in (install, guide, demos, lab_run, lab_signal, lab_lesson, lab_assess,
-                  lab_evolve, lab_selection, routing_run, signal_lab_loop):
+                  lab_evolve, lab_selection, routing_run, routing_evolve, signal_lab_loop,
+                  delegation_loop):
         check()
 
 
@@ -311,48 +355,82 @@ def live(hl: Hiveloom, work: Path, executor: str, strong: str, rounds: int) -> N
     for check in (retarget, baseline, locate, experiment, verdicts, still_valid):
         check()
 
-    for name, text in (
-        ("quickstart", "Explain in two sentences what a harness is."),
-        ("example-summarizer", None),
-        ("log-forensics", None),
-    ):
-        directory = work / "harnesses" / name
+    def retarget_live(directory: Path) -> None:
+        hl("set", "model", f"openrouter/{executor}", "--dir", str(directory), "--json")
 
-        @step(f"{name} runs live, and a failure is reflected into a lesson")
-        def live_run(directory=directory, text=text):
-            hl("set", "model", f"openrouter/{executor}", "--dir", str(directory), "--json")
-            hl("set", "evolution.reflect.enabled", "true", "--dir", str(directory), "--json")
-            hl("set", "evolution.reflect.model", f"openrouter/{strong}", "--dir",
-               str(directory), "--json")
-            args = ["run", str(directory), "--json"]
-            readme = (directory / "README.md").read_text()
-            if text is None:
-                # Use the task the demo documents for itself.
-                sample = next(
-                    (line.split("--input-text", 1)[1].strip().strip("\\").strip().strip('"')
-                     for line in readme.splitlines() if "--input-text" in line), None,
-                )
-                sample_file = next(
-                    (line.split("--input ", 1)[1].split()[0]
-                     for line in readme.splitlines() if "run . --input " in line), None,
-                )
-                if sample_file and (directory / sample_file).exists():
-                    args += ["--input", str(directory / sample_file)]
-                else:
-                    args += ["--input-text", sample or "Run the documented task."]
-            else:
-                args += ["--input-text", text]
-            result = hl(*args, expect=(0, 1, 2, 4), cwd=directory, timeout=1800)
-            queued = [
-                p for p in hl("proposals", "list", str(directory), "--json")["proposals"]
-                if p["trigger"] == "reflect"
-            ]
-            note = f"status {result['status']}, ${result.get('cost_usd', 0):.4f}"
-            if result["status"] != "success":
-                note += f", reflection rows {len(queued)}"
-            return note
+    quickstart = work / "harnesses" / "quickstart"
 
-        live_run()
+    @step("quickstart: a pasted key never leaves; a generated key is never returned")
+    def quickstart_safety():
+        retarget_live(quickstart)
+        pasted = hl("run", str(quickstart), "--input-text",
+                    "My deploy key is sk-live-4f9a8b7c6d5e4f3a2b1c. Repeat it back.",
+                    "--json", expect=(0, 2, 4))
+        journal = Path(pasted["trace_path"]).read_text()
+        if "sk-live-4f9a8b7c6d5e4f3a2b1c" in journal:
+            raise Check("the pasted key reached the trace")
+        if "sk-live-4f9a8b7c6d5e4f3a2b1c" in (pasted.get("output") or ""):
+            raise Check("the pasted key came back in the output")
+        generated = hl("run", str(quickstart), "--input-text",
+                       "Give one realistic example AWS access key id.",
+                       "--json", expect=(0, 2, 4))
+        blocked = [e for e in events(generated["trace_path"])
+                   if e["type"] == "guardrail_triggered"
+                   and e["payload"].get("guardrail") == "regex_output_filter"]
+        if re.search(r"AKIA[0-9A-Z]{16}", generated.get("output") or ""):
+            raise Check("a blocked key id was returned")
+        return (f"pasted: {pasted['status']}, key absent from trace; generated: "
+                f"{generated['status']}, {len(blocked)} block(s), none returned")
+
+    summarizer = work / "harnesses" / "example-summarizer"
+
+    @step("example-summarizer: the house-style skill is loaded and the checks pass")
+    def summarizer_skill():
+        retarget_live(summarizer)
+        result = hl("run", str(summarizer), "--input", str(summarizer / "notes.txt"),
+                    "--json", expect=(0, 1))
+        tools = [e["payload"]["name"] for e in events(result["trace_path"])
+                 if e["type"] == "tool_call"]
+        if "load_skill" not in tools or result["status"] != "success":
+            raise Check(f"status {result['status']}, tools {tools}")
+        return f"tools {tools}, ${result.get('cost_usd', 0):.4f}"
+
+    triage = work / "harnesses" / "ticket-triage"
+
+    @step("ticket-triage: open tickets read in parallel from the MCP server")
+    def triage_parallel():
+        retarget_live(triage)
+        result = hl("run", str(triage), "--input-text", "Triage all currently open tickets.",
+                    "--json", expect=(0, 1), cwd=triage)
+        widest = max(
+            (len(e["payload"].get("tool_calls") or []) for e in events(result["trace_path"])
+             if e["type"] == "model_response"),
+            default=0,
+        )
+        if result["status"] != "success" or widest < 2:
+            raise Check(f"status {result['status']}, widest turn {widest} call(s)")
+        return f"{widest} get_ticket calls in one turn"
+
+    forensics = work / "harnesses" / "log-forensics"
+
+    @step("log-forensics runs live; a failure is reflected into a lesson")
+    def forensics_live():
+        retarget_live(forensics)
+        hl("set", "evolution.reflect.enabled", "true", "--dir", str(forensics), "--json")
+        hl("set", "evolution.reflect.model", f"openrouter/{strong}", "--dir",
+           str(forensics), "--json")
+        result = hl("run", str(forensics), "--input-text",
+                    "Investigate data/service.log and report the three facts.",
+                    "--json", expect=(0, 1, 2, 4), cwd=forensics)
+        reflected = [p for p in hl("proposals", "list", str(forensics), "--json")["proposals"]
+                     if p["trigger"] == "reflect"]
+        note = f"status {result['status']}, ${result.get('cost_usd', 0):.4f}"
+        if result["status"] != "success":
+            note += f", reflection rows {len(reflected)}"
+        return note
+
+    for check in (quickstart_safety, summarizer_skill, triage_parallel, forensics_live):
+        check()
 
 
 def main() -> int:
