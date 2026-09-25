@@ -1,6 +1,11 @@
 # log-forensics
 
-The demo for the containment release. One shell command produces 77 KB of
+> **Proves:** an allowlisted shell command can produce far more than the
+> context holds and the harness still answers from its last line — the result
+> spilled whole and read back by handle, the command confined so it can reach
+> nothing but the log.
+
+Live: needs an API key. The demo for the containment release. One shell command produces 77 KB of
 output, and the harness has to answer three questions about it — including one
 whose answer is in the last line — without ever holding the log in context and
 without the command being able to reach anything but the log.
@@ -32,7 +37,7 @@ Expected output, verified against `schemas/output.json`:
 {"dominant_failure_code": "POOL_EXHAUSTED", "error_count": 84, "build_digest": "8F2C-77A1-DE30"}
 ```
 
-## What to look for in the trace
+## What to look for
 
 ```bash
 hiveloom trace <run_id>
@@ -72,7 +77,13 @@ this harness allows cannot read back another run's evidence. Confirm it:
 hiveloom confinement . --json    # runtime_state_hidden, home_hidden, network_isolated
 ```
 
-## Changing it
+## Try this
+
+- `hiveloom confinement . --json` on another machine: the backend that
+  actually runs is recorded in every `run_started`, so a journal says what was
+  enforced, not what was asked for.
+- Run it twice: the second run's `recall_runs` finds the first as a worked
+  example, scoped to this harness version only.
 
 Do not hand-edit `harness.yaml`. Make changes through the CLI, which validates
 every mutation and rolls back on error — including the shell allowlist:
