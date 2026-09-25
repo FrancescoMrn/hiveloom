@@ -77,3 +77,16 @@ def test_a_measured_peer_takes_the_task_and_the_desk_verifies_it(lab: Path):
     assert "three to five working days" in json.loads(general["output"])["answer"]
     assert general["delegations"] == []
     assert _referrals(general) == [("ledger-desk", "none_fit")]
+
+
+def test_a_blocked_peer_answer_is_not_handed_back(lab: Path):
+    peer = lab / "peers" / "ledger-desk"
+    for invoice in ("INV-1001", "inv-1005", "INV-1009"):
+        _invoke("run", str(peer), "--input-text", f"Amount of invoice {invoice}?")
+    _invoke("add", "guardrail", "--builtin", "regex_output_filter", "--pattern", "Cobalt",
+            "--dir", str(lab))
+    result = CliRunner().invoke(app, ["run", str(lab), "--input-text", INVOICE, "--json"])
+    run = json.loads(result.stdout)
+    assert run["status"] == "guardrail_halt"
+    assert run["output"] == ""
+    assert "delegated output blocked" in run["reason"]

@@ -193,6 +193,18 @@ within declared budgets.
 
 ### Fixed
 
+- **A blocked output is no longer handed back.** When `regex_output_filter`
+  (or any output guardrail) blocked an answer and the model never produced a
+  compliant one before `loop.max_turns`, the run returned the blocked text as
+  its `output`; a blocked delegated answer was returned with `guardrail_halt`
+  the same way. An output is now recorded as the run's answer only after the
+  output guardrails pass; a turn-exhausted run returns no output and says
+  `last output blocked: …` in its reason, and a blocked delegated answer is
+  dropped. Found by the quickstart demo, where a generated AWS-style key id
+  was blocked twice and still returned.
+- Runs routed through their own playbooks (a playbook with its own model) are
+  no longer held out of their version's fitness bucket as "swapped": only a
+  model swap from outside the spec is.
 - Compaction no longer discards the newest tool results. Summarize-compaction
   kept only the last message, which for a tool turn is results whose calls had
   just been summarized away. The orphan repair then dropped them too, so the

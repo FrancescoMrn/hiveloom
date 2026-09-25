@@ -234,6 +234,9 @@ class AgentLoop:
                 switch_tool.bind(self._handle_switch_playbook)
         self._events = events if events is not None else EventBus(trace=trace)
         self._pending_output: str | None = None
+        # The reason the newest output was blocked by an output guardrail, so a
+        # run that exhausts its turns can say why without returning that output.
+        self._last_output_block: str | None = None
         self._policy = policy if policy is not None else build_policy(
             spec.loop.policy, {"steps": spec.loop.steps, "attempts": spec.loop.attempts}
         )
@@ -611,16 +614,21 @@ class AgentLoop:
 
             output = self._policy.select_output(self, output)
             output = self._transform_output(output)
-            self._state.output = output
 
+            # Output guardrails run before the output is recorded as the run's
+            # answer: a blocked output must never become what a stopped or
+            # turn-exhausted run hands back to its caller.
             block = self._on_output(output)
             if block is not None:
                 if block.startswith("HALT:"):
                     return self._finish("guardrail_halt", reason=block[5:])
+                self._last_output_block = block
                 self._context.add_user(
                     f"Your output was blocked ({block}). Produce a compliant result."
                 )
                 continue
+            self._last_output_block = None
+            self._state.output = output
 
             if loop.require_verification:
                 verdicts = self._verify(output)
@@ -670,6 +678,11 @@ class AgentLoop:
             "max_turns",
             output=self._policy.fallback_output(self, self._state.output or ""),
             verdicts=last_verdicts,
+            reason=(
+                f"last output blocked: {self._last_output_block}"
+                if self._last_output_block
+                else ""
+            ),
         )
 
     # ------------------------------------------------------------------ #
@@ -1804,15 +1817,17 @@ class AgentLoop:
         counts as a success.
         """
         output = self._transform_output(record.output)
-        self._state.output = output
         block = self._on_output(output)
         if block is not None:
             reason = block[5:] if block.startswith("HALT:") else block
+            # The blocked answer is not handed back: the guardrail is the
+            # last line between a peer's output and this harness's caller.
             return self._finish(
                 "guardrail_halt",
-                output=output,
+                output="",
                 reason=f"delegated output blocked: {reason}",
             )
+        self._state.output = output
         verdicts: list[VerdictResult] = []
         if self._spec.loop.require_verification:
             verdicts = self._verify(output)
