@@ -10,8 +10,8 @@ two countable rules; the rest is what a reviewer reads for.
 
 - **title** — at most 8 words, no trailing period. Name the subject, not the
   document ("Q3 migration plan", not "Notes about the plan").
-- **key_points** — 3 to 5 entries. Each is one sentence making one claim the
-  source makes, in the source's own terms.
+- **key_points** — at most 5 entries, fewer for a short source. Each is one
+  sentence making one claim the source makes, in the source's own terms.
 - **Numbers** — keep figures, dates and names exactly as the source writes
   them; never round or convert.
 - **summary** — plain prose, no bullet characters, no heading.

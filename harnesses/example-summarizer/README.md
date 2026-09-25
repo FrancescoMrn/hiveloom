@@ -41,7 +41,7 @@ hiveloom run . --input notes.txt --json
 - **Verification that bites.** Each `verification_result` is journalled;
   when one fails, the next user turn is its feedback, and the model's next
   answer fixes exactly that.
-- **The output** — a title of at most 8 words and 3–5 key points. Checked live
+- **The output** — a title of at most 8 words and at most 5 key points. Checked live
   on a small model (Ministral 8B): it loaded the skill and passed both checks
   first time.
 
@@ -50,5 +50,5 @@ hiveloom run . --input notes.txt --json
 - Loosen the prompt and watch the checks catch it:
   `hiveloom set system_prompt "Summarize the file."`, run again, then
   `hiveloom stats .` — the two versions side by side.
-- Change a house rule (say, "exactly 3 key points") in the skill and the
+- Change a house rule (say, "at most 3 key points") in the skill and the
   validator, and see the retry loop teach it.
