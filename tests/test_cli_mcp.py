@@ -83,6 +83,35 @@ def test_add_mcp_server_http_cli_writes_expected_yaml(tmp_path: Path):
     assert entry["deferred"] is True
 
 
+def test_add_mcp_server_timeout_seconds_cli(tmp_path: Path):
+    """Defect 3: the 30s default is too short for a peer harness run."""
+    directory = _init(tmp_path)
+    r = runner.invoke(
+        app,
+        [
+            "add", "mcp-server", "--name", "echo", "--stdio-command", "npx",
+            "--timeout-seconds", "120",
+            "--dir", directory, "--json",
+        ],
+    )
+    assert r.exit_code == ExitCode.OK
+    raw = yaml.safe_load((Path(directory) / "harness.yaml").read_text())
+    assert raw["mcp_servers"][0]["timeout_seconds"] == 120.0
+
+
+def test_add_mcp_server_timeout_seconds_out_of_range_rejected(tmp_path: Path):
+    directory = _init(tmp_path)
+    r = runner.invoke(
+        app,
+        [
+            "add", "mcp-server", "--name", "echo", "--stdio-command", "npx",
+            "--timeout-seconds", "601",
+            "--dir", directory, "--json",
+        ],
+    )
+    assert r.exit_code == ExitCode.SPEC_ERROR
+
+
 def test_add_mcp_server_malformed_env_pair(tmp_path: Path):
     directory = _init(tmp_path)
     r = runner.invoke(
@@ -177,3 +206,38 @@ def test_mcp_list_tools_trust_gate_blocks_before_any_subprocess_spawns(
     r = runner.invoke(app, ["mcp", "list-tools", "--dir", directory, "--json"])
     assert r.exit_code == ExitCode.SPEC_ERROR
     assert "not trusted" in _json(r)["error"]
+
+
+# --------------------------------------------------------------------------- #
+# `mcp serve` startup errors: stderr only, never the protocol channel
+# --------------------------------------------------------------------------- #
+def test_mcp_serve_startup_error_goes_to_stderr_not_stdout(tmp_path: Path, monkeypatch):
+    """stdout IS the MCP protocol on stdio: a JSON error object written there
+    reaches the calling agent as nothing but "Connection closed"."""
+    directory = _init(tmp_path)
+    monkeypatch.setenv("HIVELOOM_TRUST", "never")
+    trust.revoke_trust(directory)
+
+    r = runner.invoke(app, ["mcp", "serve", directory])
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert r.stdout == ""
+    assert "not trusted" in r.stderr
+
+
+def test_mcp_serve_missing_harness_errors_to_stderr(tmp_path: Path):
+    r = runner.invoke(app, ["mcp", "serve", str(tmp_path / "nope")])
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert r.stdout == ""
+    assert r.stderr.startswith("error:")
+
+
+def test_mcp_serve_rejects_a_bad_bound(tmp_path: Path):
+    directory = _init(tmp_path)
+
+    r = runner.invoke(app, ["mcp", "serve", directory, "--max-depth", "0"])
+
+    assert r.exit_code == ExitCode.SPEC_ERROR
+    assert r.stdout == ""
+    assert "max-depth" in r.stderr

@@ -87,6 +87,31 @@ export interface Verdict {
   feedback: string
 }
 
+/** One completed hand-off, as `run_result_payload` and `run_finished` report it. */
+export interface Delegation {
+  harness: string
+  run_id: string
+  status: string
+  cost_usd: number
+  turns: number
+  output: string
+  reason: string
+}
+
+/**
+ * A peer that would have fitted but was not used.
+ *
+ * `reason` is one of `no_candidates`, `below_fitness`, `none_fit`,
+ * `unparsable`, `depth`, `cycle`, `budget`, `listed` — see docs/delegation.md.
+ */
+export interface Referral {
+  harness: string
+  description: string
+  success_rate: number
+  total_runs: number
+  reason: string
+}
+
 export interface RunResult {
   type: 'run_result'
   ok: boolean
@@ -99,6 +124,16 @@ export interface RunResult {
   reason: string
   verdicts: Verdict[]
   artifacts: Artifact[]
+  /**
+   * What this run handed to a peer. Optional because a conversation stored
+   * before delegation existed has results without it — never because the
+   * server omits it.
+   */
+  delegations?: Delegation[]
+  /** Peers that fitted but were not used, so the reader can go there directly. */
+  referrals?: Referral[]
+  /** The share of `cost_usd` that was spent by children, not by this run. */
+  delegated_cost_usd?: number
 }
 
 export interface RunRow {
@@ -120,6 +155,8 @@ export interface RunRow {
   reason?: string
   trace_path?: string
   parent_run_id?: string | null
+  /** How this run hangs off its parent: a delegated peer run, or a fork. */
+  lineage_kind?: 'delegation' | 'fork' | null
   forked_at_seq?: number | null
   model_path?: string
   verifications?: Verification[]
@@ -223,7 +260,10 @@ export interface MemoryRecord {
 export interface Lineage {
   run: RunRow | null
   ancestors: (RunRow | { run_id: string; missing: true })[]
+  /** Historically forks only; the Hive now returns every child here. */
   forks: RunRow[]
+  /** Every run started from this one, forks and delegated peer runs alike. */
+  children?: RunRow[]
 }
 
 export interface RunDetail {
@@ -233,6 +273,10 @@ export interface RunDetail {
   lineage: Lineage
   fork_points: ForkPoint[]
   artifacts: Artifact[]
+  /** Read back off the recorded `run_finished` event, like `artifacts`. */
+  delegations?: Delegation[]
+  referrals?: Referral[]
+  delegated_cost_usd?: number
 }
 
 export interface MaterializedContext {
@@ -376,11 +420,6 @@ export interface Comparison {
   new_failures: string[]
   /** Fewer than five runs on a side: the delta is not evidence yet. */
   underpowered: boolean
-}
-
-export interface PendingMessage {
-  id: string
-  content: string
 }
 
 /* ---------------------------------------------------------- workbench state */

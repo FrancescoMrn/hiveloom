@@ -592,6 +592,7 @@ def create_app(
                     excerpt_config=spec.evolution.trace_excerpts,
                     redaction=spec.logging.redact,
                     objectives=spec.evolution.objectives,
+                    evolution=spec.evolution,
                 )
                 if report.is_empty():
                     return {

@@ -26,6 +26,7 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'context', label: 'Context' },
   { id: 'verify', label: 'Verify' },
   { id: 'safety', label: 'Safety' },
+  { id: 'delegation', label: 'Delegation' },
   { id: 'control', label: 'Control' },
 ]
 
@@ -123,6 +124,7 @@ export function Trajectory({
       : open.integrity?.ok
         ? 'legacy'
         : 'bad'
+    const delegation = delegationStat(open, trajectory)
     const integrityIcon = integrityTone === 'ok'
       ? 'ph-seal-check'
       : integrityTone === 'legacy'
@@ -154,9 +156,30 @@ export function Trajectory({
             <Stat label="events" value={String(open.events.length)} />
             <Stat label="version" value={run.harness_version_hash.slice(0, 12)} />
             <Stat label="model path" value={run.model_path || 'not recorded'} />
+            {delegation && <Stat label="delegation" value={delegation} />}
           </div>
 
-          {(run.reason || hasEvidence(open)) && <RunEvidence detail={open} />}
+          {run.lineage_kind === 'delegation' && run.parent_run_id && (
+            <div className="lineage-strip">
+              <i className="ph ph-arrow-bend-left-up" />
+              <span>
+                A delegated run — <strong>{run.harness_name}</strong> did this work for another
+                harness.
+              </span>
+              <button
+                className="msg-action"
+                onClick={() => onSelectRun(run.parent_run_id!)}
+                title={`Open ${run.parent_run_id}`}
+              >
+                <i className="ph ph-arrow-square-out" />
+                Open the parent run
+              </button>
+            </div>
+          )}
+
+          {(run.reason || hasEvidence(open)) && (
+            <RunEvidence detail={open} trajectory={trajectory} onSelectRun={onSelectRun} />
+          )}
         </div>
 
         <div className="trajectory-toolbar">
@@ -808,10 +831,24 @@ function ContextSection({ label, value }: { label: string; value: unknown }) {
   )
 }
 
-function RunEvidence({ detail }: { detail: RunDetail }) {
+function RunEvidence({
+  detail,
+  trajectory,
+  onSelectRun,
+}: {
+  detail: RunDetail
+  trajectory: TrajectoryProjection | null
+  onSelectRun: (runId: string | null) => void
+}) {
   const run = detail.run
   const ancestors = detail.lineage.ancestors
-  const forks = detail.lineage.forks
+  // `children` is the Hive's own name for the whole set; `forks` is the same
+  // list under the name it had before delegated runs joined it. Prefer the
+  // former and fall back, so an older API answer still renders.
+  const children = detail.lineage.children ?? detail.lineage.forks
+  const delegations = detail.delegations ?? []
+  const referrals = detail.referrals ?? []
+  const steps = trajectory?.delegations ?? []
   return (
     <details className="run-evidence">
       <summary>
@@ -838,11 +875,75 @@ function RunEvidence({ detail }: { detail: RunDetail }) {
         </section>
         <section>
           <Label>Lineage</Label>
-          <p>{run.parent_run_id ? `Forked from ${run.parent_run_id} at seq ${run.forked_at_seq}.` : 'Root run.'}</p>
-          {ancestors.map((item) => <div className="mono evidence-line" key={item.run_id}>↑ {item.run_id}</div>)}
-          {forks.map((item) => <div className="mono evidence-line" key={item.run_id}>↳ {item.run_id} @ {item.forked_at_seq}</div>)}
+          <p>{lineageLine(run)}</p>
+          {ancestors.map((item) => (
+            <button
+              className="mono evidence-line evidence-link"
+              key={item.run_id}
+              onClick={() => onSelectRun(item.run_id)}
+              title={`Open ${item.run_id}`}
+            >
+              ↑ {item.run_id}
+            </button>
+          ))}
+          {children.map((item) => (
+            <button
+              className="mono evidence-line evidence-link"
+              key={item.run_id}
+              onClick={() => onSelectRun(item.run_id)}
+              title={`Open ${item.run_id}`}
+            >
+              ↳ {item.run_id}
+              {item.lineage_kind === 'delegation'
+                ? ` · delegated to ${item.harness_name}`
+                : ` @ ${item.forked_at_seq}`}
+            </button>
+          ))}
           {detail.fork_points.length > 0 && <p>{detail.fork_points.length} safe model-call fork boundaries.</p>}
         </section>
+        {(delegations.length > 0 || referrals.length > 0 || steps.length > 0) && (
+          <section>
+            <Label>Delegation</Label>
+            {(detail.delegated_cost_usd ?? 0) > 0 && (
+              <p>
+                ${(detail.delegated_cost_usd ?? 0).toFixed(4)} of this run's cost was spent by a
+                peer, not by this harness.
+              </p>
+            )}
+            {delegations.map((record, index) => (
+              <div className="evidence-line" key={`${record.harness}-${record.run_id || index}`}>
+                <i className="ph ph-arrow-bend-up-right" />
+                <span>
+                  <strong>{record.harness}</strong> · {record.status || 'no status'} · $
+                  {(record.cost_usd ?? 0).toFixed(4)} · {record.turns ?? 0} turns
+                  {record.reason ? ` — ${record.reason}` : ''}
+                </span>
+                {record.run_id && (
+                  <button
+                    className="msg-action"
+                    onClick={() => onSelectRun(record.run_id)}
+                    title={`Open ${record.run_id}`}
+                  >
+                    Open run
+                  </button>
+                )}
+              </div>
+            ))}
+            {referrals.map((referral, index) => (
+              <div className="evidence-line" key={`${referral.harness}-${index}`}>
+                <i className="ph ph-signpost" />
+                <span title={referral.description}>
+                  <strong>{referral.harness}</strong> · success{' '}
+                  {Math.round((referral.success_rate ?? 0) * 100)}% over {referral.total_runs ?? 0}{' '}
+                  runs · {referral.reason}
+                </span>
+              </div>
+            ))}
+            {delegations.length === 0 && referrals.length === 0 && (
+              <p>{steps.length} hand-off decision{steps.length === 1 ? '' : 's'} in the journal.</p>
+            )}
+          </section>
+        )}
         <section>
           <Label>Artifacts</Label>
           {detail.artifacts.length === 0 ? (
@@ -942,8 +1043,44 @@ function hasEvidence(detail: RunDetail): boolean {
       detail.run.guardrail_triggers?.length ||
       detail.artifacts.length ||
       detail.lineage.ancestors.length ||
-      detail.lineage.forks.length,
+      detail.lineage.forks.length ||
+      detail.lineage.children?.length ||
+      detail.delegations?.length ||
+      detail.referrals?.length,
   )
+}
+
+/** How this run hangs off its parent, in the vocabulary of the kind it is. */
+function lineageLine(run: RunRow): string {
+  if (!run.parent_run_id) return 'Root run.'
+  if (run.lineage_kind === 'delegation') {
+    return `Delegated by ${run.parent_run_id} — this run did that run's work.`
+  }
+  return `Forked from ${run.parent_run_id} at seq ${run.forked_at_seq}.`
+}
+
+/**
+ * The one-line delegation headline for the metrics row.
+ *
+ * The recorded receipts first — they are what the run was charged for — and
+ * the journal's own decisions when there are none, so a run that only ever
+ * *considered* a hand-off still says so.
+ */
+function delegationStat(
+  detail: RunDetail,
+  trajectory: TrajectoryProjection | null,
+): string | null {
+  const delegations = detail.delegations ?? []
+  const cost = detail.delegated_cost_usd ?? 0
+  if (delegations.length > 0) {
+    const peers = [...new Set(delegations.map((record) => record.harness))].join(', ')
+    return `${peers} · $${cost.toFixed(4)}`
+  }
+  if (detail.run.lineage_kind === 'delegation') return 'delegated run'
+  const steps = trajectory?.delegations ?? []
+  if (steps.length > 0) return `${steps.length} considered`
+  if ((detail.referrals ?? []).length > 0) return `${detail.referrals!.length} referred`
+  return null
 }
 
 function kindLabel(type: string): string {
@@ -951,6 +1088,8 @@ function kindLabel(type: string): string {
   if (type === 'model_response') return 'assistant'
   if (type === 'context_append') return 'message'
   if (type === 'verification_result') return 'verifier'
+  // 'delegation' does not fit the ledger's kind column; the verb does.
+  if (category === 'delegation') return 'delegate'
   return category
 }
 
@@ -968,6 +1107,11 @@ function eventTitle(event: TraceEvent): string {
     case 'tool_spilled': return `${String(p.name ?? 'Tool')} result spilled`
     case 'spill_inherited': return 'Spilled results inherited'
     case 'verification_result': return String(p.verifier ?? 'Verification')
+    case 'delegation_selected': return `Peer chosen · ${String(p.harness ?? '?')}`
+    case 'delegation_started': return `Delegating to ${String(p.harness ?? '?')}`
+    case 'delegation_finished':
+      return `${String(p.harness ?? 'Peer')} ${String(p.status ?? 'finished')}`
+    case 'delegation_skipped': return 'No hand-off'
     case 'guardrail_triggered': return String(p.guardrail ?? 'Guardrail triggered')
     case 'context_append': {
       const message = asRecord(p.message)
@@ -985,6 +1129,9 @@ function eventTitle(event: TraceEvent): string {
 
 function eventSummary(event: TraceEvent): string {
   const p = event.payload
+  // Before the generic scan below: every delegation event carries `reason` or
+  // `status`, which the scan would return on its own and drop the rest.
+  if (categoryOf(event.type) === 'delegation') return delegationSummary(event)
   if (event.type === 'context_append') {
     const message = asRecord(p.message)
     return preview(message.content ?? message.text ?? '', 180)
@@ -1005,6 +1152,47 @@ function eventSummary(event: TraceEvent): string {
   return preview(p, 180)
 }
 
+/**
+ * One delegation event, said in full.
+ *
+ * Each of the four answers a different question — who was chosen and on what
+ * measured odds, how deep the hand-off is and what it may spend, what the child
+ * produced, or why nothing was handed over at all — so each gets its own line
+ * rather than a shared field scan.
+ */
+function delegationSummary(event: TraceEvent): string {
+  const p = event.payload
+  const mode = p.mode ? `${String(p.mode)} · ` : ''
+  switch (event.type) {
+    case 'delegation_selected': {
+      const runs = Number(p.total_runs)
+      const rate = Number(p.success_rate)
+      const fitness = Number.isFinite(rate) && Number.isFinite(runs)
+        ? `success ${Math.round(rate * 100)}% over ${runs} runs`
+        : 'no measured fitness'
+      return `${mode}${String(p.harness ?? '?')} · ${fitness}`
+    }
+    case 'delegation_started': {
+      const chain = Array.isArray(p.chain) ? p.chain.length : 0
+      const cap = Number(p.cost_cap_usd)
+      const budget = Number.isFinite(cap) ? `cap $${cap.toFixed(4)}` : 'no extra cap'
+      return `${mode}depth ${String(p.depth ?? '?')} · chain of ${chain} · ${budget}`
+    }
+    case 'delegation_finished': {
+      const cost = Number(p.cost_usd)
+      const spent = Number.isFinite(cost) ? ` · $${cost.toFixed(4)}` : ''
+      const turns = p.turns === undefined ? '' : ` · ${String(p.turns)} turns`
+      const run = p.run_id ? ` · ${String(p.run_id)}` : ''
+      const why = p.reason || p.error ? ` — ${String(p.reason ?? p.error)}` : ''
+      return `${mode}${String(p.status ?? '?')}${spent}${turns}${run}${why}`
+    }
+    default: {
+      const who = p.harness ? `${String(p.harness)} · ` : ''
+      return `${mode}${who}${String(p.reason ?? 'no reason recorded')}`
+    }
+  }
+}
+
 function eventNarrative(event: TraceEvent): string {
   const summary = eventSummary(event)
   switch (categoryOf(event.type)) {
@@ -1013,6 +1201,8 @@ function eventNarrative(event: TraceEvent): string {
     case 'context': return summary || 'The folded model context changed.'
     case 'verify': return summary || 'A verifier judged the final output.'
     case 'safety': return summary || 'A safety or lifecycle hook intervened.'
+    case 'delegation':
+      return summary || 'The run looked for a peer to hand this task to.'
     case 'control': return summary || 'The harness changed execution policy.'
     default: return summary || 'The run lifecycle advanced.'
   }

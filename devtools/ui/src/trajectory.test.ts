@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { projectTrajectory } from './trajectory.ts'
+import { categoryOf, projectTrajectory } from './trajectory.ts'
 
 type Event = {
   run_id: string
@@ -148,4 +148,120 @@ test('marks a failed verifier as a point event', () => {
   // A point event is its own start and end: it has no separate result half.
   assert.equal(span.startSeq, span.endSeq)
   assert.equal(trajectory.pairedSeqs.size, 0)
+})
+
+test('projects the four delegation events as one step per hand-off', () => {
+  const trajectory = projectTrajectory([
+    event(0, 'run_started', 0, { input: 'rank these' }),
+    event(1, 'delegation_selected', 10, {
+      mode: 'on_start',
+      harness: 'ranked-retrieval',
+      harness_id: 'hl-9f',
+      success_rate: 0.82,
+      total_runs: 44,
+      cost_usd: 0.0002,
+    }),
+    event(2, 'delegation_started', 20, {
+      mode: 'on_start',
+      harness: 'ranked-retrieval',
+      depth: 1,
+      chain: ['hl-root', 'hl-parent'],
+      cost_cap_usd: 0.25,
+    }),
+    event(3, 'delegation_finished', 1520, {
+      mode: 'on_start',
+      harness: 'ranked-retrieval',
+      run_id: 'run_child',
+      status: 'success',
+      cost_usd: 0.031,
+      turns: 3,
+    }),
+  ] as never)
+
+  assert.equal(trajectory.delegations.length, 1)
+  const [step] = trajectory.delegations
+  assert.equal(step.phase, 'finished')
+  assert.equal(step.mode, 'on_start')
+  assert.equal(step.harness, 'ranked-retrieval')
+  assert.equal(step.runId, 'run_child')
+  assert.equal(step.status, 'success')
+  // The hand-off's own cost supersedes what the selection call cost.
+  assert.equal(step.costUsd, 0.031)
+  assert.equal(step.turns, 3)
+  assert.equal(step.successRate, 0.82)
+  assert.equal(step.totalRuns, 44)
+  assert.equal(step.depth, 1)
+  assert.deepEqual(step.chain, ['hl-root', 'hl-parent'])
+  assert.equal(step.costCapUsd, 0.25)
+  assert.deepEqual(step.seqs, [1, 2, 3])
+  assert.equal(step.durationMs, 1510)
+  // The step is a projection beside the spans, never one of them.
+  assert.equal(trajectory.spans.length, 0)
+})
+
+test('a skipped hand-off is a step of its own, with its reason', () => {
+  const trajectory = projectTrajectory([
+    event(1, 'delegation_skipped', 10, {
+      mode: 'on_start',
+      reason: 'below_fitness',
+      candidates: ['scratch-harness'],
+    }),
+  ] as never)
+
+  const [step] = trajectory.delegations
+  assert.equal(step.phase, 'skipped')
+  assert.equal(step.reason, 'below_fitness')
+  assert.equal(step.harness, '')
+  assert.equal(step.runId, '')
+  assert.equal(step.durationMs, 0)
+})
+
+test('keeps two hand-offs to different peers apart', () => {
+  const trajectory = projectTrajectory([
+    event(1, 'delegation_started', 10, { mode: 'model_choice', harness: 'alpha', depth: 1 }),
+    event(2, 'delegation_started', 20, { mode: 'model_choice', harness: 'beta', depth: 1 }),
+    event(3, 'delegation_finished', 30, {
+      mode: 'model_choice',
+      harness: 'beta',
+      run_id: 'run_beta',
+      status: 'success',
+      cost_usd: 0.01,
+    }),
+    event(4, 'delegation_finished', 40, {
+      mode: 'model_choice',
+      harness: 'alpha',
+      run_id: 'run_alpha',
+      status: 'verify_failed',
+      cost_usd: 0.02,
+    }),
+  ] as never)
+
+  assert.deepEqual(
+    trajectory.delegations.map((step) => [step.harness, step.runId, step.status]),
+    [
+      ['alpha', 'run_alpha', 'verify_failed'],
+      ['beta', 'run_beta', 'success'],
+    ],
+  )
+})
+
+test('a hand-off the journal never closed stays open rather than ending at zero', () => {
+  const trajectory = projectTrajectory([
+    event(1, 'delegation_selected', 10, { mode: 'on_verify_fail', harness: 'peer' }),
+    event(2, 'delegation_started', 20, { mode: 'on_verify_fail', harness: 'peer', depth: 2 }),
+  ] as never)
+
+  const [step] = trajectory.delegations
+  assert.equal(step.phase, 'started')
+  assert.equal(step.endMs, null)
+  assert.equal(step.durationMs, null)
+})
+
+test('a delegation event is its own category, not a tool or a run event', () => {
+  assert.equal(categoryOf('delegation_selected'), 'delegation')
+  assert.equal(categoryOf('delegation_started'), 'delegation')
+  assert.equal(categoryOf('delegation_finished'), 'delegation')
+  assert.equal(categoryOf('delegation_skipped'), 'delegation')
+  assert.equal(categoryOf('tool_call'), 'tool')
+  assert.equal(categoryOf('run_finished'), 'run')
 })

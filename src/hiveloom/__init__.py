@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from hiveloom.spec.schema import HarnessSpec
 

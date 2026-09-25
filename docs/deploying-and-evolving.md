@@ -24,7 +24,7 @@ The running deployment does **not** evolve itself:
 - Evolution is a **gated, versioned, auditable mutation**, not silent drift.
   The evolver can never change `id`, `guardrails`, `model`, `logging.redact`,
   `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-  `evolution.trace_excerpts`, or `evolution.objectives`;
+  `evolution.trace_excerpts`, `evolution.objectives`, or the `memory` budgets;
   regenerated code hooks require explicit y/n approval; every applied change
   bumps an `# evolved: N` counter and records old→new version hashes in the
   Hive.
@@ -94,11 +94,143 @@ hiveloom proposals apply ./harness <id>       # apply it (re-checks the harness
 hiveloom proposals reject ./harness <id> --reason "not worth it"
 ```
 
-There is no auto-apply: a human always calls `proposals apply` or
-`proposals reject`. This is the additive extension the trace sink / networked
+`apply` needs an answer about the gated YAML changes: `--yes`, or an
+interactive `y`. Declining applies nothing and leaves the proposal `pending`,
+so it is still there to apply later. `--json` cannot prompt, so
+`proposals apply --json` without `--yes` is a usage error (exit 3) rather than
+a call that resolves the row without applying it.
+
+Queued proposals are never auto-applied: a human always calls `proposals
+apply` or `proposals reject`. The one loop that applies on its own is the
+explicit `evolve --experiment eval.yaml --yes`, which keeps a change only when
+the eval confirms its prediction and reverts it otherwise (see
+[signal-driven-evolution.md](signal-driven-evolution.md)). This is the additive extension the trace sink / networked
 Hive / A/B runner discussion below anticipates — proposals live in the same
 Hive as runs and evolutions, so a later automatic trigger or HTTP control plane
 can populate the same queue without changing this review step.
+
+### Proposing a durable lesson
+
+A proposal can add to the harness's [durable memory](spec.md#memory) — a
+standing constraint the runs keep rediscovering — instead of enlarging the
+system prompt around it. The proposing model is told the current entry count
+and the budgets, and appends by writing the reserved path segment `+`:
+
+```json
+{"path": "memory.entries.+",
+ "value": {"id": "iso-dates", "kind": "rule", "title": "Dates in ISO 8601",
+           "content": "Emit dates as YYYY-MM-DD.",
+           "source": "evolve", "evidence": "4 runs failed date_format"},
+ "rationale": "date_format rejected 4 of the last 9 runs"}
+```
+
+`+` means *append*, and it is resolved when the proposal is applied, not when
+it is queued. An existing index replaces that entry, and a numeric index equal
+to the current length still appends — but a position written at queue time goes
+stale the moment another entry lands, and the same index then silently replaces
+the lesson that took it. Write `+`.
+
+Because an append says what it does rather than where it lands, it is also the
+one proposal that survives the harness moving underneath it: **a proposal whose
+every change is a `memory.entries.+` append, and that carries no code changes,
+applies against a newer spec version too.** Everything else is still refused
+with *harness has changed — regenerate*, because a mutation drafted against a
+spec the harness no longer has is a fix for a harness that no longer exists.
+Applying against a newer version is not applying unchecked: the gate, full
+re-validation and rollback all run at apply, so an append that would break a
+budget is refused there and leaves the row pending.
+
+Everything else under `memory` — the budgets and `enabled` — is refused
+by the gate, so a proposal can add a lesson but never widen the store that
+holds it, and an entry that would break `max_entries`, `max_entry_chars`, or
+`prompt_budget_chars` is rejected with the rest of its batch and leaves
+`harness.yaml` untouched.
+
+Reviewing one is the ordinary flow, plus one question:
+
+```console
+hiveloom proposals show ./harness <id> --json   # the entry, its rationale, the gate result
+hiveloom memory list ./harness                  # what is already there, and how full it is
+hiveloom proposals apply ./harness <id>
+hiveloom memory show ./harness iso-dates        # the applied entry, with its evidence
+```
+
+Ask whether the lesson is *durable* (true of every future run, not of the runs
+in this failure cluster), whether it belongs in memory rather than in a
+validator (memory advises the model, it does not check its work), and whether
+it is worth its tokens on every model call of every run. A lesson that stops
+paying comes out with `hiveloom memory forget`, which is a spec change like any
+other and moves the version hash accordingly.
+
+### Lessons the executor itself proposes
+
+A third source fills the same queue. Declare the opt-in
+[`propose_memory`](spec.md#letting-the-executor-propose-a-lesson) tool and the
+running model can offer a durable lesson mid-run — it discovered the
+constraint, after all — without any new authority:
+
+```bash
+hiveloom add tool --builtin propose_memory --param max_per_run=2 --json
+hiveloom proposals list ./harness --json      # rows with "trigger": "executor"
+```
+
+Such a row is a `MutationProposal` appending to `memory.entries.+` like the one
+above, built with no strong-model call, gated at the moment it is queued, and
+reviewed with the same four commands. Several lessons from one run compose:
+applying the first moves the version hash, and the rest are appends, which
+apply against the new one. Nothing about the review step changes:
+`apply` still re-checks that the harness has not moved, re-gates, re-validates
+and rolls back. What changes is where the queue's input comes from —
+`--propose` (you), `auto_propose` (a failing run), and now the executor's own
+`propose_memory` (a run that learned something).
+
+Two things worth knowing when you review one:
+
+- The `evidence` receipt names the run that proposed it, so
+  `hiveloom trace <run_id>` shows the work that produced the lesson.
+- Queue pressure is bounded by design: `max_per_run` caps one run, identical
+  content dedups against the pending row, and runs launched by `hiveloom eval`
+  never queue at all. If the queue still fills with restatements, the lesson to
+  draw is usually about the harness's prompt, not about memory.
+
+### Attempt memory and operator findings
+
+Evolution includes the latest 12 resolved proposals for the same harness
+identity, across versions. An `applied` or `rejected` record describes a review
+decision, not measured improvement or regression. Rejected records retain the
+proposed paths and rejection reason. This automatic history comes from the
+proposal queue; direct `evolve --yes` applications are not queue entries.
+
+Drivers that evaluate and keep or revert mutations can supply a newest-first
+ledger via `analyze(..., attempt_history=[AttemptRecord(...)])`. Each record can
+carry `outcome`, `rationale`, `changed_paths`, `yaml_diff`, `measured`,
+`version_hash`, and `note`. An explicit empty list disables automatic queue
+history. Record inconclusive measurements separately from measured regressions.
+The ledger informs proposals; it does not automatically apply or reject them.
+
+Operator findings can identify opportunities even when all recorded runs pass:
+
+```console
+hiveloom evolve ./harness --propose --note "Formatting passes; investigate retrieval coverage" --json
+```
+
+Repeat `--note` for multiple findings, or pass `analyst_notes` to `analyze`.
+Findings cannot override frozen fields or hard metric constraints. Changing the
+findings or supplied history gives a queued proposal a new deduplication key.
+
+All prompt sections, including the current spec, history, and findings, pass
+through the current redaction policy before text is shortened. Failure evidence
+strings are capped at 1,500 characters; the report section is capped at 64,000
+characters, history at approximately 24,000, and findings at 6,000. History
+includes at most 12 attempts and 2,000 characters per diff. Cuts are marked, and
+oversized JSON sections become a valid JSON object containing an explicitly
+truncated excerpt. These evidence limits do not truncate the current spec.
+
+Malformed proposals and correctable objective omissions receive feedback, with
+at most three total proposing-model calls. Transport errors are left to the
+provider's retry policy; inconsistent metric directions fail before calling
+the model. Frozen-path gates, whole-spec validation, and code approval still
+apply to every proposal.
 
 ### Bounded incident evidence
 
@@ -247,9 +379,33 @@ queue, same dedup, just triggered on your own cadence instead of per-run.
   non-loopback bind without the key is refused. Same caller contract as the
   HTTP servers: input is always literal text, and trust is enforced per
   directory at startup (the command is non-interactive — stdout is the protocol
-  channel — so approve foreign folders with `hiveloom trust` first). Delegated
+  channel — so approve foreign folders with `hiveloom trust` first; every
+  startup error goes to stderr with an exit code, never to stdout). Delegated
   runs land in the Hive like any other, so tasks handed over by *other agents*
-  drive the evolve loop too.
+  drive the evolve loop too. `--concurrency N` bounds how many runs one server
+  process executes at once (default unlimited); a call that finds no free slot
+  waits, bounded by the caller's own timeout.
+- **Harness → harness (MCP)** — the calling agent can itself be a harness: give
+  it an `mcp_servers` entry pointing at a peer's `hiveloom mcp serve`, and its
+  `run_<name>` tools join the loop. Three things to get right:
+  - **Credentials.** A stdio child is spawned with a minimal environment;
+    hiveloom passes `HIVELOOM_HOME`/`HIVELOOM_DB` through so the peer shares
+    this machine's Hive and trust store, but **never** API keys. Declare them:
+    `env_from_host_env: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY}`, or give the
+    peer harness folder its own `.env`. (Agent hosts such as Claude Code and
+    Claude Desktop also launch `hiveloom mcp serve` with a minimal environment
+    — configure the key in the host's server entry.) Over HTTP, authenticate
+    with `header_env: {X-API-Key: HIVELOOM_API_KEY}`.
+  - **Timeouts.** A peer run is a whole agent loop, not a function call. Set
+    the entry's `timeout_seconds` at or above the peer's
+    `max_wall_clock_seconds`; a caller timeout asks the peer to stop
+    gracefully at its next turn boundary but does not kill it.
+  - **Bounds.** The caller sends its run id, harness identity, depth and chain
+    in the request `_meta`, so the peer's run is recorded with
+    `parent_run_id` and the pair shows up under `hiveloom lineage`. The server
+    refuses a chain deeper than `--max-depth` (default 3), and refuses a
+    harness that already appears in the chain (a cycle) — both as
+    `status: "error"` results, before spending anything.
 - **Git-backed harness** — keep `harness.yaml` + hooks in git (traces are
   gitignored by `init`). Evolution produces a clean diff (the `# evolved` counter
   and version hash); commit it and redeploy. Rollback = `git revert`.
@@ -263,9 +419,10 @@ The artifact and memory models are portable and complete; the *transport* betwee
   trace sink; you move `.hiveloom/traces/` with whatever tooling you already use.
 - **The Hive is single-machine SQLite** — many replicas cannot all write one Hive
   concurrently; a central multi-deployment Hive would need a networked backend.
-- **Judging is human-in-the-loop** — `stats` gives you the per-version-hash signal
-  to decide; automated A/B re-runs and auto-promote/rollback are future work (the
-  schema's version-hash bucketing is designed to support them).
+- **Judging production runs is human-in-the-loop** — `hiveloom assess` checks
+  each applied evolution against its own prediction on the runs that arrive,
+  and `evolve --experiment` measures and keeps or reverts a change on an eval;
+  promoting a version across a fleet of deployments stays a human decision.
 
 These are additive: the idempotent-by-`run_id`, version-hash-bucketed foundation
 was chosen precisely so a trace sink, a networked Hive, or an A/B runner can be

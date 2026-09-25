@@ -35,6 +35,7 @@ _RUN_STATUS_EXIT = {
     "verify_failed": ExitCode.VERIFY_FAILED,
     "guardrail_halt": ExitCode.GUARDRAIL_HALT,
     "max_turns": ExitCode.RUNTIME_ERROR,
+    "truncated": ExitCode.RUNTIME_ERROR,
     "error": ExitCode.RUNTIME_ERROR,
 }
 
@@ -72,6 +73,10 @@ add_app = typer.Typer(help="Add a tool, validator, guardrail, hook, or skill to 
 app.add_typer(add_app, name="add")
 proposals_app = typer.Typer(help="Review, apply, or reject queued evolution proposals.")
 app.add_typer(proposals_app, name="proposals")
+memory_app = typer.Typer(
+    help="Inspect and edit a harness's durable memory (spec `memory.entries`)."
+)
+app.add_typer(memory_app, name="memory")
 friction_app = typer.Typer(help="Query recovered retries and other indexed run friction.")
 app.add_typer(friction_app, name="friction")
 traces_app = typer.Typer(help="Manage raw trace files under a validated Hiveloom root.")
@@ -647,7 +652,9 @@ def init(
 
 @app.command("set")
 def set_cmd(
-    path: str = typer.Argument(..., help="Dotted field path, e.g. loop.max_turns."),
+    path: str = typer.Argument(
+        ..., help="Dotted field path, e.g. loop.max_turns or guardrails.0.value."
+    ),
     value: str | None = typer.Argument(None, help="Value (parsed as a YAML scalar)."),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     file: str | None = typer.Option(None, "--file", help="Read the value from this file."),
@@ -657,7 +664,14 @@ def set_cmd(
 
     Examples: ``hiveloom set loop.max_turns 30`` /
     ``hiveloom set system_prompt --file prompt.txt`` /
-    ``hiveloom set model openai/gpt-4.1-mini``.
+    ``hiveloom set model openai/gpt-4.1-mini`` /
+    ``hiveloom set guardrails.0.value 0.05`` (a numeric segment indexes an
+    existing list item — read-modify-write only, no appending via ``set``).
+
+    A plain ``str`` schema field (e.g. ``system_prompt``) keeps the value
+    exactly as typed instead of parsing it as YAML, so text containing
+    ``": "`` or similar doesn't get misread as a mapping; use ``--file`` when
+    that heuristic can't tell (or for anything long/multi-line).
 
     ``set model provider/model-id`` is the way to switch labs: provider and id
     validate against each other, so they must change in one commit.
@@ -920,6 +934,14 @@ def add_mcp_server_cmd(
     deferred: bool = typer.Option(
         False, "--deferred", help="Register discovered tools inactive until search_tools."
     ),
+    timeout_seconds: float | None = typer.Option(
+        None,
+        "--timeout-seconds",
+        help=(
+            "Timeout for connect/initialize and each tool call (default 30s; "
+            "must be > 0 and <= 600). Raise it for a slower peer harness/tool."
+        ),
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -942,13 +964,20 @@ def add_mcp_server_cmd(
             header_env=_parse_kv_pairs(header_env, "--header-env") or None,
             tools=tool or None,
             deferred=deferred,
+            timeout_seconds=timeout_seconds,
         )
         _added(json_output, "mcp-server", name)
 
 
 @app.command()
 def remove(
-    target: str = typer.Argument(..., help="Builtin name, code ref, or dotted field path."),
+    target: str = typer.Argument(
+        ...,
+        help=(
+            "Builtin name, code ref, or dotted (optionally indexed, e.g. "
+            "guardrails.0) field path."
+        ),
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -1094,6 +1123,18 @@ def mcp_serve_cmd(
     ),
     host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host (with --http)."),
     port: int = typer.Option(8765, "--port", help="HTTP bind port (with --http)."),
+    max_depth: int = typer.Option(
+        3,
+        "--max-depth",
+        help="Maximum harness-to-harness delegation depth accepted from a peer "
+        "hiveloom harness (a direct child is 1). Deeper calls are refused as data.",
+    ),
+    concurrency: int = typer.Option(
+        0,
+        "--concurrency",
+        help="Maximum runs executed at once by this process (0 = unlimited). "
+        "A call that arrives with no slot free waits, bounded by the caller's timeout.",
+    ),
 ) -> None:
     """Expose harnesses as MCP tools (one ``run_<name>`` tool each).
 
@@ -1102,11 +1143,19 @@ def mcp_serve_cmd(
     validator-checked result. Non-interactive by design — stdout is the MCP
     protocol channel — so untrusted directories fail at startup instead of
     prompting; approve them first with ``hiveloom trust <dir>``.
+
+    Startup errors go to stderr with the usual exit code, never to stdout: a
+    JSON error object written into the protocol channel reaches the calling
+    agent as nothing but "Connection closed".
     """
     from hiveloom import registry as registry_mod
     from hiveloom.serve.mcp import serve_http, serve_stdio
 
-    with _guard(True):
+    def _die(message: str, code: int) -> None:
+        print(f"error: {message}", file=sys.stderr)
+        raise typer.Exit(code)
+
+    try:
         if registered:
             dirs, skipped = registry_mod.serveable()
             for entry in skipped:
@@ -1125,10 +1174,27 @@ def mcp_serve_cmd(
             dirs = [Path(".")] if not directories else directories
         if http:
             serve_http(
-                dirs, host=host, port=port, api_key=os.environ.get("HIVELOOM_API_KEY")
+                dirs,
+                host=host,
+                port=port,
+                api_key=os.environ.get("HIVELOOM_API_KEY"),
+                max_depth=max_depth,
+                concurrency=concurrency or None,
             )
         else:
-            serve_stdio(dirs)
+            serve_stdio(dirs, max_depth=max_depth, concurrency=concurrency or None)
+    except typer.Exit:
+        raise
+    except SpecError as exc:
+        _die(str(exc), ExitCode.SPEC_ERROR)
+    except HiveloomError as exc:
+        _die(str(exc), ExitCode.RUNTIME_ERROR)
+    except (KeyError, ValueError) as exc:
+        _die(str(exc).strip("'\""), ExitCode.SPEC_ERROR)
+    except KeyboardInterrupt:  # pragma: no cover - operator stopped the server
+        raise typer.Exit(ExitCode.OK) from None
+    except Exception as exc:  # noqa: BLE001 - a server must not print a traceback to stdout
+        _die(str(exc) or type(exc).__name__, ExitCode.RUNTIME_ERROR)
 
 
 @mcp_app.command("list-tools")
@@ -1348,6 +1414,8 @@ def run(
                     # The spilled results this fork was granted at fork time.
                     "spill_handles": record.get("spill_handles") or [],
                     "spill_manifest": record.get("spill_manifest") or [],
+                    # And the notes it was granted, on the same terms.
+                    "notes_manifest": record.get("notes_manifest") or [],
                 },
                 on_event=on_event,
                 run_id=run_id,
@@ -1881,11 +1949,13 @@ def lineage(
     run_id: str = typer.Argument(..., help="Run to show the fork tree around."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    """Show a run's forks and the parent they diverged from.
+    """Show a run's children and the parent it came from.
 
     A fork shares its parent's journal up to the seq it re-entered at, so the
     two are comparable on that identical prefix — which is what makes a fork a
-    controlled experiment rather than a second, unrelated run.
+    controlled experiment rather than a second, unrelated run. A delegated
+    child is the other kind of descendant: a peer harness that was handed the
+    task, listed here with `kind=delegation`.
     """
     from hiveloom.logging.hive import Hive
 
@@ -1927,14 +1997,25 @@ def lineage(
                 f"at seq {run.get('forked_at_seq')}[/dim]"
             )
         _console.print(_line(run, prefix="> "))
-        if not tree["forks"]:
-            _console.print("[dim]no forks of this run[/dim]")
+        children = tree.get("children") or tree["forks"]
+        if not children:
+            _console.print("[dim]no forks or delegated runs from this run[/dim]")
             return
-        _console.print(
-            f"[bold]{len(tree['forks'])} fork(s)[/bold] — identical prefix, one change each"
-        )
-        for child in tree["forks"]:
-            _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
+        forks = [c for c in children if (c.get("lineage_kind") or "fork") == "fork"]
+        delegated = [c for c in children if c.get("lineage_kind") == "delegation"]
+        if forks:
+            _console.print(
+                f"[bold]{len(forks)} fork(s)[/bold] — identical prefix, one change each"
+            )
+            for child in forks:
+                _console.print(_line(child, prefix=f"  @seq {child.get('forked_at_seq')}  "))
+        if delegated:
+            _console.print(
+                f"[bold]{len(delegated)} delegated run(s)[/bold] — a peer harness "
+                "did the work; its cost is included in the parent's"
+            )
+            for child in delegated:
+                _console.print(_line(child, prefix="  -> "))
 
 
 @friction_app.command("list")
@@ -1998,6 +2079,134 @@ def friction_list(
                 record["summary"],
             )
         _console.print(table)
+
+
+@app.command()
+def assess(
+    harness_dir: str = typer.Argument(..., help="Harness directory whose evolutions to assess."),
+    min_runs: int = typer.Option(
+        5, "--min-runs", min=1, help="Runs of a new version needed before judging it."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Check applied evolutions against what they predicted. Free: no model call.
+
+    Each applied evolution recorded the signal it aimed at and which way it
+    should move. This compares the old and new version's runs on that signal —
+    case by case when both ran the same eval — with the success rate as a
+    guard, and reports confirmed, refuted, regressed, inconclusive (with the
+    runs that would settle it) or pending.
+    """
+    from hiveloom import runner
+    from hiveloom.evolve.assess import assess_all
+    from hiveloom.logging.hive import Hive
+    from hiveloom.spec.loader import load_spec
+
+    with _guard(json_output):
+        spec = load_spec(harness_dir)
+        with Hive() as hive:
+            runner.resolve_and_ingest(harness_dir, hive)
+            assessments = assess_all(hive, spec.identity, min_runs=min_runs)
+        if json_output:
+            _emit_json(
+                {"ok": True, "assessments": [a.model_dump(mode="json") for a in assessments]}
+            )
+            return
+        if not assessments:
+            _console.print("no applied evolutions to assess")
+            return
+        colours = {
+            "confirmed": "green", "regressed": "red", "refuted": "red",
+            "inconclusive": "yellow", "pending": "cyan",
+        }
+        for item in assessments:
+            colour = colours[item.verdict]
+            # Escaped: Rich would otherwise read "[kept]" as a markup tag and drop it.
+            decision = f" \\[{item.decision.get('action')}]" if item.decision else ""
+            _console.print(
+                f"evolution {item.evolution_id} (#{item.counter}) "
+                f"{item.old_version} -> {item.new_version}: "
+                f"[{colour}]{item.verdict}[/{colour}]{decision} — aimed at "
+                f"{item.target} ({item.expect})"
+            )
+            _console.print(f"    {item.summary}")
+
+
+@app.command()
+def signal(
+    harness_dir: str = typer.Argument(..., help="Harness directory to locate signal for."),
+    version: str | None = typer.Option(
+        None, "--version", help="Harness version hash to analyse (default: the spec on disk)."
+    ),
+    max_signals: int = typer.Option(12, "--max-signals", min=1, max=50),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Locate where a harness version's evidence points. Free: no model call.
+
+    Contrasts failing and successful runs feature by feature (tools called or
+    erroring, steps violated, playbooks, memory entries shown, peers, executor
+    model, task size), counts the friction mechanisms a change would be judged
+    by, attributes each failure to a loss class, and says how large a change
+    this many runs could detect at all. `evolve` receives the same map and must
+    aim its proposal at one of its targets.
+    """
+    from hiveloom import runner
+    from hiveloom.evolve.signal import locate_signal
+    from hiveloom.logging.hive import Hive
+    from hiveloom.logging.trace import spec_version_hash
+    from hiveloom.spec.loader import harness_path, load_spec
+
+    with _guard(json_output):
+        base = harness_path(harness_dir).parent
+        spec = load_spec(harness_dir)
+        with Hive() as hive:
+            key = runner.resolve_and_ingest(harness_dir, hive)
+            signal_map = locate_signal(
+                hive,
+                key,
+                version=version or spec_version_hash(spec, base),
+                evolution=spec.evolution,
+                max_signals=max_signals,
+            )
+        if json_output:
+            _emit_json({"ok": True, **signal_map.model_dump(mode="json")})
+            return
+        _console.print(
+            f"[bold]{spec.name}[/bold] @ {signal_map.version} — verdict "
+            f"[cyan]{signal_map.verdict}[/cyan]"
+        )
+        for line in signal_map.headline:
+            _console.print(f"  • {line}")
+        if signal_map.signals:
+            table = Table(title="features vs failure")
+            table.add_column("feature", style="cyan")
+            table.add_column("fail with", justify="right")
+            table.add_column("fail without", justify="right")
+            table.add_column("p", justify="right")
+            table.add_column("q", justify="right")
+            table.add_column("lever")
+            for item in signal_map.signals:
+                table.add_row(
+                    item.feature,
+                    f"{item.failures_with}/{item.failures_with + item.successes_with}",
+                    f"{item.failures_without}/{item.failures_without + item.successes_without}",
+                    f"{item.p_value:.3g}",
+                    f"{item.q_value:.3g}",
+                    (item.levers[0] if item.levers else "-")
+                    + ("" if item.addressable else " (frozen)"),
+                )
+            _console.print(table)
+        if signal_map.mechanisms:
+            table = Table(title="mechanisms")
+            table.add_column("target", style="cyan")
+            table.add_column("events", justify="right")
+            table.add_column("runs", justify="right")
+            table.add_column("failed runs", justify="right")
+            for item in signal_map.mechanisms:
+                table.add_row(
+                    item.target, str(item.events), str(item.runs), str(item.failed_runs)
+                )
+            _console.print(table)
 
 
 @app.command()
@@ -2576,6 +2785,28 @@ def evolve(
         "--from-parent",
         help="Analyse the parent run's version instead (a fork with no runs yet).",
     ),
+    notes: list[str] | None = typer.Option(
+        None, "--note", help="Operator finding to inform the proposal; repeatable."
+    ),
+    experiment: str | None = typer.Option(
+        None,
+        "--experiment",
+        help="Eval document to measure each change with: apply, run the eval, keep "
+        "a confirmed change and revert the rest. Requires --yes.",
+    ),
+    rounds: int = typer.Option(
+        1, "--rounds", min=1, max=10, help="Experiment rounds (with --experiment)."
+    ),
+    keep_inconclusive: bool = typer.Option(
+        False,
+        "--keep-inconclusive",
+        help="With --experiment, keep a change the eval could not decide on.",
+    ),
+    remeasure_baseline: bool = typer.Option(
+        False,
+        "--remeasure-baseline",
+        help="With --experiment, re-run the eval on the current version every round.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
@@ -2591,6 +2822,12 @@ def evolve(
     motivated the fork are invisible at exactly the moment there is most to
     say. It reads the parent version out of ``fork.yaml`` and drafts against
     those failures, applying the result to the fork's own spec.
+
+    ``--experiment eval.yaml --yes`` turns evolution into a measured loop: each
+    round applies one targeted change, runs the eval on the new version,
+    assesses it case by case against the change's own prediction, and keeps it
+    only if confirmed (see ``hiveloom assess``). Code changes are never
+    applied in this mode.
     """
     from hiveloom import evolve as evolve_mod
     from hiveloom import runner
@@ -2607,7 +2844,53 @@ def evolve(
         # named by --model. Resolving the strong model before the spec made an
         # otherwise runnable local provider look unknown and fell back to Claude.
         spec = load_spec(harness_dir)
+        if experiment is not None and (propose or from_parent):
+            _fail(
+                "--experiment cannot be combined with --propose or --from-parent",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
+        if experiment is not None and not yes:
+            _fail(
+                "--experiment applies and reverts changes on its own; pass --yes to allow it",
+                json_output,
+                ExitCode.SPEC_ERROR,
+            )
         model = build_strong_model(model_id, base)
+        if experiment is not None:
+            from hiveloom.evolve.experiment import run_experiment
+
+            def report_round(item: Any) -> None:
+                if json_output:
+                    return
+                colour = {"kept": "green", "reverted": "yellow"}.get(item.status, "cyan")
+                _console.print(
+                    f"[{colour}]round {item.round}: {item.status}[/{colour}] {item.reason}"
+                )
+
+            with Hive() as hive:
+                runner.resolve_and_ingest(harness_dir, hive)
+                results = run_experiment(
+                    harness_dir,
+                    experiment,
+                    model,
+                    rounds=rounds,
+                    keep_inconclusive=keep_inconclusive,
+                    remeasure_baseline=remeasure_baseline,
+                    notes=notes,
+                    hive=hive,
+                    approve_trust=_trust_prompt(json_output),
+                    on_round=report_round,
+                )
+            if json_output:
+                _emit_json(
+                    {
+                        "ok": True,
+                        "rounds": [item.model_dump(mode="json") for item in results],
+                        "kept": sum(1 for item in results if item.status == "kept"),
+                    }
+                )
+            return
         with Hive() as hive:
             name = runner.resolve_and_ingest(harness_dir, hive)
             # Scoped to one version — see analyze().
@@ -2619,6 +2902,8 @@ def evolve(
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
                 objectives=spec.evolution.objectives,
+                evolution=spec.evolution,
+                analyst_notes=notes,
             )
             if report.is_empty():
                 reason = _nothing_to_evolve_reason(
@@ -2882,11 +3167,17 @@ def proposals_apply_cmd(
 
     Re-derives the harness's version hash first; if it no longer matches what
     the proposal was drafted against, it fails without touching disk (the
-    harness changed — regenerate). Review with ``proposals show`` first: YAML
-    changes apply with ``--yes`` or interactive confirmation, same as
-    ``evolve`` (asked only after the trust/existence/staleness checks above
-    pass); code changes need per-file ``--approve-code`` or interactive y/n,
-    fed from the proposal's stored gate result rather than a fresh propose.
+    harness changed — regenerate; a proposal that only appends durable memory
+    is exempt, since ``memory.entries.+`` resolves at apply time). Review with
+    ``proposals show`` first: YAML changes apply with ``--yes`` or interactive
+    confirmation, same as ``evolve`` (asked only after the trust/existence/
+    staleness checks above pass); code changes need per-file ``--approve-code``
+    or interactive y/n, fed from the proposal's stored gate result rather than
+    a fresh propose.
+
+    ``--json`` is non-interactive, so there is no confirmation to give: asking
+    it to apply gated YAML changes without ``--yes`` is a usage error (exit 3)
+    rather than a no-op that resolves the row and loses the proposal.
     """
     from hiveloom import trust as trust_mod
     from hiveloom.evolve import proposals as proposals_mod
@@ -2904,6 +3195,19 @@ def proposals_apply_cmd(
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         with Hive() as hive:
+            record = proposals_mod.get_proposal(hive, proposal_id)
+            if json_output and not yes and record is not None and record.gate.accepted:
+                # Without --yes the confirmation callback can only answer "no"
+                # here, which would apply nothing at all; say so instead of
+                # handing back an ok:true that changed nothing.
+                _fail(
+                    f"proposal '{proposal_id}' has "
+                    f"{len(record.gate.accepted)} gated YAML change(s) and --json "
+                    "cannot prompt: re-run with --yes to apply them, or "
+                    "'proposals reject' to discard it",
+                    json_output,
+                    ExitCode.SPEC_ERROR,
+                )
             result = proposals_mod.apply_proposal_by_id(
                 hive,
                 harness_dir,
@@ -2920,7 +3224,10 @@ def proposals_apply_cmd(
                     f"({result.old_version_hash} -> {result.new_version_hash})"
                 )
             else:
-                _console.print(f"[yellow]no changes applied[/yellow] for proposal {proposal_id}")
+                _console.print(
+                    f"[yellow]no changes applied[/yellow] for proposal {proposal_id} "
+                    "— it is still pending"
+                )
             _print_apply_leftovers(result)
 
 
@@ -2954,6 +3261,161 @@ def proposals_reject_cmd(
             _emit_json({"ok": True, "proposal_id": proposal_id, "status": "rejected"})
         else:
             _console.print(f"[yellow]rejected[/yellow] proposal {proposal_id}")
+
+
+# --------------------------------------------------------------------------- #
+# Memory (durable, bounded lessons rendered into the system prompt)
+# --------------------------------------------------------------------------- #
+def _memory_entry_payload(entry: Any) -> dict[str, Any]:
+    return entry.model_dump(mode="json", exclude_none=True)
+
+
+def _load_memory(harness_dir: str, json_output: bool):
+    """Trust-gate, then load the spec — memory is read from the same document
+    every other command validates, never from a side file."""
+    from hiveloom import trust as trust_mod
+    from hiveloom.spec.loader import load_spec
+
+    trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
+    return load_spec(harness_dir)
+
+
+@memory_app.command("list")
+def memory_list_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List this harness's durable lessons, in the order they are rendered."""
+    with _guard(json_output):
+        spec = _load_memory(harness_dir, json_output)
+        memory = spec.memory
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "name": spec.name,
+                    "enabled": memory.enabled,
+                    "max_entries": memory.max_entries,
+                    "max_entry_chars": memory.max_entry_chars,
+                    "prompt_budget_chars": memory.prompt_budget_chars,
+                    "rendered_chars": len(memory.render()),
+                    "count": len(memory.entries),
+                    "entries": [_memory_entry_payload(e) for e in memory.entries],
+                }
+            )
+            return
+        if not memory.entries:
+            _console.print("[green]no memory entries[/green]")
+            return
+        table = Table(
+            title=(
+                f"memory: {len(memory.entries)}/{memory.max_entries} entries, "
+                f"{len(memory.render())}/{memory.prompt_budget_chars} prompt chars"
+                + ("" if memory.enabled else " [disabled]")
+            )
+        )
+        table.add_column("id", style="bold cyan")
+        table.add_column("kind", style="green")
+        table.add_column("title")
+        table.add_column("source", style="dim")
+        for entry in memory.entries:
+            table.add_row(entry.id, entry.kind, entry.title, entry.source or "-")
+        _console.print(table)
+
+
+@memory_app.command("show")
+def memory_show_cmd(
+    harness_dir: str = typer.Argument(..., help="Harness directory."),
+    entry_id: str = typer.Argument(..., help="Memory entry id."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show one lesson in full, including the evidence kept out of the prompt."""
+    with _guard(json_output):
+        spec = _load_memory(harness_dir, json_output)
+        entry = next((e for e in spec.memory.entries if e.id == entry_id), None)
+        if entry is None:
+            raise SpecError(f"no memory entry with id '{entry_id}'")
+        if json_output:
+            _emit_json({"ok": True, **_memory_entry_payload(entry)})
+            return
+        _console.print(f"[bold cyan]{entry.id}[/bold cyan]  ([green]{entry.kind}[/green])")
+        _console.print(entry.title)
+        _console.print(entry.content)
+        if entry.source:
+            _console.print(f"source: {entry.source}")
+        if entry.evidence:
+            _console.print(f"evidence: {entry.evidence}")
+        if entry.created_at:
+            _console.print(f"created_at: {entry.created_at}")
+
+
+@memory_app.command("add")
+def memory_add_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    kind: str = typer.Option(..., "--kind", help="fact | rule | example."),
+    title: str = typer.Option(..., "--title", help="Short label; the id is slugged from it."),
+    content: str = typer.Option(..., "--content", help="The lesson, in the imperative."),
+    source: str = typer.Option(
+        "operator", "--source", help="Provenance recorded with the entry."
+    ),
+    evidence: str | None = typer.Option(
+        None, "--evidence", help="Why this was learned (kept out of the prompt)."
+    ),
+    entry_id: str | None = typer.Option(
+        None, "--id", help="Explicit id instead of the slug derived from --title."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Add a durable lesson to `memory.entries`.
+
+    Validated and rolled back like any construction command: an entry that
+    would exceed `memory.max_entries`, `memory.max_entry_chars`, or
+    `memory.prompt_budget_chars` fails with exit 3 and writes nothing.
+    """
+    with _guard(json_output):
+        spec = construct.add_memory_entry(
+            harness_dir,
+            kind=kind,
+            title=title,
+            content=content,
+            source=source or None,
+            evidence=evidence,
+            entry_id=entry_id,
+        )
+        added = spec.memory.entries[-1]
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "added": "memory",
+                    "ref": added.id,
+                    "count": len(spec.memory.entries),
+                    "entry": _memory_entry_payload(added),
+                }
+            )
+        else:
+            _added(False, "memory entry", added.id)
+
+
+@memory_app.command("forget")
+def memory_forget_cmd(
+    harness_dir: str = typer.Argument(..., help="Harness directory."),
+    entry_id: str = typer.Argument(..., help="Memory entry id to remove."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Remove one durable lesson by id."""
+    with _guard(json_output):
+        spec = construct.forget_memory_entry(harness_dir, entry_id)
+        if json_output:
+            _emit_json(
+                {
+                    "ok": True,
+                    "removed": entry_id,
+                    "count": len(spec.memory.entries),
+                }
+            )
+        else:
+            _console.print(f"[yellow]forgot[/yellow] memory entry {entry_id}")
 
 
 @app.command()

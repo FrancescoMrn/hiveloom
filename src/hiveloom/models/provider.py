@@ -40,6 +40,25 @@ def _bounded_json(value: Any, *, field: str, max_bytes: int) -> Any:
     return value
 
 
+# These fields control identity, transcript, tool authority, response shape, or
+# accounting. Extra request fields cannot replace them through provider aliases.
+RESERVED_MODEL_PARAMS = frozenset({
+    "model", "messages", "system", "input", "tools", "functions",
+    "max_tokens", "max_completion_tokens", "max_output_tokens", "temperature",
+    "stream", "stream_options", "n",
+})
+
+
+def validate_model_params(value: dict[str, Any]) -> dict[str, Any]:
+    reserved = RESERVED_MODEL_PARAMS.intersection(value)
+    if reserved:
+        raise ValueError(
+            f"model.params cannot set {sorted(reserved)}: "
+            "these fields are controlled by the harness"
+        )
+    return _bounded_json(value, field="model.params", max_bytes=64 * 1024)
+
+
 class Usage(BaseModel):
     """Token usage for a single model call.
 
@@ -171,6 +190,15 @@ class ModelConfig(BaseModel):
     id: str
     max_tokens: int = 4096
     temperature: float | None = None
+    # Extra provider request fields from spec `model.params`, merged into the
+    # call verbatim. Empty for every provider that does not need them.
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("params")
+    @classmethod
+    def _check_params(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_model_params(value)
+
     # Which provider serves `id`. Carried for pricing, not for dispatch: an
     # open-catalog provider accepts model ids that are not individually
     # registered, and the *provider* is then the only thing that says what an

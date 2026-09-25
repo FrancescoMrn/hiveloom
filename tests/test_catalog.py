@@ -79,3 +79,27 @@ def test_parse_shell_rule_allows_extra_args_for_safe_binaries():
         True,
     )
     assert catalog.parse_shell_rule("wc -l app.log") == (["wc", "-l", "app.log"], False)
+
+
+def test_notes_is_a_catalog_tool_with_bounded_parameters():
+    # The catalog is the truth: a builtin nobody can spell does not exist.
+    entry = catalog.BUILTIN_TOOLS["notes"]
+    assert {p.name for p in entry.params} == {"max_notes", "max_note_bytes"}
+    assert catalog.validate_builtin_params(entry, {"max_notes": 8}) == []
+    assert catalog.validate_builtin_params(entry, {"max_notes": "many"})
+    assert catalog.validate_builtin_params(entry, {"retention": "forever"})
+
+
+def test_propose_memory_is_a_catalog_tool_with_bounded_parameters():
+    entry = catalog.BUILTIN_TOOLS["propose_memory"]
+    assert {p.name for p in entry.params} == {"max_per_run"}
+    assert catalog.validate_builtin_params(entry, {"max_per_run": 2}) == []
+    assert catalog.validate_builtin_params(entry, {"max_per_run": "plenty"})
+    assert catalog.validate_builtin_params(entry, {"harness": "../other"})
+
+
+def test_the_runtime_tools_are_not_spellable_in_a_spec():
+    # read/search/transform_result are runtime machinery the loop activates,
+    # not builtins a harness declares.
+    for name in ("read_tool_result", "search_tool_result", "transform_result"):
+        assert name not in catalog.BUILTIN_TOOLS

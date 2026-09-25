@@ -27,6 +27,16 @@ class MaxCostGuardrail(Guardrail):
     def __init__(self, value: float):
         self._limit = float(value)
 
+    @property
+    def limit(self) -> float:
+        """The ceiling this instance enforces.
+
+        Public because the run needs to know what is left of the budget before
+        it can carve a child's share out of it (see
+        :mod:`hiveloom.delegation`).
+        """
+        return self._limit
+
     def before_model_call(self, state: RunState) -> Decision:
         if state.cost_usd >= self._limit:
             return Halt(f"cost ${state.cost_usd:.4f} reached limit ${self._limit:.2f}")

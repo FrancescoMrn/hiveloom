@@ -276,6 +276,7 @@ def run_harness(
     lineage: dict[str, Any] | None = None,
     providers: dict[str, ModelProvider] | None = None,
     approve_network: Callable[[str], bool] | None = None,
+    cost_cap_usd: float | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -325,6 +326,13 @@ def run_harness(
     the parent was. This is what ``hiveloom run <fork> --resume`` passes; see
     :mod:`hiveloom.fork`. ``lineage`` is the accompanying provenance record
     (parent run id, journal seq) written into ``run_started``.
+
+    ``cost_cap_usd`` installs one extra ``max_cost_usd`` guardrail for this run
+    only, on top of whatever the spec declares. It never mutates the spec — the
+    harness's own cap is the user's decision and stays the user's decision —
+    and, being additive, it can only ever make a run cheaper. This is how a
+    delegated child is confined to a share of its parent's remaining budget
+    (see :mod:`hiveloom.delegation`).
 
     ``approve_network`` is the run-scoped decision point for an undeclared
     ``http_get`` hostname. It receives only the normalized hostname and returns
@@ -380,6 +388,12 @@ def run_harness(
     router: ModelRouter | None = None
     try:
         guardrails = build_guardrails(spec, registry, base)
+        if cost_cap_usd is not None:
+            # Appended, never substituted: a caller-supplied cap tightens the
+            # run, it does not replace the spec's frozen safety layer.
+            from hiveloom.guardrails.builtin import MaxCostGuardrail
+
+            guardrails.append(MaxCostGuardrail(cost_cap_usd))
         verifiers = build_verifiers(spec, base, run_boundary=run_boundary)
         skills = load_skills(spec, base)
         playbooks = (
@@ -398,6 +412,12 @@ def run_harness(
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
                 provider=spec.model.provider,
+                # Every model field the spec declares has to appear here. This
+                # is the config the router actually calls with, so anything
+                # omitted is silently not sent — a dropped provider pin routes a
+                # run to whichever upstream an aggregator picks, which shows up
+                # as model variance and is not.
+                params=spec.model.params,
             ),
             provider,
             providers=providers,
@@ -458,7 +478,20 @@ def run_harness(
         indexed = _ingest_trace(trace.path, hive_path)
         if indexed:
             # Auto-propose needs this run ingested before it can count the failure.
-            _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+            _maybe_auto_propose(
+                spec, base, result, hive_path, strong_model=strong_model, context=context
+            )
+            from hiveloom.evolve.reflect import maybe_reflect
+
+            maybe_reflect(
+                spec,
+                base,
+                result.run_id,
+                result.status,
+                hive_path,
+                context=context,
+                strong_model=strong_model,
+            )
             _apply_trace_retention(spec, trace.path, hive_path)
     return result
 
@@ -509,6 +542,7 @@ def _maybe_auto_propose(
     hive_path: str | Path | None,
     *,
     strong_model: StrongModel | None = None,
+    context: dict[str, Any] | None = None,
 ) -> None:
     """Best-effort auto-draft (never auto-apply) of an evolution proposal.
 
@@ -530,6 +564,11 @@ def _maybe_auto_propose(
         if not auto.enabled:
             return
         if result.status == "success":
+            return
+        # A run inside an eval batch is a measurement in progress: drafting from
+        # it would spend a strong-model call on partial evidence mid-batch. The
+        # same rule propose_memory and reflection follow.
+        if isinstance(context, dict) and context.get("eval_run_id"):
             return
 
         from hiveloom.evolve.analyzer import analyze
@@ -558,6 +597,7 @@ def _maybe_auto_propose(
                 excerpt_config=spec.evolution.trace_excerpts,
                 redaction=spec.logging.redact,
                 objectives=spec.evolution.objectives,
+                evolution=spec.evolution,
             )
             # record_empty_as_rejected: even when the draft gates to nothing,
             # persist a terminal auto row so the cooldown timestamp advances —
@@ -579,7 +619,7 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
     """The JSON shape of a completed run, shared by the CLI and the HTTP control plane.
 
     ``ok`` reflects only ``status == "success"`` — ``verify_failed``,
-    ``guardrail_halt``, ``step_failed``, ``max_turns``, ``stopped``, and ``error``
+    ``guardrail_halt``, ``step_failed``, ``max_turns``, ``truncated``, ``stopped``, and ``error``
     are all completed runs reported here, not raised exceptions, so both
     callers can never diverge on what a finished run looks like.
     """
@@ -602,6 +642,15 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         # Structural fakes and 1.0-era embedding adapters may still return the
         # pre-override result shape. Keep that additive transition readable.
         "runtime_config": getattr(result, "runtime_config", {}),
+        # Delegation receipts: what this run handed to a peer, what that cost,
+        # and which peers it could only refer. Absent on a 1.0-era result
+        # shape, hence the defensive reads.
+        "delegations": [
+            record.model_dump(mode="json")
+            for record in getattr(result, "delegations", [])
+        ],
+        "referrals": list(getattr(result, "referrals", [])),
+        "delegated_cost_usd": getattr(result, "delegated_cost_usd", 0.0),
         "execution": (
             result.execution.model_dump(mode="json")
             if getattr(result, "execution", None) is not None
@@ -621,11 +670,13 @@ def _apply_runtime_model_overrides(
 
     from hiveloom.spec.schema import ModelConfig as SpecModelConfig
 
+    # An override changes model identity while retaining its request settings.
     model = SpecModelConfig(
         id=model_override or spec.model.id,
         provider=provider_override or spec.model.provider,
         max_tokens=spec.model.max_tokens,
         temperature=spec.model.temperature,
+        params=spec.model.params,
     )
     return spec.model_copy(update={"model": model})
 

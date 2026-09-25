@@ -25,6 +25,7 @@ from hiveloom.spec.schema import (
     CodeToolRef,
     CodeValidatorRef,
     HarnessSpec,
+    MemoryConfig,
     TraceExcerptConfig,
 )
 
@@ -50,6 +51,13 @@ _SpecDumper.add_representer(str, _represent_str)
 def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     """Serialize a spec to a plain dict with a stable, readable shape."""
     data = spec.model_dump(mode="json", exclude_none=True)
+    # An unused provider-params field must not invalidate existing run cohorts.
+    if not data.get("model", {}).get("params"):
+        data["model"].pop("params", None)
+    # Sampling is opt-in; its default must not change other policies' hashes.
+    loop = data.get("loop", {})
+    if loop.get("policy") != "best_of_n" and loop.get("attempts") == 3:
+        loop.pop("attempts", None)
     # Empty lists for these fields are the default; omit them so specs that
     # predate a field keep their exact YAML shape (and version hash) on rewrite.
     for optional_list in ("extensions", "hooks", "skills"):
@@ -66,6 +74,11 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
         data["evolution"].pop("trace_excerpts", None)
     if not data.get("evolution", {}).get("objectives"):
         data["evolution"].pop("objectives", None)
+    # A harness that has learned nothing keeps the exact YAML — and therefore
+    # the exact version hash and fitness bucket — it had before memory existed.
+    # The section reappears the moment anything in it is not the default.
+    if data.get("memory") == MemoryConfig().model_dump(mode="json"):
+        data.pop("memory", None)
     return data
 
 
@@ -214,7 +227,7 @@ def _accepts_n_params(func, minimum: int) -> bool:
     except (ValueError, TypeError):
         return True  # builtins / C callables — assume ok
     positional = 0
-    has_var = False
+    absorbs_extra_positionals = False
     for param in sig.parameters.values():
         if param.kind in (
             inspect.Parameter.POSITIONAL_ONLY,
@@ -222,10 +235,13 @@ def _accepts_n_params(func, minimum: int) -> bool:
         ):
             positional += 1
         elif param.kind == inspect.Parameter.VAR_POSITIONAL:
-            has_var = True
-        elif param.kind == inspect.Parameter.VAR_KEYWORD:
-            has_var = True
-    return has_var or positional >= minimum
+            # *args takes whatever is left over; **kwargs does not. Counting
+            # **kwargs here passed `def validate(output, **_)` — one positional
+            # parameter against a two-positional-argument protocol — and the
+            # mismatch then surfaced as a TypeError mid-run, once every cell of
+            # a sweep had already been dispatched.
+            absorbs_extra_positionals = True
+    return absorbs_extra_positionals or positional >= minimum
 
 
 def resolve_hooks(spec: HarnessSpec, base_dir: str | Path) -> None:

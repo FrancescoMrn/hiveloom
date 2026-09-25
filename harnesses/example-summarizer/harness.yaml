@@ -12,6 +12,9 @@ system_prompt: |
 
   The task input is the source itself: either the text to summarize, or the name of a file in the working directory. If the input is a short string that looks like a filename (for example `notes.txt`), read that file with the `file_read` tool and summarize its contents; otherwise summarize the input text directly — do not go looking for a file that was never named.
 
+  Before you write, load the `house-style` skill with `load_skill` and follow it: the
+  validators check it.
+
   Emit exactly one JSON object with these keys:
 
     "title"       a short title for the source
@@ -27,7 +30,10 @@ system_prompt: |
 tools:
 - builtin: file_read
 - builtin: file_write
+- builtin: load_skill
 mcp_servers: []
+skills:
+- house-style
 playbooks: []
 context:
   max_input_tokens: 30000
@@ -38,6 +44,11 @@ context:
   pinned:
   - system_prompt
   - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
 guardrails:
 - builtin: max_cost_usd
   value: 0.25
@@ -66,6 +77,30 @@ logging:
   redact:
   - api[_-]?key
   snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
 evolution:
   enabled: true
   mutable:
@@ -81,3 +116,8 @@ evolution:
     enabled: false
     min_failures: 5
     cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0

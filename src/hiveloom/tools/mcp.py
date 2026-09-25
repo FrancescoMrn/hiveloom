@@ -30,7 +30,7 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 
 from hiveloom.errors import McpError
 from hiveloom.spec.schema import McpHttpServerRef, McpServerRef, McpStdioServerRef
-from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
+from hiveloom.tools.registry import RUN_CONTEXT_PARAM, Artifact, Tool, ToolError, ToolResult
 
 _MAX_DISCOVERED_TOOLS = 500
 _NAME_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_-]")
@@ -51,6 +51,13 @@ def _sanitize(name: str) -> str:
 # MCP server can never trip it by having a field of its own called "artifacts",
 # and so the envelope never reaches the model as text.
 ARTIFACT_ENVELOPE = "_hiveloom"
+
+# Request `_meta` key carrying this run's delegation lineage to the server it
+# calls. The server half is `hiveloom.serve.mcp` (a peer hiveloom harness
+# server); any other MCP server simply ignores an unknown `_meta` key, which
+# is what the spec requires of it.
+DELEGATION_META_KEY = "hiveloom"
+DELEGATION_KIND = "delegation"
 
 
 def _artifacts_from(result: mcp_types.CallToolResult) -> list[Artifact]:
@@ -200,11 +207,19 @@ class McpToolAdapter(Tool):
         input_schema: dict[str, Any],
         transport: str,
         timeout: float,
+        harness_id: str | None = None,
     ) -> None:
         self._bridge = bridge
         self._session = session
         self._remote_name = remote_name
         self._timeout = timeout
+        # Who is calling, in Hive terms (``spec.identity``). Sent on every
+        # call so a peer hiveloom server can link the child run to this one
+        # and refuse a chain that loops back here.
+        self._harness_id = harness_id
+        # Not model input: the registry injects the run context at dispatch,
+        # and it is popped before the arguments go on the wire.
+        self.wants_run_context = True
         self.name = f"mcp__{server_name}__{_sanitize(remote_name)}"
         self.description = description
         self.input_schema = input_schema or {"type": "object", "properties": {}}
@@ -216,13 +231,49 @@ class McpToolAdapter(Tool):
             ["exec", "dangerous"] if transport == "stdio" else ["network"]
         )
 
+    def _delegation_meta(self, run_context: dict[str, Any] | None) -> dict[str, Any] | None:
+        """This run's lineage for the callee, or ``None`` outside a real run.
+
+        ``depth`` counts hops from the root (a direct child is 1) and ``chain``
+        lists harness identities root-first, ending with *this* harness — so
+        the callee can see itself in the chain and refuse the cycle.
+        """
+        if not isinstance(run_context, dict):
+            return None
+        parent_run_id = run_context.get("run_id")
+        if not parent_run_id:
+            return None
+        depth = 1
+        chain: list[str] = []
+        parent = run_context.get("lineage")
+        if isinstance(parent, dict) and parent.get("kind") == DELEGATION_KIND:
+            try:
+                depth = int(parent.get("depth", 0)) + 1
+            except (TypeError, ValueError):
+                depth = 1
+            chain = [str(item) for item in (parent.get("chain") or [])]
+        harness_id = str(self._harness_id or run_context.get("harness_id") or "")
+        return {
+            DELEGATION_META_KEY: {
+                "kind": DELEGATION_KIND,
+                "parent_run_id": str(parent_run_id),
+                "parent_harness_id": harness_id,
+                "depth": depth,
+                "chain": [*chain, harness_id],
+            }
+        }
+
     def run(self, **kwargs: Any) -> ToolResult:
+        meta = self._delegation_meta(kwargs.pop(RUN_CONTEXT_PARAM, None))
         try:
             result: mcp_types.CallToolResult = self._bridge.call(
-                self._session.call_tool,
-                self._remote_name,
-                kwargs,
-                self._timeout,
+                partial(
+                    self._session.call_tool,
+                    self._remote_name,
+                    kwargs,
+                    self._timeout,
+                    meta=meta,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - any transport/timeout failure is a ToolError
             raise ToolError(f"mcp tool '{self.name}' failed: {exc}") from exc
@@ -233,14 +284,31 @@ class McpToolAdapter(Tool):
         )
 
 
+# Where hiveloom keeps its state. Forwarded to a stdio child so a spawned
+# `hiveloom mcp serve` shares this process's Hive and trust store.
+_HIVELOOM_LOCATION_VARS = ("HIVELOOM_HOME", "HIVELOOM_DB")
+
+
 def _resolve_env(ref: McpStdioServerRef) -> dict[str, str]:
     """Literal ``env`` plus ``env_from_host_env`` secrets resolved from this process.
 
     ``stdio_client`` merges the result on top of a minimal safe base env
     (``mcp.client.stdio.get_default_environment``) — never a full host
-    passthrough.
+    passthrough. hiveloom adds only its own *locations*
+    (:data:`_HIVELOOM_LOCATION_VARS`); credentials stay an explicit
+    ``env_from_host_env`` decision.
     """
-    env = dict(ref.env)
+    env: dict[str, str] = {}
+    # Locations, not secrets: without these a child `hiveloom mcp serve` writes
+    # to a different Hive and trust store than the harness that spawned it (the
+    # SDK gives a stdio child only HOME/LOGNAME/PATH/SHELL/TERM/USER), so a
+    # delegated run would vanish from the parent's history. Credentials are
+    # deliberately NOT forwarded — declare those in `env_from_host_env`.
+    for location_var in _HIVELOOM_LOCATION_VARS:
+        value = os.environ.get(location_var)
+        if value:
+            env[location_var] = value
+    env.update(ref.env)
     for target_var, host_var in ref.env_from_host_env.items():
         value = os.environ.get(host_var)
         if value is None:
@@ -291,6 +359,7 @@ def _build_adapters(
     bridge: McpBridge,
     session: ClientSession,
     transport: str,
+    harness_id: str | None = None,
 ) -> list[Tool]:
     """Apply the `tools` allowlist and adapt each remaining remote tool.
 
@@ -325,12 +394,18 @@ def _build_adapters(
                 input_schema=remote.input_schema or {"type": "object", "properties": {}},
                 transport=transport,
                 timeout=ref.timeout_seconds,
+                harness_id=harness_id,
             )
         )
     return adapters
 
 
-def connect_mcp_server(ref: McpServerRef, base_dir: Path, bridge: McpBridge) -> list[Tool]:
+def connect_mcp_server(
+    ref: McpServerRef,
+    base_dir: Path,
+    bridge: McpBridge,
+    harness_id: str | None = None,
+) -> list[Tool]:
     """Connect to one declared MCP server and adapt its (allowlisted) tools.
 
     Called eagerly at ``build_registry`` time for both ``run`` and
@@ -358,4 +433,4 @@ def connect_mcp_server(ref: McpServerRef, base_dir: Path, bridge: McpBridge) -> 
             f"mcp server '{ref.name}' ({ref.transport}) failed to connect: {exc}"
         ) from exc
 
-    return _build_adapters(ref, remote_tools, bridge, session, transport)
+    return _build_adapters(ref, remote_tools, bridge, session, transport, harness_id)

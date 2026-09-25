@@ -22,9 +22,10 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 
 import yaml
+from pydantic import BaseModel
 
 from hiveloom import trust
 from hiveloom.catalog import CATALOGS
@@ -176,9 +177,7 @@ _STUBS = {
 }
 
 _SKILL_STUB = """---
-name: {name}
-description: {description}
----
+{frontmatter}---
 
 # {name}
 
@@ -371,6 +370,144 @@ def _toml_line(text: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Dotted/indexed path walking (shared by set/remove)
+# --------------------------------------------------------------------------- #
+def _resolve_index(items: list[Any], segment: str, path: str) -> int:
+    """Resolve a numeric path segment to an existing index into ``items``.
+
+    Existing index only — there is no "append via set" — so an out-of-range
+    (or non-numeric) segment raises a :class:`SpecError` naming the list's
+    actual length rather than silently falling through to dict handling.
+    """
+    if not segment.isdigit():
+        raise SpecError(f"cannot resolve '{path}': '{segment}' is not a list index")
+    index = int(segment)
+    if index >= len(items):
+        noun = "item" if len(items) == 1 else "items"
+        raise SpecError(
+            f"cannot resolve '{path}': index {index} out of range "
+            f"(list has {len(items)} {noun})"
+        )
+    return index
+
+
+def _walk_settable(raw: dict[str, Any], path: str) -> tuple[Any, Any]:
+    """Return ``(parent, key)`` for ``path``'s final segment, creating along the way.
+
+    A dotted segment auto-vivifies a missing/wrong-type dict key (unchanged
+    from before), while a numeric segment indexes into an existing list —
+    never creating one, per :func:`_resolve_index`. ``key`` is a dict key
+    (``str``) when ``parent`` is a dict, or a list index (``int``) when
+    ``parent`` is a list; either way ``parent[key] = value`` sets it.
+    """
+    parts = path.split(".")
+    cursor: Any = raw
+    for segment in parts[:-1]:
+        if isinstance(cursor, list):
+            cursor = cursor[_resolve_index(cursor, segment, path)]
+            continue
+        if not isinstance(cursor, dict):
+            raise SpecError(f"cannot set '{path}': parent is not a mapping")
+        existing = cursor.get(segment)
+        if not isinstance(existing, (dict, list)):
+            existing = {}
+            cursor[segment] = existing
+        cursor = existing
+    last = parts[-1]
+    if isinstance(cursor, list):
+        return cursor, _resolve_index(cursor, last, path)
+    if not isinstance(cursor, dict):
+        raise SpecError(f"cannot set '{path}': parent is not a mapping")
+    return cursor, last
+
+
+def _walk_removable(raw: dict[str, Any], path: str) -> tuple[Any, Any] | None:
+    """Return ``(parent, key)`` for ``path``'s final segment, or ``None`` if not found.
+
+    Mirrors :func:`_walk_settable` but never creates anything: a missing dict
+    key along the way means the path simply doesn't exist (``remove`` falls
+    back to its "nothing found" error), matching the pre-existing behaviour of
+    dotted object paths. A numeric segment still resolves via
+    :func:`_resolve_index`, so an out-of-range list index raises the same
+    clear error it does for ``set`` rather than being swallowed as "not found".
+    """
+    parts = path.split(".")
+    cursor: Any = raw
+    for segment in parts[:-1]:
+        if isinstance(cursor, list):
+            cursor = cursor[_resolve_index(cursor, segment, path)]
+            continue
+        if not isinstance(cursor, dict) or segment not in cursor:
+            return None
+        cursor = cursor[segment]
+    last = parts[-1]
+    if isinstance(cursor, list):
+        return cursor, _resolve_index(cursor, last, path)
+    if not isinstance(cursor, dict):
+        return None
+    return cursor, last
+
+
+def _unwrap_annotation(annotation: Any) -> Any:
+    """Strip ``Annotated[...]``/``Optional[...]`` noise down to a bare type.
+
+    Same idea as ``spec.annotate._unwrap``, kept local so ``set_field`` doesn't
+    reach into that module's private helpers. A discriminated union (more than
+    one non-``None`` branch, e.g. ``ToolRef``) is returned as-is — callers that
+    only care about a plain scalar type treat that as "not resolvable".
+    """
+    while hasattr(annotation, "__metadata__"):  # Annotated[T, ...]
+        annotation = annotation.__origin__
+    origin = get_origin(annotation)
+    if origin is not None and (
+        origin.__name__ == "UnionType" or str(origin) == "typing.Union"
+    ):
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if len(args) == 1:
+            return _unwrap_annotation(args[0])
+    return annotation
+
+
+def _leaf_field_is_str(path: str) -> bool:
+    """True if the dotted/indexed spec ``path`` resolves to a plain ``str`` field.
+
+    Walks ``HarnessSpec``'s pydantic model the same way ``_walk_settable``
+    walks the raw YAML dict — descending into nested models and, for a
+    numeric segment, into a list field's item type. Anything this can't
+    confidently resolve (an unknown segment, a discriminated union like
+    ``tools.0`` or ``mcp_servers.0``, a catalog-defined builtin parameter)
+    returns ``False``, which keeps the existing YAML-parsing behavior for
+    those paths unchanged.
+    """
+    parts = [p for p in path.split(".") if p]
+    if not parts:
+        return False
+    cls: Any = HarnessSpec
+    for segment in parts:
+        cls = _unwrap_annotation(cls)
+        if get_origin(cls) is list:
+            args = get_args(cls)
+            if not segment.isdigit() or not args:
+                return False
+            cls = args[0]
+            continue
+        if not (isinstance(cls, type) and issubclass(cls, BaseModel)):
+            return False
+        fields = cls.model_fields
+        if segment not in fields:
+            return False
+        cls = fields[segment].annotation
+    return _unwrap_annotation(cls) is str
+
+
+_STRING_COERCION_HINT = (
+    "hint: the value is parsed as YAML, so text with YAML-significant "
+    "characters (e.g. ': ', '- ', or a leading '{'/'[') can be misread as a "
+    "mapping/list. Pass it via --file to use it verbatim instead."
+)
+
+
+# --------------------------------------------------------------------------- #
 # set
 # --------------------------------------------------------------------------- #
 def set_field(
@@ -379,33 +516,46 @@ def set_field(
     value: str | None = None,
     file: str | Path | None = None,
 ) -> HarnessSpec:
-    """Set a scalar/object field by dotted path (e.g. ``loop.max_turns``).
+    """Set a scalar/object field by dotted (and optionally indexed) path.
 
-    ``value`` is parsed as a YAML scalar (so ``"30"`` becomes ``30``). Use
-    ``file`` to load the value verbatim from a text file (e.g. a system prompt).
+    Examples: ``loop.max_turns``, ``guardrails.0.value`` (read-modify-write of
+    an existing list item; an out-of-range index is a clear ``SpecError``).
+
+    ``value`` is normally parsed as a YAML scalar (so ``"30"`` becomes
+    ``30``) — except when ``path`` resolves to a plain ``str`` field in the
+    schema (e.g. ``system_prompt``), where the raw CLI text is kept verbatim
+    so YAML-significant characters (``": "``, ...) can't turn it into a
+    mapping. Use ``file`` to load the value from a text file either way.
     """
     directory = Path(directory)
+    parsed_from_yaml = False
     if file is not None:
         parsed: Any = Path(file).read_text(encoding="utf-8")
     elif value is not None:
-        parsed = yaml.safe_load(value)
+        if _leaf_field_is_str(path):
+            parsed = value
+        else:
+            parsed = yaml.safe_load(value)
+            parsed_from_yaml = True
     else:
         raise SpecError("set requires either a value or a --file")
 
     raw = load_raw(directory)
-    parts = path.split(".")
-    cursor: Any = raw
-    for segment in parts[:-1]:
-        if segment not in cursor or not isinstance(cursor[segment], dict):
-            cursor[segment] = {}
-        cursor = cursor[segment]
-    if not isinstance(cursor, dict):
-        raise SpecError(f"cannot set '{path}': parent is not a mapping")
-    cursor[parts[-1]] = parsed
+    parent, key = _walk_settable(raw, path)
+    parent[key] = parsed
 
-    return _commit(
-        directory, raw, [], "set", {"path": path, "value": parsed if file is None else f"<{file}>"}
-    )
+    try:
+        return _commit(
+            directory,
+            raw,
+            [],
+            "set",
+            {"path": path, "value": parsed if file is None else f"<{file}>"},
+        )
+    except SpecError as exc:
+        if parsed_from_yaml and "valid string" in str(exc):
+            raise SpecError(f"{exc}\n{_STRING_COERCION_HINT}") from exc
+        raise
 
 
 def set_model(directory: str | Path, selector: str) -> HarnessSpec:
@@ -442,21 +592,15 @@ def set_model(directory: str | Path, selector: str) -> HarnessSpec:
 
 
 def set_value(directory: str | Path, path: str, value: Any) -> HarnessSpec:
-    """Set a dotted field to an already-typed value (no YAML parsing).
+    """Set a dotted (and optionally indexed) field to an already-typed value.
 
-    Used by the generator and evolver, which supply native JSON values.
+    No YAML parsing — used by the generator and evolver, which supply native
+    JSON values. See :func:`set_field` for the path syntax.
     """
     directory = Path(directory)
     raw = load_raw(directory)
-    parts = path.split(".")
-    cursor: Any = raw
-    for segment in parts[:-1]:
-        if segment not in cursor or not isinstance(cursor[segment], dict):
-            cursor[segment] = {}
-        cursor = cursor[segment]
-    if not isinstance(cursor, dict):
-        raise SpecError(f"cannot set '{path}': parent is not a mapping")
-    cursor[parts[-1]] = value
+    parent, key = _walk_settable(raw, path)
+    parent[key] = value
     return _commit(directory, raw, [], "set", {"path": path})
 
 
@@ -606,7 +750,18 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
     if not skill_file.exists():
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text(
-            _SKILL_STUB.format(name=name, description=description), encoding="utf-8"
+            _SKILL_STUB.format(
+                name=name,
+                # Serialized, not interpolated: a description containing ": "
+                # or a quote would otherwise be invalid frontmatter YAML.
+                frontmatter=yaml.safe_dump(
+                    {"name": name, "description": description},
+                    sort_keys=False,
+                    allow_unicode=True,
+                    width=10_000,
+                ),
+            ),
+            encoding="utf-8",
         )
         created.append(skill_file)
     raw = load_raw(directory)
@@ -615,6 +770,92 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
         raise SpecError(f"skill '{name}' is already listed in the spec")
     skills.append(name)
     return _commit(directory, raw, created, "add_skill", {"name": name})
+
+
+_MEMORY_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def memory_slug(title: str) -> str:
+    """Derive a memory entry id from its title.
+
+    Deterministic so the same lesson added twice collides on the id instead of
+    quietly becoming two entries; the caller can always pass an explicit id.
+    """
+    slug = _MEMORY_SLUG_RE.sub("-", title.casefold()).strip("-")[:64].strip("-")
+    if not slug or not slug[0].isalnum():
+        raise SpecError(
+            f"could not derive a memory id from title {title!r}; pass an explicit id "
+            "(a-z, 0-9, dashes)"
+        )
+    return slug
+
+
+def add_memory_entry(
+    directory: str | Path,
+    *,
+    kind: str,
+    title: str,
+    content: str,
+    source: str | None = None,
+    evidence: str | None = None,
+    entry_id: str | None = None,
+) -> HarnessSpec:
+    """Append a durable lesson to ``memory.entries``.
+
+    The operator-side write path. It goes through :func:`_commit` like every
+    other construction command, so the entry count, the entry length, and the
+    rendered prompt budget are all enforced by the schema before anything is
+    written — and an over-budget entry leaves ``harness.yaml`` untouched.
+    """
+    directory = Path(directory)
+    raw = load_raw(directory)
+    memory = raw.setdefault("memory", {})
+    if not isinstance(memory, dict):
+        raise SpecError("memory section is not a mapping; fix harness.yaml first")
+    entries = memory.setdefault("entries", [])
+    if not isinstance(entries, list):
+        raise SpecError("memory.entries is not a list; fix harness.yaml first")
+
+    new_id = entry_id or memory_slug(title)
+    if any(isinstance(e, dict) and e.get("id") == new_id for e in entries):
+        raise SpecError(
+            f"memory entry '{new_id}' already exists; forget it first or use another id"
+        )
+    entry: dict[str, Any] = {
+        "id": new_id,
+        "kind": kind,
+        "title": title,
+        "content": content,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    if source:
+        entry["source"] = source
+    if evidence:
+        entry["evidence"] = evidence
+    entries.append(entry)
+    return _commit(directory, raw, [], "add_memory", {"id": new_id, "kind": kind})
+
+
+def forget_memory_entry(directory: str | Path, entry_id: str) -> HarnessSpec:
+    """Remove one durable lesson by id, validating and rolling back like any edit.
+
+    Deliberately not part of :func:`remove_item`: memory entries key on ``id``
+    rather than a builtin/code/name ref, and a bare `hiveloom remove <name>`
+    must never reach into what the harness has learned.
+    """
+    directory = Path(directory)
+    raw = load_raw(directory)
+    memory = raw.get("memory")
+    entries = memory.get("entries") if isinstance(memory, dict) else None
+    kept = (
+        [e for e in entries if not (isinstance(e, dict) and e.get("id") == entry_id)]
+        if isinstance(entries, list)
+        else []
+    )
+    if not isinstance(entries, list) or len(kept) == len(entries):
+        raise SpecError(f"no memory entry with id '{entry_id}'")
+    memory["entries"] = kept
+    return _commit(directory, raw, [], "forget_memory", {"id": entry_id})
 
 
 _PLAYBOOK_PROMPT_STUB = """# {name}
@@ -720,6 +961,7 @@ def add_mcp_server(
     header_env: dict[str, str] | None = None,
     tools: list[str] | None = None,
     deferred: bool = False,
+    timeout_seconds: float | None = None,
 ) -> HarnessSpec:
     """Add an MCP server (a stdio subprocess or a Streamable HTTP endpoint).
 
@@ -729,6 +971,10 @@ def add_mcp_server(
     here, so this makes NO live connection — a typo in the command or URL only
     surfaces later, at ``run``/``dry-run`` (which discover eagerly) or
     ``hiveloom mcp list-tools``.
+
+    ``timeout_seconds`` covers connect/initialize and each tool call (default
+    30s on the schema; ``> 0`` and ``<= 600``, validated there) — raise it for
+    a slower peer harness/tool round trip.
     """
     if (stdio_command is None) == (url is None):
         raise SpecError("add mcp-server requires exactly one of --stdio-command or --url")
@@ -757,6 +1003,8 @@ def add_mcp_server(
         entry["tools"] = list(tools)
     if deferred:
         entry["deferred"] = True
+    if timeout_seconds is not None:
+        entry["timeout_seconds"] = timeout_seconds
 
     raw = load_raw(directory)
     raw.setdefault("mcp_servers", []).append(entry)
@@ -806,8 +1054,9 @@ def remove_item(directory: str | Path, target: str) -> HarnessSpec:
     """Remove a tool/guardrail/validator by identifier, or delete a field path.
 
     ``target`` matches a builtin name or a ``path.py:function`` code ref in any
-    of the list sections; failing that, it is treated as a dotted field path to
-    delete (which reverts the field to its default).
+    of the list sections; failing that, it is treated as a dotted (optionally
+    indexed, e.g. ``guardrails.0``) field path to delete (which reverts an
+    object field to its default, or drops one item from a list).
     """
     directory = Path(directory)
     raw = load_raw(directory)
@@ -877,13 +1126,14 @@ def _ref_matches(item: Any, target: str) -> bool:
 
 
 def _delete_path(raw: dict[str, Any], path: str) -> bool:
-    parts = path.split(".")
-    cursor: Any = raw
-    for segment in parts[:-1]:
-        if not isinstance(cursor, dict) or segment not in cursor:
-            return False
-        cursor = cursor[segment]
-    if isinstance(cursor, dict) and parts[-1] in cursor:
-        del cursor[parts[-1]]
+    resolved = _walk_removable(raw, path)
+    if resolved is None:
+        return False
+    parent, key = resolved
+    if isinstance(parent, list):
+        del parent[key]
+        return True
+    if key in parent:
+        del parent[key]
         return True
     return False

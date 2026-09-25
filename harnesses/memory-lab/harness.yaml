@@ -1,0 +1,147 @@
+schema_version: 0.2.0
+name: memory-lab
+id: hl-8196bff8609b
+description: Answer three questions about a large service log using run-scoped notes, in-place transforms
+  of the spilled log, and durable memory.
+extensions:
+- extensions/memory_provider.py
+model:
+  provider: memory_lab
+  id: qa-analyst
+  max_tokens: 4096
+system_prompt: |
+  You investigate one service log and report three facts about it as JSON.
+
+  The log is `data/service.log`, roughly 77 KB — far more than this conversation
+  can hold. Read it with file_read. It will not come back inline: you get its
+  head, its tail, an omitted-byte count, and a handle.
+
+  Work on the handle, not on the text:
+    - transform_result narrows a stored result in place (count, grep, tail, ...).
+      What fits the budget comes back inline; what does not becomes a new handle.
+    - notes keeps your findings outside the conversation. Write them as soon as
+      you have them and read them back before you answer, because older turns
+      may be dropped.
+    - file_write accepts a handle as its content, so a large derived result can
+      be written out without ever entering this conversation.
+    - propose_memory queues a durable lesson for the operator to review. It never
+      changes this harness by itself.
+
+  Report exactly:
+    dominant_failure_code — the code=... value appearing on the most ERROR lines
+    error_count           — how many ERROR lines the log contains, in total
+    build_digest          — the digest= value on the final SUMMARY line
+
+  Your final message must be the JSON object alone: it starts with { and ends
+  with }, with no sentence before it and no code fence around it.
+tools:
+- builtin: file_read
+- builtin: file_write
+- builtin: notes
+  max_notes: 4
+- builtin: propose_memory
+  max_per_run: 2
+mcp_servers: []
+playbooks: []
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
+memory:
+  enabled: true
+  max_entries: 24
+  max_entry_chars: 600
+  prompt_budget_chars: 6000
+  selection: all
+  max_selected: 8
+  entries:
+  - id: never-guess-an-omitted-byte
+    kind: rule
+    title: Never guess an omitted byte
+    content: A spilled result's middle is stored whole. Count or grep it with transform_result before
+      reporting a number.
+    source: operator
+    evidence: seeded by the walkthrough
+    created_at: '2026-09-21T20:53:00.146810+00:00'
+    pinned: false
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+loop:
+  policy: react
+  steps: []
+  max_turns: 16
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - builtin: output_schema
+    schema_file: ./schemas/output.json
+  - builtin: file_exists
+    path: out/error-context.txt
+  - builtin: command_succeeds
+    command: grep -q code=POOL_EXHAUSTED out/error-context.txt
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  - memory.entries
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0

@@ -217,3 +217,17 @@ def test_thinking_blocks_are_preserved_on_the_assistant_turn(monkeypatch):
         "type": "thinking", "thinking": "…", "signature": "sig",
     }
     assert result.text == "ok"
+
+
+def test_provider_params_reach_claude_extra_body(monkeypatch):
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return _response()
+
+    provider, _ = _make_provider(monkeypatch, create)
+    provider.complete(system="s", messages=[], tools=[], config=ModelConfig(
+        id="m", temperature=0.5, params={"thinking": {"type": "disabled"}},
+    ))
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}, "temperature": 0.5}

@@ -366,6 +366,10 @@ class TraceWriter:
                 "tool_retry",
                 "tool_result",
                 "tool_spilled",
+                # A hand-off to another harness is spend and provenance, not
+                # detail: a summary journal that hid it would under-report both.
+                "delegation_started",
+                "delegation_finished",
                 "guardrail_triggered",
                 "verification_result",
             }:

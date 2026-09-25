@@ -54,6 +54,28 @@ hiveloom add guardrail --builtin max_cost_usd --value 0.50 --dir ./h
 hiveloom remove file_read --dir ./h      # remove by identifier, or delete a field path
 ```
 
+`set`/`remove` paths are dotted and may be indexed into an existing list item
+for read-modify-write, e.g. `hiveloom set guardrails.0.value 0.05 --dir ./h`
+(the default cost guardrail `init` seeds) or `hiveloom remove guardrails.1
+--dir ./h`; an out-of-range index is a clear error naming the list's length —
+there is no append-via-`set`, use `add`. A `set` value normally parses as
+YAML (so `"30"` becomes `30`), except a plain string field such as
+`system_prompt` keeps the CLI text verbatim so `": "` and the like can't be
+misread as a YAML mapping; use `--file` for anything long, multi-line, or
+that this heuristic can't resolve.
+
+Add an MCP server's tools the same way — no live connection is made, so a
+typo in the command/URL only surfaces at `run`/`--dry-run`/`mcp list-tools`:
+
+```bash
+hiveloom add mcp-server --name jira --url https://mcp.acme.example/mcp \
+  --header-env Authorization=ACME_MCP_TOKEN --timeout-seconds 120 --dir ./h
+```
+
+`--timeout-seconds` (default 30, must be `> 0` and `<= 600`) covers
+connect/initialize and each tool call — raise it for a slower peer
+harness/tool round trip.
+
 To dictate a fixed, ordered list of objectives instead of free-form react,
 set `loop.steps` **before** switching `loop.policy` to `sequential_steps`
 (each `set` fully re-validates, and an empty-steps `sequential_steps` is
@@ -84,6 +106,10 @@ Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
   `http_get` (declare repeatable `hosts`; new hosts otherwise need an
   interactive operator decision and fail closed in agent/JSON runs).
   Add them with repeated `--host` flags; never hand-edit the tool entry.
+  Opt-in memory tools: `recall_runs` (this harness's own prior runs), `notes`
+  (run-scoped storage that survives compaction), `propose_memory` (queue a
+  durable lesson for review; it never writes the spec — curate entries with
+  `hiveloom memory list|show|add|forget`).
 - **Validators** (the reward signal — always add at least one):
   `output_schema --schema-file`, `regex_match --pattern`, `file_exists --path`,
   `command_succeeds --command`, `grounded_references --output-path
@@ -92,6 +118,26 @@ Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
   `max_turns_hard_cap`, `tool_allowlist`, `no_network_write`,
   `regex_output_filter --pattern`. The cost guardrail defaults **on**
   (`max_cost_usd: 1.00`) even if omitted.
+
+### Optional: let the harness ask a peer for help
+
+A harness's model is frozen, but *which harness runs the task* need not be.
+`delegation` (off by default) lets a run hand the task to a peer harness in
+this machine's registry that measures better on it, verify the answer with its
+own validators, and charge the peer's cost to its own budget — or, when nothing
+qualifies, return `referrals` naming the harness that fits.
+
+```bash
+hiveloom set delegation.enabled true --dir ./h --json
+hiveloom set delegation.when '["on_start","model_choice"]' --dir ./h --json
+hiveloom set delegation.min_peer_success_rate 0.7 --dir ./h --json
+hiveloom set delegation.min_peer_runs 5 --dir ./h --json
+```
+
+`on_start` and `on_verify_fail` are enforced by the loop; `model_choice` adds a
+deferred `delegate__<peer>` tool per eligible peer plus an active `list_peers`.
+Depth, cycles, and the child's share of the remaining budget are runtime
+decisions, not the model's. Full reference: `hiveloom guide delegation`.
 
 ### Task-specific logic → code hooks
 

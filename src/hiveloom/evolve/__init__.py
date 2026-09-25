@@ -1,6 +1,11 @@
 """Evolution: analyze Hive failures and propose gated harness mutations."""
 
-from hiveloom.evolve.analyzer import FailureReport, analyze
+from hiveloom.evolve.analyzer import (
+    AttemptRecord,
+    FailureReport,
+    analyze,
+    queued_attempt_history,
+)
 from hiveloom.evolve.evidence import IncidentEvidence, IncidentPacket
 from hiveloom.evolve.evolver import (
     ApplyResult,
@@ -16,6 +21,7 @@ from hiveloom.evolve.metric_evidence import MetricEvidence
 
 __all__ = [
     "ApplyResult",
+    "AttemptRecord",
     "FailureReport",
     "IncidentEvidence",
     "IncidentPacket",
@@ -27,5 +33,6 @@ __all__ = [
     "gate",
     "preview_yaml_changes",
     "propose",
+    "queued_attempt_history",
     "resolve_code_change_path",
 ]

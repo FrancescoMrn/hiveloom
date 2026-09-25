@@ -56,9 +56,46 @@ call, returning `{status, output, reason, cost_usd, turns, run_id, verdicts}`
 hiveloom mcp serve ./h ./other            # stdio; one run_<name> tool each
 hiveloom registry add ./h                 # register once...
 hiveloom mcp serve --registered           # ...serve everything registered
+hiveloom mcp serve ./h --concurrency 2 --max-depth 3
+                                          # bound parallel runs / delegation depth
 HIVELOOM_API_KEY=k hiveloom mcp serve --registered --http --port 8765
                                           # streamable HTTP at /mcp, Bearer-gated
 ```
+
+A run that could not start at all (missing key, untrusted folder) comes back
+as `status: "error"` with the reason — data the calling agent can read, not a
+protocol error. Startup failures go to stderr with an exit code; stdout stays
+the protocol channel.
+
+### Harness → harness
+
+The caller can be a harness too — point its `mcp_servers` at a peer's server:
+
+```bash
+hiveloom add mcp-server --name peer --stdio-command hiveloom \
+  --stdio-arg mcp --stdio-arg serve --stdio-arg /srv/harnesses/summarizer \
+  --env-from-host ANTHROPIC_API_KEY=ANTHROPIC_API_KEY \
+  --timeout-seconds 300 --dir ./h
+
+# or over HTTP
+hiveloom add mcp-server --name peer --url https://harnesses.internal/mcp \
+  --header-env 'X-API-Key=HIVELOOM_API_KEY' --timeout-seconds 300 --dir ./h
+```
+
+- **Forward the key explicitly.** A stdio child gets a minimal environment
+  (hiveloom adds only `HIVELOOM_HOME`/`HIVELOOM_DB`, so the peer shares this
+  machine's Hive and trust store). API keys are never auto-forwarded: use
+  `env_from_host_env`, or give the peer folder its own `.env`. Agent hosts
+  (Claude Code/Desktop) also start `mcp serve` with a minimal environment.
+- **Size the timeout.** `timeout_seconds` must cover the peer's whole run
+  (>= its `max_wall_clock_seconds`); a caller timeout only *asks* the peer to
+  stop at its next turn boundary.
+- **The chain is bounded.** The caller's run id, harness identity, depth and
+  chain travel in the request `_meta`: the peer's run is linked as a child
+  (`hiveloom lineage`), and a chain deeper than `--max-depth` or one that
+  revisits a harness is refused as `status: "error"`.
+- **Artifacts survive the hop** — a peer run's artifacts come back on the
+  caller's `RunResult.artifacts`.
 
 Every server also exposes `list_harnesses`: the catalog with each harness's
 measured fitness (runs, success rate, avg cost/turns from the Hive), so a

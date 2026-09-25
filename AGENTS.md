@@ -28,18 +28,19 @@ the library; humans should start at [README.md](README.md).
    operator decision and is denied in non-interactive/`--json` runs.
 4. **Never weaken the safety layer**: `guardrails`, `model`, `logging.redact`,
    `egress`, `confinement`, `extensions`, `hooks`, `mcp_servers`,
-   `evolution.auto_propose`, `evolution.trace_excerpts`, and
-   `evolution.objectives` are frozen from evolution; the cost guardrail
-   defaults on; `shell` is allowlist-only; foreign harness folders are
-   trust-gated before their code loads. Don't route around any of this on a
-   user's behalf.
+   `evolution.auto_propose`, `evolution.reflect`, `evolution.trace_excerpts`,
+   `evolution.objectives`, and the `memory` budgets are frozen from evolution;
+   the cost guardrail defaults on; `shell` is allowlist-only; foreign harness
+   folders are trust-gated before their code loads. Don't route around any of
+   this on a user's behalf.
 5. **Free exploration is free.** `schema`, `catalog`, `explain`, `validate`,
-   `extensions`, `guide`, and `run --dry-run` never call the model API. A
-   harness with `mcp_servers` is the one exception to "free": its tools are
-   discovered eagerly, so `run --dry-run` does perform real local/network I/O
-   against those declared servers (see `docs/spec.md`). `run`, `generate`, and
-   `evolve` need credentials for their configured provider when that provider
-   requires them (for example, `ANTHROPIC_API_KEY` for the default provider).
+   `extensions`, `guide`, `signal`, `assess`, and `run --dry-run` never call the
+   model API. A harness with `mcp_servers` is the one exception to "free":
+   its tools are discovered eagerly, so `run --dry-run` does perform real
+   local/network I/O against those declared servers (see `docs/spec.md`).
+   `run`, `generate`, and `evolve` need credentials for their configured
+   provider when that provider requires them (for example,
+   `ANTHROPIC_API_KEY` for the default provider).
 
 ## Task → skill map
 
@@ -57,14 +58,17 @@ reference documents below also ship as guide topics: for example,
 | Run one / debug a run / check stats | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `run [--json\|--stream\|--dry-run\|--resume]`, `trace [--materialize\|--verify]`, `stats`, `metrics` |
 | Define, run, report, or compare an eval | [`skills/hiveloom-eval`](skills/hiveloom-eval/SKILL.md) | `eval schema`, `catalog datasets\|scorers`, `eval validate`, `eval run\|status\|resume`, `eval report\|compare`, `metrics` |
 | Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
-| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve [--yes\|--propose]`, `proposals list\|show\|apply\|reject`, `stats` |
+| Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `signal`, `evolve [--yes\|--propose\|--experiment]`, `assess`, `proposals list\|show\|apply\|reject`, `memory list\|show\|add\|forget`, `stats` |
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `models probe`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
 A harness with `evolution.auto_propose.enabled: true` may already have queued a
 `trigger=auto` proposal after a failing `run` — check `proposals list` before
 assuming you need to run `evolve --propose` yourself. It only ever drafts;
-applying still needs an explicit `proposals apply`.
+applying still needs an explicit `proposals apply`. A harness that declares the
+opt-in `propose_memory` tool can also queue `trigger=executor` rows: durable
+lessons the run itself offered, reviewed the same way and curated with
+`hiveloom memory`.
 
 ## Reference docs
 
@@ -80,18 +84,34 @@ applying still needs an explicit `proposals apply`.
   artifacts and the production feedback loop.
 - [docs/evaluating.md](docs/evaluating.md) — versioned local eval documents,
   dataset/scorer extensions, identity, metrics, and privacy.
+- [docs/delegation.md](docs/delegation.md) — handing a task to a fitter peer
+  harness: the three modes, fitness floors, lineage, cost, and limits.
+- [docs/signal-driven-evolution.md](docs/signal-driven-evolution.md) — where
+  the evidence points (`signal`), aimed proposals, `assess`, the measured
+  `evolve --experiment` loop, relevance-selected memory and reflection.
 - [docs/journal.md](docs/journal.md) — the run journal, `trace --verify`,
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — seven worked examples to imitate: `quickstart`
-  (no tools), `example-summarizer` (tools + verification),
+- [harnesses/](harnesses/) — ten worked examples to imitate, indexed by
+  capability in [harnesses/README.md](harnesses/README.md): `quickstart`
+  (no tools; output filter, hard turn cap, redaction), `example-summarizer`
+  (tools, verification, a skill loaded on demand),
   `article-extractor` (a custom tool + anti-hallucination validator),
-  `routing-lab` (playbooks, forking, evolution — offline, no API key),
-  `ticket-triage` (an MCP server as the harness's only data source),
+  `routing-lab` (playbooks, `plan_then_act`, forking, aimed evolution —
+  offline, no API key),
+  `ticket-triage` (an MCP server as the only data source, parallel reads),
   `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
-  synthetic data), and `log-forensics` (confinement around an allowlisted
-  shell, an oversized tool result spilled and read back by handle).
+  synthetic data), `log-forensics` (confinement around an allowlisted
+  shell, an oversized tool result spilled and read back by handle),
+  `memory-lab` (run-scoped `notes`, `transform_result` over a spilled
+  handle, a handle passed to `file_write`, `propose_memory`, and
+  `memory.entries` grown only through an applied proposal, artifact
+  validators — offline), `signal-lab` (`signal` locating the failing tool,
+  reflection, auto-propose with trace excerpts, an `evolve --experiment` that
+  reverts a refuted change and keeps a confirmed one, `assess`, and
+  relevance-selected memory — offline), and `delegation-lab` (a peer referred
+  until measured, then handed the task and verified — offline).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 

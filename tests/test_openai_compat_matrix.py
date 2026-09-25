@@ -346,3 +346,344 @@ def test_openai_compat_other_400_stays_a_runtime_error(monkeypatch):
             config=ModelConfig(id="m"),
         )
     assert not isinstance(excinfo.value, ContextOverflowError)
+
+
+# --------------------------------------------------------------------------- #
+# Oversized reasoning degrades; it must never cost the answer
+# --------------------------------------------------------------------------- #
+def test_huge_reasoning_is_dropped_rather_than_failing_the_response():
+    """A reasoning model can out-write the bound on provider-owned payloads.
+
+    Reasoning is replay metadata, not the answer. Rejecting the whole response
+    over its size threw away a turn whose text and tool calls were fine — the
+    model did the work and hiveloom discarded it over bookkeeping.
+    """
+    from hiveloom.models.provider import PROVIDER_REASONING_MAX_BYTES
+
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "the answer is 42",
+                    "reasoning": "x" * (PROVIDER_REASONING_MAX_BYTES + 1),
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+    response = _normalize(payload, estimated_input_tokens=10)
+
+    assert response.text == "the answer is 42"
+    assert response.reasoning is None
+    assert response.provider_metadata["reasoning_dropped_bytes"] > PROVIDER_REASONING_MAX_BYTES
+    # The opaque replay payload is gone, but the thinking itself stays in the
+    # transcript: the model is stateless, so dropping it outright would be the
+    # harness losing the agent's state, not merely losing a replay convenience.
+    kept = [b for b in response.content_blocks if b["type"] == "text"]
+    assert any(b["text"].startswith("x" * 100) for b in kept)
+    assert any("truncated by the harness" in b["text"] for b in kept)
+
+
+def test_reasoning_within_the_bound_is_still_carried_for_replay():
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "42", "reasoning": "short thought"},
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+    response = _normalize(payload, estimated_input_tokens=10)
+
+    assert response.reasoning == {"reasoning": "short thought"}
+    assert "reasoning_dropped_bytes" not in response.provider_metadata
+
+
+def test_a_dropped_reasoning_payload_still_keeps_tool_calls():
+    from hiveloom.models.provider import PROVIDER_REASONING_MAX_BYTES
+
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning": "y" * (PROVIDER_REASONING_MAX_BYTES + 1),
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city": "Rome"}'},
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+    response = _normalize(payload, estimated_input_tokens=10)
+
+    assert [c.name for c in response.tool_calls] == ["get_weather"]
+    assert response.reasoning is None
+
+
+def test_an_absurd_provider_metadata_value_is_clamped_not_fatal():
+    """Provenance is worth recording, never worth losing a turn over."""
+    payload = {
+        "choices": [{"finish_reason": "stop", "message": {"content": "42"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        "provider": "x" * 100_000,
+    }
+
+    response = _normalize(payload, estimated_input_tokens=10)
+
+    assert response.text == "42"
+    assert len(response.provider_metadata["provider"]) == 1024
+
+
+def test_blank_content_falls_through_to_reasoning():
+    """A server returning content " " with a full reasoning field is not empty-handed.
+
+    Truthiness says a single space is content, so the whole reasoning-only turn
+    was discarded and the run recorded a one-character answer. Observed from a
+    vLLM-backed OpenRouter upstream returning 17k reasoning tokens beside " ".
+    """
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": " ",
+                    "reasoning": "the rule is a diagonal flip; the answer is [[1,2],[3,4]]",
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 17279},
+    }
+
+    response = _normalize(payload, estimated_input_tokens=10)
+
+    assert response.text.startswith("the rule is a diagonal flip")
+
+
+def test_real_content_still_wins_over_reasoning():
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "42", "reasoning": "thinking out loud"},
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+    assert _normalize(payload, estimated_input_tokens=10).text == "42"
+
+
+def test_a_response_cut_off_mid_body_is_retried_not_fatal():
+    """http.client.IncompleteRead inherits from HTTPException, not ConnectionError.
+
+    It therefore escaped the retry handler and killed the run. A reasoning model
+    streams hundreds of KB over minutes, so a dropped connection in that window
+    is routine rather than exotic.
+    """
+    from http.client import IncompleteRead
+
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = {"n": 0}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise IncompleteRead(b"12345")
+            import json as _json
+
+            return _json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "42"}}]}
+            ).encode()
+
+    import pytest as _pytest
+
+    monkeypatch = _pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "hiveloom.models.openai_compat.urlrequest.urlopen",
+        lambda request, timeout=0: _Response(),
+    )
+    try:
+        response = provider.complete(
+            system="s",
+            messages=[{"role": "user", "content": "x"}],
+            tools=[],
+            config=ModelConfig(id="m"),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert response.text == "42"
+    assert calls["n"] == 2  # first attempt raised, second succeeded
+
+
+def test_an_error_inside_a_200_body_is_retried():
+    """Aggregators answer HTTP 200 and put the upstream's failure in the body.
+
+    Observed: `{"error": {"message": "Upstream error from Wafer: The model is
+    temporarily at capacity. Please retry shortly.", "code": 502}}` returned with
+    status 200. Status-only classification never saw it, so a transient blip
+    became an unretryable "provider returned no choices" and killed the run at
+    turn 0 — more likely with a pinned upstream, which has no sibling to absorb
+    a capacity blip.
+    """
+    import json as _json
+
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = {"n": 0}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _json.dumps(
+                    {
+                        "error": {
+                            "message": "Upstream error: temporarily at capacity.",
+                            "code": 502,
+                        }
+                    }
+                ).encode()
+            return _json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "42"}}]}
+            ).encode()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "hiveloom.models.openai_compat.urlrequest.urlopen",
+        lambda request, timeout=0: _Response(),
+    )
+    try:
+        response = provider.complete(
+            system="s",
+            messages=[{"role": "user", "content": "x"}],
+            tools=[],
+            config=ModelConfig(id="m"),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert response.text == "42"
+    assert calls["n"] == 2
+
+
+def test_a_non_transient_error_body_is_not_retried_forever():
+    """A 400-class error in the body is the caller's problem, not a blip."""
+    import json as _json
+
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = {"n": 0}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            calls["n"] += 1
+            return _json.dumps(
+                {"error": {"message": "invalid model id", "code": 400}}
+            ).encode()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "hiveloom.models.openai_compat.urlrequest.urlopen",
+        lambda request, timeout=0: _Response(),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="invalid model id"):
+            provider.complete(
+                system="s",
+                messages=[{"role": "user", "content": "x"}],
+                tools=[],
+                config=ModelConfig(id="m"),
+            )
+    finally:
+        monkeypatch.undo()
+
+    assert calls["n"] == 1  # not retried
+
+
+def test_oversized_reasoning_only_response_obeys_the_salvage_limit():
+    from hiveloom.models.openai_compat import (
+        _SALVAGED_REASONING_MAX_CHARS,
+        normalize_openai_response,
+    )
+    from hiveloom.models.provider import PROVIDER_REASONING_MAX_BYTES
+
+    response = normalize_openai_response(
+        {"choices": [{"finish_reason": "length", "message": {
+            "content": " ", "reasoning": "x" * (PROVIDER_REASONING_MAX_BYTES + 100),
+        }}]}, estimated_input_tokens=1,
+    )
+    assert len(response.text) < _SALVAGED_REASONING_MAX_CHARS + 100
+    assert "reasoning truncated" in response.text
+    assert response.reasoning is None
+    assert response.content_blocks[0]["text"] == response.text
+
+
+def test_non_scalar_provider_metadata_does_not_reject_an_answer():
+    from hiveloom.models.openai_compat import normalize_openai_response
+
+    response = normalize_openai_response(
+        {"provider": {"unexpected": "x" * 100_000},
+         "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]},
+        estimated_input_tokens=1,
+    )
+    assert response.text == "ok"
+    assert "provider" not in response.provider_metadata
+
+
+def test_embedded_context_overflow_is_recoverable(monkeypatch):
+    import json
+
+    from hiveloom.models.openai_compat import OpenAICompatProvider
+    from hiveloom.models.provider import ContextOverflowError
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def read(self):
+            return json.dumps({"error": {"code": 400,
+                                        "message": "maximum context length exceeded"}}).encode()
+
+    monkeypatch.setattr(
+        "hiveloom.models.openai_compat.urlrequest.urlopen", lambda *a, **k: Response()
+    )
+    with pytest.raises(ContextOverflowError):
+        OpenAICompatProvider("http://localhost:9").complete(
+            system="s", messages=[], tools=[], config=ModelConfig(id="m"),
+        )

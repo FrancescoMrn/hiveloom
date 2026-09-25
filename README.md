@@ -24,11 +24,14 @@ at this sample size, and one is slightly worse. Which is the point:
 [the evidence is measured per task and model](#measured-performance), not
 assumed.
 
-> **Status:** `1.1.0`. The spec, CLI, Python SDK, runtime, journal/Hive
+> **Status:** `1.2.0`. The spec, CLI, Python SDK, runtime, journal/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
 > serving surfaces are implemented, along with playbooks, structured artifacts,
-> run control, and a tamper-evident run journal you can fork from, replay, and
-> read in [the workbench](#the-workbench).
+> run control, delegation between harnesses, run-scoped notes and durable
+> memory that is selected per task and learned through reviewed reflection,
+> signal-driven evolution that locates where failures concentrate and checks
+> every change against its own prediction, and a tamper-evident run journal you
+> can fork from, replay, and read in [the workbench](#the-workbench).
 
 ## Why hiveloom: task confinement
 
@@ -43,6 +46,7 @@ hiveloom harness starts with one job and declares its operating boundary:
 | **Acceptance** | Deterministic validators — not the model — decide whether an answer counts as success. |
 | **Change** | Evolution is limited to declared mutable fields; safety-critical fields stay frozen. |
 | **Evidence** | Every run is tied to the exact harness version and written to a checkable journal. |
+| **Help** | Optional delegation: a harness hands the task to a peer with better measured odds, verifies the answer itself, and charges the peer's cost to its own budget — or names the harness that fits. |
 
 The result is more reliable than a prompt and narrower than a general-purpose
 agent: a portable, versioned agent program for a task you can define and check.
@@ -231,7 +235,9 @@ hiveloom metrics record ./summarizer --run-id eval-case-01 \
 hiveloom metrics list ./summarizer --name recall_at_5 --json
 hiveloom eval run eval.yaml --provider openai --model gpt-4.1-mini \
   --repetitions 3 --concurrency 2 --json
+hiveloom signal ./summarizer --json      # free: where failures concentrate
 hiveloom evolve ./summarizer --propose --json
+hiveloom assess ./summarizer --json      # free: did each change do what it predicted?
 ```
 
 Prefer model-driven construction?
@@ -287,18 +293,24 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Seven worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
-each the smallest thing that shows one layer of the runtime:
+Ten worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
+each the smallest thing that shows one layer of the runtime, with a README that
+states what it proves and the evidence to look for. The
+[gallery](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses#by-capability)
+indexes them by capability.
 
 | harness | what it shows |
 |---|---|
-| [`quickstart`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/quickstart) | a harness with no tools at all — prompt, guardrails, a run, a trace |
-| [`example-summarizer`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/example-summarizer) | builtin tools, schema *and* code verification, retry-with-feedback |
+| [`quickstart`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/quickstart) | a harness with no tools — journal, hashed spec, cost and hard turn ceilings, and a safety layer that keeps a credential out of the request, the trace and the answer; how to package and serve it |
+| [`example-summarizer`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/example-summarizer) | builtin tools, schema *and* code verification, retry-with-feedback, and a house-style skill loaded on demand with `load_skill` |
 | [`article-extractor`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/article-extractor) | a custom `@tool`, an output hook, a validator that re-fetches to catch invention |
-| [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run — offline, so forking and evolution need no API key |
-| [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*` |
+| [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run on a `plan_then_act` plan; forking; an aimed evolution confirmed by `assess` — offline, no API key |
+| [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*`, read in parallel |
 | [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | structured tool phases, a deterministic search-and-verify tool, grounded IDs, and local ranked metrics over synthetic data |
 | [`log-forensics`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/log-forensics) | OS confinement around an allowlisted shell, a 77 KB tool result spilled and read back by handle, and `recall_runs` scoped to one harness version |
+| [`memory-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/memory-lab) | the three memory layers on one task: a spilled log narrowed in place with `transform_result`, findings kept in `notes` across compaction and a fork, a derived object handed to `file_write` by handle, and `memory.entries` that grow only through an applied proposal — offline, no API key |
+| [`signal-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/signal-lab) | signal-driven evolution: `hiveloom signal` locates the failing tool, reflection drafts a lesson for review, `evolve --experiment` reverts a refuted change and keeps the confirmed one pair by pair, `assess` reports both, and relevance-selected memory shows the learned rule only where it applies — offline, no API key |
+| [`delegation-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/delegation-lab) | a front desk refers a ledger specialist until the peer has earned a measured record, then hands it the task, re-verifies the answer, and records the lineage — offline, no API key |
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone
@@ -392,7 +404,13 @@ hiveloom migrate ./legacy-harness --json
 hiveloom explain context.compaction --json
 hiveloom catalog validators --json
 hiveloom set loop.max_turns 20 --dir ./my-harness --json
+# `set`/`remove` paths may index an existing list item (read-modify-write,
+# no append via `set`); a string field like `system_prompt` keeps the CLI
+# text verbatim instead of parsing it as YAML.
+hiveloom set guardrails.0.value 0.05 --dir ./my-harness --json
 hiveloom add tool --builtin file_read --dir ./my-harness --json
+hiveloom add mcp-server --name jira --url https://mcp.acme.example/mcp \
+  --timeout-seconds 120 --dir ./my-harness --json
 
 # Run and inspect
 hiveloom run ./my-harness --input input.txt --stream
@@ -419,9 +437,14 @@ hiveloom run ./my-harness/.hiveloom/forks/probe --resume
 hiveloom lineage <run-id> --json
 
 # Improve with a human gate
+hiveloom signal ./my-harness --json
 hiveloom evolve ./my-harness --propose --json
 hiveloom proposals list ./my-harness --json
-hiveloom proposals apply ./my-harness <proposal-id> --json
+hiveloom proposals apply ./my-harness <proposal-id> --yes --json
+hiveloom assess ./my-harness --json
+
+# Or measure each change on an eval and keep only what it confirms
+hiveloom evolve ./my-harness --experiment eval.yaml --yes --rounds 3 --json
 
 # Extend and ship
 hiveloom extensions --json
@@ -442,10 +465,24 @@ measured success rate and cost, so any MCP-capable agent can pick a harness on
 evidence and delegate a task to it — getting back a structured,
 validator-checked result instead of improvising the task itself. Input is
 always treated as literal text, and untrusted directories fail at startup
-(approve them with `hiveloom trust`). Register harnesses once with
-`hiveloom registry add <dir>` and serve them all with `--registered`; add
-`--http` (with `HIVELOOM_API_KEY`) to serve over streamable HTTP instead of
-stdio.
+(approve them with `hiveloom trust`; startup errors go to stderr, never to the
+protocol channel). Register harnesses once with `hiveloom registry add <dir>`
+and serve them all with `--registered`; add `--http` (with `HIVELOOM_API_KEY`)
+to serve over streamable HTTP instead of stdio. `--concurrency N` bounds
+parallel runs; `--max-depth N` (default 3) bounds delegation chains. A run that
+could not start at all comes back as `status: "error"` with the reason — data,
+not a protocol failure.
+
+The calling agent can be another harness: give it an `mcp_servers` entry
+pointing at a peer's `hiveloom mcp serve` and its `run_<name>` tools join the
+loop. Forward the credential explicitly
+(`env_from_host_env: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY}` for stdio,
+`header_env: {X-API-Key: HIVELOOM_API_KEY}` for HTTP — a stdio child is spawned
+with a minimal environment, and only `HIVELOOM_HOME`/`HIVELOOM_DB` are passed
+through so the peer shares this machine's Hive), and set `timeout_seconds` to
+cover the peer's whole run. The peer's run is recorded as a child of the
+caller's, and a chain that grows too deep or loops back is refused. See
+[docs/spec.md](docs/spec.md#harness--harness).
 
 ### Python SDK
 
@@ -485,8 +522,9 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 ## Safety invariants
 
 - Evolution cannot change `id`, `guardrails`, `model`, `logging.redact`,
-  `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-  `evolution.trace_excerpts`, or `evolution.objectives`. Opt-in excerpts are
+  `extensions`, `hooks`, `mcp_servers`, `confinement`, `egress`,
+  `evolution.auto_propose`, `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`,
+  or the `memory` budgets. Opt-in excerpts are
   re-redacted and bounded
   before they reach the proposing model.
 - The cost guardrail defaults on at `$1.00`.
@@ -495,6 +533,8 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - Redaction runs before trace persistence.
 - Provider egress screens the final request after request hooks.
 - Foreign harness code is trust-gated before loading.
+- A delegated peer run is depth- and cycle-bounded, capped at a share of the
+  parent's remaining budget, and counted into the parent's cost.
 
 ## Documentation
 
@@ -506,6 +546,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Architecture](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/architecture.md)
 - [The workbench](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/workbench.md)
 - [Journal, forks, and model swaps](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/journal.md)
+- [Delegation between harnesses](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/delegation.md)
 - [Models and providers](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/models.md)
 - [Extensions](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/extending.md)
 - [Deployment and evolution](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/deploying-and-evolving.md)

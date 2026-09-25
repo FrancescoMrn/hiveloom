@@ -131,6 +131,39 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
         ],
     ),
     CatalogEntry(
+        name="notes",
+        description=(
+            "Keep run-scoped notes the model writes and reads by name. A note "
+            "lives outside the conversation, so it survives compaction; the "
+            "system prompt carries only the index (name, size, first line). "
+            "Opt-in: storage is private to the run and is discarded with it."
+        ),
+        tags=["write", "memory", "context"],
+        params=[
+            ParamSpec(
+                name="max_notes",
+                type="int",
+                required=False,
+                default=32,
+                description=(
+                    "Notes the run may hold at once (hard-capped at 256). The index "
+                    "is rendered into every turn's system prompt, so the count is a "
+                    "prompt budget as much as a storage one."
+                ),
+            ),
+            ParamSpec(
+                name="max_note_bytes",
+                type="int",
+                required=False,
+                default=0,
+                description=(
+                    "Largest single note in bytes (hard-capped at 1 MiB). 0 takes "
+                    "the harness's context.tool_results.max_inline_bytes."
+                ),
+            ),
+        ],
+    ),
+    CatalogEntry(
         name="recall_runs",
         description=(
             "Look up this harness's own prior runs in the Hive — successes as "
@@ -169,6 +202,28 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
                     "'harness' recalls every version's runs; 'version' recalls only "
                     "runs of the harness version now executing — evidence that "
                     "cannot have come from different instructions."
+                ),
+            ),
+        ],
+    ),
+    CatalogEntry(
+        name="propose_memory",
+        description=(
+            "Offer a durable lesson for this harness to remember across runs. "
+            "It is queued as an evolution proposal for human review — the "
+            "executor never writes the spec. Opt-in, and bounded per run."
+        ),
+        tags=["write", "memory"],
+        params=[
+            ParamSpec(
+                name="max_per_run",
+                type="int",
+                required=False,
+                default=3,
+                description=(
+                    "Proposals one run may add to the review queue (hard-capped "
+                    "at 10). A run with more lessons than this has usually found "
+                    "one and restated it; a human reads every row either way."
                 ),
             ),
         ],
@@ -321,6 +376,12 @@ POLICIES: dict[str, CatalogEntry] = _entries(
         name="sequential_steps",
         description="Walk fixed objectives in order; structured loop.steps can enforce "
         "tool subsets, required successful calls, and per-step call limits.",
+        tags=["loop"],
+    ),
+    CatalogEntry(
+        name="best_of_n",
+        description="Solve the task loop.attempts times independently (context rewound "
+        "between attempts) and submit the answer the attempts agree on.",
         tags=["loop"],
     ),
 )

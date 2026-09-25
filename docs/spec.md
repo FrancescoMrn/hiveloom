@@ -20,7 +20,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 |---|---|---|
 | `schema_version` | Harness document format | defaults to `0.2.0`; legacy `version` still loads and `hiveloom migrate HARNESS --json` rewrites it atomically |
 | `name` / `description` | Identity (Hive + packaging) | required |
-| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens`, `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
+| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens` (validated against registered `max_output_tokens` when known), `params` (bounded provider fields; see [models.md](models.md#provider-request-parameters)), `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
 | `tools` | Tools available to the loop | list of `{builtin: name}` or `{code: path.py:fn, description: ...}` |
 | `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |
@@ -28,14 +28,16 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `skills` | Progressive-disclosure instructions | names of `skills/<name>/SKILL.md` folders |
 | `playbooks` | Named modes the run switches between | `name`, `description`, `prompt` (md fragment), `tools` (active subset), `validators`, `model`/`model_provider` (**always frozen**), `on_enter`/`on_exit` (**always frozen**), `entry` |
 | `hooks` | Lifecycle middleware | code or catalog handlers attached by `event` |
-| `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
+| `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method,max_tokens}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
+| `memory` | Durable lessons rendered into the system prompt | `enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`, `selection`, `max_selected` (**all frozen from evolution**), `entries` (evolvable) |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
 | `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `confinement` | OS confinement for spawned processes | `mode` (`auto`\|`off`\|`require`), `network`, `writable`, `hide_home`, `env_passthrough`, `timeout_seconds`, `max_output_bytes`, `max_memory_mb`, `max_processes`; **frozen from evolution** |
 | `egress` | What may leave in a model request | `mode` (`redact`\|`block`\|`off`), `detect_credentials`, `patterns`; **frozen from evolution** |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
-| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all three nested policies are frozen |
+| `delegation` | Whether this harness may hand a task to a peer harness | `enabled` (off by default), `directory` (`local`), `when` (`on_start`/`on_verify_fail`/`model_choice`), `min_peer_success_rate`, `min_peer_runs`, `max_depth`, `budget_share`, `exclude`; tunable by evolution |
+| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `reflect` (post-run lesson drafting), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all four nested policies are frozen |
 
 ## Builtins
 
@@ -59,7 +61,10 @@ for each new hostname during a plain CLI run.
   (allowlist-only, disabled without one), `http_get` (declared hosts or a
   run-time operator decision), `load_skill` (reads a declared skill in full —
   progressive disclosure without a filesystem reader),
-  `recall_runs` (this harness's own prior runs, from the Hive).
+  `recall_runs` (this harness's own prior runs, from the Hive),
+  `notes` (run-scoped scratch storage that survives compaction),
+  `propose_memory` (offer a durable lesson to the review queue — never to the
+  spec).
 - **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
   `regex_output_filter` are *singletons*: only one entry is meaningful, so
@@ -71,9 +76,27 @@ for each new hostname during a plain CLI run.
   600, and confined like any other spawn), `grounded_references` (selected
   output IDs must occur in approved evidence from this run).
 - **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
-  ordered `loop.steps` list; object steps can enforce tools and call limits).
+  ordered `loop.steps` list; object steps can enforce tools and call limits),
+  `best_of_n` (experimental consensus over `loop.attempts` samples).
 - **Compaction:** `summarize`, `truncate_oldest`.
 - **Hooks:** `strip_json_fence` (an opt-in final-output normalizer).
+
+`best_of_n` is experimental. It rewinds conversation history
+between samples and chooses a plurality over whitespace-normalized outputs.
+Tool state is shared between attempts; journal replay and general-purpose
+verification integration still need the work described in
+[evolution-migration.md](evolution-migration.md#multiple-attempt-consensus-best_of_n).
+
+```yaml
+loop:
+  policy: best_of_n
+  attempts: 5
+  max_turns: 60  # shared across all attempts
+```
+
+`attempts: 1` provides a single-sample control. The trace records
+`attempt_recorded` and `attempts_selected`; ties select the first answer.
+This policy does not automatically increase the configured model token budget.
 
 Structured sequential steps make deterministic phases inspectable and
 enforceable:
@@ -195,10 +218,70 @@ query="..."). Do not guess at the omitted content — read it.
 REPORT TAIL
 ```
 
-`read_tool_result` and `search_tool_result` are added automatically, and stay
-**inactive until the first spill** — a harness that never spills never pays for
-them in its tool payload. Neither is spellable in a spec, and neither can be
-reached by `search_tools`.
+`read_tool_result`, `search_tool_result` and `transform_result` are added
+automatically, and stay **inactive until the first spill** — a harness that
+never spills never pays for them in its tool payload. None is spellable in a
+spec, and none can be reached by `search_tools`. `tool_results.transforms:
+false` leaves only the two readers: the pre-1.2 surface, and the control arm
+when measuring what the transforms are worth.
+
+### Reshaping a stored result in place
+
+Reading a 40 MB log back 4 KB at a time to find twelve lines spends the whole
+context budget on the 39.9 MB that did not matter. `transform_result` runs a
+fixed set of ops against the *stored bytes* and returns only what they produced:
+
+| `op` | Arguments | Returns |
+|---|---|---|
+| `lines` | `start` (1-based), `count` | a numbered line range |
+| `head` / `tail` | `bytes` | the first/last bytes |
+| `grep` | `pattern`, `max_matches` (≤ 200), `context_lines` (≤ 5), `raw` | matching lines, numbered; with `raw: true`, the bare lines only (≤ 10 000, and refused rather than truncated) |
+| `json_path` | `path` | the selection, as JSON |
+| `count` | `pattern` (optional) | lines, bytes, matching lines |
+| `sort` | `unique` | the lines in order |
+| `unique` | — | distinct lines, first seen first |
+| `concat` | `handles` (≤ 8 objects in total) | the objects joined |
+
+`raw` exists so a result can be *data*: a raw grep's derived handle holds
+exactly the matching lines, so it can be passed straight to a handle-typed
+argument such as `file_write`'s `content` — an export whose bytes never pass
+through the model.
+
+If the output fits `max_inline_bytes` it comes back inline. If it does not, it
+is stored as a **derived object** with its own handle (the sidecar records
+`derived_from` and the op, and a `tool_spilled` event records it as minted), so
+a narrowing that is still too large can be narrowed again rather than
+abandoned.
+
+Deliberately not a scripting surface. Each op is bounded in what it may scan
+(32 MB, streamed in windows) and what it may emit (4 MB); a `grep`/`count`
+pattern is at most 256 characters, is applied to **one line at a time** rather
+than to the whole buffer, and is refused when it repeats a group that already
+contains an unbounded quantifier — the catastrophic-backtracking shape. A
+"line" is itself bounded at 1 MiB, so an object with no newlines in it is still
+matched against bounded input. No op can name a path, and `concat` reaches only
+objects this run was already authorized to read.
+
+### Handing a stored result to another tool
+
+A tool may declare which of its string parameters accept a handle in place of a
+literal. `file_write` declares `content`, so a large result can be written out
+without the model re-emitting it token by token:
+
+```json
+{"path": "report.txt", "content": "tr_9f2c1a04b7e35d16"}
+```
+
+At dispatch the runtime replaces a value that matches the handle pattern *in
+full* with the stored object's text, resolved under the run's authority. A
+value that is not a handle is passed through unchanged, and a handle this run
+cannot resolve is a tool error — never a silent literal, which is the one
+outcome indistinguishable from success. One expansion is capped at 4 MiB. The
+journal's `tool_call` event and the provider both keep the handle; the
+expansion exists only for the duration of the call.
+
+Code tools opt in through the decorator — see
+[Handle-typed parameters](extending.md#handle-typed-parameters).
 
 The point is that nothing is thrown away. Before, an oversized result was cut
 to its leading characters and the model was told the rest was in the trace —
@@ -241,6 +324,58 @@ A tool that truncates *its own* output before returning (`http_get` caps the
 response body) is outside this mechanism — the runtime can only preserve what
 the tool hands it.
 
+## Notes
+
+`notes` is opt-in scratch storage for the executor — the write side of the same
+boundary spilled results live behind. Everything a model concludes otherwise
+lives in the conversation, and the conversation is the one thing compaction is
+allowed to throw away.
+
+```yaml
+tools:
+  - builtin: notes
+    max_notes: 32         # notes held at once (hard cap 256)
+    max_note_bytes: 0     # largest note; 0 = context.tool_results.max_inline_bytes
+```
+
+The model calls it with `action: write | read | delete` and a `name`
+(`^[a-z0-9][a-z0-9_-]{0,63}$`), plus `content` on a write or `offset`/`limit`
+on a read. Writing an existing name replaces that note.
+
+What the conversation carries is not the note but the **index** of notes,
+rendered into the system prompt in a stable order:
+
+```
+# Notes
+Your own notes for this run. They are not part of the conversation, so they
+survive when older turns are compacted away. …
+- findings (412 bytes): the invoice total disagrees with the line items
+- plan (96 bytes): 1. reconcile totals  2. flag the mismatch
+```
+
+So a note survives compaction by construction — it was never a message — and
+costs one line per note rather than a body. An empty store renders no section.
+
+The same rules as spilled results, for the same reasons:
+
+- notes live under the run's own directory beside the spill objects (0600 files
+  in a 0700 directory), inside the trace directory `file_read`/`file_write`
+  refuse and confinement masks from spawned processes;
+- **a name is not a capability**: resolution goes through a per-run map, and a
+  fork re-authorizes from the hash-bound `notes_manifest` in `fork.yaml`, which
+  `hiveloom fork` replays from the parent's *verified* journal — a note written
+  and then deleted is not a note the fork inherits;
+- `logging.redact` is applied **before** the write;
+- every write and delete is journaled (`note_written`, `note_deleted`), so
+  `trace --verify` and `fork` see the store the model saw;
+- counts and sizes are bounded by the spec, and a write past either limit is a
+  tool error naming the limit rather than a silent drop. A read is ranged like
+  `read_tool_result`, so reading a note back cannot exceed the inline budget.
+
+Notes are **run-scoped**: they are discarded with the run, and nothing in them
+reaches the harness, the Hive or another run. Durable lessons belong in
+[`memory`](#memory), which is spec state and goes through proposals.
+
 ## Recalling prior runs
 
 `recall_runs` is opt-in memory: declare it and the executor can look up **this
@@ -278,6 +413,143 @@ Three properties bound it:
 
 Recall reads the same Hive the run will be ingested into. A harness with no
 history yet gets a plain "nothing recorded" answer rather than an error.
+
+## Memory
+
+`recall_runs` above is *lookup*: the executor asks about earlier runs while it
+works. `memory` is the layer above it — what the harness has already concluded,
+carried into every run without anyone asking:
+
+```yaml
+memory:
+  enabled: true              # frozen from evolution
+  max_entries: 24            # frozen; hard cap 200
+  max_entry_chars: 600       # frozen; hard cap 4000
+  prompt_budget_chars: 6000  # frozen; hard cap 40000
+  selection: all             # frozen; `relevant` shows pinned + best matches
+  max_selected: 8            # frozen; with `relevant`, entries shown per run
+  entries:                   # evolvable
+    - id: iso-dates
+      kind: rule             # fact | rule | example
+      title: Dates in ISO 8601
+      content: Emit dates as YYYY-MM-DD; the validators reject locale formats.
+      source: prop_2f1c9a
+      evidence: 3 runs rejected by the date_format validator
+      created_at: 2026-09-21T18:00:00+00:00
+      pinned: false          # with `relevant`, always shown
+```
+
+Entries render as a `# Memory` section of the system prompt, after the skills
+index and before the tool guidelines, one bullet per entry in declaration
+order:
+
+```
+# Memory
+Lessons from earlier runs of this harness. Treat them as standing constraints
+on how you work, not as the current task.
+- [rule] Dates in ISO 8601: Emit dates as YYYY-MM-DD; the validators reject locale formats.
+```
+
+What keeps it from becoming drift:
+
+- **The executor never writes it.** No tool edits `memory`. An entry reaches
+  `harness.yaml` only through `hiveloom memory add` (validated and rolled back
+  like every construction command) or through an applied evolution proposal —
+  gate, full re-validation, `# evolved: N`, rollback. The executor's most
+  privileged action, with `propose_memory` declared, is to put a suggestion in
+  that review queue (below).
+- **A proposal appends; it does not overwrite.** An evolution proposal writes
+  the reserved final segment `+` — `memory.entries.+` — which is resolved
+  against the list on disk when the proposal is *applied*, not when it is
+  queued. A numeric index still works (an existing one replaces that entry, one
+  equal to the current length appends), but a position chosen at queue time is
+  stale as soon as another lesson lands. Because an append needs no particular
+  version to be correct, an append-only proposal (no code changes) may apply
+  after the harness has moved on; every other proposal is refused with *harness
+  has changed — regenerate*. The gate, full re-validation and rollback still run
+  at apply, so an append that would break a budget is refused there. See
+  [deploying-and-evolving.md](deploying-and-evolving.md#proposing-a-durable-lesson).
+- **The budgets are frozen from evolution** and hard-capped in the schema. A
+  harness can add a lesson; it can never raise the ceiling on how many lessons
+  there are, how long one may be, or how much prompt they occupy — nor set
+  `enabled: false` to hide what it already wrote. `memory.entries` is the only
+  path under `memory` the gate will ever accept. *Frozen from evolution* is not
+  frozen from you: `hiveloom set memory.max_entries 10` is the sanctioned
+  builder-side path, as for every other frozen field.
+- **Bounded, not truncated.** Too many entries, an over-long one, or a rendered
+  section above `prompt_budget_chars` is a validation error at write time (exit
+  3, nothing written), never a silent eviction at run time. Which lesson to drop
+  is a review decision.
+- **A memory change is a behavior change.** Entries live in `harness.yaml`
+  rather than a side file, so they move the spec version hash and land in their
+  own fitness bucket — the effect of a lesson is measurable like any other
+  mutation. A harness with an all-default `memory` section keeps its exact
+  previous YAML and hash.
+- **What the model saw is journalled.** The section is part of the assembled
+  system prompt, so it appears in the `context_system` event and `trace
+  --verify` and `fork` reproduce it.
+- **A store can outgrow one prompt.** With `selection: relevant` a run is shown
+  its pinned entries plus the entries that best match its task (deterministic
+  tf-idf, chosen once per run), up to `max_selected`; the section says how many
+  more are stored, and the auto-registered, read-only `search_memory` tool looks
+  them up. The choice is journalled as `memory_selected` and indexed, so
+  `hiveloom signal` can tell whether runs shown a lesson fail more or less often.
+  See [signal-driven-evolution.md](signal-driven-evolution.md#5-memory-that-learns-and-scales).
+- `evidence` is for whoever reviews the entry; it is not rendered into the
+  prompt. Whitespace in `content` is collapsed on render, so one entry is always
+  one line.
+
+Operator commands (all with `--json`, exit 3 on a spec error):
+
+```bash
+hiveloom memory list ./harness                       # entries + budget usage
+hiveloom memory show ./harness iso-dates             # one lesson, with evidence
+hiveloom memory add ./harness --kind rule \
+  --title "Dates in ISO 8601" \
+  --content "Emit dates as YYYY-MM-DD." \
+  --evidence "3 runs rejected by date_format"        # id is slugged from --title
+hiveloom memory forget ./harness iso-dates
+```
+
+Set `enabled: false` to keep the entries in the spec while showing the executor
+none of them — that is how to measure whether memory is earning its tokens.
+
+### Letting the executor propose a lesson
+
+The run that discovers a constraint is the one best placed to state it. The
+opt-in `propose_memory` tool lets it do so without weakening anything above:
+
+```bash
+hiveloom add tool --builtin propose_memory --param max_per_run=2 --json
+```
+
+The model calls it with `kind`, `title`, `content` and (optionally) `evidence`.
+What happens then is deliberately unexciting: the lesson is redacted with this
+run's `logging.redact` patterns, checked against the running spec's memory
+budgets, journaled as a `memory_proposed` event, and queued as an ordinary
+`MutationProposal` appending to `memory.entries.+` — `trigger: executor`, gated
+by the same code path as an evolved one, no strong-model call. It then waits
+for `hiveloom proposals apply --yes`, which re-gates, re-validates and rolls
+back like any other mutation. The tool never touches `harness.yaml`.
+
+- Identity, version and Hive path come from the run context, never from tool
+  input, so a model cannot propose into another harness's queue.
+- Proposals dedup on the *content* of the lesson against the harness and spec
+  version, so a run that restates what it already proposed gets the pending row
+  back instead of queueing a near-duplicate.
+- `max_per_run` (default 3, hard cap 10) bounds what one run may add to the
+  queue. All of them can be applied: each is an append, so applying one does
+  not strand the others against the version they were queued at.
+- Memory turned off, an unreachable Hive, a spent cap, a lesson already stored
+  or already pending: the tool answers in plain words and the run carries on.
+  Proposing is an aside, never something to recover from. A malformed or
+  over-long lesson *is* a tool error, because the model can restate it.
+- **Eval runs do not queue.** A matrix of 200 cases would file 200 restatements
+  of one finding, so a run the eval runner launched records its
+  `memory_proposed` event and says so in the result instead. The marker is an
+  `eval_run_id` key in the caller `context` that `hiveloom.eval_runner` passes
+  to every cell; an embedding caller with its own `execute_cell` passes the
+  same key to get the same behavior.
 
 ## Process confinement
 
@@ -497,6 +769,40 @@ frozen. None can be changed by evolution, including through a rewrite of the
 surrounding `playbooks` list. Prompts are the evolvable part — which is the
 point: evolution rewrites one mode's guidance on that mode's own evidence.
 
+## Delegation
+
+A harness's **model** is frozen; *which harness runs the task* is not. With
+`delegation` a run can look for a peer on this machine that is more specific,
+or has better measured odds, hand the task over, and verify the answer with its
+own validators — or name the peer that would have fitted. Full reference:
+[docs/delegation.md](delegation.md) (`hiveloom guide delegation`).
+
+```yaml
+delegation:
+  enabled: true
+  directory: local          # this machine's registry; remote MCP is a follow-up
+  when: [on_start, model_choice]
+  min_peer_success_rate: 0.7  # measured floor for an automatic hand-off
+  min_peer_runs: 5            # below this a peer counts as unmeasured
+  max_depth: 2                # hops before a chain is refused
+  budget_share: 0.5           # share of the parent's REMAINING budget
+  exclude: [scratch-harness]  # never delegate to these
+```
+
+`on_start` and `on_verify_fail` are executed by the loop, not requested of the
+model — a prompt-only "find a specialist first" instruction is skipped by
+exactly the small models this helps. `model_choice` registers one deferred
+`delegate__<peer>` tool per eligible peer (found through `search_tools`) plus an
+always-active `list_peers`.
+
+The child runs with its own tools, guardrails and journal, and a `max_cost_usd`
+cap of `budget_share × the parent's remaining budget`; its spend counts toward
+the parent's cap and is reported as `delegated_cost_usd`. Depth and cycle
+refusals are checked before the peer is contacted. Peers below the fitness
+floors are never chosen automatically but come back as `referrals`. Every
+outcome is traced: `delegation_selected`, `delegation_started`,
+`delegation_finished`, `delegation_skipped`.
+
 ## MCP servers
 
 A harness can declare MCP servers; their tools become ordinary dispatchable
@@ -545,6 +851,75 @@ Add one with `hiveloom add mcp-server` (see `hiveloom add mcp-server --help`);
 inspect what a harness's declared servers actually expose with
 `hiveloom mcp list-tools --dir ./h`.
 
+### Harness → harness
+
+The server on the other end may itself be a harness: `hiveloom mcp serve`
+exposes one `run_<name>` tool per harness (plus `list_harnesses`), so harness A
+can hand a whole task to harness B — a versioned, guardrailed, verified
+executor — instead of improvising it.
+
+```yaml
+mcp_servers:
+  - name: peer
+    transport: stdio
+    command: hiveloom
+    args: ["mcp", "serve", "/srv/harnesses/summarizer"]
+    env_from_host_env:
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY   # REQUIRED: see below
+    timeout_seconds: 300                     # >= the peer's max_wall_clock_seconds
+```
+
+Over HTTP instead:
+
+```yaml
+mcp_servers:
+  - name: peer
+    transport: http
+    url: https://harnesses.internal/mcp
+    header_env:
+      X-API-Key: HIVELOOM_API_KEY
+    timeout_seconds: 300
+```
+
+What travels on that wire:
+
+- **The child's environment.** A stdio child is spawned with a *minimal* env
+  (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) — hiveloom adds
+  `HIVELOOM_HOME` and `HIVELOOM_DB` when they are set, so the peer writes to
+  the same Hive and trust store, and nothing else. **Credentials are never
+  auto-forwarded**: declare each one in `env_from_host_env`, or give the peer
+  harness its own `.env`. The same applies when an agent host (Claude Code,
+  Claude Desktop) launches `hiveloom mcp serve` — it too passes a minimal
+  environment, so the key has to be configured in the host's server entry or
+  in the harness folder.
+- **The result, always as data.** `{status, output, reason, turns, cost_usd,
+  run_id, verdicts}`. A peer that could not even start (no API key, an
+  untrusted folder) answers `status: "error"` with the reason in `reason` —
+  never a protocol error the calling model cannot read.
+- **Artifacts.** A peer run's `RunResult.artifacts` come back in the same
+  `_hiveloom` envelope described above, so they land on the caller's
+  `RunResult.artifacts`.
+- **Lineage.** The caller sends its run id, harness identity, depth and chain
+  in the request `_meta`; the peer records the run with `parent_run_id` set, so
+  `hiveloom lineage` and the Hive show the delegated run under its parent.
+  `hiveloom mcp serve --max-depth N` (default 3) refuses a chain deeper than
+  `N`, and a harness already on the chain refuses the call as a cycle — both as
+  `status: "error"`, before the first paid turn. That `_meta` (run id, harness
+  identities, depth — no secrets, no task text) rides every MCP tool call the
+  harness makes; a server that does not understand the key ignores it, as the
+  MCP spec requires of unknown `_meta`.
+
+Two limits worth sizing for:
+
+- **A caller timeout does not stop the peer's run.** The MCP SDK does send
+  `notifications/cancelled`, and `mcp serve` turns that into a graceful stop
+  request — the peer finishes its current turn, then stops. It is *not*
+  instant: size `timeout_seconds` at or above the peer's
+  `max_wall_clock_seconds` guardrail rather than relying on cancellation.
+- **Concurrency.** `hiveloom mcp serve --concurrency N` bounds how many runs
+  one server process executes at once (default unlimited). A call that finds no
+  free slot waits, so the caller's `timeout_seconds` also bounds that wait.
+
 ## Three identities, three jobs
 
 - `schema_version` identifies the `harness.yaml` document format.
@@ -583,7 +958,9 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 
 1. The evolver can never modify `id`, `guardrails`, `model`, `logging.redact`,
    `extensions`, `hooks`, `mcp_servers`, `evolution.auto_propose`,
-   `evolution.trace_excerpts`, or `evolution.objectives` — nor any
+   `evolution.reflect`, `evolution.trace_excerpts`, `evolution.objectives`, or the
+   `memory` budgets (`enabled`, `max_entries`, `max_entry_chars`,
+   `prompt_budget_chars`, `selection`, `max_selected`) — nor any
    playbook's `on_enter`/`on_exit`, including by rewriting the `playbooks` list
    around them. Playbook *prompts* stay mutable: evolution rewrites guidance,
    never side-effecting code.
@@ -603,6 +980,13 @@ schema --json` and validate its components with `hiveloom eval validate`; see
 9. New `http_get` hosts require an operator decision unless pre-approved.
 10. `recall_runs` is scoped to the running harness from the run context, so no
    tool input can widen it to another harness's evidence.
+11. `propose_memory` writes no spec. It queues a gated proposal scoped the same
+   way, redacted before it is stored, bounded per run — and a human still
+   applies it.
+12. A delegated child never escapes its parent's budget: its cost is added to
+   the parent's, its own cap is a share of what the parent has left, and depth
+   and cycle refusals are applied before the peer is contacted. Untrusted peer
+   folders are never offered — trust is checked before a peer's spec is read.
 
 ## The harness directory
 

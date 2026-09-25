@@ -220,3 +220,20 @@ def test_auto_propose_forbids_extra_fields():
         HarnessSpec.model_validate(
             _minimal(evolution={"auto_propose": {"unexpected": True}})
         )
+
+
+def test_memory_budgets_are_always_frozen_but_entries_are_evolvable():
+    """The whole point of the section: a harness may learn, but it may never
+    widen what it is allowed to learn, or switch the section off to hide it."""
+    for path in (
+        "memory.enabled",
+        "memory.max_entries",
+        "memory.max_entry_chars",
+        "memory.prompt_budget_chars",
+    ):
+        assert path in ALWAYS_FROZEN
+    assert "memory" not in ALWAYS_FROZEN
+    assert "memory.entries" not in ALWAYS_FROZEN
+
+    spec = HarnessSpec.model_validate(_minimal())
+    assert "memory.entries" in spec.evolution.mutable

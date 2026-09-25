@@ -326,3 +326,169 @@ def _assert_tool_blocks_paired(messages: list) -> None:
                 seen.add(block["id"])
             elif block.get("type") == "tool_result":
                 assert block["tool_use_id"] in seen, f"orphaned tool_result: {block}"
+
+
+def _memory_spec(**memory) -> HarnessSpec:
+    return HarnessSpec.model_validate(
+        {"name": "t", "description": "d", "system_prompt": "sp", "memory": memory}
+    )
+
+
+def test_memory_section_renders_between_the_skills_index_and_tool_guidelines():
+    """Section order is the prompt's cache prefix: it must not depend on what
+    a given run happens to carry."""
+    from hiveloom.skills import Skill
+
+    spec = _memory_spec(
+        entries=[
+            {"id": "iso-dates", "kind": "rule", "title": "Dates", "content": "Emit YYYY-MM-DD."}
+        ]
+    )
+    cm = ContextManager(
+        spec,
+        FakeModelProvider([]),
+        skills=[
+            Skill(name="research", description="How to research", path="skills/r/SKILL.md")
+        ],
+    )
+
+    system = cm.system()
+
+    assert system.index("research") < system.index("# Memory")
+    assert cm.system() == system  # stable across assemblies
+
+
+def test_memory_counts_toward_the_input_token_estimate():
+    """A prompt prefix paid for on every call has to be visible to the budget."""
+    empty = ContextManager(_memory_spec(), FakeModelProvider([]))
+    filled = ContextManager(
+        _memory_spec(
+            entries=[
+                {
+                    "id": "iso-dates",
+                    "kind": "rule",
+                    "title": "Dates in ISO 8601",
+                    "content": "Emit dates as YYYY-MM-DD, never a locale format.",
+                }
+            ]
+        ),
+        FakeModelProvider([]),
+    )
+
+    assert filled.estimated_input_tokens() > empty.estimated_input_tokens()
+
+
+def _tool_result_ids(messages: list[dict]) -> list[str]:
+    return [
+        block["tool_use_id"]
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    ]
+
+
+def test_summarize_keeps_the_newest_exchange_verbatim():
+    """The results the model just asked for must survive a compaction.
+
+    Keeping only the last message orphaned its tool_results, and the orphan
+    repair then dropped them: the freshest output was neither summarized nor
+    kept, and a live run re-issued the same calls after every compaction.
+    """
+    from hiveloom.models.fake import text_response
+
+    spec = _spec(
+        max_input_tokens=400,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "summarize"},
+    )
+    provider = FakeModelProvider([text_response("# Goal\n- go\n# Next steps\n- none")])
+    cm = ContextManager(spec, provider, None)
+    cm.add_user("TASK: pinned first message")
+    for index in range(4):
+        _tool_cycle(cm, f"toolu_{index}", filler=" with enough length to force compaction")
+
+    assert cm.maybe_compact() is True
+
+    assert _tool_result_ids(cm.messages) == ["toolu_3"]
+    assert cm.messages[-2]["role"] == "assistant"
+    _assert_tool_blocks_paired(cm.messages)
+    # The summarizer saw everything it replaced, and not the kept exchange.
+    transcript = provider.calls[-1]["messages"][0]["content"]
+    assert "toolu_2" in transcript and "toolu_3" not in transcript
+
+
+def test_summarize_folds_an_oversized_newest_exchange_into_the_summary():
+    from hiveloom.models.fake import text_response
+
+    spec = _spec(
+        max_input_tokens=40,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "summarize"},
+    )
+    provider = FakeModelProvider([text_response("# Goal\n- go")])
+    cm = ContextManager(spec, provider, None)
+    cm.add_user("TASK: pinned first message")
+    _tool_cycle(cm, "toolu_0", filler=" x" * 20)
+    _tool_cycle(cm, "toolu_1", filler=" y" * 200)
+
+    assert cm.maybe_compact() is True
+
+    # Too large to keep whole: summarized (seen by the summarizer), not lost.
+    transcript = provider.calls[-1]["messages"][0]["content"]
+    assert "toolu_1" in transcript
+    _assert_tool_blocks_paired(cm.messages)
+
+
+def test_truncate_oldest_keeps_the_newest_exchange():
+    spec = _spec(
+        max_input_tokens=60,
+        strategy="rolling",
+        compaction={"trigger_at_pct": 1, "method": "truncate_oldest"},
+    )
+    cm = ContextManager(spec, FakeModelProvider([]), None)
+    cm.add_user("TASK: pinned first message")
+    for index in range(6):
+        _tool_cycle(cm, f"toolu_{index}", filler=" with enough length to force compaction")
+
+    assert cm.maybe_compact() is True
+
+    assert _tool_result_ids(cm.messages)[-1] == "toolu_5"
+    _assert_tool_blocks_paired(cm.messages)
+
+
+def test_compaction_max_tokens_caps_only_the_summary_call(tmp_path: Path):
+    import shutil
+
+    from hiveloom import construct, runner
+    from hiveloom.models.fake import text_response, tool_response
+
+    harness = tmp_path / "h"
+    source = Path(__file__).resolve().parent.parent / "harnesses" / "example-summarizer"
+    shutil.copytree(source, harness)
+    (harness / "notes.txt").write_text("The quick brown fox. " * 400)
+    construct.set_field(harness, "context.max_input_tokens", "600")
+    construct.set_field(harness, "context.compaction.trigger_at_pct", "10")
+    construct.set_field(harness, "context.compaction.method", "summarize")
+    construct.set_field(harness, "context.compaction.max_tokens", "256")
+    construct.set_field(harness, "loop.require_verification", "false")
+    caps: list[int] = []
+
+    class Recording(FakeModelProvider):
+        def complete(self, **kwargs):
+            caps.append(kwargs["config"].max_tokens)
+            return super().complete(**kwargs)
+
+    provider = Recording(
+        [
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c1"),
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c2"),
+            text_response("# Goal\n- summarize"),
+            text_response("done"),
+        ]
+    )
+
+    runner.run_harness(harness, "notes.txt", provider=provider)
+
+    assert 256 in caps
+    assert any(cap > 256 for cap in caps)

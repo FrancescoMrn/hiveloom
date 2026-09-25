@@ -342,8 +342,8 @@ def test_unknown_or_wrong_provider_model_rejected_in_spec(monkeypatch, tmp_path:
 
 
 def test_model_and_runtime_numeric_bounds_are_rejected():
-    with pytest.raises(ValueError, match="less than or equal to 32768"):
-        ModelConfig(max_tokens=32_769)
+    with pytest.raises(ValueError, match="less than or equal to 1000000"):
+        ModelConfig(max_tokens=1_000_001)
     with pytest.raises(ValueError, match="less than or equal to 1000000"):
         HarnessSpec(
             name="h",
@@ -765,3 +765,103 @@ def test_models_command_lists_providers_and_hides_key_values(monkeypatch):
 def test_models_command_rejects_an_unknown_provider():
     r = cli_runner.invoke(app, ["models", "nosuchlab"])
     assert r.exit_code != 0
+
+
+def test_models_yaml_timeout_seconds_reaches_the_provider(monkeypatch, tmp_path: Path):
+    """A queued endpoint needs a longer read timeout than the 120 s default."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    monkeypatch.setenv("SLOW_KEY", "k")
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  slowlab:
+    api: openai_compat
+    base_url: https://slow.example.test/v1
+    api_key_env: SLOW_KEY
+    timeout_seconds: 900
+    models:
+      - id: slow-model
+        input_cost_per_mtok: 0
+        output_cost_per_mtok: 0
+""",
+        encoding="utf-8",
+    )
+
+    provider = ext.build_provider("slowlab")
+    assert provider._timeout == 900
+
+
+def test_models_yaml_without_timeout_keeps_the_default(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML, encoding="utf-8")
+
+    assert ext.build_provider("localllm")._timeout == 120
+
+
+def test_max_tokens_is_held_to_what_the_model_can_emit(monkeypatch, tmp_path: Path):
+    """A model that declares its output ceiling is the authority on it."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  smalllab:
+    api: openai_compat
+    base_url: https://small.example.test/v1
+    models:
+      - id: short-answers
+        input_cost_per_mtok: 0
+        output_cost_per_mtok: 0
+        max_output_tokens: 8192
+""",
+        encoding="utf-8",
+    )
+
+    assert ModelConfig(provider="smalllab", id="short-answers", max_tokens=8192)
+    with pytest.raises(ValueError, match="exceeds what short-answers can emit"):
+        ModelConfig(provider="smalllab", id="short-answers", max_tokens=8193)
+
+
+def test_a_model_that_declares_a_big_ceiling_may_use_it(monkeypatch, tmp_path: Path):
+    """The old blanket 32768 under-reported real limits by orders of magnitude."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        """
+providers:
+  biglab:
+    api: openai_compat
+    base_url: https://big.example.test/v1
+    models:
+      - id: long-answers
+        input_cost_per_mtok: 0
+        output_cost_per_mtok: 0
+        max_output_tokens: 943718
+""",
+        encoding="utf-8",
+    )
+
+    assert ModelConfig(provider="biglab", id="long-answers", max_tokens=131_072)
+
+
+def test_an_undeclared_model_keeps_the_loose_bound(monkeypatch, tmp_path: Path):
+    """Guessing low for unknown models would recreate the silent under-cap."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML, encoding="utf-8")
+
+    assert ModelConfig(provider="localllm", id="tiny-model", max_tokens=100_000)
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_model_capabilities_and_timeouts_must_be_positive(value):
+    from hiveloom.ext import ModelInfo, _YamlModelEntry, _YamlProviderEntry
+
+    with pytest.raises(ValueError):
+        ModelInfo(id="m", provider="p", max_output_tokens=value)
+    with pytest.raises(ValueError):
+        _YamlModelEntry(id="m", max_output_tokens=value)
+    with pytest.raises(ValueError):
+        _YamlProviderEntry(timeout_seconds=value)

@@ -77,6 +77,8 @@ packages = ["src/hiveloom"]
 "docs/models.md" = "hiveloom/agent_docs/docs/models.md"
 "docs/extending.md" = "hiveloom/agent_docs/docs/extending.md"
 "docs/evaluating.md" = "hiveloom/agent_docs/docs/evaluating.md"
+"docs/delegation.md" = "hiveloom/agent_docs/docs/delegation.md"
+"docs/signal-driven-evolution.md" = "hiveloom/agent_docs/docs/signal-driven-evolution.md"
 "docs/journal.md" = "hiveloom/agent_docs/docs/journal.md"
 "docs/workbench.md" = "hiveloom/agent_docs/docs/workbench.md"
 "docs/deploying-and-evolving.md" = "hiveloom/agent_docs/docs/deploying-and-evolving.md"
@@ -101,6 +103,8 @@ only-include = [
     "docs/models.md",
     "docs/extending.md",
     "docs/evaluating.md",
+    "docs/delegation.md",
+    "docs/signal-driven-evolution.md",
     "docs/journal.md",
     "docs/workbench.md",
     "docs/deploying-and-evolving.md",

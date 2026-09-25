@@ -18,13 +18,36 @@ from hiveloom.errors import SpecError
 # as a single constant so it is trivial to bump.
 DEFAULT_STRONG_MODEL = "claude-sonnet-4-6"
 
+# Known model capabilities permit a larger proposal budget. Unknown models
+# retain the compatible historical default; a high guessed limit can cause 400s.
+DEFAULT_STRONG_MAX_TOKENS = 32768
+FALLBACK_STRONG_MAX_TOKENS = 4096
+
+
+def strong_max_tokens(model_id: str, requested: int | None = None) -> int:
+    """Use a declared ceiling when available, with a conservative fallback."""
+    from hiveloom import ext
+
+    info = ext.model_info(model_id)
+    ceiling = info.max_output_tokens if info else None
+    if requested is not None:
+        if requested <= 0 or (ceiling is not None and requested > ceiling):
+            raise ValueError("strong-model max_tokens must be positive and within its limit")
+        return requested
+    return min(ceiling, DEFAULT_STRONG_MAX_TOKENS) if ceiling else FALLBACK_STRONG_MAX_TOKENS
+
 
 class StrongModel(ABC):
     """A strong text model: given a system + user prompt, return text."""
 
     @abstractmethod
-    def generate(self, *, system: str, user: str, max_tokens: int = 4096) -> str:
-        """Return the model's text response."""
+    def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
+        """Return the model's text response.
+
+        An unset budget uses the registered model ceiling, capped by
+        DEFAULT_STRONG_MAX_TOKENS, or the conservative fallback for unknown
+        models. See :func:`strong_max_tokens`.
+        """
 
 
 class ClaudeStrongModel(StrongModel):
@@ -36,10 +59,10 @@ class ClaudeStrongModel(StrongModel):
         self._model_id = model_id
         self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
-    def generate(self, *, system: str, user: str, max_tokens: int = 4096) -> str:
+    def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
         response = self._client.messages.create(
             model=self._model_id,
-            max_tokens=max_tokens,
+            max_tokens=strong_max_tokens(self._model_id, max_tokens),
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -58,14 +81,17 @@ class ProviderStrongModel(StrongModel):
         self._provider = provider
         self._model_id = model_id
 
-    def generate(self, *, system: str, user: str, max_tokens: int = 4096) -> str:
+    def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
         from hiveloom.models.provider import ModelConfig
 
         response = self._provider.complete(
             system=system,
             messages=[{"role": "user", "content": user}],
             tools=[],
-            config=ModelConfig(id=self._model_id, max_tokens=max_tokens),
+            config=ModelConfig(
+                id=self._model_id,
+                max_tokens=strong_max_tokens(self._model_id, max_tokens),
+            ),
         )
         return response.text
 
@@ -77,7 +103,8 @@ class FakeStrongModel(StrongModel):
         self._responses = list(responses)
         self.prompts: list[dict[str, str]] = []
 
-    def generate(self, *, system: str, user: str, max_tokens: int = 4096) -> str:
+    def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
+        del max_tokens
         self.prompts.append({"system": system, "user": user})
         if not self._responses:
             raise RuntimeError("FakeStrongModel ran out of scripted responses")

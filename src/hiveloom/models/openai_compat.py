@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json
 import time
+from http.client import HTTPException
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from hiveloom.models.provider import (
+    PROVIDER_REASONING_MAX_BYTES,
     ContextOverflowError,
     Message,
     ModelConfig,
@@ -28,7 +30,26 @@ from hiveloom.models.provider import (
     ToolCall,
     Usage,
     estimate_tokens,
+    validate_model_params,
 )
+
+
+def _first_nonblank(*values: Any) -> str:
+    """The first value carrying actual characters, else ""."""
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+# How much of an over-large reasoning payload is kept as transcript text. The
+# model cannot remember what the transcript does not carry, so this is state,
+# not logging; the context manager bounds it further from here.
+_SALVAGED_REASONING_MAX_CHARS = 200_000
+
+# Per-value clamp for provider_metadata's scalar fields. Three fields well
+# under this can never reach PROVIDER_METADATA_MAX_BYTES between them.
+_METADATA_VALUE_MAX_CHARS = 1024
 
 _STOP_REASONS = {
     "stop": "end_turn",
@@ -43,6 +64,21 @@ _BASE_DELAY = 1.0
 # ("context_length_exceeded" is OpenAI's error code; the phrases cover servers
 # that only return a message, e.g. vLLM's "maximum context length is ...").
 _OVERFLOW_MARKERS = ("context_length_exceeded", "maximum context length", "context window")
+
+
+def _embedded_error(body: Any) -> tuple[int, str] | None:
+    """``(code, message)`` when a 200 response carries an error instead of a result.
+
+    Returns None for a normal response, so the caller keeps its fast path.
+    """
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+    raw_code = error.get("code")
+    code = raw_code if isinstance(raw_code, int) else 0
+    return code, str(error.get("message") or error)[:300]
 
 
 def _is_overflow(body: str) -> bool:
@@ -75,6 +111,9 @@ class OpenAICompatProvider(ModelProvider):
         config: ModelConfig,
     ) -> ModelResponse:
         payload: dict[str, Any] = {
+            # Spec-declared provider fields first, so the keys the harness owns
+            # always win even if `model.params` validation is somehow bypassed.
+            **validate_model_params(config.params),
             "model": config.id,
             "max_tokens": config.max_tokens,
             **({} if config.temperature is None else {"temperature": config.temperature}),
@@ -103,14 +142,34 @@ class OpenAICompatProvider(ModelProvider):
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
-                    return json.loads(resp.read().decode("utf-8"))
+                    body = json.loads(resp.read().decode("utf-8"))
+                embedded = _embedded_error(body)
+                if embedded is None:
+                    return body
+                # An aggregator can answer HTTP 200 and put the upstream's
+                # failure in the body ("temporarily at capacity", code 502).
+                # Status-only classification never sees it, so a transient blip
+                # surfaced as an unretryable "no choices" and killed the run —
+                # more likely with a pinned upstream, which has no sibling to
+                # absorb it.
+                code, message = embedded
+                if _is_overflow(message):
+                    raise ContextOverflowError(message)
+                last_exc = RuntimeError(f"provider returned an error body: {message}")
+                retryable = code == 429 or 500 <= code < 600
             except urlerror.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")[:500]
                 if exc.code == 400 and _is_overflow(body):
                     raise ContextOverflowError(f"provider returned HTTP 400: {body}") from exc
                 last_exc = RuntimeError(f"provider returned HTTP {exc.code}: {body}")
                 retryable = exc.code == 429 or 500 <= exc.code < 600
-            except (urlerror.URLError, TimeoutError, ConnectionError) as exc:
+            except (urlerror.URLError, TimeoutError, ConnectionError, HTTPException) as exc:
+                # HTTPException covers http.client.IncompleteRead: a response
+                # cut off mid-body. It inherits from neither URLError nor
+                # ConnectionError, so it used to escape this handler and kill
+                # the run. Long generations make it routine — a reasoning model
+                # streams hundreds of KB over several minutes, and any dropped
+                # connection in that window lands here.
                 last_exc = RuntimeError(f"provider unreachable at {self._base_url}: {exc}")
                 retryable = True
             if not retryable or attempt == _MAX_RETRIES:
@@ -207,22 +266,58 @@ def normalize_openai_response(
     # Reasoning models (DeepSeek-R1 family etc.) may return an empty "content"
     # with the chain-of-thought in "reasoning"/"reasoning_content" instead;
     # fall back so a reasoning-only turn isn't silently normalized to "".
-    text = (
-        message.get("content")
-        or message.get("reasoning")
-        or message.get("reasoning_content")
-        or ""
+    # Blank-but-not-empty counts as empty: servers in this family have been
+    # seen returning content " " alongside a full reasoning field, and a
+    # truthiness test on that single space discards the entire turn.
+    text = _first_nonblank(
+        message.get("content"),
+        message.get("reasoning"),
+        message.get("reasoning_content"),
     )
 
     tool_calls: list[ToolCall] = []
     content_blocks: list[dict[str, Any]] = []
     if text:
         content_blocks.append({"type": "text", "text": text})
-    replay_fields = {
+    # A reasoning model can emit more reasoning than the bound on provider-owned
+    # payloads allows, and rejecting the response over that would throw away a
+    # turn whose text and tool calls are perfectly good. But the model is
+    # stateless: what it knows next turn is only what the transcript carries, so
+    # silently dropping its thinking is the harness losing the agent's state and
+    # then wondering why it starts over. Drop only the *opaque* replay payload —
+    # which cannot be truncated without risking an invalid replay — and keep the
+    # thinking itself as text, bounded, for the transcript to hold.
+    replay_fields: dict[str, Any] | None = {
         key: message[key]
         for key in ("reasoning", "reasoning_content", "reasoning_details")
         if message.get(key) is not None
     }
+    reasoning_dropped_bytes = 0
+    salvaged_reasoning = ""
+    if replay_fields:
+        encoded = len(
+            json.dumps(replay_fields, separators=(",", ":"), default=str).encode("utf-8")
+        )
+        if encoded > PROVIDER_REASONING_MAX_BYTES:
+            reasoning_dropped_bytes = encoded
+            salvaged_reasoning = _first_nonblank(
+                message.get("reasoning"), message.get("reasoning_content")
+            )
+            replay_fields = None
+
+    if reasoning_dropped_bytes:
+        # If reasoning was used as the visible-text fallback, bound that copy
+        # too. Otherwise a blank-content response bypasses the salvage limit.
+        if text == salvaged_reasoning:
+            text = text[:_SALVAGED_REASONING_MAX_CHARS]
+            if len(salvaged_reasoning) > _SALVAGED_REASONING_MAX_CHARS:
+                text += "\n[... reasoning truncated by the harness ...]"
+            content_blocks = [{"type": "text", "text": text}] if text else []
+        elif salvaged_reasoning:
+            kept = salvaged_reasoning[:_SALVAGED_REASONING_MAX_CHARS]
+            if len(salvaged_reasoning) > _SALVAGED_REASONING_MAX_CHARS:
+                kept += "\n[... reasoning truncated by the harness ...]"
+            content_blocks.append({"type": "text", "text": kept})
     for raw_call in message.get("tool_calls") or []:
         function = raw_call.get("function") or {}
         raw_arguments = function.get("arguments")
@@ -284,11 +379,17 @@ def normalize_openai_response(
         billed_currency = str(raw_currency).upper()
         if billed_currency == "USD":
             billed_cost_usd = billed_cost
+    # Provenance, like reasoning: worth recording, never worth losing a turn
+    # over. These are scalar routing fields, so clamping each one keeps the
+    # payload under the bound no matter what a misbehaving provider returns —
+    # the validator on ModelResponse would otherwise reject the whole response.
     provider_metadata = {
-        key: data[key]
+        key: (value[:_METADATA_VALUE_MAX_CHARS] if isinstance(value, str) else value)
         for key in ("provider", "service_tier", "system_fingerprint")
-        if data.get(key) is not None
+        if isinstance((value := data.get(key)), str)
     }
+    if reasoning_dropped_bytes:
+        provider_metadata["reasoning_dropped_bytes"] = reasoning_dropped_bytes
     return ModelResponse(
         text=text,
         tool_calls=tool_calls,

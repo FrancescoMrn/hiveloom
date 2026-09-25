@@ -8,6 +8,7 @@ runtime builtin and is not intended for production work.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from hiveloom.ext import ModelInfo
@@ -17,6 +18,30 @@ from hiveloom.models.provider import Message, ModelConfig, ModelProvider, ModelR
 
 def _contains(messages: list[Message], needle: str) -> bool:
     return needle in json.dumps(messages, sort_keys=True)
+
+
+def _asked_to_plan(messages: list[Message]) -> bool:
+    """plan_then_act's planning turn: the task asks for a plan, nothing answered yet."""
+    return (
+        len(messages) == 1
+        and "output a brief numbered plan" in str(messages[0].get("content", ""))
+    )
+
+
+def _aimed_target(prompt: str) -> dict[str, Any]:
+    """Aim at what the signal map in the evolve prompt measured.
+
+    The failures in this demo are non-JSON final answers, which the map shows
+    as the `verify_failed` status. If a run of this harness ever fails another
+    way, the evolver falls back to the success rate rather than inventing a
+    target the assessment could not check.
+    """
+    section = prompt.split("<signal_map>", 1)[-1].split("</signal_map>", 1)[0]
+    match = re.search(r"^targets: (\[.*\])", section, re.MULTILINE)
+    targets = json.loads(match.group(1)) if match else []
+    if "status:verify_failed" in targets:
+        return {"signal": "status:verify_failed", "expect": "decrease"}
+    return {"signal": "success_rate", "expect": "increase"}
 
 
 class RoutingLabProvider(ModelProvider):
@@ -31,8 +56,10 @@ class RoutingLabProvider(ModelProvider):
         config: ModelConfig,
     ) -> ModelResponse:
         if config.id == "qa-evolver":
+            prompt = str(messages[-1].get("content", "")) if messages else ""
             proposal = {
                 "rationale": "Make the verified JSON contract explicit after repeated failures.",
+                "target": _aimed_target(prompt),
                 "yaml_changes": [
                     {
                         "path": "system_prompt",
@@ -60,6 +87,12 @@ class RoutingLabProvider(ModelProvider):
             )
 
         if config.id == "qa-triage":
+            if _asked_to_plan(messages):
+                return text_response(
+                    "1. Read incident.txt for the symptoms and timeline.\n"
+                    "2. Switch to the decide playbook once the evidence is in.\n"
+                    "3. Commit to severity, owner and action as one JSON object."
+                )
             if not _contains(messages, '"type": "tool_result"'):
                 return tool_response("file_read", {"path": "incident.txt"}, call_id="read-1")
             return tool_response(
