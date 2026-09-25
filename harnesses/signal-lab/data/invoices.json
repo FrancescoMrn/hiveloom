@@ -1,0 +1,62 @@
+{
+  "INV-1001": {
+    "customer": "Acme GmbH",
+    "amount": 1250.0,
+    "currency": "EUR"
+  },
+  "INV-1002": {
+    "customer": "Borealis SA",
+    "amount": 389.5,
+    "currency": "EUR"
+  },
+  "INV-1003": {
+    "customer": "Cobalt BV",
+    "amount": 4200.0,
+    "currency": "EUR"
+  },
+  "INV-1004": {
+    "customer": "Dunmore Ltd",
+    "amount": 77.25,
+    "currency": "EUR"
+  },
+  "INV-1005": {
+    "customer": "Eastwind AB",
+    "amount": 1830.0,
+    "currency": "EUR"
+  },
+  "INV-1006": {
+    "customer": "Fjord AS",
+    "amount": 960.4,
+    "currency": "EUR"
+  },
+  "INV-1007": {
+    "customer": "Granite SpA",
+    "amount": 15000.0,
+    "currency": "EUR"
+  },
+  "INV-1008": {
+    "customer": "Harbor Oy",
+    "amount": 242.0,
+    "currency": "EUR"
+  },
+  "INV-1009": {
+    "customer": "Ironleaf NV",
+    "amount": 5310.75,
+    "currency": "EUR"
+  },
+  "INV-1010": {
+    "customer": "Juniper SL",
+    "amount": 618.0,
+    "currency": "EUR"
+  },
+  "INV-1011": {
+    "customer": "Kestrel sro",
+    "amount": 2999.99,
+    "currency": "EUR"
+  },
+  "INV-1012": {
+    "customer": "Lumen Kft",
+    "amount": 104.5,
+    "currency": "EUR"
+  }
+}

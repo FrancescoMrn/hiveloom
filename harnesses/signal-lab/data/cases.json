@@ -1,0 +1,98 @@
+[
+  {
+    "id": "case-01",
+    "input": "Look up invoice inv-1001 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1001",
+      "amount": 1250.0
+    }
+  },
+  {
+    "id": "case-02",
+    "input": "Look up invoice inv-1002 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1002",
+      "amount": 389.5
+    }
+  },
+  {
+    "id": "case-03",
+    "input": "Look up invoice inv-1003 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1003",
+      "amount": 4200.0
+    }
+  },
+  {
+    "id": "case-04",
+    "input": "Look up invoice INV-1004 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1004",
+      "amount": 77.25
+    }
+  },
+  {
+    "id": "case-05",
+    "input": "Look up invoice inv-1005 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1005",
+      "amount": 1830.0
+    }
+  },
+  {
+    "id": "case-06",
+    "input": "Look up invoice inv-1006 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1006",
+      "amount": 960.4
+    }
+  },
+  {
+    "id": "case-07",
+    "input": "Look up invoice INV-1007 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1007",
+      "amount": 15000.0
+    }
+  },
+  {
+    "id": "case-08",
+    "input": "Look up invoice inv-1008 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1008",
+      "amount": 242.0
+    }
+  },
+  {
+    "id": "case-09",
+    "input": "Look up invoice INV-1009 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1009",
+      "amount": 5310.75
+    }
+  },
+  {
+    "id": "case-10",
+    "input": "Look up invoice inv-1010 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1010",
+      "amount": 618.0
+    }
+  },
+  {
+    "id": "case-11",
+    "input": "Look up invoice inv-1011 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1011",
+      "amount": 2999.99
+    }
+  },
+  {
+    "id": "case-12",
+    "input": "Look up invoice INV-1012 and report its amount.",
+    "expected": {
+      "invoice_id": "INV-1012",
+      "amount": 104.5
+    }
+  }
+]

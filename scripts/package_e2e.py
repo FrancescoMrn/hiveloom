@@ -12,7 +12,9 @@ Offline (default, no credentials, no network beyond building):
     the executor queued is applied through the review queue, `assess` sees the
     evolution, an aimed proposal is drafted by the harness's scripted evolver,
     and relevance-selected memory is journalled and searchable;
-  * routing-lab runs and can be forked.
+  * routing-lab runs and can be forked;
+  * signal-lab's measured loop locates its failing tool, reverts a refuted
+    change, keeps the confirmed one, and the evolved harness then succeeds.
 
 Live (--live, needs OPENROUTER_API_KEY; spends real money, bounded):
   * ranked-retrieval, moved onto a small OpenRouter executor, is measured on its
@@ -223,8 +225,29 @@ def offline(hl: Hiveloom, work: Path) -> None:
             raise Check("no fork points")
         return f"{len(points)} fork points"
 
+    signal_lab = work / "harnesses" / "signal-lab"
+
+    @step("signal-lab: the measured loop reverts the refuted idea and keeps the lesson")
+    def signal_lab_loop():
+        hl("eval", "run", str(signal_lab / "eval.yaml"), "--approve", "--json")
+        located = hl("signal", str(signal_lab), "--json")
+        top = located["signals"][0]["feature"] if located["signals"] else None
+        if located["verdict"] != "actionable" or top != "tool_error:lookup_invoice":
+            raise Check(f"{located['verdict']}, top signal {top}")
+        result = hl("evolve", str(signal_lab), "--experiment", str(signal_lab / "eval.yaml"),
+                    "--yes", "--rounds", "2", "--model", "signal_lab/qa-evolver", "--json")
+        decided = [(r["status"], (r.get("assessment") or {}).get("verdict"))
+                   for r in result["rounds"]]
+        if decided != [("reverted", "refuted"), ("kept", "confirmed")]:
+            raise Check(f"rounds {decided}")
+        after = hl("run", str(signal_lab), "--input-text",
+                   "Look up invoice inv-1010 and report its amount.", "--json")
+        if after["status"] != "success":
+            raise Check(f"lowercase lookup after evolving: {after['status']}")
+        return "reverted (refuted), kept (confirmed); inv-1010 now found"
+
     for check in (install, guide, demos, lab_run, lab_signal, lab_lesson, lab_assess,
-                  lab_evolve, lab_selection, routing_run):
+                  lab_evolve, lab_selection, routing_run, signal_lab_loop):
         check()
 
 

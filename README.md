@@ -293,7 +293,7 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Eight worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
+Nine worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
 each the smallest thing that shows one layer of the runtime:
 
 | harness | what it shows |
@@ -306,6 +306,7 @@ each the smallest thing that shows one layer of the runtime:
 | [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | structured tool phases, a deterministic search-and-verify tool, grounded IDs, and local ranked metrics over synthetic data |
 | [`log-forensics`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/log-forensics) | OS confinement around an allowlisted shell, a 77 KB tool result spilled and read back by handle, and `recall_runs` scoped to one harness version |
 | [`memory-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/memory-lab) | the three memory layers on one task: a spilled log narrowed in place with `transform_result`, findings kept in `notes` across compaction and a fork, a derived object handed to `file_write` by handle, and `memory.entries` that grow only through an applied proposal — offline, no API key |
+| [`signal-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/signal-lab) | signal-driven evolution: `hiveloom signal` locates the failing tool, reflection drafts a lesson for review, `evolve --experiment` reverts a refuted change and keeps the confirmed one pair by pair, `assess` reports both, and relevance-selected memory shows the learned rule only where it applies — offline, no API key |
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone

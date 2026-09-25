@@ -67,6 +67,12 @@ within declared budgets.
   queued with `trigger: reflect` through the `propose_memory` path and applied
   only by a human. Eval runs never reflect, and a cooldown bounds spend. Frozen
   from evolution.
+- `harnesses/signal-lab`: an offline worked example of signal-driven
+  evolution. Its scripted clerk fails on lowercase invoice ids; `signal`
+  locates the failing tool, reflection drafts a lesson for review, and
+  `evolve --experiment` reverts a refuted retry idea before keeping the
+  uppercase rule the eval confirms (8 improved pairs, none worse). The learned
+  rule is then shown only to the runs it matches.
 - `hiveloom guide signal`: the signal-driven evolution reference
   (`docs/signal-driven-evolution.md`).
 

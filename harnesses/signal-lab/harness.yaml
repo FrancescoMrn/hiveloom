@@ -1,0 +1,130 @@
+schema_version: 0.2.0
+name: signal-lab
+id: hl-6a0674832f3b
+description: Look up one invoice in the ledger and report its amount as JSON.
+extensions:
+- extensions/signal_provider.py
+model:
+  provider: signal_lab
+  id: qa-clerk
+  max_tokens: 4096
+system_prompt: |
+  You look up one invoice in the ledger and report its amount.
+
+  The task names the invoice. Call lookup_invoice with its id, then answer with
+  the JSON object alone — it starts with { and ends with }, with no sentence
+  before it and no code fence around it:
+
+    {"invoice_id": "<id as the ledger returned it>", "status": "found", "amount": <number>}
+
+  If the ledger has no such invoice, answer {"invoice_id": "<id>", "status": "not_found"}.
+tools:
+- code: tools/lookup_invoice.py:lookup_invoice
+  description: Look up one invoice by id in the demo ledger.
+mcp_servers: []
+playbooks: []
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
+memory:
+  enabled: true
+  max_entries: 24
+  max_entry_chars: 600
+  prompt_budget_chars: 6000
+  selection: relevant
+  max_selected: 4
+  entries:
+  - id: amounts-are-in-eur
+    kind: fact
+    title: Amounts are in EUR
+    content: Every ledger amount is in euros; report the number, not a currency string.
+    source: operator
+    created_at: '2026-09-25T06:13:38.545615+00:00'
+    pinned: false
+  - id: escalate-disputed-charges
+    kind: rule
+    title: Escalate disputed charges
+    content: When a customer disputes a charge, open a ticket with the dispute team instead of answering.
+    source: operator
+    created_at: '2026-09-25T06:15:38.406890+00:00'
+    pinned: false
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+loop:
+  policy: react
+  steps: []
+  max_turns: 6
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - builtin: regex_match
+    pattern: '"status": "found"'
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 1
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  - memory.entries
+  - delegation
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0
+  reflect:
+    enabled: true
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 1.0
+    model: signal_lab/qa-evolver

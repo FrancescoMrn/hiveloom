@@ -93,17 +93,20 @@ lessons the run itself offered, reviewed the same way and curated with
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — eight worked examples to imitate: `quickstart`
+- [harnesses/](harnesses/) — nine worked examples to imitate: `quickstart`
   (no tools), `example-summarizer` (tools + verification),
   `article-extractor` (a custom tool + anti-hallucination validator),
   `routing-lab` (playbooks, forking, evolution — offline, no API key),
   `ticket-triage` (an MCP server as the harness's only data source),
   `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
   synthetic data), `log-forensics` (confinement around an allowlisted
-  shell, an oversized tool result spilled and read back by handle), and
+  shell, an oversized tool result spilled and read back by handle),
   `memory-lab` (run-scoped `notes`, `transform_result` over a spilled
   handle, a handle passed to `file_write`, `propose_memory`, and
-  `memory.entries` grown only through an applied proposal — offline).
+  `memory.entries` grown only through an applied proposal — offline), and
+  `signal-lab` (`signal` locating the failing tool, reflection, an
+  `evolve --experiment` that reverts a refuted change and keeps a confirmed
+  one, `assess`, and relevance-selected memory — offline).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 

@@ -18,6 +18,10 @@ runs ──► Hive ──► hiveloom signal ──► evolve (aimed proposal) 
 Everything on the left and bottom is counting and costs nothing. The only paid
 step is the proposal itself, and it is aimed before it is written.
 
+[`harnesses/signal-lab`](../harnesses/signal-lab) walks the whole loop offline,
+with no API key: a located tool error, a reflected lesson, a refuted change
+reverted and a confirmed one kept.
+
 ## 1. Locate: `hiveloom signal`
 
 ```bash
