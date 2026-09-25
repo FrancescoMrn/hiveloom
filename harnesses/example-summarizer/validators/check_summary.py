@@ -40,6 +40,21 @@ def validate(run_output: str, run_context: dict[str, Any]) -> dict[str, Any]:
             "feedback": "Every entry in 'key_points' must be a non-empty string.",
         }
 
+    # The house-style skill's two countable rules. The feedback names the skill,
+    # so a model that skipped load_skill is sent to read it.
+    if len(data["title"].split()) > 8:
+        return {
+            "passed": False,
+            "feedback": "The title is longer than 8 words. Follow the house-style skill "
+            "(load_skill house-style) and shorten it.",
+        }
+    if not 3 <= len(data["key_points"]) <= 5:
+        return {
+            "passed": False,
+            "feedback": f"There are {len(data['key_points'])} key points; the house-style "
+            "skill asks for 3 to 5. Load it with load_skill house-style and follow it.",
+        }
+
     # `input` is the run input: the path when the harness was given a file, so
     # the length check only applies once there is a source to compare against.
     source = str(run_context.get("input") or "")
