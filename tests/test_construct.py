@@ -570,3 +570,14 @@ def test_failed_construction_logged_as_error(harness_dir: Path):
     log = harness_dir / ".hiveloom" / "traces" / "construction.jsonl"
     events = [json.loads(line) for line in log.read_text().splitlines()]
     assert any(e["outcome"] == "error" for e in events)
+
+
+def test_add_skill_quotes_a_description_that_is_not_plain_yaml(harness_dir):
+    """A description with ": " once broke the scaffolded frontmatter and the command."""
+    from hiveloom.skills import load_skills
+
+    description = "House style: title length, key points: 3-5, and 'numbers' verbatim."
+    spec = construct.add_skill(harness_dir, "house-style", description)
+    assert spec.skills == ["house-style"]
+    [skill] = load_skills(spec, harness_dir)
+    assert skill.description == description

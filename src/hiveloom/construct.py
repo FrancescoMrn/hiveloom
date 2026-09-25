@@ -177,9 +177,7 @@ _STUBS = {
 }
 
 _SKILL_STUB = """---
-name: {name}
-description: {description}
----
+{frontmatter}---
 
 # {name}
 
@@ -752,7 +750,18 @@ def add_skill(directory: str | Path, name: str, description: str) -> HarnessSpec
     if not skill_file.exists():
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text(
-            _SKILL_STUB.format(name=name, description=description), encoding="utf-8"
+            _SKILL_STUB.format(
+                name=name,
+                # Serialized, not interpolated: a description containing ": "
+                # or a quote would otherwise be invalid frontmatter YAML.
+                frontmatter=yaml.safe_dump(
+                    {"name": name, "description": description},
+                    sort_keys=False,
+                    allow_unicode=True,
+                    width=10_000,
+                ),
+            ),
+            encoding="utf-8",
         )
         created.append(skill_file)
     raw = load_raw(directory)
