@@ -35,6 +35,7 @@ def write_run(
     steps: list[dict] | None = None,
     extra: list[tuple[str, dict]] = (),
     finished_at: str = "2026-01-01T00:00:09+00:00",
+    model_path: str = "",
 ) -> Path:
     """A well-formed journal with the events signal location reads."""
     events: list[tuple[str, dict]] = [("run_started", {"input": task})]
@@ -60,6 +61,7 @@ def write_run(
                 "reason": "",
                 "steps": steps or [],
                 "execution": {"effective_model": "exec-model"},
+                "model_path": model_path,
             },
         )
     )
@@ -367,3 +369,21 @@ def test_a_proposal_without_a_known_target_is_sent_back(tmp_path):
         [_aimed({"signal": "friction:tool_error@http_get", "expect": "decrease"})]
     ))
     assert alias.target.signal == "friction:tool_error@http_get"
+
+
+def test_declared_playbook_routing_is_not_a_swap(tmp_path):
+    """A playbook with its own model is the spec; only an off-spec swap holds a run out."""
+    traces = tmp_path / "traces"
+    routed = [("model_swap", {"from": "p:a", "to": "p:b", "source": "playbook"})]
+    swapped = [("model_swap", {"from": "p:a", "to": "p:c", "source": "operator"})]
+    write_run(traces, "routed", extra=routed, model_path="p:a>p:b")
+    write_run(traces, "swapped", extra=swapped, model_path="p:a>p:c")
+    write_run(traces, "plain", model_path="p:a")
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_dir(traces)
+        assert {r["run_id"] for r in hive.feature_population("h")} == {"routed", "plain"}
+        [bucket] = hive.version_stats("h")
+        assert (bucket["runs"], bucket["swapped_runs"]) == (2, 1)
+        # A row ingested before the flag existed falls back to the model path.
+        hive._conn.execute("UPDATE runs SET off_spec_swap = NULL WHERE run_id = 'routed'")
+        assert {r["run_id"] for r in hive.feature_population("h")} == {"plain"}

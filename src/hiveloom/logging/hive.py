@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS runs (
     lineage_kind TEXT,
     forked_at_seq INTEGER,
     model_path TEXT,
+    off_spec_swap INTEGER,
     task TEXT,
     output TEXT
 );
@@ -244,6 +245,17 @@ CREATE INDEX IF NOT EXISTS idx_friction_fingerprint ON friction_events(fingerpri
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_dedup
     ON proposals(harness_name, spec_version_hash, dedup_key) WHERE status='pending';
 """
+
+
+#: A run that executed the harness as declared: no model swap from outside the
+#: spec. Declared playbook routing (a playbook with its own model) is the spec,
+#: not a swap. Rows ingested before ``off_spec_swap`` existed fall back to the
+#: model-path test, which cannot tell routing from a swap. ``{t}`` is the table
+#: alias prefix ("" or "r.").
+_ON_SPEC_SQL = (
+    "({t}off_spec_swap = 0 OR ({t}off_spec_swap IS NULL AND "
+    "({t}model_path IS NULL OR {t}model_path NOT LIKE '%>%')))"
+)
 
 
 def _friction_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -442,6 +454,10 @@ class Hive:
             ("lineage_kind", "TEXT"),
             ("forked_at_seq", "INTEGER"),
             ("model_path", "TEXT"),
+            # 1 when the executor changed mid-run by something other than the
+            # spec's own playbook routing; NULL for rows ingested before this
+            # was recorded (queries then fall back to the model-path test).
+            ("off_spec_swap", "INTEGER"),
             ("task", "TEXT"),
             ("harness_id", "TEXT"),
             ("harness_key", "TEXT"),
@@ -691,6 +707,7 @@ class Hive:
             "lineage_kind": None,
             "forked_at_seq": None,
             "model_path": "",
+            "off_spec_swap": 0,
             "task": None,
             "requested_provider": "",
             "requested_model": "",
@@ -781,6 +798,8 @@ class Hive:
                         payload.get("hook", ""),
                     )
                 )
+            elif etype == "model_swap" and payload.get("source") != "playbook":
+                row["off_spec_swap"] = 1
             elif etype == "playbook_switch":
                 visits.append(
                     (
@@ -805,13 +824,14 @@ class Hive:
             "INSERT INTO runs (run_id, harness_name, harness_id, harness_key, "
             "harness_version_hash, status, turns, "
             "cost_usd, duration_seconds, started_at, finished_at, reason, trace_path, "
-            "parent_run_id, lineage_kind, forked_at_seq, model_path, task, requested_provider, "
+            "parent_run_id, lineage_kind, forked_at_seq, model_path, off_spec_swap, task, "
+            "requested_provider, "
             "requested_model, effective_provider, effective_model, execution_fingerprint, "
             "trace_pruned_at, output) "
             "VALUES (:run_id, :harness_name, :harness_id, :harness_key, "
             ":harness_version_hash, :status, :turns, "
             ":cost_usd, :duration_seconds, :started_at, :finished_at, :reason, :trace_path, "
-            ":parent_run_id, :lineage_kind, :forked_at_seq, :model_path, :task, "
+            ":parent_run_id, :lineage_kind, :forked_at_seq, :model_path, :off_spec_swap, :task, "
             ":requested_provider, "
             ":requested_model, :effective_provider, :effective_model, "
             ":execution_fingerprint, :trace_pruned_at, :output)",
@@ -1064,9 +1084,12 @@ class Hive:
 
         A ``model_path`` naming exactly one model is not a swap — that is
         every ordinary run, including every run recorded before 1.0 (whose
-        ``model_path`` is empty).
+        ``model_path`` is empty). Nor is declared playbook routing: a playbook
+        that names its own model is part of the spec, so its ``model_swap``
+        (``source: playbook``) leaves the run in its bucket. Only a swap from
+        outside the spec (an operator, a control request) holds a run out.
         """
-        clause = "" if include_swapped else " AND (model_path IS NULL OR model_path NOT LIKE '%>%')"
+        clause = "" if include_swapped else f" AND {_ON_SPEC_SQL.format(t='')}"
         rows = self._conn.execute(
             "SELECT harness_version_hash AS version, "
             "COUNT(*) AS runs, "
@@ -1081,7 +1104,7 @@ class Hive:
             row["version"]: row["n"]
             for row in self._conn.execute(
                 "SELECT harness_version_hash AS version, COUNT(*) AS n FROM runs "
-                "WHERE harness_key=? AND model_path LIKE '%>%' "
+                f"WHERE harness_key=? AND NOT {_ON_SPEC_SQL.format(t='')} "
                 "GROUP BY harness_version_hash",
                 (harness_key,),
             )
@@ -1606,7 +1629,7 @@ class Hive:
             query += " AND r.harness_version_hash=?"
             params.append(version)
         if not include_swapped:
-            query += " AND (r.model_path IS NULL OR r.model_path NOT LIKE '%>%')"
+            query += f" AND {_ON_SPEC_SQL.format(t='r.')}"
         query += " ORDER BY r.finished_at DESC LIMIT ?"
         params.append(limit)
         rows = [dict(row) for row in self._conn.execute(query, params)]
@@ -1667,7 +1690,7 @@ class Hive:
             query += " AND r.harness_version_hash=?"
             params.append(version)
         if not include_swapped:
-            query += " AND (r.model_path IS NULL OR r.model_path NOT LIKE '%>%')"
+            query += f" AND {_ON_SPEC_SQL.format(t='r.')}"
         query += " GROUP BY f.category, component ORDER BY failed_runs DESC, events DESC"
         return [dict(row) for row in self._conn.execute(query, params)]
 
