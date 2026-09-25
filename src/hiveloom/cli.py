@@ -2121,7 +2121,8 @@ def assess(
         }
         for item in assessments:
             colour = colours[item.verdict]
-            decision = f" [{item.decision.get('action')}]" if item.decision else ""
+            # Escaped: Rich would otherwise read "[kept]" as a markup tag and drop it.
+            decision = f" \\[{item.decision.get('action')}]" if item.decision else ""
             _console.print(
                 f"evolution {item.evolution_id} (#{item.counter}) "
                 f"{item.old_version} -> {item.new_version}: "
