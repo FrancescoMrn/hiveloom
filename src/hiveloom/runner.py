@@ -478,7 +478,9 @@ def run_harness(
         indexed = _ingest_trace(trace.path, hive_path)
         if indexed:
             # Auto-propose needs this run ingested before it can count the failure.
-            _maybe_auto_propose(spec, base, result, hive_path, strong_model=strong_model)
+            _maybe_auto_propose(
+                spec, base, result, hive_path, strong_model=strong_model, context=context
+            )
             from hiveloom.evolve.reflect import maybe_reflect
 
             maybe_reflect(
@@ -540,6 +542,7 @@ def _maybe_auto_propose(
     hive_path: str | Path | None,
     *,
     strong_model: StrongModel | None = None,
+    context: dict[str, Any] | None = None,
 ) -> None:
     """Best-effort auto-draft (never auto-apply) of an evolution proposal.
 
@@ -561,6 +564,11 @@ def _maybe_auto_propose(
         if not auto.enabled:
             return
         if result.status == "success":
+            return
+        # A run inside an eval batch is a measurement in progress: drafting from
+        # it would spend a strong-model call on partial evidence mid-batch. The
+        # same rule propose_memory and reflection follow.
+        if isinstance(context, dict) and context.get("eval_run_id"):
             return
 
         from hiveloom.evolve.analyzer import analyze

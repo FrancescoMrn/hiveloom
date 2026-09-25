@@ -202,6 +202,10 @@ within declared budgets.
   `last output blocked: …` in its reason, and a blocked delegated answer is
   dropped. Found by the quickstart demo, where a generated AWS-style key id
   was blocked twice and still returned.
+- Auto-propose no longer drafts from runs inside an eval batch. A batch is a
+  measurement in progress, and each failing cell past `min_failures` could
+  spend a strong-model call on partial evidence; `propose_memory` and
+  reflection already skipped eval runs.
 - Runs routed through their own playbooks (a playbook with its own model) are
   no longer held out of their version's fitness bucket as "swapped": only a
   model swap from outside the spec is.
