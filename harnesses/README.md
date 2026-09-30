@@ -23,6 +23,7 @@ API key for their provider (any provider works via `--provider/--model`).
 | [routing-lab](routing-lab) | playbooks change the model *and* the tools mid-run on a pinned plan; forks re-enter a run at any call; an aimed evolution is confirmed by measurement | offline |
 | [memory-lab](memory-lab) | a small executor works over more data than its context holds — narrowing it in place, keeping notes, exporting by handle — and learns only through review | offline |
 | [signal-lab](signal-lab) | the harness finds where its failures come from, drafts an aimed fix on its own, and keeps a change only when its eval confirms it | offline |
+| [research-lab](research-lab) | a director model improves a harness through experiments an engine measures, keeps only what is confirmed, and stops at the ceiling no lever can reach | offline |
 | [delegation-lab](delegation-lab) | a harness hands a task to a peer only once the peer has earned it in measured runs, verifies the answer itself, and otherwise names the peer | offline |
 
 ## By capability
@@ -64,6 +65,7 @@ API key for their provider (any provider works via `--provider/--model`).
 | `evolve --experiment`, `hiveloom assess` | [signal-lab](signal-lab) (offline), [ranked-retrieval](ranked-retrieval) (live) |
 | evals, datasets, scorers, metric objectives | [ranked-retrieval](ranked-retrieval), [signal-lab](signal-lab) |
 | delegation between harnesses, referrals, lineage | [delegation-lab](delegation-lab) |
+| research programs (`hiveloom research`) | [research-lab](research-lab) |
 
 `best_of_n` is experimental and not in a demo: its plurality vote needs
 answers that can be compared verbatim, which none of these tasks produce.

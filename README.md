@@ -293,7 +293,7 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Ten worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
+Eleven worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
 each the smallest thing that shows one layer of the runtime, with a README that
 states what it proves and the evidence to look for. The
 [gallery](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses#by-capability)
@@ -311,6 +311,7 @@ indexes them by capability.
 | [`memory-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/memory-lab) | the three memory layers on one task: a spilled log narrowed in place with `transform_result`, findings kept in `notes` across compaction and a fork, a derived object handed to `file_write` by handle, and `memory.entries` that grow only through an applied proposal — offline, no API key |
 | [`signal-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/signal-lab) | signal-driven evolution: `hiveloom signal` locates the failing tool, reflection drafts a lesson for review, `evolve --experiment` reverts a refuted change and keeps the confirmed one pair by pair, `assess` reports both, and relevance-selected memory shows the learned rule only where it applies — offline, no API key |
 | [`delegation-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/delegation-lab) | a front desk refers a ledger specialist until the peer has earned a measured record, then hands it the task, re-verifies the answer, and records the lineage — offline, no API key |
+| [`research-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/research-lab) | a research program: a director model finds a planted defect from the runs behind a signal, the engine confirms and keeps the fix, discards a generic idea, stops at the ceiling no prompt can reach, and queues the result for review — offline, no API key |
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone
@@ -545,6 +546,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Harness spec](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/spec.md)
 - [Architecture](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/architecture.md)
 - [The workbench](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/workbench.md)
+- [Evolving autonomously (research programs)](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/research.md)
 - [Journal, forks, and model swaps](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/journal.md)
 - [Delegation between harnesses](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/delegation.md)
 - [Models and providers](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/models.md)

@@ -1,0 +1,19 @@
+{
+  "C-100": {
+    "contract": false
+  },
+  "C-101": {
+    "contract": false
+  },
+  "C-102": {
+    "contract": false
+  },
+  "C-200": {
+    "contract": true,
+    "discount": 0.12
+  },
+  "C-201": {
+    "contract": true,
+    "discount": 0.12
+  }
+}
