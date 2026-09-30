@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -207,9 +208,15 @@ def import_hook(code_ref: str, base_dir: Path):
     if module_spec is None or module_spec.loader is None:
         raise SpecError(f"could not load code hook module: {rel_path}")
     module = importlib.util.module_from_spec(module_spec)
+    # Registered before it runs, as a normal import would be: postponed
+    # annotations (TypedDict or dataclass fields under `from __future__ import
+    # annotations`) resolve through sys.modules, and a tool's item schema is
+    # built from them.
+    sys.modules[module_name] = module
     try:
         module_spec.loader.exec_module(module)
     except Exception as exc:  # noqa: BLE001 - surface any import-time failure clearly
+        sys.modules.pop(module_name, None)
         raise SpecError(f"error importing code hook {rel_path}: {exc}") from exc
 
     if not hasattr(module, func_name):
