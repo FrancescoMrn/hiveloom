@@ -2811,6 +2811,29 @@ def evolve(
         "--remeasure-baseline",
         help="With --experiment, re-run the eval on the current version every round.",
     ),
+    research: bool = typer.Option(
+        False,
+        "--research",
+        help="Evolve autonomously: a director model runs measured rounds unattended "
+        "(a research program) and queues one proposal. --model is the director.",
+    ),
+    charter: str | None = typer.Option(
+        None, "--charter", help="With --research: the charter (default research.yaml or auto)."
+    ),
+    eval_file: str | None = typer.Option(
+        None, "--eval", help="With --research: the eval in the harness folder (default eval.yaml)."
+    ),
+    budget: float | None = typer.Option(
+        None, "--budget", min=0.0001, help="With --research: USD for the whole program."
+    ),
+    program: str | None = typer.Option(
+        None, "--program", help="With --research: program name; an existing one resumes."
+    ),
+    tools: list[str] | None = typer.Option(
+        None, "--tool",
+        help="With --research: classify a tool with effects, NAME=allow|replay|deny "
+        "(repeatable).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Analyze Hive failures and propose a gated harness mutation.
@@ -2832,6 +2855,14 @@ def evolve(
     assesses it case by case against the change's own prediction, and keeps it
     only if confirmed (see ``hiveloom assess``). Code changes are never
     applied in this mode.
+
+    ``--research`` is evolution's autonomous mode: a director model reads the
+    evidence, forms hypotheses and designs changes round after round,
+    unattended, while the engine measures each one on copies of the harness,
+    keeps only what it confirms, reads a sealed split once, and queues one
+    proposal. The live harness is untouched unless ``--yes`` is given, and then
+    only when the evidence is confirmed or supported. ``--program NAME``
+    resumes an interrupted run. See ``hiveloom guide research``.
     """
     from hiveloom import evolve as evolve_mod
     from hiveloom import runner
@@ -2840,6 +2871,24 @@ def evolve(
     from hiveloom.generate.llm import build_strong_model
     from hiveloom.logging.hive import Hive
     from hiveloom.spec.loader import harness_path, load_spec
+
+    research_only = [flag for flag, value in (("--charter", charter), ("--eval", eval_file),
+                                              ("--budget", budget), ("--program", program),
+                                              ("--tool", tools)) if value]
+    if research:
+        if experiment is not None or propose or from_parent or notes or keep_inconclusive \
+                or remeasure_baseline:
+            _fail("--research cannot be combined with --experiment, --propose, --from-parent, "
+                  "--note, --keep-inconclusive or --remeasure-baseline",
+                  json_output, ExitCode.SPEC_ERROR)
+        _evolve_research(harness_dir, model_id=model_id, rounds=rounds, apply=yes,
+                         charter=charter, eval_file=eval_file, budget=budget, program=program,
+                         tools=tools or [], json_output=json_output,
+                         rounds_given=rounds != 1)
+        return
+    if research_only:
+        _fail(f"{', '.join(research_only)} only apply with --research", json_output,
+              ExitCode.SPEC_ERROR)
 
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
@@ -3910,6 +3959,42 @@ def cloud_sync(
 # --------------------------------------------------------------------------- #
 # research
 # --------------------------------------------------------------------------- #
+def _evolve_research(harness_dir: str, *, model_id: str | None, rounds: int, apply: bool,
+                     charter: str | None, eval_file: str | None, budget: float | None,
+                     program: str | None, tools: list[str], json_output: bool,
+                     rounds_given: bool) -> None:
+    """`evolve --research`: an unattended research program, to a stop."""
+    from hiveloom.research import service
+
+    with _guard(json_output):
+        classified: dict[str, str] = {}
+        for item in tools:
+            name, sep, mode = item.partition("=")
+            if not sep or mode not in ("allow", "sandbox", "replay", "deny"):
+                raise SpecError(f"--tool {item!r}: use NAME=allow|sandbox|replay|deny")
+            classified[name.strip()] = mode
+        result = service.autonomous(
+            harness_dir, program=program, charter_path=charter, eval_file=eval_file,
+            director=model_id, budget=budget, rounds=rounds if rounds_given else None,
+            tools=classified or None, apply=apply, approve_trust=_trust_prompt(json_output),
+        )
+        status = result["status"]
+        if json_output:
+            _emit_json({"ok": True, "mode": "research", **result})
+            return
+        _print_research_steps([{"unit": unit} for unit in result["steps"]])
+        _print_research_status(status)
+        if status.get("awaiting"):
+            _console.print(f"waiting for the contract to be approved: hiveloom research "
+                           f"contract {harness_dir} --name {result['program']}")
+        if result["applied"]:
+            _console.print(f"[green]applied[/green] the promotion → "
+                           f"{result['applied']['new_version_hash']}")
+        elif status.get("promotion") and status["promotion"]["status"] == "pending":
+            _console.print(f"review and apply: hiveloom proposals apply {harness_dir} "
+                           f"{status['promotion']['proposal_id']} --yes")
+        if result["report"]:
+            _console.print(f"report: {result['report']}")
 def _research_engine(harness_dir: str, name: str):
     from hiveloom.research.engine import Engine
     from hiveloom.research.program import Program
