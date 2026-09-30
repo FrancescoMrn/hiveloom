@@ -79,6 +79,7 @@ packages = ["src/hiveloom"]
 "docs/evaluating.md" = "hiveloom/agent_docs/docs/evaluating.md"
 "docs/delegation.md" = "hiveloom/agent_docs/docs/delegation.md"
 "docs/signal-driven-evolution.md" = "hiveloom/agent_docs/docs/signal-driven-evolution.md"
+"docs/research.md" = "hiveloom/agent_docs/docs/research.md"
 "docs/journal.md" = "hiveloom/agent_docs/docs/journal.md"
 "docs/workbench.md" = "hiveloom/agent_docs/docs/workbench.md"
 "docs/deploying-and-evolving.md" = "hiveloom/agent_docs/docs/deploying-and-evolving.md"

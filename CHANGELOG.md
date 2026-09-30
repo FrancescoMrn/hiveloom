@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`hiveloom evolve --research`: evolution's autonomous mode.** The step
+  `evolve` takes deliberately, run unattended by a director model, round after
+  round, until a stop condition, ending in one proposal to review. It uses a
+  charter built from the harness when none is given (`--model`, `--budget`,
+  `--rounds`, `--tool NAME=MODE`), resumes with `--program`, and applies with
+  `--yes` only when the evidence is confirmed or supported. The workbench's
+  Improve tab offers **Evolve autonomously**.
+- **Research programs (`hiveloom research`).** A director model improves a
+  harness through experiments it cannot grade itself. A deterministic engine
+  owns the program: it runs every eval, measures each candidate pair by pair
+  against the incumbent in staged looks (harm and futility may stop an
+  experiment early, a benefit is read only at the planned size), keeps only
+  `confirmed` or `improved` candidates that pass the guard, debits every cost
+  to exploration, experiments and a reserved confirmation pool, reads a sealed
+  split once, and queues the kept changes as a `trigger=research` proposal on
+  the live harness, which it never touches. The director is a packaged,
+  confined harness whose typed tools refuse levers outside the charter,
+  targets the signal map does not know, ideas already refuted, and harnesses
+  already tested. Programs stop on goal, rounds, time, budget, no progress,
+  the director, the user, or a **ceiling** (remaining failures are content
+  errors no lever in the charter reaches), with a recommendation.
+  `init|step|run|status|report|stop`, all `--json`, resumable from the
+  program's hash-chained ledger and state. See `docs/research.md`.
+- **Research-safe execution.** Every research run can only be tightened:
+  each tool is `allow`, `sandbox`, `replay` (recorded results from the base
+  harness's real runs) or `deny`; read-only builtins default to allow and file
+  writes to sandbox, and an unclassified code, network, shell or MCP tool
+  stops a program before anything runs. `run_harness(tool_policy=...)` is the
+  hook.
+- **Concepts mode for research programs.** A charter can bring `concepts`
+  (and optional `seeds`) instead of an eval.
+  - The director drafts an evaluation contract, with deterministic checks or
+    judge rubrics per criterion, and writes working cases for it.
+  - You approve the contract with sample cases before anything is spent on
+    changes.
+  - A separate examiner model writes sealed cases the director never sees.
+    Near-copies are dropped from the working set.
+  - Runs are scored per criterion. A run passes only on criteria that are
+    measured: deterministic ones, or judged ones whose unanimous judges agree
+    with your labels (κ, agreement, a minimum number of labels).
+  - The engine asks for those labels (disagreements first) and audits the
+    incumbent every round, within a question budget.
+  - Evidence strength accounts for unmeasured criteria. The report shows how
+    each criterion was measured, and flags a working-vs-sealed gap as
+    possible overfitting.
+  - CLI: `research contract|approve|questions|answer`.
+- **Research in the workbench, end to end.**
+  - A charter form built from the harness, with a director picker from Settings
+    and one choice per tool with effects.
+  - A live progress bar for the eval in flight.
+  - Programs the workbench was running are resumed when its server restarts.
+  - Each experiment's cases, base against candidate, open in Trace.
+  - A rail badge when a program needs you.
+  - Copilot tools to start, follow and relay programs (contracts and questions)
+    in conversation.
+- **Research tab in the workbench.**
+  - Start, step, run and stop programs.
+  - Approve the contract and answer label questions as cards.
+  - Read budgets, experiments, trust, findings, the report and the ledger.
+  - Hand the queued proposal to Improve.
+- **`research-lab` demo** (offline): a shipping desk with a defect a prompt
+  can fix and one only a contract lookup could; the scripted director finds
+  the first from the runs behind the signal and the program stops at the
+  ceiling for the second.
+- **`run_eval(case_ids=...)`** runs an eval over a subset of its cases with
+  the eval's identity unchanged, so working and sealed splits stay comparable.
+- **`evals/research-bakeoff`**: planted-defect harnesses and a runner that
+  compares a research program against `evolve --experiment` with the same
+  model.
+
+### Fixed
+
+- The workbench copilot's model saw only a one-line summary of each tool result
+  (the data went to the interface), so it could not act on ids and names it had
+  just read. It now also reads a compact copy of the data. Choosing a non-Claude
+  copilot model no longer requires an Anthropic key.
+- A code tool written under `from __future__ import annotations` could not
+  declare a `TypedDict` item type: its module was not registered before it
+  ran, so the input schema failed to build.
+- `evolve --experiment` rounds now include the proposing model's billed cost.
+
 ## [1.2.0] - 2026-09-24
 
 The signal, memory and collaboration release. Evolution now finds where a

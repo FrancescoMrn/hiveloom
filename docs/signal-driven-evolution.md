@@ -172,6 +172,29 @@ Eval size matters. Pairs are what make a small eval decisive: six improved
 pairs and no worsened ones gives p = 0.03. Six cases that all changed is
 the smallest sample that can confirm anything at all.
 
+## 4b. Autonomously: `evolve --research`
+
+`evolve` and `evolve --experiment` are deliberate steps: you decide when to run
+them. `evolve --research` runs the same step **unattended**, round after round:
+
+- a director model reads the signal map and the failing runs, and registers
+  hypotheses;
+- it designs changes on copies of the harness;
+- the engine measures each change pair by pair and keeps what it confirms;
+- the engine stops at a goal, a budget, no progress, or a ceiling;
+- a sealed split is read once;
+- one proposal is queued.
+
+```bash
+hiveloom evolve . --research --json                 # research.yaml, or a charter built from the harness
+hiveloom evolve . --research --yes --json           # also apply it, if confirmed or supported
+```
+
+It is as good as a person rerunning `evolve --experiment`, without the person.
+Across two planted-defect bake-offs it fixed 19 and then 21 defects against 17
+and 20, with no false promotions. Everything else about it is in
+[research.md](research.md) (`hiveloom guide research`).
+
 ## 5. Memory that learns and scales
 
 ### Relevance-selected memory
