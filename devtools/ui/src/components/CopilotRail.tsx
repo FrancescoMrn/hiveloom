@@ -135,6 +135,7 @@ export function CopilotRail({
                           : 'No runs yet'}
                       </small>
                     </span>
+                    <ResearchBadge research={item.research} />
                     <span className="copilot-harness-use">
                       <i className="ph ph-play" /> Use
                     </span>
@@ -203,4 +204,26 @@ function harnessColor(item: Harness): string {
   if (item.stats.success_rate >= 0.8) return 'var(--ok)'
   if (item.stats.success_rate < 0.5) return 'var(--err)'
   return 'var(--warn)'
+}
+
+/** Research programs that need the person (a contract, questions) or are running. */
+function ResearchBadge({ research }: { research: Harness['research'] }) {
+  if (!research) return null
+  const needs = research.awaiting + research.questions
+  const title = [
+    research.awaiting ? `${research.awaiting} contract(s) to approve` : '',
+    research.questions ? `${research.questions} question(s) for you` : '',
+    research.blocked ? `${research.blocked} blocked` : '',
+    research.running ? `${research.running} evolving autonomously` : '',
+  ].filter(Boolean).join(' · ')
+  return (
+    <span
+      className="research-badge"
+      data-needs={needs || research.blocked ? '1' : '0'}
+      title={`Research: ${title}`}
+    >
+      <i className={`ph ${research.running && !needs ? 'ph-circle-notch spin' : 'ph-flask'}`} />
+      {needs ? needs : research.blocked ? '!' : ''}
+    </span>
+  )
 }

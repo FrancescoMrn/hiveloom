@@ -25,12 +25,15 @@ export function Evolve({
   evolveModel,
   onApplied,
   onCompare,
+  onOpenResearch,
 }: {
   harness: HarnessDetail
   /** `provider/model-id` to draft with, or '' for hiveloom's strong-model default. */
   evolveModel: string
   onApplied: () => Promise<void>
   onCompare: () => void
+  /** Evolve autonomously: a research program, in the Research tab. */
+  onOpenResearch?: () => void
 }) {
   const [proposals, setProposals] = useState<Proposal[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -158,6 +161,17 @@ export function Evolve({
                 <i className="ph ph-git-fork" />
               )}
               Propose from parent's failures
+            </button>
+          )}
+          {onOpenResearch && (
+            <button
+              className="v-btn"
+              onClick={onOpenResearch}
+              disabled={busy !== null}
+              title="A director model runs measured rounds unattended and queues one proposal here"
+            >
+              <i className="ph ph-flask" />
+              Evolve autonomously
             </button>
           )}
         </div>

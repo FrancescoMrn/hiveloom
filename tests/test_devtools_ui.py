@@ -74,6 +74,10 @@ def test_catalog_recursively_scans_a_harness_tree(tmp_path: Path, monkeypatch) -
     nested_fork = parent / ".hiveloom" / "forks" / "probe"
     construct.init_harness(parent, name="demo", task="Parent task.")
     construct.init_harness(nested_fork, name="demo", task="Fork task.")
+    # A research program's candidates are full harness copies, but the engine's
+    # working state: a scan that listed them would flood the rail.
+    candidate = parent / ".hiveloom" / "research" / "quotes" / "candidates" / "c0"
+    construct.init_harness(candidate, name="demo", task="Candidate task.")
     monkeypatch.setattr(ui.registry_mod, "registered", lambda: [])
 
     found = ui._catalog([], [str(root)])
@@ -1037,6 +1041,33 @@ def test_proposals_list_is_empty_before_anything_is_proposed(client) -> None:
     assert response.json()["proposals"] == []
 
 
+def test_proposals_are_read_by_the_harness_identity(client, harness_copy) -> None:
+    """Evolve, research and executor lessons file a proposal under the harness's
+    id, not its name; the Improve tab must list it, and not one filed under the
+    name, which any same-named harness elsewhere could have written."""
+    from hiveloom.logging.hive import Hive
+    from hiveloom.spec.loader import load_spec
+
+    identity = load_spec(harness_copy).identity
+    assert identity != "example-summarizer"
+
+    def row(proposal_id: str, owner: str) -> dict:
+        return {
+            "id": proposal_id, "harness_name": owner, "spec_version_hash": "v",
+            "dedup_key": proposal_id, "status": "pending", "trigger": "research",
+            "rationale": "", "proposal_json": "{}", "gate_json": "{}",
+            "apply_result_json": None, "created_at": "2026-01-01T00:00:00+00:00",
+            "resolved_at": None,
+        }
+
+    with Hive() as hive:
+        hive.insert_proposal(row("prop_mine", identity))
+        hive.insert_proposal(row("prop_namesake", "example-summarizer"))
+
+    listed = client.get("/api/harnesses/example-summarizer/proposals").json()["proposals"]
+    assert [p["id"] for p in listed] == ["prop_mine"]
+
+
 def test_propose_reports_when_there_is_nothing_to_learn_from(client, harness_copy) -> None:
     """No failures means no proposal — and a reason, not an empty success."""
     response = client.post("/api/harnesses/example-summarizer/evolve/propose", json={})
@@ -1255,6 +1286,25 @@ def test_run_alias_round_trips_on_disk_and_joins_the_run_list(
     assert cleared.json()["alias"] is None
     listed = client.get("/api/harnesses/example-summarizer/runs").json()["runs"]
     assert listed[0]["alias"] is None
+
+
+def test_runs_are_listed_newest_first(client: TestClient, harness_copy: Path) -> None:
+    """Run ids are random hex, so ordering by trace file name shuffles the list."""
+    from hiveloom.logging.trace import TraceWriter
+
+    for run_id in ("run_zz_older", "run_aa_newer"):
+        writer = TraceWriter(
+            harness_copy / ".hiveloom" / "traces",
+            run_id=run_id,
+            harness_name="example-summarizer",
+            version_hash="abc123def456",
+        )
+        writer.emit("run_started", input=run_id)
+        writer.emit("run_finished", status="success", turns=1, cost_usd=0.0,
+                    duration_seconds=0.1)
+
+    runs = client.get("/api/harnesses/example-summarizer/runs").json()["runs"]
+    assert [run["run_id"] for run in runs] == ["run_aa_newer", "run_zz_older"]
 
 
 def test_tag_endpoint_refuses_a_missing_version(client: TestClient) -> None:
@@ -1962,3 +2012,296 @@ def test_the_npm_package_manifest_ships_the_api_and_not_the_source() -> None:
     # The launcher and the API are one release; the runtime warns when they
     # disagree, and a mismatch here would ship that warning to every user.
     assert manifest["version"] == ui.__version__
+
+
+# --------------------------------------------------------------------------- #
+# Research programs
+# --------------------------------------------------------------------------- #
+RESEARCH_LAB = REPO_ROOT / "harnesses" / "research-lab"
+
+
+@pytest.fixture
+def research_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path]:
+    import shutil
+
+    from hiveloom import trust
+
+    lab = tmp_path / "research-lab"
+    shutil.copytree(RESEARCH_LAB, lab, ignore=shutil.ignore_patterns(".hiveloom"))
+    monkeypatch.setattr(ui.registry_mod, "registered", lambda: [])
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HIVELOOM_DB", str(tmp_path / "home" / "hive.db"))
+    monkeypatch.setenv("HIVELOOM_UI_DB", str(tmp_path / "workbench.db"))
+    monkeypatch.delenv("HIVELOOM_TRUST", raising=False)
+    trust.record_trust(lab)
+    return TestClient(ui.build_app([str(lab)])), lab
+
+
+def _wait_idle(client: TestClient, name: str, timeout: float = 120.0) -> dict:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        detail = client.get(f"/api/harnesses/research-lab/research/{name}").json()
+        if not (detail["job"] or {}).get("running"):
+            return detail
+        time.sleep(0.2)
+    raise AssertionError("the research job never finished")
+
+
+def test_a_research_program_runs_from_the_workbench(research_client) -> None:
+    client, lab = research_client
+    listed = client.get("/api/harnesses/research-lab/research").json()
+    assert listed["programs"] == []
+    assert "levers:" in listed["charter_template"]  # the harness's own research.yaml
+
+    created = client.post("/api/harnesses/research-lab/research",
+                          json={"name": "quotes", "charter": listed["charter_template"]})
+    assert created.status_code == 201, created.text
+    assert created.json()["unit"] == "baseline"
+
+    started = client.post("/api/harnesses/research-lab/research/quotes/run",
+                          json={"until": "round"})
+    assert started.status_code == 202
+    after_round = _wait_idle(client, "quotes")
+    assert after_round["job"]["error"] is None, after_round["job"]
+    assert after_round["round"] == 1 and after_round["hypotheses"]
+
+    client.post("/api/harnesses/research-lab/research/quotes/run", json={"until": "done"})
+    done = _wait_idle(client, "quotes")
+    assert done["status"] == "done" and done["stop_reason"]["condition"] == "ceiling"
+    assert done["report"].startswith("# Research program: quotes")
+    # Each experiment's cases pair a base run with a candidate run, and both open
+    # in the Trace view like any run.
+    rows = done["experiment_runs"]["e1"]
+    assert len(rows) == 18 and all(row["before_run"] and row["after_run"] for row in rows)
+    flipped = [row for row in rows if row["before_status"] != row["after_status"]]
+    assert flipped and all(row["after_status"] == "success" for row in flipped)
+    trace = client.get(f"/api/runs/{flipped[0]['after_run']}")
+    assert trace.status_code == 200 and trace.json()["events"]
+    assert any(event["kind"] == "sealed_read" for event in done["ledger_tail"])
+    again = client.post("/api/harnesses/research-lab/research/quotes/run", json={})
+    assert again.status_code == 400 and "has finished" in again.json()["error"]["message"]
+    [row] = client.get("/api/harnesses/research-lab/research").json()["programs"]
+    assert (row["name"], row["status"], row["running"]) == ("quotes", "done", False)
+
+
+def test_research_refuses_a_bad_charter_and_an_untrusted_harness(research_client) -> None:
+    from hiveloom import trust
+
+    client, lab = research_client
+    bad = client.post("/api/harnesses/research-lab/research",
+                      json={"name": "bad", "charter": "goal: x\nlevers: [guardrails]\n"})
+    assert bad.status_code == 400
+    trust.revoke_trust(lab)
+    gated = client.post("/api/harnesses/research-lab/research",
+                        json={"name": "q", "charter": (lab / "research.yaml").read_text()})
+    assert gated.status_code == 403 and gated.json()["error"]["code"] == "trust_required"
+
+
+def test_a_concepts_program_is_approved_and_answered_from_the_workbench(research_client) -> None:
+    import json as _json
+
+    client, lab = research_client
+    templates = client.get("/api/harnesses/research-lab/research").json()["charter_templates"]
+    assert set(templates) >= {"research.yaml", "research-concepts.yaml"}
+    created = client.post("/api/harnesses/research-lab/research",
+                          json={"name": "concepts", "charter": templates["research-concepts.yaml"]})
+    assert created.status_code == 201, created.text
+    client.post("/api/harnesses/research-lab/research/concepts/run", json={"until": "done"})
+    waiting = _wait_idle(client, "concepts")
+    assert waiting["awaiting"] == "contract" and waiting["draft_contract"]["criteria"]
+    [row] = client.get("/api/harnesses").json()["harnesses"]
+    assert row["research"] == {"running": 0, "awaiting": 1, "questions": 0, "blocked": 0}
+    assert waiting["sample_cases"]
+
+    approved = client.post("/api/harnesses/research-lab/research/concepts/approve", json={})
+    assert approved.status_code == 200 and approved.json()["contract_version"] == 1
+    for _ in range(2):  # examine, baseline
+        client.post("/api/harnesses/research-lab/research/concepts/run", json={"until": "unit"})
+        detail = _wait_idle(client, "concepts")
+    open_questions = [q for q in detail["question_list"] if q["status"] == "open"]
+    assert open_questions
+    for question in open_questions:
+        try:
+            data = _json.loads(question["output"])
+        except ValueError:
+            data = None
+        label = "pass" if isinstance(data, dict) and set(data) == {"zone", "weight_kg",
+                                                                   "price"} else "fail"
+        answered = client.post(
+            f"/api/harnesses/research-lab/research/concepts/questions/{question['id']}",
+            json={"answer": label})
+        assert answered.status_code == 200, answered.text
+    assert client.get("/api/harnesses").json()["harnesses"][0]["research"] is None or \
+        client.get("/api/harnesses").json()["harnesses"][0]["research"]["questions"] == 0
+    bad = client.post(
+        f"/api/harnesses/research-lab/research/concepts/questions/{open_questions[0]['id']}",
+        json={"answer": "pass"})
+    assert bad.status_code == 400  # already answered
+
+
+def test_a_research_program_busy_elsewhere_is_a_409_not_a_silent_failure(research_client):
+    from hiveloom.research.program import Program
+
+    client, lab = research_client
+    client.post("/api/harnesses/research-lab/research",
+                json={"name": "q", "charter": (lab / "research.yaml").read_text()})
+    with Program(lab, "q").lock():  # a CLI `research run` in another terminal
+        busy = client.post("/api/harnesses/research-lab/research/q/run", json={"until": "unit"})
+    assert busy.status_code == 409 and busy.json()["error"]["code"] == "busy"
+    started = client.post("/api/harnesses/research-lab/research/q/run", json={"until": "unit"})
+    assert started.status_code == 202
+    assert _wait_idle(client, "q")["unit"] == "survey"
+
+
+def _copilot_tools():
+    spec = importlib.util.spec_from_file_location(
+        "copilot_workbench_tools", REPO_ROOT / "devtools" / "ui" / "copilot" / "tools" /
+        "workbench.py")
+    module = importlib.util.module_from_spec(spec)
+    import sys as _sys
+
+    _sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_copilot_starts_follows_and_relays_research(research_client) -> None:
+    import time
+
+    from hiveloom.research import service as research
+
+    _client, lab = research_client
+    tools = _copilot_tools()
+
+    def catalog():
+        return ui._catalog([str(lab)])
+
+    workbench = ui._CopilotWorkbench(
+        catalog=catalog, resolve=lambda harness_id: catalog()[harness_id],
+        creation_root=lab.parent, selected_harness="research-lab",
+    )
+    context = {"context": {"workbench": workbench}}
+
+    empty = tools.research_status(run_context=context)
+    assert "no research programs yet" in empty.content
+
+    started = tools.start_research(program="auto", budget=1.0, run_context=context)
+    [card] = started.artifacts
+    assert card.kind == "research_program" and card.data["started"] == "auto"
+    assert card.data["harness_id"] == "research-lab"
+    deadline = time.monotonic() + 120
+    while research.job(lab, "auto")["running"] and time.monotonic() < deadline:
+        time.sleep(0.2)
+    done = tools.research_status(run_context=context)
+    assert "Stopped: ceiling" in done.content and "pending" in done.content
+
+    # A concepts program: the copilot relays the gate and the user's answers.
+    research.launch(lab, program="concepts", charter_path=lab / "research-concepts.yaml")
+    while research.job(lab, "concepts")["running"]:
+        time.sleep(0.2)
+    waiting = tools.research_status(run_context=context)
+    assert "waiting for the user to approve" in waiting.content
+    assert waiting.artifacts[0].data["program"]["contract_to_approve"]["sample_cases"]
+    tools.approve_research_contract(program="concepts", run_context=context)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        status = tools.research_status(run_context=context).artifacts[0].data["program"]
+        if status["open_questions"] or status["status"] == "done":
+            break
+        time.sleep(0.3)
+    question = status["open_questions"][0]
+    answered = tools.answer_research_question(program="concepts", question_id=question["id"],
+                                              answer="fail", run_context=context)
+    assert question["id"] in answered.content
+    tools.stop_research(program="concepts", run_context=context)
+
+
+def test_the_copilot_starts_on_the_model_the_person_picked(client: TestClient, monkeypatch):
+    seen: dict = {}
+
+    class _Result:
+        status, output, turns = "success", "ok", 1
+        cost_usd, duration_seconds = 0.0, 0.1
+        run_id, trace_path, reason = "run_c", "", ""
+        verdicts: list = []
+        artifacts: list = []
+
+    def fake_run(directory, input_value, **kwargs):
+        seen.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(ui.runner_mod, "run_harness", fake_run)
+    with client.stream("POST", "/api/copilot/chat", json={
+        "messages": [{"role": "user", "content": "hi"}],
+        "model": "openrouter/openai/gpt-5-mini",
+    }) as response:
+        list(response.iter_lines())
+    # Started on it, not swapped to mid-run (which needs the default provider's key).
+    assert (seen["provider_override"], seen["model_override"]) == ("openrouter",
+                                                                   "openai/gpt-5-mini")
+
+
+def test_a_program_the_workbench_was_running_resumes_when_it_starts_again(tmp_path, monkeypatch):
+    import shutil
+
+    from hiveloom import trust
+    from hiveloom.research import service as research
+    from hiveloom.research.engine import Engine
+    from hiveloom.research.program import Program, init_program
+
+    lab = tmp_path / "research-lab"
+    shutil.copytree(RESEARCH_LAB, lab, ignore=shutil.ignore_patterns(".hiveloom"))
+    monkeypatch.setattr(ui.registry_mod, "registered", lambda: [])
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HIVELOOM_UI_DB", str(tmp_path / "workbench.db"))
+    trust.record_trust(lab)
+    init_program(lab, "quotes", lab / "research.yaml", approve_trust=lambda _p: True)
+    Engine(Program(lab, "quotes")).run(until="unit")  # the old server got this far
+    (Program(lab, "quotes").root / "job.json").write_text('{"until": "done"}')  # then died
+
+    client = TestClient(ui.build_app([str(lab)], resume_research=True))
+    detail = _wait_idle(client, "quotes")
+    assert detail["status"] == "done" and detail["job"]["steps"][0]["unit"] == "survey"
+    assert not (Program(lab, "quotes").root / "job.json").exists()
+    # A marker on a finished program is cleared, not resumed.
+    (Program(lab, "quotes").root / "job.json").write_text('{"until": "done"}')
+    assert research.resume_interrupted([lab]) == []
+    assert not (Program(lab, "quotes").root / "job.json").exists()
+
+
+def test_a_running_program_reports_how_far_its_eval_has_got(research_client) -> None:
+    import threading
+    import time
+
+    from hiveloom.research.engine import Engine
+
+    client, lab = research_client
+    client.post("/api/harnesses/research-lab/research",
+                json={"name": "p", "charter": (lab / "research.yaml").read_text()})
+    gate, seen = threading.Event(), []
+    real = Engine._executor
+
+    def slow(self, **kwargs):
+        if len(seen) == 5:
+            gate.wait(10)  # hold the baseline mid-way so its progress can be read
+        seen.append(1)
+        return real(self, **kwargs)
+
+    Engine._executor = slow
+    try:
+        client.post("/api/harnesses/research-lab/research/p/run", json={"until": "unit"})
+        deadline = time.monotonic() + 30
+        progress = None
+        while time.monotonic() < deadline:
+            progress = client.get("/api/harnesses/research-lab/research/p").json()["progress"]
+            if progress and progress["completed"] == 5:
+                break
+            time.sleep(0.1)
+        assert progress == {"purpose": "baseline", "unit": "baseline", "completed": 5,
+                            "total": 18}
+    finally:
+        gate.set()
+        Engine._executor = real
+    assert _wait_idle(client, "p")["progress"] is None

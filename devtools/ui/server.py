@@ -592,6 +592,20 @@ def _slug(name: str) -> str:
     return cleaned or "harness"
 
 
+def _engine_owned(relative: Path) -> bool:
+    """A harness copy the engine keeps under ``.hiveloom/``, other than a fork.
+
+    Forks are experiments a person made and the rail nests them under their
+    harness. Everything else there — a research program's candidates — is the
+    engine's working state, read through that harness, never a harness of its own.
+    """
+    parts = relative.parts
+    if ".hiveloom" not in parts:
+        return False
+    after = parts[parts.index(".hiveloom") + 1 :]
+    return not after or after[0] != "forks"
+
+
 def _scan_harnesses(scan_dirs: list[str]) -> list[str]:
     """Find harness roots below workbench scan directories, deepest included."""
     found: set[str] = set()
@@ -604,7 +618,7 @@ def _scan_harnesses(scan_dirs: list[str]) -> list[str]:
         try:
             manifests = root.rglob("harness.yaml")
             for manifest in manifests:
-                if manifest.is_file():
+                if manifest.is_file() and not _engine_owned(manifest.relative_to(root)):
                     found.add(str(manifest.parent.resolve()))
         except OSError:
             # An unreadable subtree does not hide the harnesses already found;
@@ -863,6 +877,9 @@ def _guarded(handler):
         # any other spec problem — so trust is checked explicitly where it
         # applies (see run_endpoint) rather than caught by type here.
         except (HiveloomError, ValueError) as exc:
+            if type(exc).__name__ == "ProgramBusy":
+                # Another process is advancing that research program: a state.
+                return _error(str(exc), 409, code="busy")
             return _error(f"{type(exc).__name__}: {exc}", 400, code="spec_error")
         except Exception as exc:  # noqa: BLE001 - a dev tool must show the traceback
             return _error(f"{type(exc).__name__}: {exc}", 500, detail=traceback.format_exc())
@@ -1295,6 +1312,58 @@ class _CopilotWorkbench:
             **proposals_mod.proposal_payload(record),
         }
 
+    # -- research programs: evolving autonomously -------------------------- #
+    def _research_entry(self, harness_id: str) -> dict[str, Any]:
+        entry = self._entry(harness_id)
+        if not trust_mod.is_trusted(entry["path"]):
+            raise ValueError(f"harness {entry['name']!r} is not trusted")
+        return entry
+
+    def research_status(self, harness_id: str = "") -> dict[str, Any]:
+        from hiveloom.research import service as research
+
+        entry = self._entry(harness_id)
+        return {"harness_id": entry["id"], "harness_name": entry["name"],
+                **research.overview(entry["path"])}
+
+    def start_research(self, harness_id: str = "", *, program: str = "", director: str = "",
+                       budget: float = 0.0, rounds: int = 0,
+                       tools: dict[str, str] | None = None) -> dict[str, Any]:
+        from hiveloom.research import service as research
+
+        entry = self._research_entry(harness_id)
+        started = research.launch(entry["path"], program=program or None,
+                                  director=director or None, budget=budget or None,
+                                  rounds=rounds or None, tools=tools or None)
+        return {"harness_id": entry["id"], "harness_name": entry["name"],
+                **research.overview(entry["path"]), "started": started["program"]}
+
+    def answer_research(self, harness_id: str, program: str, question_id: str,
+                        answer: str) -> dict[str, Any]:
+        from hiveloom.research import service as research
+
+        entry = self._research_entry(harness_id)
+        answered = research.answer(entry["path"], program, question_id, answer)
+        return {"harness_id": entry["id"], "harness_name": entry["name"], "answered": answered,
+                **research.overview(entry["path"])}
+
+    def approve_research(self, harness_id: str, program: str) -> dict[str, Any]:
+        from hiveloom.research import service as research
+
+        entry = self._research_entry(harness_id)
+        research.approve(entry["path"], program)
+        research.start(entry["path"], program, "done")
+        return {"harness_id": entry["id"], "harness_name": entry["name"],
+                **research.overview(entry["path"])}
+
+    def stop_research(self, harness_id: str, program: str) -> dict[str, Any]:
+        from hiveloom.research import service as research
+
+        entry = self._research_entry(harness_id)
+        research.stop(entry["path"], program, "stopped from the copilot conversation")
+        return {"harness_id": entry["id"], "harness_name": entry["name"],
+                **research.overview(entry["path"])}
+
     def create_interface(
         self,
         harness_id: str,
@@ -1404,7 +1473,18 @@ def _standalone_interface_html(
 # --------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------- #
-def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Starlette:
+def build_app(
+    extra_dirs: list[str],
+    scan_dirs: list[str] | None = None,
+    *,
+    resume_research: bool = False,
+) -> Starlette:
+    """The workbench application.
+
+    ``resume_research`` restarts the research programs this workbench was
+    running when its previous process stopped (the server does this at start;
+    tests opt in).
+    """
     scan_dirs = list(scan_dirs or [])
     # Before anything can be run or reported on: a run happens in this process,
     # so the workbench's keys have to be in this process's environment.
@@ -1440,6 +1520,15 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
     # bundled code tools; target harnesses retain their ordinary trust gates.
     # Resolved here rather than at import because resolving it can materialize a
     # directory, which importing a module must not do.
+    if resume_research:
+        from hiveloom.research import service as research
+
+        paths = [entry["path"] for entry in catalog().values()
+                 if entry.get("ok") and not entry.get("is_fork")]
+        for row in research.resume_interrupted(paths):
+            state = "resumed" if row["resumed"] else f"could not resume: {row['error']}"
+            print(f"research program {row['program']} ({row['harness']}) {state}", flush=True)
+
     copilot_dir = _copilot_dir()
     validate_harness(copilot_dir)
     trust_mod.record_trust(copilot_dir)
@@ -1573,13 +1662,14 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         run_id = runner_mod.new_run_id()
         control = RunControl()
         selector = str(body.get("model") or "").strip()
+        model_override = provider_override = None
         if selector:
-            provider, _, model_id = selector.partition("/")
-            if not model_id:
+            provider_override, _, model_override = selector.partition("/")
+            if not model_override:
                 raise ValueError("'model' must be 'provider/model-id'")
-            control.switch_model(
-                model_id, provider=provider, reason="copilot model selected in workbench"
-            )
+            # The copilot starts on the chosen model: a mid-run swap would first
+            # build the copilot's default (Claude) provider, and fail without its
+            # key even though the person picked another model.
 
         def on_event(event: Any) -> None:
             events.put(event.model_dump_json())
@@ -1592,6 +1682,8 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                     text,
                     conversation=conversation,
                     context={"workbench": copilot_service(selection), "selection": selection},
+                    model_override=model_override,
+                    provider_override=provider_override,
                     on_event=on_event,
                     literal_input=True,
                     run_id=run_id,
@@ -1644,6 +1736,17 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         )
 
     # ---------------- harnesses ---------------- #
+    def _research_attention(entry: dict[str, Any]) -> dict[str, int] | None:
+        from hiveloom.research import service as research
+
+        if not entry.get("ok") or entry.get("is_fork"):
+            return None
+        try:
+            counts = research.attention(entry["path"])
+        except Exception:  # noqa: BLE001 - a broken program never hides the harness
+            return None
+        return counts if any(counts.values()) else None
+
     @_guarded
     async def list_harnesses(request: Request) -> Response:
         entries = await asyncio.to_thread(catalog)
@@ -1654,6 +1757,7 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                 row = dict(entry)
                 row["trusted"] = trust_mod.is_trusted(entry["path"])
                 row["stats"] = _stats(entry) if entry["ok"] else None
+                row["research"] = _research_attention(entry)
                 rows.append(row)
             return rows
 
@@ -2084,6 +2188,9 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
                     if run is not None:
                         run["alias"] = aliases.get(run["run_id"])
                         rows.append(run)
+                # Newest first by when it ran: run ids are random, so the file
+                # name says nothing about order.
+                rows.sort(key=lambda run: run.get("started_at") or "", reverse=True)
                 return rows
 
         return JSONResponse({"runs": await asyncio.to_thread(work)})
@@ -2492,12 +2599,113 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
         def work() -> dict[str, Any]:
             with Hive() as hive:
                 _ingest_entry_traces(hive, entry)
+                # Proposals bind to the harness's identity, not its name, so a
+                # same-named harness elsewhere never sees them — as the CLI reads.
                 records = proposals_mod.list_proposals(
-                    hive, harness_name=entry["name"], status=status
+                    hive, harness_name=entry.get("key") or entry["name"], status=status
                 )
             return {"proposals": [proposals_mod.proposal_payload(r) for r in records]}
 
         return JSONResponse(await asyncio.to_thread(work))
+
+    # ---------------- research programs ---------------- #
+    def _trust_error(entry: dict[str, Any]) -> Response | None:
+        if trust_mod.is_trusted(entry["path"]):
+            return None
+        return _error(f"{entry['path']} is not trusted yet", 403, code="trust_required",
+                      path=entry["path"])
+
+    @_guarded
+    async def list_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+
+        def work() -> dict[str, Any]:
+            return {"programs": research.programs(entry["path"]),
+                    "charter_template": research.charter_template(entry["path"]),
+                    "charter_templates": research.charter_templates(entry["path"]),
+                    "form": research.charter_form(entry["path"])}
+
+        return JSONResponse(await asyncio.to_thread(work))
+
+    @_guarded
+    async def create_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        body = json.loads(await request.body() or b"{}")
+        unknown = sorted(set(body) - {"name", "charter"})
+        if unknown:
+            raise ValueError(f"unknown fields: {unknown}")
+        refusal = await asyncio.to_thread(_trust_error, entry)
+        if refusal is not None:
+            return refusal
+        payload = await asyncio.to_thread(
+            research.create, entry["path"], str(body.get("name") or ""),
+            str(body.get("charter") or ""),
+        )
+        return JSONResponse(payload, status_code=201)
+
+    @_guarded
+    async def get_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        return JSONResponse(await asyncio.to_thread(
+            research.detail, entry["path"], request.path_params["name"]))
+
+    @_guarded
+    async def run_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        body = json.loads(await request.body() or b"{}")
+        unknown = sorted(set(body) - {"until"})
+        if unknown:
+            raise ValueError(f"unknown fields: {unknown}")
+        refusal = await asyncio.to_thread(_trust_error, entry)
+        if refusal is not None:
+            return refusal
+        started = await asyncio.to_thread(
+            research.start, entry["path"], request.path_params["name"],
+            str(body.get("until") or "round"),
+        )
+        return JSONResponse({"job": started}, status_code=202)
+
+    @_guarded
+    async def approve_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        body = json.loads(await request.body() or b"{}")
+        unknown = sorted(set(body) - {"contract"})
+        if unknown:
+            raise ValueError(f"unknown fields: {unknown}")
+        return JSONResponse(await asyncio.to_thread(
+            research.approve, entry["path"], request.path_params["name"],
+            body.get("contract")))
+
+    @_guarded
+    async def answer_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        body = json.loads(await request.body() or b"{}")
+        unknown = sorted(set(body) - {"answer"})
+        if unknown:
+            raise ValueError(f"unknown fields: {unknown}")
+        return JSONResponse(await asyncio.to_thread(
+            research.answer, entry["path"], request.path_params["name"],
+            request.path_params["question_id"], str(body.get("answer") or "")))
+
+    @_guarded
+    async def stop_research(request: Request) -> Response:
+        from hiveloom.research import service as research
+
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        await asyncio.to_thread(research.stop, entry["path"], request.path_params["name"])
+        return JSONResponse({"ok": True})
 
     @_guarded
     async def get_proposal(request: Request) -> Response:
@@ -2730,6 +2938,23 @@ def build_app(extra_dirs: list[str], scan_dirs: list[str] | None = None) -> Star
             "/api/harnesses/{harness_id}/evolve/propose", propose_evolution, methods=["POST"]
         ),
         Route("/api/harnesses/{harness_id}/proposals", list_proposals, methods=["GET"]),
+        Route("/api/harnesses/{harness_id}/research", list_research, methods=["GET"]),
+        Route("/api/harnesses/{harness_id}/research", create_research, methods=["POST"]),
+        Route("/api/harnesses/{harness_id}/research/{name}", get_research, methods=["GET"]),
+        Route(
+            "/api/harnesses/{harness_id}/research/{name}/run", run_research, methods=["POST"]
+        ),
+        Route(
+            "/api/harnesses/{harness_id}/research/{name}/stop", stop_research, methods=["POST"]
+        ),
+        Route(
+            "/api/harnesses/{harness_id}/research/{name}/approve", approve_research,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/harnesses/{harness_id}/research/{name}/questions/{question_id}",
+            answer_research, methods=["POST"],
+        ),
         Route("/api/proposals/{proposal_id}", get_proposal, methods=["GET"]),
         Route(
             "/api/harnesses/{harness_id}/proposals/{proposal_id}/apply",
@@ -2852,7 +3077,7 @@ def main() -> int:
     # this is piped or captured rather than attached to a terminal.
     print("\n".join(banner), flush=True)
     uvicorn.run(
-        build_app(args.dirs, args.scan_dirs),
+        build_app(args.dirs, args.scan_dirs, resume_research=True),
         host=args.host,
         port=args.port,
         log_level="warning",

@@ -186,6 +186,51 @@ unapproved unless you select them — silence is a refusal, not consent. Frozen
 safety fields remain protected by hiveloom's evolution gate, which the UI cannot
 bypass because it goes through the same `construct` API everything else does.
 
+## Research programs: evolving autonomously
+
+The **Research** tab runs a [research program](research.md), evolve's autonomous
+mode, on the selected harness. The Improve tab's **Evolve autonomously** button
+leads there.
+
+- **New program** opens a form built from the harness:
+  - the goal, from its description, and the eval that runs it;
+  - the levers evolution allows, with the safe ones ticked;
+  - the budget, rounds, and sealed share;
+  - a director picked from the models in Settings;
+  - one choice per tool with effects (allow, replay or deny). The program
+    cannot start until each is chosen.
+
+  **Edit YAML** shows the same charter as text, and offers the harness's own
+  `research*.yaml` files, which is how a concepts-mode program starts.
+- **Step**, **Run a round** and **Run to the end** run the program in the
+  background.
+  - A progress bar follows the eval in flight (for example, "experiment e3 ·
+    14/30 cells").
+  - A program the workbench was running when its server stopped is resumed when
+    the server starts again, and continues its interrupted eval instead of
+    starting over.
+- For each program the tab shows:
+  - the budget by pool and every experiment's verdict;
+  - each experiment's cases, with the base version's run beside the
+    candidate's. Each status opens that run in **Trace**;
+  - the director's findings, the stop reason with the ceiling's
+    recommendation, the sealed confirmation, the report, and the hash-chained
+    ledger.
+- A concepts-mode program shows its contract for approval, with sample cases,
+  and its label questions as cards.
+- The rail badges a harness whose program waits on you (a contract to approve,
+  questions to answer), is blocked, or is evolving.
+- The **copilot** can do the same in conversation:
+  - start a program when asked ("keep improving this on its own, $1");
+  - report how it is going;
+  - relay a contract with its criteria and sample cases, and each question with
+    the output it is about;
+  - submit only your own answers and approvals.
+
+  Its cards open the Research tab.
+- The program never touches the harness. Its kept changes arrive as a
+  `research` proposal. **Open in Improve** takes you there to apply or reject it.
+
 ## Generated interfaces
 
 `create_interface` writes a dependency-free page to

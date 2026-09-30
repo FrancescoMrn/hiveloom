@@ -26,6 +26,7 @@ const ARTIFACT_LABELS: Record<string, { icon: string; title: string }> = {
   version_comparison: { icon: 'ph-git-diff', title: 'Version comparison' },
   improvement_proposal: { icon: 'ph-sparkle', title: 'Improvement proposal' },
   interface: { icon: 'ph-browser', title: 'Standalone interface' },
+  research_program: { icon: 'ph-flask', title: 'Research program' },
 }
 
 export function CopilotChat({
@@ -331,6 +332,16 @@ function artifactSummary(artifact: Artifact): string {
   if (artifact.kind === 'memories') return `${data.count ?? 0} durable memories`
   if (artifact.kind === 'memory_saved') return String(data.content ?? 'Saved for later conversations')
   if (artifact.kind === 'harness_stats') return `${data.total_runs ?? 0} recorded runs`
+  if (artifact.kind === 'research_program') {
+    const program = record(data.program)
+    if (!program.name) return 'No research programs yet'
+    const waiting = record(program).contract_to_approve
+      ? ' · contract to approve'
+      : Array.isArray(program.open_questions) && program.open_questions.length
+        ? ` · ${program.open_questions.length} question(s) for you`
+        : ''
+    return `${program.name} · ${program.status}${waiting}`
+  }
   if (artifact.kind === 'improvement_proposal') return data.changed ? 'Draft ready for review' : String(data.summary ?? 'No proposal')
   return String(data.name ?? data.harness_name ?? 'Open details')
 }

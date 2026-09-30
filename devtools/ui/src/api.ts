@@ -18,6 +18,9 @@ import {
   type MemoryRecord,
   type Proposal,
   type Provider,
+  type ResearchDetail,
+  type ResearchJob,
+  type ResearchProgramRow,
   type RunResult,
   type RunDetail,
   type RunRow,
@@ -47,6 +50,51 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  researchPrograms: (harnessId: string) =>
+    call<{
+      programs: ResearchProgramRow[]
+      charter_template: string
+      charter_templates: Record<string, string>
+      form?: import('./components/Research').CharterForm
+    }>(
+      `/api/harnesses/${encodeURIComponent(harnessId)}/research`,
+    ),
+
+  createResearch: (harnessId: string, name: string, charter: string) =>
+    call<ResearchDetail>(`/api/harnesses/${encodeURIComponent(harnessId)}/research`, {
+      method: 'POST',
+      body: JSON.stringify({ name, charter }),
+    }),
+
+  research: (harnessId: string, name: string) =>
+    call<ResearchDetail>(
+      `/api/harnesses/${encodeURIComponent(harnessId)}/research/${encodeURIComponent(name)}`,
+    ),
+
+  runResearch: (harnessId: string, name: string, until: 'unit' | 'round' | 'done') =>
+    call<{ job: ResearchJob }>(
+      `/api/harnesses/${encodeURIComponent(harnessId)}/research/${encodeURIComponent(name)}/run`,
+      { method: 'POST', body: JSON.stringify({ until }) },
+    ),
+
+  approveResearch: (harnessId: string, name: string, contract?: string) =>
+    call<ResearchDetail>(
+      `/api/harnesses/${encodeURIComponent(harnessId)}/research/${encodeURIComponent(name)}/approve`,
+      { method: 'POST', body: JSON.stringify(contract ? { contract } : {}) },
+    ),
+
+  answerResearch: (harnessId: string, name: string, questionId: string, answer: string) =>
+    call<Record<string, unknown>>(
+      `/api/harnesses/${encodeURIComponent(harnessId)}/research/${encodeURIComponent(name)}/questions/${encodeURIComponent(questionId)}`,
+      { method: 'POST', body: JSON.stringify({ answer }) },
+    ),
+
+  stopResearch: (harnessId: string, name: string) =>
+    call<{ ok: boolean }>(
+      `/api/harnesses/${encodeURIComponent(harnessId)}/research/${encodeURIComponent(name)}/stop`,
+      { method: 'POST', body: '{}' },
+    ),
+
   copilot: () => call<CopilotInfo>('/api/copilot'),
 
   conversations: () =>

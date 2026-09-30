@@ -3689,3 +3689,76 @@ button.copilot-context-chip:hover { border-color: var(--acc); color: var(--text)
   .copilot-composer-tools > span { display: none; }
   .copilot-composer-tools select { max-width: 48vw; }
 }
+
+/* ---------------- research programs ---------------- */
+.research-body, .research-program { display: flex; flex-direction: column; gap: 18px; }
+.research-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.research-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--panel); color: var(--dim); font-size: 12px; cursor: pointer;
+}
+.research-tab[data-on="1"] { color: var(--fg, inherit); border-color: var(--acc, var(--ok)); }
+.research-tab small { color: var(--mut); font-size: 10.5px; }
+.research-tab .dot.live { width: 6px; height: 6px; border-radius: 999px; background: var(--ok); }
+.research-status {
+  display: flex; justify-content: space-between; gap: 16px; align-items: flex-start;
+  padding: 16px 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--panel);
+}
+.research-status h3 { margin: 0 0 4px; font-size: 15px; }
+.research-meta { color: var(--mut); font-size: 10.5px; line-height: 1.6; }
+.research-status .evolve-actions { flex-wrap: wrap; justify-content: flex-end; }
+.research-experiment {
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 9px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.research-experiment-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
+.research-measure { color: var(--dim); font-size: 10.5px; }
+.research-findings { margin: 5px 0 0; padding-left: 18px; color: var(--dim); font-size: 12px; }
+.research-new {
+  display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px;
+  padding: 16px 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--panel);
+}
+.research-name, .research-charter {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--bg); color: inherit; font-size: 12px;
+}
+.research-charter { resize: vertical; line-height: 1.5; }
+.research-report pre, .research-ledger { font-size: 11px; }
+.research-report pre {
+  white-space: pre-wrap; padding: 12px; border-radius: 8px; background: var(--bg); color: var(--dim);
+}
+.research-report summary, .research-ledger summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+.research-event {
+  display: grid; grid-template-columns: 150px 150px minmax(0, 1fr); gap: 10px;
+  padding: 4px 0; border-bottom: 1px solid var(--border); color: var(--dim);
+}
+.research-event strong { color: inherit; font-weight: 500; }
+.research-event.research-sample { grid-template-columns: minmax(0, 1fr) auto minmax(0, 160px); }
+.research-event.research-case { grid-template-columns: minmax(0, 1fr) auto 16px auto; }
+.research-runlink {
+  background: none; border: 0; padding: 0; cursor: pointer; font: inherit;
+  text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.research-badge {
+  display: inline-flex; align-items: center; gap: 3px; margin-right: 6px;
+  padding: 1px 6px; border-radius: 999px; font-size: 10.5px;
+  color: var(--dim); border: 1px solid var(--border);
+}
+.research-badge[data-needs="1"] { color: var(--warn); border-color: var(--warn); }
+.research-new-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.research-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); flex: 1; }
+.research-field > span { font-size: 11px; letter-spacing: 0.03em; }
+.research-field input, .research-field select, .research-field textarea {
+  box-sizing: border-box; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--bg); color: inherit; font-size: 12px;
+}
+.research-field-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.research-field-row .research-field { min-width: 110px; }
+.research-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.research-checks label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.research-tool { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: center; gap: 10px; font-size: 12px; }
+.research-tool small { color: var(--mut); }
+.research-progress { display: flex; flex-direction: column; gap: 5px; }
+.research-progress-bar { height: 4px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.research-progress-bar > div { height: 100%; background: var(--ok); transition: width 0.4s ease; }

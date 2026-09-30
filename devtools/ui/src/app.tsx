@@ -76,6 +76,14 @@ export function App() {
     }
   }, [])
 
+  // While a research program runs or waits on the person, keep the rail's badges current.
+  const researchActive = (harnesses ?? []).some((row) => row.research)
+  useEffect(() => {
+    if (!researchActive) return
+    const timer = window.setInterval(() => void refreshHarnesses(), 8000)
+    return () => window.clearInterval(timer)
+  }, [refreshHarnesses, researchActive])
+
   const refreshConversations = useCallback(async () => {
     try {
       setConversations(await api.conversations())
@@ -211,10 +219,24 @@ export function App() {
       })
   }, [conversation, refreshConversations, selection])
 
+  /** A research program's card opens that harness's Research tab, not a canvas. */
+  const openResearch = useCallback((next: Artifact): boolean => {
+    const data = record(next.data)
+    if (next.kind !== 'research_program' || typeof data.harness_id !== 'string') return false
+    setSelectedHarness(data.harness_id)
+    setSelectedRun(null)
+    setArtifact(null)
+    setInspectorView('research')
+    setInspectorViewKey((value) => value + 1)
+    setInspectorOpen(true)
+    setRailCollapsed(true)
+    return true
+  }, [])
+
   const onCopilotFinished = useCallback(
     (artifacts: Artifact[]) => {
       const newest = artifacts.at(-1)
-      if (newest) {
+      if (newest && !openResearch(newest)) {
         setArtifact(newest)
         setInspectorOpen(true)
         setRailCollapsed(true)
@@ -228,7 +250,7 @@ export function App() {
       }
       void refresh()
     },
-    [refresh],
+    [openResearch, refresh],
   )
 
   const conversationPersisted = useCallback(async () => {
@@ -425,6 +447,7 @@ export function App() {
               }
             }}
             onArtifact={(next) => {
+              if (openResearch(next)) return
               setArtifact(next)
               setInspectorOpen(true)
               setRailCollapsed(true)

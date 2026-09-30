@@ -9,6 +9,7 @@ import type {
   VersionTags,
 } from '../types'
 import { Evolve } from './Evolve'
+import { Research } from './Research'
 import { InterfacePreview } from './CopilotCanvas'
 import { SpecEditor } from './SpecEditor'
 import { Trajectory } from './Trajectory'
@@ -22,6 +23,7 @@ export type InspectorView =
   | 'versions'
   | 'spec'
   | 'improve'
+  | 'research'
   | 'interface'
 
 const VIEWS: { id: InspectorView; label: string; icon: string }[] = [
@@ -32,6 +34,7 @@ const VIEWS: { id: InspectorView; label: string; icon: string }[] = [
   { id: 'versions', label: 'Versions', icon: 'ph-git-branch' },
   { id: 'spec', label: 'Spec', icon: 'ph-file-code' },
   { id: 'improve', label: 'Improve', icon: 'ph-sparkle' },
+  { id: 'research', label: 'Research', icon: 'ph-flask' },
 ]
 
 /**
@@ -197,6 +200,16 @@ export function ContextInspector({
             evolveModel={loadPrefs().evolveModel}
             onApplied={changed}
             onCompare={() => setView('versions')}
+            onOpenResearch={() => setView('research')}
+          />
+        ) : view === 'research' ? (
+          <Research
+            harness={harness}
+            onOpenImprove={() => setView('improve')}
+            onOpenRun={(id) => {
+              onSelectRun(id)
+              setView('trace')
+            }}
           />
         ) : view === 'interface' ? (
           harnessInterface?.exists ? (

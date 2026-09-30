@@ -25,6 +25,8 @@ export interface ForkRecord {
 export interface Harness {
   id: string
   path: string
+  /** Research programs that need the person, or are running; absent when none. */
+  research?: { running: number; awaiting: number; questions: number; blocked: number } | null
   /** The directory's own name — what tells a fork from the parent it copied. */
   folder: string
   /** Where this folder was forked from, when it was. */
@@ -457,4 +459,118 @@ export class HiveloomApiError extends Error {
   get needsTrust(): boolean {
     return this.info.code === 'trust_required'
   }
+}
+
+/** One research program of a harness, as the rail of the Research view lists it. */
+export interface ResearchProgramRow {
+  name: string
+  status: string
+  unit: string
+  round: number
+  incumbent: string
+  started_at: string
+  updated_at: string
+  running: boolean
+}
+
+export interface ResearchJob {
+  running: boolean
+  until: 'unit' | 'round' | 'done'
+  started_at: string
+  finished_at: string | null
+  error: string | null
+  detail?: string
+  steps: { unit: string; outcome?: string }[]
+}
+
+export interface ResearchExperiment {
+  id: string
+  round: number
+  hypothesis: string
+  candidate: string
+  base: string
+  changes: { path: string; value: unknown; rationale?: string }[]
+  verdict: string
+  kept: boolean
+  stopped_early: string | null
+  guard_ok: boolean
+  measured_effect: number
+  success_gain?: number
+  success: string
+  target_measure: string
+  summary: string
+}
+
+export interface ResearchHypothesis {
+  id: string
+  round: number
+  claim: string
+  levers: string[]
+  target: string
+  expect: 'increase' | 'decrease'
+  by: number | null
+  prior: number
+  falsifier: string
+  status: string
+}
+
+export interface ResearchDetail {
+  name: string
+  status: string
+  unit: string
+  round: number
+  incumbent: string
+  goal: string
+  charter: Record<string, unknown> & { levers: string[]; models: { director: string } }
+  split: { working: number; holdout: number }
+  budget: Record<string, { size: number; spent: number; left: number }>
+  hypotheses: ResearchHypothesis[]
+  experiments: ResearchExperiment[]
+  pending_experiments: string[]
+  calibration: { hypothesis: string; predicted: number; measured: number; gap: number }[]
+  handoffs: { round: number; findings: string[]; next_focus: string[]; decision: string; stop_reason: string | null }[]
+  stop_reason: { condition: string; detail: string; recommendation?: string } | null
+  confirmation: { ran: boolean; strength: string | null; reason?: string; success?: string } | null
+  promotion: { proposal_id: string; status: string; strength: string; changes: number } | null
+  ledger: { ok: boolean; checked: number; broken_at: number | null }
+  report: string | null
+  ledger_tail: { seq: number; ts: string; kind: string; data: Record<string, unknown> }[]
+  job: ResearchJob | null
+  progress?: { purpose: string | null; unit: string; completed: number; total: number } | null
+  mode?: 'eval' | 'concepts'
+  awaiting?: 'contract' | null
+  blocked_reason?: string | null
+  contract?: ResearchContract | null
+  contract_version?: number | null
+  draft_contract?: ResearchContract | null
+  sample_cases?: { id: string; input: string; expected: Record<string, unknown>; criteria: string[]; provenance: string }[] | null
+  trust?: { criterion: string; measured: boolean; how: string; kappa?: number | null; anchors?: number }[]
+  question_list?: ResearchQuestion[]
+  working_cases?: number
+  experiment_runs?: Record<string, {
+    case: string
+    before_run: string | null
+    before_status: string | null
+    after_run: string | null
+    after_status: string | null
+  }[]>
+}
+
+export interface ResearchContract {
+  criteria: { id: string; says: string; check: { kind: string; field?: string | null; pattern?: string | null; rubric?: string | null }; weight?: number }[]
+  goal_thresholds: Record<string, number>
+}
+
+export interface ResearchQuestion {
+  id: string
+  kind: 'label' | 'audit' | 'disambiguate' | 'confirm'
+  text: string
+  criterion: string | null
+  options: string[]
+  request: string | null
+  output: string | null
+  judges: Record<string, string | null>
+  asked_by: 'engine' | 'director'
+  status: 'open' | 'answered' | 'withdrawn'
+  answer: string | null
 }
