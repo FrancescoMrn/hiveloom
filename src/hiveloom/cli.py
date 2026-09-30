@@ -97,6 +97,10 @@ metrics_app = typer.Typer(help="Record, import, and query numeric run metrics.")
 app.add_typer(metrics_app, name="metrics")
 eval_app = typer.Typer(help="Validate and run versioned local evaluations.")
 app.add_typer(eval_app, name="eval")
+research_app = typer.Typer(
+    help="Research programs: a director model improves a harness through measured experiments."
+)
+app.add_typer(research_app, name="research")
 
 _console = Console()
 _err_console = Console(stderr=True)
@@ -3900,6 +3904,321 @@ def cloud_sync(
                     if result["changed"]
                     else f"already up to date @ {result['version_hash']}"
                 )
+            )
+
+
+# --------------------------------------------------------------------------- #
+# research
+# --------------------------------------------------------------------------- #
+def _research_engine(harness_dir: str, name: str):
+    from hiveloom.research.engine import Engine
+    from hiveloom.research.program import Program
+
+    return Engine(Program(harness_dir, name))
+
+
+def _print_research_steps(steps: list[dict[str, Any]]) -> None:
+    for step in steps:
+        _console.print(f"[cyan]{step['unit']:>11}[/cyan]  {step.get('outcome', '')}")
+
+
+def _print_research_status(status: dict[str, Any]) -> None:
+    _console.print(
+        f"[bold]{status['name']}[/bold]  {status['status']} · unit [cyan]{status['unit']}[/cyan]"
+        f" · round {status['round']} · incumbent {status['incumbent']}"
+    )
+    for pool, values in status["budget"].items():
+        _console.print(f"  {pool:<13} ${values['spent']:.4f} of ${values['size']:.4f}")
+    for experiment in status["experiments"]:
+        early = f" (stopped: {experiment['stopped_early']})" if experiment["stopped_early"] else ""
+        kept = " [green]kept[/green]" if experiment["kept"] else ""
+        _console.print(
+            f"  {experiment['id']} {experiment['hypothesis']} → {experiment['candidate']}: "
+            f"{experiment['verdict']}{early}{kept}"
+        )
+    if status["stop_reason"]:
+        _console.print(
+            f"stopped: {status['stop_reason']['condition']} — {status['stop_reason']['detail']}"
+        )
+    if status["promotion"]:
+        _console.print(
+            f"promotion: proposal {status['promotion']['proposal_id']} "
+            f"({status['promotion']['status']}, evidence {status['promotion']['strength']})"
+        )
+
+
+@research_app.command("init")
+def research_init_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory the program improves."),
+    name: str = typer.Option(..., "--name", help="Program name (a-z, 0-9, dashes)."),
+    charter: str = typer.Option(
+        "research.yaml", "--charter", help="The charter (research.yaml) to start from."
+    ),
+    approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Start a program: validate the charter, freeze the split, copy the harness as c0.
+
+    Nothing is run and nothing is spent. The charter's levers must be mutable
+    and unfrozen, its eval must run this harness, and every tool with effects
+    the engine cannot bound must be classified under `execution`.
+    """
+    from hiveloom.research.program import init_program
+
+    with _guard(json_output):
+        approval = (lambda _path: True) if approve else _trust_prompt(json_output)
+        program = init_program(harness_dir, name, charter, approve_trust=approval)
+        state = program.load_state()
+        payload = {
+            "ok": True,
+            "name": program.name,
+            "root": str(program.root),
+            "working": len(state["split"]["working"]),
+            "holdout": len(state["split"]["holdout"]),
+            "budget_usd": program.charter.budget.usd,
+        }
+        if json_output:
+            _emit_json(payload)
+        else:
+            _console.print(
+                f"[green]started[/green] research program {program.name}: "
+                f"{payload['working']} working case(s), {payload['holdout']} sealed, "
+                f"${payload['budget_usd']:.2f} budget\n"
+                f"next: hiveloom research run {harness_dir} --name {program.name}"
+            )
+
+
+@research_app.command("step")
+def research_step_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Advance the program by exactly one unit, then stop."""
+    with _guard(json_output):
+        engine = _research_engine(harness_dir, name)
+        steps = engine.run(until="unit")
+        if json_output:
+            _emit_json({"ok": True, "steps": steps, "status": engine.status()})
+        else:
+            _print_research_steps(steps)
+
+
+@research_app.command("run")
+def research_run_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    until: str = typer.Option("done", "--until", help="done | round | unit."),
+    max_steps: int = typer.Option(500, "--max-steps", min=1, help="Units at most."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Run the program until it finishes (or one round, or one unit).
+
+    Resumable: a stopped or interrupted program continues from its files.
+    """
+    if until not in ("done", "round", "unit"):
+        _fail("--until must be done, round or unit", json_output, ExitCode.SPEC_ERROR)
+    with _guard(json_output):
+        engine = _research_engine(harness_dir, name)
+        steps = engine.run(until=until, max_steps=max_steps)
+        status = engine.status()
+        if json_output:
+            _emit_json({"ok": True, "steps": steps, "status": status})
+        else:
+            _print_research_steps(steps)
+            _print_research_status(status)
+
+
+@research_app.command("status")
+def research_status_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str | None = typer.Option(
+        None, "--name", help="Program name; omitted, list every program of this harness."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Where a program stands: unit, round, budget pools, experiments, stop, promotion."""
+    from hiveloom.research.program import list_programs
+
+    with _guard(json_output):
+        if name is None:
+            programs = list_programs(harness_dir)
+            if json_output:
+                _emit_json({"ok": True, "programs": programs})
+            elif not programs:
+                _console.print("no research programs")
+            else:
+                for program in programs:
+                    _console.print(
+                        f"{program['name']:<24} {program['status']:<11} "
+                        f"unit {program['unit']:<12} round {program['round']}"
+                    )
+            return
+        status = _research_engine(harness_dir, name).status()
+        if json_output:
+            _emit_json({"ok": True, **status})
+        else:
+            _print_research_status(status)
+
+
+@research_app.command("report")
+def research_report_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """The finished program's report (written when the program ends)."""
+    from hiveloom.research.program import Program
+
+    with _guard(json_output):
+        program = Program(harness_dir, name)
+        path = program.root / "report.md"
+        if not path.exists():
+            raise SpecError(
+                f"program '{name}' has not finished; see `hiveloom research status` "
+                "(stop it early with `hiveloom research stop`)"
+            )
+        text = path.read_text(encoding="utf-8")
+        if json_output:
+            _emit_json({"ok": True, "path": str(path), "report": text})
+        else:
+            print(text)
+
+
+@research_app.command("contract")
+def research_contract_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """The evaluation contract: the draft waiting for approval, or the approved one.
+
+    Shows each criterion, how it is checked and whether it is measured (a judged
+    criterion counts only once its judges agree with your labels), and, while
+    waiting for approval, the sample cases to read before approving.
+    """
+    from hiveloom.research import service
+
+    with _guard(json_output):
+        detail = service.detail(harness_dir, name)
+        if detail.get("mode") != "concepts":
+            raise SpecError(f"program '{name}' measures a given eval; it has no contract")
+        payload = {key: detail.get(key) for key in (
+            "unit", "contract_version", "contract", "draft_contract", "sample_cases", "trust")}
+        if json_output:
+            _emit_json({"ok": True, **payload})
+            return
+        contract = payload["draft_contract"] or payload["contract"] or {}
+        state = "draft, waiting for your approval" if payload["draft_contract"] else (
+            f"v{payload['contract_version']}, approved")
+        _console.print(f"[bold]contract[/bold] ({state})")
+        trust = {row["criterion"]: row for row in payload["trust"] or []}
+        for criterion in contract.get("criteria", []):
+            check = criterion["check"]
+            how = trust.get(criterion["id"], {}).get("how", "")
+            _console.print(f"  [cyan]{criterion['id']}[/cyan]  {criterion['says']}")
+            _console.print(f"      {check['kind']}"
+                           + (f" {check.get('field')}" if check.get("field") else "")
+                           + (f" — {check.get('rubric')}" if check.get("rubric") else "")
+                           + (f"  [dim]{how}[/dim]" if how else ""))
+        for case in payload["sample_cases"] or []:
+            _console.print(f"  sample: {case['input']}  → {', '.join(case['criteria'])}"
+                           + (f"  expected {case['expected']}" if case["expected"] else ""))
+        if payload["draft_contract"]:
+            _console.print(f"approve with: hiveloom research approve {harness_dir} --name {name}")
+
+
+@research_app.command("approve")
+def research_approve_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    contract: str | None = typer.Option(
+        None, "--contract", help="An edited contract (YAML file) to approve instead."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Approve the drafted evaluation contract (a hard gate: nothing runs before it)."""
+    from hiveloom.research import service
+
+    with _guard(json_output):
+        text = Path(contract).read_text(encoding="utf-8") if contract else None
+        detail = service.approve(harness_dir, name, text)
+        if json_output:
+            _emit_json({"ok": True, "contract_version": detail.get("contract_version"),
+                        "unit": detail["unit"]})
+        else:
+            _console.print(f"[green]approved[/green] contract v{detail.get('contract_version')}; "
+                           f"continue with: hiveloom research run {harness_dir} --name {name}")
+
+
+@research_app.command("questions")
+def research_questions_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    all_questions: bool = typer.Option(False, "--all", help="Include answered ones."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """The program's questions to you: labels, audits, and what a concept means."""
+    from hiveloom.research import service
+
+    with _guard(json_output):
+        rows = service.detail(harness_dir, name).get("question_list") or []
+        if not all_questions:
+            rows = [row for row in rows if row["status"] == "open"]
+        if json_output:
+            _emit_json({"ok": True, "questions": rows})
+            return
+        if not rows:
+            _console.print("no open questions")
+        for row in rows:
+            _console.print(f"[cyan]{row['id']}[/cyan] [{row['kind']}] {row['text']}"
+                           + (f"  ({row['status']}: {row['answer']})" if row["answer"] else ""))
+            if row.get("request"):
+                _console.print(f"    request: {row['request'][:300]}")
+            if row.get("output") is not None:
+                _console.print(f"    answer:  {row['output'][:600]}")
+            if row.get("options"):
+                _console.print(f"    options: {' | '.join(row['options'])}")
+
+
+@research_app.command("answer")
+def research_answer_cmd(
+    question_id: str = typer.Argument(..., help="Question id (q_...)."),
+    value: str = typer.Argument(..., help="pass | fail for a label; words or an option."),
+    harness_dir: str = typer.Option(".", "--dir", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Answer one question; a label becomes an anchor the judges are measured against."""
+    from hiveloom.research import service
+
+    with _guard(json_output):
+        answered = service.answer(harness_dir, name, question_id, value)
+        if json_output:
+            _emit_json({"ok": True, "question": answered})
+        else:
+            _console.print(f"[green]answered[/green] {question_id}: {answered['answer']}")
+
+
+@research_app.command("stop")
+def research_stop_cmd(
+    harness_dir: str = typer.Argument(".", help="Harness directory."),
+    name: str = typer.Option(..., "--name", help="Program name."),
+    reason: str = typer.Option("requested", "--reason", help="Recorded in the ledger."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Ask the program to stop: at its next unit it confirms what it kept and reports.
+
+    Run `hiveloom research run` afterwards to carry out the confirmation and report.
+    """
+    with _guard(json_output):
+        engine = _research_engine(harness_dir, name)
+        engine.request_stop(reason)
+        if json_output:
+            _emit_json({"ok": True, "name": name, "stop_requested": reason})
+        else:
+            _console.print(
+                f"stop requested; finish with: hiveloom research run {harness_dir} --name {name}"
             )
 
 

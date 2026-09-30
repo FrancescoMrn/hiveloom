@@ -277,6 +277,7 @@ def run_harness(
     providers: dict[str, ModelProvider] | None = None,
     approve_network: Callable[[str], bool] | None = None,
     cost_cap_usd: float | None = None,
+    tool_policy: Any = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -334,6 +335,11 @@ def run_harness(
     delegated child is confined to a share of its parent's remaining budget
     (see :mod:`hiveloom.delegation`).
 
+    ``tool_policy`` (an object with ``apply(registry)``) adjusts the built tool
+    registry before the run starts, and may only tighten it: a research
+    program's execution policy uses it to deny tools or replace them with
+    recorded results (see :mod:`hiveloom.research.execution`).
+
     ``approve_network`` is the run-scoped decision point for an undeclared
     ``http_get`` hostname. It receives only the normalized hostname and returns
     true to allow that host for the rest of this run. Without a callback the
@@ -377,6 +383,10 @@ def run_harness(
         base, spec, trace_dir=trace_dir, hive_path=hive_path
     )
     registry = build_registry(spec, base, run_boundary=run_boundary)
+    if tool_policy is not None:
+        # A research execution policy (hiveloom.research.execution) may only
+        # tighten the tool set: deny a tool or swap it for recorded results.
+        tool_policy.apply(registry)
     # An explicitly required process sandbox is checked before any paid model
     # turn. The default `auto` policy is opportunistic and never blocks a run.
     gap = confine.unavailable_reason(spec.confinement)
