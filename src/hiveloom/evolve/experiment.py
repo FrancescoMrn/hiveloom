@@ -143,15 +143,18 @@ def run_experiment(
                     on_round(result)
                 break
 
+            spent_before = getattr(model, "spent_usd", 0.0)
             try:
                 proposal = propose(spec, report, model)
             except ProposalError as exc:
+                result.cost_usd += getattr(model, "spent_usd", 0.0) - spent_before
                 result.status = "no_proposal"
                 result.reason = str(exc)
                 results.append(result)
                 if on_round:
                     on_round(result)
                 break
+            result.cost_usd += getattr(model, "spent_usd", 0.0) - spent_before
             result.rationale = proposal.rationale
             result.target = proposal.target.model_dump() if proposal.target else None
 

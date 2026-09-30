@@ -40,6 +40,10 @@ def strong_max_tokens(model_id: str, requested: int | None = None) -> int:
 class StrongModel(ABC):
     """A strong text model: given a system + user prompt, return text."""
 
+    #: What this model's calls were billed so far, where the provider reports
+    #: it (0.0 where it cannot be known), so a caller can charge a round for it.
+    spent_usd: float = 0.0
+
     @abstractmethod
     def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
         """Return the model's text response.
@@ -93,6 +97,7 @@ class ProviderStrongModel(StrongModel):
                 max_tokens=strong_max_tokens(self._model_id, max_tokens),
             ),
         )
+        self.spent_usd += float(response.billed_cost or 0.0)
         return response.text
 
 
