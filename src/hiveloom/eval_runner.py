@@ -111,6 +111,10 @@ class EvalManifest(BaseModel):
     infrastructure_retries: int
     model_probe: ModelProbeResult
     trace_root: str
+    # The case ids this run was restricted to, or None for every case. The
+    # eval identity stays the whole eval's, so runs over different subsets of
+    # one eval still pair case by case.
+    case_ids: list[str] | None = None
     cells: list[EvalCell]
     created_at: str
     updated_at: str
@@ -158,13 +162,22 @@ def _save_manifest(manifest: EvalManifest, lock: threading.Lock) -> None:
         manifest.updated_at = _now()
         path = manifest_path(manifest.eval_run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, manifest.model_dump_json(indent=2) + "\n")
+        # case_ids is written only when a run was restricted, so a manifest of a
+        # whole-eval run stays readable by releases that predate the field.
+        exclude = {"case_ids"} if manifest.case_ids is None else None
+        atomic_write_text(path, manifest.model_dump_json(indent=2, exclude=exclude) + "\n")
         with Hive() as hive:
-            hive.upsert_eval_manifest(manifest.model_dump(mode="json"), str(path))
+            hive.upsert_eval_manifest(manifest.model_dump(mode="json", exclude=exclude),
+                                      str(path))
 
 
 def _case_key(case: EvalCase) -> str:
-    return _digest(case.id)[:20]
+    return case_key_for(case.id)
+
+
+def case_key_for(case_id: str) -> str:
+    """The stable key a case id is recorded under in manifests and the Hive."""
+    return _digest(case_id)[:20]
 
 
 def _case_digest(case: EvalCase) -> str:
@@ -528,8 +541,14 @@ def run_eval(
     approve_trust=None,
     eval_run_id: str | None = None,
     max_cells: int | None = None,
+    case_ids: set[str] | list[str] | None = None,
 ) -> EvalManifest:
-    """Create and execute an atomic eval manifest."""
+    """Create and execute an atomic eval manifest.
+
+    ``case_ids`` restricts the run to those cases (by ``EvalCase.id``); an id
+    the eval does not contain is an error. The eval identity is unchanged, so
+    a working split and a held-out split of one eval stay comparable.
+    """
     if concurrency < 1 or concurrency > 128:
         raise ValueError("eval concurrency must be between 1 and 128")
     if infrastructure_retries < 0 or infrastructure_retries > 20:
@@ -537,6 +556,12 @@ def run_eval(
     if max_cells is not None and max_cells < 0:
         raise ValueError("max_cells cannot be negative")
     validated, cases = resolve_eval_spec(path, approve_trust=approve_trust)
+    if case_ids is not None:
+        wanted = set(case_ids)
+        unknown = sorted(wanted - {case.id for case in cases})
+        if unknown:
+            raise ValueError(f"eval has no case(s) with id: {', '.join(unknown[:5])}")
+        cases = [case for case in cases if case.id in wanted]
     selected = _resolve_model(validated, model_override, provider_override)
     probe = _probe_for_eval(validated, selected, model_probe)
     repetition_count = repetitions if repetitions is not None else validated.spec.repetitions
@@ -564,6 +589,7 @@ def run_eval(
         infrastructure_retries=infrastructure_retries,
         model_probe=probe,
         trace_root=str(root / "traces"),
+        case_ids=sorted(case_ids) if case_ids is not None else None,
         cells=_build_cells(
             run_id,
             validated.identity,
