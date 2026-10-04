@@ -1773,15 +1773,6 @@ table.grid tbody tr {
 .rail-settings:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .rail-settings:disabled { opacity: 0.4; cursor: default; }
 
-.key-state {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 7px;
-  color: var(--warn);
-  font-size: 12px;
-}
-.key-state[data-ok="1"] { color: var(--ok); }
 
 /* The one place a fork is offered: on a boundary the journal says is safe. */
 .fork-strip {
@@ -2961,23 +2952,6 @@ select.v-input {
   padding: 16px 18px;
   border-bottom: 1px solid var(--border);
 }
-.settings-subject { color: var(--mut); font-size: 12.5px; min-width: 0; }
-.settings-spec {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-left: auto;
-  padding: 5px 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--dim);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.settings-spec:hover { color: var(--text); border-color: var(--border2); }
 .settings-close {
   display: grid;
   place-items: center;
@@ -2990,6 +2964,7 @@ select.v-input {
   cursor: pointer;
   font-size: 15px;
 }
+.settings-modal > header .settings-close { margin-left: auto; }
 .settings-close:hover { background: var(--hover-strong); color: var(--text); }
 .settings-body { display: grid; grid-template-columns: 194px minmax(0, 1fr); min-height: 0; }
 .settings-nav {
@@ -3065,30 +3040,6 @@ select.v-input {
 /* The seat's shortlist. Two columns of checkable rows, capped in height so a
    provider with forty ids cannot push the cards under it off the pane — the
    list scrolls, the card does not grow. */
-.seat-picks {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 2px 12px;
-  margin-top: 12px;
-  max-height: 232px;
-  overflow-y: auto;
-}
-.seat-pick {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 6px 8px;
-  border-radius: 8px;
-  color: var(--mut);
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.seat-pick:hover { background: var(--hover); }
-.seat-pick[data-on="1"] { color: var(--text); }
-.seat-pick input { accent-color: var(--acc); cursor: pointer; }
-.seat-pick input:disabled { cursor: default; }
-.seat-pick .v-label { margin-left: auto; flex: none; }
 .settings-grid .settings-card { margin-top: 0; }
 .settings-grid .v-input { margin-top: 10px; }
 .memory-compose textarea { width: 100%; margin-top: 10px; resize: vertical; }
@@ -3119,34 +3070,6 @@ select.v-input {
 }
 .theme-card i { font-size: 17px; }
 .theme-card[data-on="1"] { border-color: var(--acc); background: var(--acc-soft); color: var(--text); }
-.model-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.model-meta-value { font-size: 13px; font-weight: 550; }
-.provider-cards { display: flex; flex-direction: column; gap: 10px; }
-.provider-card {
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--panel2);
-  padding: 13px 14px;
-}
-.provider-card[data-on="1"] { border-color: color-mix(in srgb, var(--acc) 45%, var(--border)); }
-.provider-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.provider-head .rail-tag { border-color: color-mix(in srgb, var(--acc) 45%, transparent); color: var(--acc); }
-.provider-models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.model-chip {
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--dim);
-  font-size: 11.5px;
-}
-.model-chip[data-on="1"] { border-color: color-mix(in srgb, var(--acc) 45%, transparent); color: var(--acc); }
 
 /* ================================================================== *
  * Branch dialog
@@ -3361,7 +3284,6 @@ a:hover { color: color-mix(in srgb, var(--acc) 76%, var(--text)); }
   font: inherit;
   font-size: 11px;
 }
-.copilot-context-empty { color: var(--mut); font-size: 11.5px; }
 .copilot-context-chip {
   display: inline-flex;
   align-items: center;
@@ -3574,14 +3496,6 @@ button.copilot-context-chip:hover { border-color: var(--acc); color: var(--text)
 .copilot-attachment-error { width: min(820px,100%); margin: 6px auto 0; color: var(--err); font-size: 10.5px; }
 .copilot-composer-tools { display: flex; align-items: center; gap: 8px; width: min(820px,100%); margin: 6px auto 0; color: var(--mut); font-size: 9.5px; }
 .copilot-composer-tools label { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.copilot-composer-tools select {
-  max-width: 230px;
-  padding: 2px 18px 2px 3px;
-  border: 0;
-  background: transparent;
-  color: var(--mut);
-  font: 9.5px var(--font-geist-mono), monospace;
-}
 .copilot-composer-tools > button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px; border: 0; background: none; color: var(--mut); cursor: pointer; font: inherit; }
 .copilot-composer-tools > button:hover { color: var(--text); }
 .copilot-composer-tools > span { margin-left: auto; }
@@ -3687,7 +3601,6 @@ button.copilot-context-chip:hover { border-color: var(--acc); color: var(--text)
   .copilot-canvas, .context-inspector { left: 0; }
   .overview-grid { grid-template-columns: 1fr; }
   .copilot-composer-tools > span { display: none; }
-  .copilot-composer-tools select { max-width: 48vw; }
 }
 
 /* ---------------- research programs ---------------- */
@@ -3762,3 +3675,274 @@ button.copilot-context-chip:hover { border-color: var(--acc); color: var(--text)
 .research-progress { display: flex; flex-direction: column; gap: 5px; }
 .research-progress-bar { height: 4px; border-radius: 999px; background: var(--border); overflow: hidden; }
 .research-progress-bar > div { height: 100%; background: var(--ok); transition: width 0.4s ease; }
+
+/* No harness attached: the header and the empty chat offer one. */
+.copilot-context-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.copilot-context-picker:hover { border-color: var(--acc); color: var(--text); }
+.copilot-context-picker select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  outline: none;
+}
+.copilot-context-picker .ph-caret-down { color: var(--mut); pointer-events: none; }
+.harness-choices { display: grid; justify-items: center; gap: 10px; margin-top: 12px; color: var(--mut); font-size: 12px; }
+.harness-choices > div { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; }
+.harness-choices button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+}
+.harness-choices button:hover { border-color: var(--acc); color: var(--text); }
+.harness-choices button i { color: var(--mut); }
+.harness-choices em { font-style: normal; font-size: 11px; }
+.copilot-needs-harness { display: flex; align-items: flex-start; gap: 8px; width: min(820px,100%); margin: 8px auto 0; }
+.copilot-needs-harness .harness-choices { flex: 1; justify-items: start; margin-top: 4px; }
+.copilot-needs-harness .harness-choices > div { justify-content: flex-start; }
+
+/* Model picker: one trigger, one popover grouped by provider (ModelPicker.tsx). */
+.model-picker { min-width: 0; }
+.model-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.model-picker-trigger:hover { border-color: var(--acc); }
+.model-picker-trigger:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--acc-soft); border-color: var(--acc); }
+.model-picker-trigger > .ph-brain { flex: none; color: var(--evo); }
+.model-picker-provider { flex: none; color: var(--mut); font-size: 12.5px; }
+.model-picker-provider::after { content: '/'; margin-left: 8px; color: var(--border); }
+.model-picker-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-geist-mono), monospace; font-size: 13px; }
+.model-picker-caret { flex: none; color: var(--mut); transition: transform .12s; }
+.model-picker-caret[data-open="1"] { transform: rotate(180deg); }
+.model-picker[data-variant="chip"] .model-picker-trigger {
+  width: auto;
+  max-width: 260px;
+  height: 22px;
+  gap: 4px;
+  padding: 0 4px 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mut);
+  font-size: 10px;
+}
+.model-picker[data-variant="chip"] .model-picker-trigger:hover { background: var(--hover); color: var(--text); }
+.model-picker[data-variant="chip"] .model-picker-trigger > .ph-brain { color: inherit; }
+.model-picker[data-variant="chip"] .model-picker-value { font-size: 10px; }
+
+.model-picker-menu {
+  position: fixed;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 40px var(--shadow, rgba(0, 0, 0, .25));
+  outline: none;
+}
+.model-picker-search { display: flex; align-items: center; gap: 7px; flex: none; padding: 6px 8px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; color: var(--mut); }
+.model-picker-search input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; outline: none; }
+.model-picker-search button { display: grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 999px; background: var(--hover); color: var(--mut); cursor: pointer; font-size: 10px; }
+.model-picker-list { flex: 1; min-height: 0; overflow-y: auto; }
+.model-picker-group + .model-picker-group { margin-top: 4px; }
+.model-picker-heading { position: sticky; top: 0; z-index: 1; padding: 6px 8px 4px; background: var(--panel); color: var(--mut); font-size: 10.5px; font-weight: 600; letter-spacing: .02em; }
+.model-picker-heading span { font-weight: 400; }
+.model-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.model-picker-row[data-highlighted="1"] { background: var(--hover); }
+.model-picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.model-picker-caption { flex: none; color: var(--mut); font-size: 10.5px; }
+.model-picker-badge { flex: none; padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--mut); font-size: 9.5px; }
+.model-picker-trigger .model-picker-badge { font-size: 10px; }
+.model-picker-check { display: grid; place-items: center; flex: none; width: 14px; color: var(--acc); }
+.model-picker-empty { padding: 14px 8px; color: var(--mut); font-size: 12px; text-align: center; }
+.model-picker-foot { display: flex; align-items: flex-start; gap: 7px; flex: none; margin-top: 4px; padding: 8px 8px 4px; border-top: 1px solid var(--border); color: var(--mut); font-size: 11px; line-height: 1.45; }
+.model-picker-foot i { margin-top: 2px; color: var(--warn); }
+
+/* Settings → Models: providers this workbench is set up with (Settings.tsx). */
+.settings-pane-title { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+.wb-providers { display: grid; gap: 8px; }
+.wb-provider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 12px 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.wb-provider-name { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; }
+.wb-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--err); }
+.wb-dot[data-ok="1"] { background: var(--ok); }
+.wb-provider-meta { margin-right: auto; color: var(--mut); font-size: 11.5px; }
+.wb-delete { padding: 4px 8px; border: 0; background: none; color: var(--err); cursor: pointer; font: inherit; font-size: 12px; }
+.wb-delete:hover { text-decoration: underline; }
+.wb-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 46px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.wb-add:hover { border-color: var(--acc); color: var(--text); }
+
+.wb-dialog-scrim { z-index: 60; }
+.wb-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 18px 60px var(--shadow, rgba(0, 0, 0, .3));
+}
+.wb-dialog > header { display: flex; align-items: center; justify-content: space-between; }
+.wb-dialog h3 { margin: 0; font-size: 15px; }
+.wb-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.wb-field { display: grid; gap: 6px; min-width: 0; }
+.wb-field > span { color: var(--dim); font-size: 12px; font-weight: 600; }
+.wb-field small { color: var(--mut); font-size: 11px; line-height: 1.45; }
+.wb-field small code { color: var(--ck); }
+.wb-model-list { display: grid; gap: 2px; max-height: 220px; overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 9px; }
+.wb-model { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+.wb-model:hover { background: var(--hover); }
+.wb-model em { margin-left: auto; color: var(--mut); font-size: 10.5px; font-style: normal; }
+.wb-id-entry { display: flex; gap: 8px; }
+.wb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.wb-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 9px; border: 1px solid var(--border); border-radius: 999px; font-size: 11.5px; }
+.wb-chip button { display: grid; place-items: center; width: 16px; height: 16px; border: 0; border-radius: 999px; background: var(--hover); color: var(--mut); cursor: pointer; font-size: 9px; }
+
+/* Harness workspace → Settings (HarnessSettings.tsx). */
+.harness-settings { display: grid; gap: 4px; }
+.harness-settings .settings-card:first-child { margin-top: 0; }
+.harness-settings .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 640px) { .harness-settings .settings-grid { grid-template-columns: 1fr; } }
+
+/* Improve → an applied proposal's recorded spec diff (Evolve.tsx SpecDiff). */
+.spec-diff {
+  margin: 8px 0 0;
+  padding: 10px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  font: 11.5px/1.55 var(--font-geist-mono), ui-monospace, monospace;
+  white-space: pre;
+}
+.spec-diff span { display: block; padding: 0 12px; }
+.spec-diff span[data-kind="add"] { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--text); }
+.spec-diff span[data-kind="del"] { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--text); }
+.spec-diff span[data-kind="hunk"] { color: var(--mut); }
+.spec-diff span[data-kind="ctx"] { color: var(--dim); }
+
+/* Resuming a fork (ForkResume.tsx), in the fork dialog and the fork banner. */
+.fork-resume { display: grid; gap: 10px; }
+.fork-resume[data-compact="1"] { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.fork-resume-outcome { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+.fork-resume-outcome pre {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font: 11.5px/1.5 var(--font-geist-mono), monospace;
+  white-space: pre-wrap;
+}
+.fork-resume-feedback { flex-basis: 100%; color: var(--warn); font-size: 11.5px; }
+.fork-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 16px 10px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--evo) 40%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--evo) 8%, var(--panel));
+  color: var(--dim);
+  font-size: 12px;
+}
+.fork-banner > .ph-git-fork { color: var(--evo); }
+
+/* Forks under their harness in the rail (CopilotRail.tsx). */
+.copilot-fork-list { display: grid; gap: 1px; margin: 2px 0 2px 14px; }
+.copilot-fork-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+}
+.copilot-fork-row:hover, .copilot-fork-row[data-on="1"] { background: var(--hover); color: var(--text); }
+.copilot-fork-row .ph-git-fork, .copilot-run-fork { color: var(--evo); }
+.copilot-run-fork { margin-right: 4px; font-size: 10px; }
+.copilot-fork-row small { color: var(--mut); font-size: 9.5px; }

@@ -19,9 +19,8 @@ import type {
   ResearchProgramRow,
   ResearchQuestion,
 } from '../types'
-import { workbenchModels } from '../models'
 import { Label, Notice, Stat, StatRow, when } from './common'
-import { useProviders } from './Settings'
+import { useWorkbenchDirectory } from '../workbench'
 
 const VERDICT_TONE: Record<string, string> = {
   confirmed: 'var(--ok)',
@@ -47,7 +46,7 @@ export function Research({
   const [programs, setPrograms] = useState<ResearchProgramRow[] | null>(null)
   const [templates, setTemplates] = useState<Record<string, string>>({})
   const [form, setForm] = useState<CharterForm | null>(null)
-  const models = workbenchModels(useProviders(harness.id))
+  const models = useWorkbenchDirectory()?.enabled_models ?? []
   const [selected, setSelected] = useState<string | null>(null)
   const [detail, setDetail] = useState<ResearchDetail | null>(null)
   const [creating, setCreating] = useState(false)

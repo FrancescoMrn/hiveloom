@@ -205,6 +205,7 @@ def test_run_streams_ndjson(client: TestClient, monkeypatch) -> None:
 
     monkeypatch.setattr(ui.trust_mod, "is_trusted", lambda _path: True)
     monkeypatch.setattr(ui.runner_mod, "run_harness", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-placeholder")  # the run is faked
 
     with client.stream(
         "POST", "/api/harnesses/example-summarizer/run", json={"input": "go"}
@@ -241,6 +242,7 @@ def test_run_passes_a_control_and_the_announced_id_to_the_runtime(
 
     monkeypatch.setattr(ui.trust_mod, "is_trusted", lambda _path: True)
     monkeypatch.setattr(ui.runner_mod, "run_harness", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-placeholder")  # the run is faked
 
     with client.stream(
         "POST",
@@ -532,6 +534,9 @@ def live_run(client, monkeypatch):
 
     monkeypatch.setattr(ui.trust_mod, "is_trusted", lambda _path: True)
     monkeypatch.setattr(ui.runner_mod, "run_harness", fake_run)
+    # The run is faked, but the endpoint first checks that the harness's model
+    # can run here; a placeholder key keeps it on its own model.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-placeholder")
 
     frames: list = []
     stream_done = threading.Event()
@@ -1158,6 +1163,7 @@ def test_resume_streams_the_fork_context(
     monkeypatch.setattr(ui.registry_mod, "registered", lambda: [])
     monkeypatch.setattr(ui.trust_mod, "is_trusted", lambda _path: True)
     monkeypatch.setattr(ui.runner_mod, "run_harness", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-placeholder")  # the run is faked
     fork_client = TestClient(ui.build_app([str(forked.directory)]))
 
     with fork_client.stream(
@@ -2305,3 +2311,174 @@ def test_a_running_program_reports_how_far_its_eval_has_got(research_client) -> 
         gate.set()
         Engine._executor = real
     assert _wait_idle(client, "p")["progress"] is None
+
+
+# ---------------- workbench providers ---------------- #
+_PROVIDER_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ACME_API_KEY")
+
+
+@pytest.fixture
+def no_keys(monkeypatch):
+    """Start keyless; whatever a test adopts into os.environ is undone after it."""
+    for name in _PROVIDER_KEYS:
+        # setenv first: delenv alone records nothing for an absent variable,
+        # so a key a test adopts would outlive it.
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
+def test_adding_a_provider_stores_its_key_privately_and_never_returns_it(
+    client: TestClient, harness_copy: Path, no_keys
+) -> None:
+    assert client.get("/api/workbench/providers").json()["providers"] == []
+
+    body = client.put("/api/workbench/providers/openai", json={"api_key": "sk-test-123"}).json()
+
+    assert "sk-test-123" not in json.dumps(body)
+    env_file = harness_copy.parent / "hiveloom-home" / ".env"
+    assert "sk-test-123" in env_file.read_text()
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    [openai] = body["providers"]
+    assert openai["key_set"] and openai["key_from"] == "workbench"
+    # The current lineup is offered; superseded models are not.
+    ids = {model["id"] for model in openai["models"]}
+    assert "gpt-6.1-sol" in ids and "gpt-4o" not in ids
+    assert "openai/gpt-6.1-sol" in body["enabled_models"]
+
+
+def test_a_provider_needs_a_key_to_be_added(client: TestClient, no_keys) -> None:
+    response = client.put("/api/workbench/providers/claude", json={})
+    assert response.status_code == 400
+
+
+def test_openrouter_offers_only_the_ids_the_person_names(client: TestClient, no_keys) -> None:
+    body = client.put(
+        "/api/workbench/providers/openrouter",
+        json={"api_key": "or-key", "models": ["deepseek/deepseek-v4-flash", " ", "bad id"]},
+    )
+    assert body.status_code == 400  # "bad id" is not a model id
+
+    body = client.put(
+        "/api/workbench/providers/openrouter",
+        json={"api_key": "or-key", "models": ["deepseek/deepseek-v4-flash"]},
+    ).json()
+    assert body["enabled_models"] == ["openrouter/deepseek/deepseek-v4-flash"]
+
+
+def test_a_custom_provider_reaches_the_registry_and_leaves_with_its_key(
+    client: TestClient, harness_copy: Path, no_keys
+) -> None:
+    from hiveloom import ext
+
+    home = harness_copy.parent / "hiveloom-home"
+    try:
+        body = client.put(
+            "/api/workbench/providers/acme",
+            json={
+                "api_key": "acme-key",
+                "label": "Acme",
+                "base_url": "https://llm.acme.test/v1",
+                "models": ["acme-large"],
+            },
+        ).json()
+        assert "acme/acme-large" in body["enabled_models"]
+        assert "llm.acme.test" in (home / "providers.yaml").read_text()
+        info = ext.provider_info("acme")
+        assert info is not None and info.api_key_env == "ACME_API_KEY"
+
+        body = client.delete("/api/workbench/providers/acme").json()
+        assert body["providers"] == []
+        assert not (home / "providers.yaml").exists()
+        assert ext.provider_info("acme") is None
+        assert "acme-key" not in (home / ".env").read_text()
+    finally:
+        ext.reset()
+
+
+def test_a_custom_provider_cannot_take_a_known_providers_name(client: TestClient, no_keys) -> None:
+    response = client.put(
+        "/api/workbench/providers/deepseek",
+        json={"api_key": "k", "base_url": "https://x.test/v1", "models": ["m"]},
+    )
+    assert response.status_code == 400
+
+
+def test_a_key_from_the_environment_shows_as_added_but_cannot_be_removed_here(
+    client: TestClient, monkeypatch, no_keys
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
+    body = client.get("/api/workbench/providers").json()
+    [claude] = body["providers"]
+    assert claude["key_from"] == "process" and not claude["removable"]
+    assert client.delete("/api/workbench/providers/claude").status_code == 400
+
+
+def test_the_default_model_must_be_one_that_can_run(client: TestClient, no_keys) -> None:
+    client.put("/api/workbench/providers/openai", json={"api_key": "sk"})
+    assert client.put(
+        "/api/workbench/default-model", json={"model": "claude/claude-opus-5-5"}
+    ).status_code == 400
+    body = client.put("/api/workbench/default-model", json={"model": "openai/gpt-6-luna"}).json()
+    assert body["default_model"] == body["effective_default"] == "openai/gpt-6-luna"
+
+
+def test_a_harness_whose_provider_has_no_key_runs_on_the_default_model(
+    client: TestClient, harness_copy: Path, no_keys
+) -> None:
+    keys: set[str] = set()
+    # Nothing set up at all: a clear error, not a failed provider build.
+    with pytest.raises(ValueError, match="Settings"):
+        ui._run_model("claude", "claude-haiku-4-5", harness_copy, keys)
+
+    client.put("/api/workbench/providers/openai", json={"api_key": "sk"})
+    client.put("/api/workbench/default-model", json={"model": "openai/gpt-6-luna"})
+    provider, model_id, fallback = ui._run_model("claude", "claude-haiku-4-5", harness_copy, keys)
+    assert (provider, model_id) == ("openai", "gpt-6-luna")
+    assert fallback == {
+        "expected": "claude/claude-haiku-4-5",
+        "used": "openai/gpt-6-luna",
+        "missing_key": "ANTHROPIC_API_KEY",
+    }
+
+    # Its own key added: it is back on its own model, nothing to undo.
+    client.put("/api/workbench/providers/claude", json={"api_key": "sk-ant"})
+    assert ui._run_model("claude", "claude-haiku-4-5", harness_copy, keys) == (None, None, None)
+
+
+def test_a_key_already_in_the_workbench_file_shows_its_provider_as_added(
+    client: TestClient, harness_copy: Path, no_keys
+) -> None:
+    home = harness_copy.parent / "hiveloom-home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("ANTHROPIC_API_KEY=written-by-hand\n", encoding="utf-8")
+    body = client.get("/api/workbench/providers").json()
+    [claude] = body["providers"]
+    assert claude["key_from"] == "workbench" and claude["removable"]
+    assert "written-by-hand" not in json.dumps(body)
+
+
+def test_a_harness_lists_the_runs_of_the_forks_it_contains(client, harness_copy) -> None:
+    """A resumed fork's run lives in the fork's folder; it still belongs in the list."""
+    from hiveloom import fork as fork_mod
+    from hiveloom import runner
+    from hiveloom.logging.hive import Hive
+    from hiveloom.models.fake import FakeModelProvider, text_response
+
+    parent_run_id = _real_run(harness_copy)
+    with Hive() as hive:
+        trace_path = Path(hive.get_run(parent_run_id)["trace_path"])
+    forked = fork_mod.create_fork(
+        trace_path, fork_mod.fork_target(harness_copy, "probe"), source_dir=harness_copy
+    )
+    resumed = runner.run_harness(
+        forked.directory,
+        resume_messages=fork_mod.load_fork_context(forked.directory),
+        lineage={"parent_run_id": parent_run_id, "forked_at_seq": forked.at_seq},
+        provider=FakeModelProvider([text_response("still not json")]),
+    )
+
+    rows = client.get("/api/harnesses/example-summarizer/runs").json()["runs"]
+    by_id = {row["run_id"]: row for row in rows}
+    assert parent_run_id in by_id and by_id[parent_run_id].get("fork_folder") is None
+    assert by_id[resumed.run_id]["fork_folder"] == "probe"
+    assert by_id[resumed.run_id]["parent_run_id"] == parent_run_id

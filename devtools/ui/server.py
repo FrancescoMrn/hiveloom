@@ -76,7 +76,7 @@ from hiveloom.fork import (
     load_fork_context,
     parent_version_hash,
 )
-from hiveloom.generate.llm import build_strong_model
+from hiveloom.generate.llm import DEFAULT_STRONG_MODEL, build_strong_model
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.journal import read_events, state_at, verify_chain
 from hiveloom.logging.trace import payload_hash, spec_version_hash
@@ -874,6 +874,351 @@ def _guarded(handler):
         except LookupError as exc:
             return _error(str(exc), 404, code="not_found")
         # There is no dedicated trust exception — the gate raises SpecError like
+# --------------------------------------------------------------------- #
+# Workbench providers
+# --------------------------------------------------------------------- #
+# The providers this machine develops with: which ones were added, the key
+# each uses, and which of their models the workbench offers. It belongs to the
+# workbench, never to a harness — a harness names its own model in its spec,
+# and when that model's provider has no key here a run falls back to the
+# workbench's default model instead of failing (see `_run_model`).
+#
+# Four providers are offered by name. Every other hosted API speaks the same
+# OpenAI-compatible protocol, so the rest is one "Other" form: a name, an
+# endpoint, a key, and the model ids to offer. Those are written to
+# `~/.hiveloom/providers.yaml`, which the framework's registry reads, so a
+# provider added here works for `hiveloom run` on this machine too.
+_FEATURED_PROVIDERS: dict[str, dict[str, str]] = {
+    "claude": {"label": "Anthropic", "models": "catalog"},
+    "openai": {"label": "OpenAI", "models": "catalog"},
+    "mistral": {"label": "Mistral", "models": "catalog"},
+    # Routes to hundreds of models; listing them all would bury the few you
+    # use, so you name the ones you want.
+    "openrouter": {"label": "OpenRouter", "models": "ids"},
+}
+_CUSTOM_NAME = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
+_MAX_PROVIDER_MODELS = 50
+
+
+def _providers_state_path() -> Path:
+    # Beside the keys (`~/.hiveloom/.env`) and `providers.yaml` it describes,
+    # not in the checkout's own state directory: the three must always move
+    # together, or a provider could be "added" in one place and keyless in
+    # the other.
+    return paths_mod.hiveloom_home() / "workbench" / "providers.json"
+
+
+def _read_provider_state() -> dict[str, Any]:
+    """`{"providers": {name: {...}}, "default_model": "provider/id" | ""}`."""
+    try:
+        data = json.loads(_providers_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    raw = data.get("providers") if isinstance(data, dict) else None
+    providers = {
+        str(name): entry
+        for name, entry in (raw.items() if isinstance(raw, dict) else [])
+        if isinstance(entry, dict)
+    }
+    default = data.get("default_model") if isinstance(data, dict) else ""
+    return {"providers": providers, "default_model": str(default or "")}
+
+
+def _write_provider_state(state: dict[str, Any]) -> None:
+    path = _providers_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _write_custom_providers(state: dict[str, Any]) -> None:
+    """Rewrite `providers.yaml` from the custom entries, then reload the registry."""
+    import yaml
+
+    from hiveloom import ext
+
+    custom = {
+        name: {
+            "api": "openai_compat",
+            "base_url": entry["base_url"],
+            "api_key_env": entry["api_key_env"],
+            "label": entry.get("label") or name,
+            # The person names the ids; any other id the endpoint serves is
+            # still accepted, priced at the conservative fallback.
+            "open_catalog": True,
+        }
+        for name, entry in sorted(state["providers"].items())
+        if entry.get("custom")
+    }
+    path = paths_mod.providers_yaml_path()
+    if custom:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        header = (
+            "# Written by the hiveloom workbench (Settings -> Models). Rewritten on\n"
+            "# every change: put hand-written entries in models.yaml, which wins.\n"
+        )
+        tmp = path.with_suffix(".yaml.tmp")
+        tmp.write_text(
+            header + yaml.safe_dump({"providers": custom}, sort_keys=True), encoding="utf-8"
+        )
+        tmp.replace(path)
+    elif path.exists():
+        path.unlink()
+    ext.reload_user_providers()
+
+
+def _workbench_env_path() -> Path:
+    return paths_mod.hiveloom_home() / ".env"
+
+
+def _store_workbench_key(name: str, value: str, adopted: set[str]) -> None:
+    """Write a key to `~/.hiveloom/.env` (owner-only) and make it live now."""
+    from dotenv import set_key
+
+    path = _workbench_env_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(mode=0o600, exist_ok=True)
+    set_key(str(path), name, value, quote_mode="always")
+    path.chmod(0o600)
+    # A key exported in the API's own environment wins over the file, as it
+    # does for a CLI run; only a key this workbench adopted is replaced live.
+    if name not in os.environ or name in adopted:
+        os.environ[name] = value
+        adopted.add(name)
+
+
+def _forget_workbench_key(name: str, adopted: set[str]) -> None:
+    from dotenv import unset_key
+
+    path = _workbench_env_path()
+    if path.exists():
+        unset_key(str(path), name)
+    if name in adopted:
+        os.environ.pop(name, None)
+        adopted.discard(name)
+
+
+def _provider_directory(adopted: set[str]) -> dict[str, Any]:
+    """Everything the Models pane and every model picker need, in one answer.
+
+    Key *presence* only — a value is never returned.
+    """
+    from hiveloom import ext
+
+    state = _read_provider_state()
+    saved = state["providers"]
+
+    def key_from(env_name: str) -> str:
+        if not env_name:
+            return "none"
+        if not os.environ.get(env_name):
+            return ""
+        return "workbench" if env_name in adopted else "process"
+
+    def priced(provider: str, model_id: str) -> dict[str, Any]:
+        info = ext.model_info(model_id)
+        known = info is not None and info.provider == provider
+        return {
+            "id": model_id,
+            "label": model_id,
+            "context_window": info.context_window if known else None,
+            "input_cost_per_mtok": info.input_cost_per_mtok if known else None,
+            "output_cost_per_mtok": info.output_cost_per_mtok if known else None,
+        }
+
+    def offered_catalog(name: str) -> list[str]:
+        return [
+            model.id
+            for model in ext.models_for_provider(name, in_order=True)
+            if not (model.legacy or model.restricted)
+        ]
+
+    catalog = [
+        {
+            "name": name,
+            "label": meta["label"],
+            "models": meta["models"],
+            "api_key_env": (ext.provider_info(name).api_key_env if ext.provider_info(name) else ""),
+            "choices": [priced(name, mid) for mid in offered_catalog(name)]
+            if meta["models"] == "catalog"
+            else [],
+        }
+        for name, meta in _FEATURED_PROVIDERS.items()
+    ]
+
+    rows: list[dict[str, Any]] = []
+    for name, meta in _FEATURED_PROVIDERS.items():
+        info = ext.provider_info(name)
+        if info is None:
+            continue
+        source = key_from(info.api_key_env)
+        # A key that is already there — exported, or saved in the workbench
+        # file by hand or by an older workbench — counts as added: it is
+        # configured, whether or not this pane was the place it was typed.
+        if name not in saved and not source:
+            continue
+        chosen = saved.get(name, {}).get("models")
+        picked = [m for m in chosen if isinstance(m, str)] if isinstance(chosen, list) else None
+        if meta["models"] == "catalog":
+            ids = picked if picked is not None else offered_catalog(name)
+        else:
+            ids = picked or []
+        rows.append(
+            {
+                "name": name,
+                "label": meta["label"],
+                "custom": False,
+                "base_url": info.base_url,
+                "api_key_env": info.api_key_env,
+                "key_set": bool(source),
+                "key_from": source,
+                "removable": source != "process",
+                "model_entry": meta["models"],
+                "models": [priced(name, mid) for mid in ids],
+            }
+        )
+    for name, entry in sorted(saved.items()):
+        if not entry.get("custom"):
+            continue
+        env_name = str(entry.get("api_key_env") or "")
+        source = key_from(env_name)
+        rows.append(
+            {
+                "name": name,
+                "label": entry.get("label") or name,
+                "custom": True,
+                "base_url": entry.get("base_url") or "",
+                "api_key_env": env_name,
+                "key_set": bool(source),
+                "key_from": source,
+                "removable": source != "process",
+                "model_entry": "ids",
+                "models": [
+                    priced(name, mid) for mid in entry.get("models") or [] if isinstance(mid, str)
+                ],
+            }
+        )
+
+    enabled = [
+        f"{row['name']}/{model['id']}" for row in rows if row["key_set"] for model in row["models"]
+    ]
+    default = state["default_model"]
+    return {
+        "catalog": catalog,
+        "providers": rows,
+        "enabled_models": enabled,
+        "default_model": default,
+        # What a run falls back to when its own model cannot run here.
+        "effective_default": default if default in enabled else (enabled[0] if enabled else ""),
+    }
+
+
+def _clean_model_ids(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        raise ValueError("'models' must be a list of model ids")
+    ids: list[str] = []
+    for item in raw:
+        model_id = str(item or "").strip()
+        if not model_id:
+            continue
+        if not _MODEL_ID.match(model_id):
+            raise ValueError(f"{model_id!r} is not a model id")
+        if model_id not in ids:
+            ids.append(model_id)
+    if len(ids) > _MAX_PROVIDER_MODELS:
+        raise ValueError(f"at most {_MAX_PROVIDER_MODELS} models per provider")
+    return ids
+
+
+def _model_reachable(provider: str, harness_dir: Path | None = None) -> tuple[bool, str]:
+    """Can a run build `provider` here? `(ok, missing key name)`.
+
+    Judged the way a run judges it: no key needed (local servers, a harness's
+    own offline extension provider), or the key in the environment (which the
+    workbench file feeds) or in the harness's own `.env`.
+    """
+    from hiveloom import ext
+
+    info = ext.provider_info(provider)
+    if info is None:
+        return False, ""
+    env_name = info.api_key_env
+    if not env_name or os.environ.get(env_name):
+        return True, ""
+    if harness_dir is not None and (harness_dir / ".env").exists():
+        from dotenv import dotenv_values
+
+        if (dotenv_values(harness_dir / ".env").get(env_name) or "").strip():
+            return True, ""
+    return False, env_name
+
+
+def _run_model(
+    provider: str, model_id: str, harness_dir: Path | None, adopted: set[str]
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """`(provider_override, model_override, fallback)` for a run with no chosen model.
+
+    A harness keeps its own model whenever that model can run. When it cannot
+    — its provider has no key on this machine — the run uses the workbench's
+    default model instead, for that run only: the spec is not touched, and the
+    model path recorded with the run says what actually ran. Adding the key
+    later puts the harness back on its own model with nothing to undo.
+    """
+    ok, missing = _model_reachable(provider, harness_dir)
+    if ok:
+        return None, None, None
+    fallback = _provider_directory(adopted)["effective_default"]
+    expected = f"{provider}/{model_id}"
+    if not fallback:
+        raise ValueError(
+            f"{expected} cannot run here ({missing or provider} is not set) and no provider "
+            "is set up to fall back to — add one in Settings → Models"
+        )
+    fallback_provider, _, fallback_id = fallback.partition("/")
+    return (
+        fallback_provider,
+        fallback_id,
+        {"expected": expected, "used": fallback, "missing_key": missing},
+    )
+
+
+def _construction_steps(directory: Path) -> list[dict[str, Any]]:
+    """Successful construction changes that recorded the versions they linked.
+
+    `set`/`add`/`remove`/`set model` go through the validated construction API
+    rather than the proposal queue, so they are not evolutions — but they do
+    produce versions, and the construction log is the record of which version
+    each one came from. Older entries without the hashes are left out: their
+    version stays unattributed rather than being guessed at.
+    """
+    path = directory / ".hiveloom" / "traces" / "construction.jsonl"
+    steps: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return steps
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        old, new = event.get("old_version_hash"), event.get("new_version_hash")
+        if event.get("outcome") != "ok" or not old or not new or old == new:
+            continue
+        steps.append(
+            {
+                "timestamp": event.get("timestamp", ""),
+                "command": event.get("command", ""),
+                "args": event.get("args") or {},
+                "old_version_hash": old,
+                "new_version_hash": new,
+            }
+        )
+    return steps
+
+
         # any other spec problem — so trust is checked explicitly where it
         # applies (see run_endpoint) rather than caught by type here.
         except (HiveloomError, ValueError) as exc:
@@ -1575,6 +1920,9 @@ def build_app(
         body = json.loads(await request.body() or b"{}")
         if body:
             raise ValueError("conversation creation takes an empty object")
+                # What an unset evolution model resolves to, so the picker can
+                # name it instead of saying "the default".
+                "strong_model": f"claude/{DEFAULT_STRONG_MODEL}",
         return JSONResponse(
             await asyncio.to_thread(conversations.create), status_code=201
         )
@@ -1691,6 +2039,15 @@ def build_app(
                 )
                 payload = runner_mod.run_result_payload(result)
                 payload["verdicts"] = [
+        else:
+            copilot_spec = await asyncio.to_thread(validate_harness, copilot_dir)
+            provider_override, model_override, _ = await asyncio.to_thread(
+                _run_model,
+                copilot_spec.model.provider,
+                copilot_spec.model.id,
+                None,
+                workbench_keys,
+            )
                     {
                         "verifier": verdict.verifier,
                         "passed": verdict.passed,
@@ -1803,6 +2160,7 @@ def build_app(
 
         def work() -> dict[str, Any]:
             yaml_path = harness_path(entry["path"])
+            payload["constructions"] = _construction_steps(Path(entry["path"]))
             previous = yaml_path.read_text(encoding="utf-8")
             yaml_path.write_text(text, encoding="utf-8")
             try:
@@ -1938,6 +2296,8 @@ def build_app(
         ``set_value`` for the same reason, one commit each, so an out-of-range
         temperature is refused by the schema rather than left on disk.
 
+                                "legacy": model.legacy,
+                                "restricted": model.restricted,
         The field list is closed on purpose. This is not a generic "write any
         spec path" endpoint — the Spec tab is that, with a validating save and
         a rollback — it is the three fields the Models pane owns.
@@ -1948,6 +2308,114 @@ def build_app(
         temperature = body.get("temperature")
         max_input_tokens = body.get("max_input_tokens")
         if not selector and temperature is None and max_input_tokens is None:
+    # ---------------- workbench providers ---------------- #
+    @_guarded
+    async def get_workbench_providers(request: Request) -> Response:
+        _load_workbench_env(workbench_keys)
+        return JSONResponse(await asyncio.to_thread(_provider_directory, workbench_keys))
+
+    @_guarded
+    async def put_workbench_provider(request: Request) -> Response:
+        """Add a provider, or edit one: its key, its models, its endpoint.
+
+        `api_key` is write-only: sent to set or replace the key, omitted to
+        keep the one already stored. It is never read back.
+        """
+        from hiveloom import ext
+
+        name = request.path_params["name"]
+        body = json.loads(await request.body() or b"{}")
+        unknown = sorted(set(body) - {"api_key", "models", "label", "base_url"})
+        if unknown:
+            raise ValueError(f"unknown fields: {unknown}")
+        api_key = str(body.get("api_key") or "").strip()
+
+        def work() -> dict[str, Any]:
+            _load_workbench_env(workbench_keys)
+            state = _read_provider_state()
+            entry = dict(state["providers"].get(name) or {})
+            if name in _FEATURED_PROVIDERS:
+                info = ext.provider_info(name)
+                env_name = info.api_key_env if info else ""
+                if "base_url" in body or "label" in body:
+                    raise ValueError(f"{name} has a fixed endpoint and name")
+            else:
+                if not _CUSTOM_NAME.match(name):
+                    raise ValueError(
+                        "a provider name is 2-32 lowercase letters, digits or underscores"
+                    )
+                existing = ext.provider_info(name)
+                if existing is not None and existing.source != "providers.yaml":
+                    raise ValueError(
+                        f"{name!r} is already a provider hiveloom knows — pick another name"
+                    )
+                base_url = str(body.get("base_url", entry.get("base_url")) or "").strip()
+                if not re.match(r"^https?://\S+$", base_url):
+                    raise ValueError("an OpenAI-compatible base URL is required, e.g. https://api.example.com/v1")
+                env_name = entry.get("api_key_env") or f"{name.upper()}_API_KEY"
+                label = str(body.get("label", entry.get("label")) or name).strip()[:60]
+                entry.update(custom=True, base_url=base_url, api_key_env=env_name, label=label)
+            if "models" in body:
+                entry["models"] = _clean_model_ids(body["models"])
+            if api_key:
+                if "\n" in api_key or len(api_key) > 4096:
+                    raise ValueError("that does not look like an API key")
+                _store_workbench_key(env_name, api_key, workbench_keys)
+            elif env_name and not os.environ.get(env_name):
+                raise ValueError(f"an API key is required to add {name}")
+            state["providers"][name] = entry
+            _write_provider_state(state)
+            if entry.get("custom"):
+                _write_custom_providers(state)
+            return _provider_directory(workbench_keys)
+
+        return JSONResponse(await asyncio.to_thread(work))
+
+    @_guarded
+    async def delete_workbench_provider(request: Request) -> Response:
+        name = request.path_params["name"]
+
+        def work() -> dict[str, Any]:
+            from hiveloom import ext
+
+            _load_workbench_env(workbench_keys)
+            state = _read_provider_state()
+            entry = state["providers"].pop(name, None) or {}
+            info = ext.provider_info(name)
+            env_name = entry.get("api_key_env") or (info.api_key_env if info else "")
+            if env_name and os.environ.get(env_name) and env_name not in workbench_keys:
+                raise ValueError(
+                    f"{env_name} is set in the environment the workbench was started in — "
+                    "unset it there to remove this provider"
+                )
+            if env_name:
+                _forget_workbench_key(env_name, workbench_keys)
+            if state["default_model"].partition("/")[0] == name:
+                state["default_model"] = ""
+            _write_provider_state(state)
+            if entry.get("custom"):
+                _write_custom_providers(state)
+            return _provider_directory(workbench_keys)
+
+        return JSONResponse(await asyncio.to_thread(work))
+
+    @_guarded
+    async def put_default_model(request: Request) -> Response:
+        body = json.loads(await request.body() or b"{}")
+        selector = str(body.get("model") or "").strip()
+
+        def work() -> dict[str, Any]:
+            _load_workbench_env(workbench_keys)
+            directory = _provider_directory(workbench_keys)
+            if selector and selector not in directory["enabled_models"]:
+                raise ValueError(f"{selector} is not a model of a provider set up here")
+            state = _read_provider_state()
+            state["default_model"] = selector
+            _write_provider_state(state)
+            return _provider_directory(workbench_keys)
+
+        return JSONResponse(await asyncio.to_thread(work))
+
             raise ValueError(
                 "nothing to set: pass 'selector', 'temperature', or 'max_input_tokens'"
             )
@@ -2059,6 +2527,8 @@ def build_app(
                     on_event=on_event,
                     literal_input=True,
                     run_id=run_id,
+        run_provider = run_model_id = None
+        fallback: dict[str, Any] | None = None
                     control=control,
                 )
                 payload = runner_mod.run_result_payload(result)
@@ -2066,6 +2536,19 @@ def build_app(
                     {"verifier": v.verifier, "passed": v.passed, "feedback": v.feedback}
                     for v in result.verdicts
                 ]
+        else:
+            # The harness's own model, unless its provider has no key here:
+            # then the workbench default, for this run only. Started on it
+            # rather than switched to it, because building the spec's provider
+            # first would fail on the very key that is missing.
+            spec = await asyncio.to_thread(validate_harness, entry["path"])
+            run_provider, run_model_id, fallback = await asyncio.to_thread(
+                _run_model,
+                spec.model.provider,
+                spec.model.id,
+                Path(entry["path"]),
+                workbench_keys,
+            )
                 events.put(json.dumps({"type": "run_result", **payload}))
             except Exception as exc:  # noqa: BLE001 - already streaming; report inline
                 events.put(json.dumps({"type": "error", "error": f"{type(exc).__name__}: {exc}"}))
@@ -2077,8 +2560,13 @@ def build_app(
 
         threading.Thread(target=work, daemon=True).start()
 
+                    model_override=run_model_id,
+                    provider_override=run_provider,
         async def stream():
-            yield json.dumps({"type": "run_accepted", "run_id": run_id}) + "\n"
+            opening: dict[str, Any] = {"type": "run_accepted", "run_id": run_id}
+            if fallback:
+                opening["fallback"] = fallback
+            yield json.dumps(opening) + "\n"
             while True:
                 item = await asyncio.to_thread(events.get)
                 if item is _STREAM_DONE:
@@ -2211,6 +2699,21 @@ def build_app(
         if len(alias) > 64:
             raise ValueError("an alias is at most 64 characters")
 
+                # A fork is an experiment on this harness and lives inside it
+                # (`.hiveloom/forks/<name>`), so its runs belong in this list
+                # too — tagged, so they read as "the fork's run", never as the
+                # trunk's. Without them a resumed fork left no visible trace.
+                for fork_dir in _fork_dirs(entry["path"]):
+                    fork_aliases = _read_aliases(str(fork_dir))
+                    for path in _trace_files(str(fork_dir)):
+                        hive.ingest_trace_file(path)
+                        run = hive.get_run(path.stem)
+                        if run is not None:
+                            run["alias"] = fork_aliases.get(run["run_id"]) or aliases.get(
+                                run["run_id"]
+                            )
+                            run["fork_folder"] = fork_dir.name
+                            rows.append(run)
         def work() -> dict[str, Any]:
             aliases = _read_aliases(entry["path"])
             if alias:
@@ -2476,6 +2979,7 @@ def build_app(
         run_id = runner_mod.new_run_id()
         control = RunControl()
 
+        _load_workbench_env(workbench_keys)
         def on_event(event: Any) -> None:
             events.put(event.model_dump_json())
 
@@ -2493,6 +2997,17 @@ def build_app(
                     on_event=on_event,
                     run_id=run_id,
                     control=control,
+        # Same rule as a fresh run: the fork's own model when it can run here,
+        # otherwise the workbench default for this run only.
+        fork_spec = await asyncio.to_thread(validate_harness, entry["path"])
+        run_provider, run_model_id, fallback = await asyncio.to_thread(
+            _run_model,
+            fork_spec.model.provider,
+            fork_spec.model.id,
+            Path(entry["path"]),
+            workbench_keys,
+        )
+
                 )
                 payload = runner_mod.run_result_payload(result)
                 payload["verdicts"] = [
@@ -2506,10 +3021,15 @@ def build_app(
                 _LIVE.release(run_id)
                 events.put(_STREAM_DONE)
 
+                    model_override=run_model_id,
+                    provider_override=run_provider,
         threading.Thread(target=work, daemon=True).start()
 
         async def stream():
-            yield json.dumps({"type": "run_accepted", "run_id": run_id}) + "\n"
+            opening: dict[str, Any] = {"type": "run_accepted", "run_id": run_id}
+            if fallback:
+                opening["fallback"] = fallback
+            yield json.dumps(opening) + "\n"
             while True:
                 item = await asyncio.to_thread(events.get)
                 if item is _STREAM_DONE:
@@ -2601,10 +3121,35 @@ def build_app(
                 _ingest_entry_traces(hive, entry)
                 # Proposals bind to the harness's identity, not its name, so a
                 # same-named harness elsewhere never sees them — as the CLI reads.
-                records = proposals_mod.list_proposals(
-                    hive, harness_name=entry.get("key") or entry["name"], status=status
+                name = entry.get("key") or entry["name"]
+                records = proposals_mod.list_proposals(hive, harness_name=name, status=status)
+                # What an applied proposal actually did to the spec: the
+                # evolution it produced, with the before/after diff recorded
+                # at apply time. The proposal alone only carries the new
+                # values, which for a rewritten prompt hides the one line
+                # that changed.
+                evolutions = {
+                    row["proposal_id"]: row
+                    for row in reversed(hive.evolutions(name))
+                    if row.get("proposal_id")
+                }
+            payloads = []
+            for record in records:
+                payload = proposals_mod.proposal_payload(record)
+                evolution = evolutions.get(record.id)
+                payload["evolution"] = (
+                    {
+                        "counter": evolution["counter"],
+                        "old_version_hash": evolution["old_version_hash"],
+                        "new_version_hash": evolution["new_version_hash"],
+                        "created_at": evolution["created_at"],
+                        "yaml_diff": (evolution.get("changes") or {}).get("yaml_diff", ""),
+                    }
+                    if evolution
+                    else None
                 )
-            return {"proposals": [proposals_mod.proposal_payload(r) for r in records]}
+                payloads.append(payload)
+            return {"proposals": payloads}
 
         return JSONResponse(await asyncio.to_thread(work))
 
@@ -2940,6 +3485,18 @@ def build_app(
         Route("/api/harnesses/{harness_id}/proposals", list_proposals, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/research", list_research, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/research", create_research, methods=["POST"]),
+        Route("/api/workbench/providers", get_workbench_providers, methods=["GET"]),
+        Route(
+            "/api/workbench/providers/{name}",
+            put_workbench_provider,
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/workbench/providers/{name}",
+            delete_workbench_provider,
+            methods=["DELETE"],
+        ),
+        Route("/api/workbench/default-model", put_default_model, methods=["PUT"]),
         Route("/api/harnesses/{harness_id}/research/{name}", get_research, methods=["GET"]),
         Route(
             "/api/harnesses/{harness_id}/research/{name}/run", run_research, methods=["POST"]
@@ -3045,6 +3602,14 @@ def main() -> int:
     parser.add_argument(
         "--scan-dir",
         action="append",
+def _fork_dirs(harness_dir: str) -> list[Path]:
+    """The forks this harness contains: `.hiveloom/forks/<name>` with a fork record."""
+    forks = Path(harness_dir) / ".hiveloom" / "forks"
+    if not forks.is_dir():
+        return []
+    return sorted(d for d in forks.iterdir() if d.is_dir() and (d / "fork.yaml").is_file())
+
+
         default=[],
         dest="scan_dirs",
         help="Recursively discover harness.yaml files below this directory.",

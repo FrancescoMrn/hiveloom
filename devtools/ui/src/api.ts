@@ -26,6 +26,7 @@ import {
   type RunRow,
   type TraceEvent,
   type VersionTags,
+  type WorkbenchDirectory,
 } from './types'
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -170,6 +171,35 @@ export const api = {
    * still correct, only broader: a provider a harness extension registered is
    * reported unavailable, because nothing said which harness is asking.
    */
+  /** The providers this workbench is set up with, and what they enable. */
+  workbenchProviders: () => call<WorkbenchDirectory>('/api/workbench/providers'),
+
+  /**
+   * Add or edit a provider. `api_key` is write-only: send it to set or replace
+   * the key, omit it to keep the stored one. It is never returned.
+   */
+  putProvider: (
+    name: string,
+    body: { api_key?: string; models?: string[]; label?: string; base_url?: string },
+  ) =>
+    call<WorkbenchDirectory>(`/api/workbench/providers/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  deleteProvider: (name: string) =>
+    call<WorkbenchDirectory>(`/api/workbench/providers/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+
+  setDefaultModel: (model: string) =>
+    call<WorkbenchDirectory>('/api/workbench/default-model', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model }),
+    }),
+
   providers: (harnessId?: string) =>
     call<{ providers: Provider[] }>(
       harnessId ? `/api/providers?harness=${encodeURIComponent(harnessId)}` : '/api/providers',
@@ -321,6 +351,20 @@ export async function streamRun(
     signal,
     onAccepted,
   )
+}
+
+/**
+ * Resume a fork from the journal point it was created at: the parent's
+ * conversation is replayed verbatim against the fork's harness and the run
+ * continues from there. No new input — that is what makes the two comparable.
+ */
+export async function streamResume(
+  harnessId: string,
+  onEvent: (event: TraceEvent) => void,
+  signal?: AbortSignal,
+  onAccepted?: (runId: string) => void,
+): Promise<RunResult | { type: 'error'; error: string }> {
+  return streamEndpoint(`/api/harnesses/${harnessId}/resume`, {}, onEvent, signal, onAccepted)
 }
 
 /** Run the bundled Hiveloom expert. Target harnesses are tools of this run. */

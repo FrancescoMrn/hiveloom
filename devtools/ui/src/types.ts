@@ -59,6 +59,17 @@ export interface HarnessDetail extends Harness {
   spec?: Record<string, unknown>
   /** The version a run started now would be recorded under. */
   version_hash?: string
+  /** Construction-API changes (set/add/remove/set model) and the versions they linked. */
+  constructions?: ConstructionStep[]
+}
+
+/** One validated construction change, from the harness's construction log. */
+export interface ConstructionStep {
+  timestamp: string
+  command: string
+  args: Record<string, unknown>
+  old_version_hash: string
+  new_version_hash: string
 }
 
 export interface CatalogEntry {
@@ -160,6 +171,8 @@ export interface RunRow {
   /** How this run hangs off its parent: a delegated peer run, or a fork. */
   lineage_kind?: 'delegation' | 'fork' | null
   forked_at_seq?: number | null
+  /** Set when the run belongs to a fork this harness contains: the fork's folder. */
+  fork_folder?: string | null
   model_path?: string
   verifications?: Verification[]
   guardrail_triggers?: GuardrailTrigger[]
@@ -209,6 +222,8 @@ export interface CopilotInfo {
   name: string
   description: string
   model: string
+  /** `provider/id` an unset evolution model resolves to. */
+  strong_model?: string
   version_hash: string
   suggestions: string[]
 }
@@ -301,6 +316,57 @@ export interface ProviderModel {
   context_window: number | null
   input_cost_per_mtok: number
   output_cost_per_mtok: number
+  /** Superseded but still valid and priced: kept off pickers unless in use. */
+  legacy?: boolean
+  /** Access-program only (e.g. Project Glasswing): kept off pickers unless in use. */
+  restricted?: boolean
+}
+
+/** One model a workbench provider offers, priced from hiveloom's registry. */
+export interface WorkbenchModel {
+  id: string
+  label: string
+  context_window: number | null
+  /** null for an id the registry does not price (OpenRouter routes, custom ids). */
+  input_cost_per_mtok: number | null
+  output_cost_per_mtok: number | null
+}
+
+/** A provider this workbench was set up with (Settings → Models). */
+export interface WorkbenchProvider {
+  name: string
+  label: string
+  custom: boolean
+  base_url: string
+  api_key_env: string
+  /** Whether a key is present — never the key itself. */
+  key_set: boolean
+  /** `workbench` (~/.hiveloom/.env), `process` (the API's environment), or ''. */
+  key_from: 'workbench' | 'process' | 'none' | ''
+  /** False for a key exported in the environment: it is removed there. */
+  removable: boolean
+  /** `catalog`: pick from hiveloom's list. `ids`: name the model ids yourself. */
+  model_entry: 'catalog' | 'ids'
+  models: WorkbenchModel[]
+}
+
+/** A provider that can be added: the four named ones (plus "Other" in the UI). */
+export interface ProviderOffer {
+  name: string
+  label: string
+  models: 'catalog' | 'ids'
+  api_key_env: string
+  choices: WorkbenchModel[]
+}
+
+export interface WorkbenchDirectory {
+  catalog: ProviderOffer[]
+  providers: WorkbenchProvider[]
+  /** `provider/id` for every model of a provider whose key is set. */
+  enabled_models: string[]
+  default_model: string
+  /** What a run falls back to when its harness's own model cannot run here. */
+  effective_default: string
 }
 
 export interface Provider {
@@ -385,6 +451,15 @@ export interface Proposal {
   /** What the gate allowed: frozen fields never reach `accepted`. */
   gate: { accepted: YamlChange[]; rejected: { path: string; reason: string }[]; code_changes: CodeChange[] }
   apply_result: Record<string, unknown> | null
+  /** For an applied proposal: the evolution it produced, with its spec diff. */
+  evolution?: {
+    counter: number
+    old_version_hash: string
+    new_version_hash: string
+    created_at: string
+    /** Unified diff of harness.yaml, before → after (capped when recorded). */
+    yaml_diff: string
+  } | null
 }
 
 export interface ApplyResult {

@@ -3,10 +3,11 @@ import logo from '../../../../docs/assets/logo.png'
 import { projectTrajectory } from '../trajectory'
 import { api } from '../api'
 import { runLabel } from '../runs'
-import type { Artifact, Attachment, CopilotInfo, Harness, RunRow } from '../types'
+import type { Artifact, Attachment, CopilotInfo, Harness, RunRow, WorkbenchDirectory } from '../types'
 import type { CopilotWorkspace } from '../useCopilot'
 import { DelegationTrail, MessageBody } from './messages'
 import { StatusPill } from './common'
+import { ModelPicker } from './ModelPicker'
 
 const ARTIFACT_LABELS: Record<string, { icon: string; title: string }> = {
   workspace_context: { icon: 'ph-crosshair', title: 'Workbench context' },
@@ -32,9 +33,11 @@ const ARTIFACT_LABELS: Record<string, { icon: string; title: string }> = {
 export function CopilotChat({
   info,
   harness,
+  harnesses = [],
+  onSelectHarness,
   run,
   workspace,
-  models = [],
+  directory = null,
   model,
   onModel,
   onArtifact,
@@ -43,9 +46,13 @@ export function CopilotChat({
 }: {
   info: CopilotInfo | null
   harness: Harness | null
+  /** Offered as one-click choices while no harness is attached. */
+  harnesses?: Harness[]
+  onSelectHarness?: (id: string) => void
   run: RunRow | null
   workspace: CopilotWorkspace
-  models: string[]
+  /** The workbench's providers: the composer offers exactly their models. */
+  directory?: WorkbenchDirectory | null
   model: string
   onModel: (model: string) => void
   onArtifact: (artifact: Artifact) => void
@@ -57,10 +64,20 @@ export function CopilotChat({
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  // Set when + is pressed with nothing attached: files land in a harness
+  // folder, so the composer asks for one instead of failing.
+  const [needsHarness, setNeedsHarness] = useState(false)
   const [uploading, setUploading] = useState(false)
   const input = useRef<HTMLTextAreaElement | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const end = useRef<HTMLDivElement | null>(null)
+
+  // Whatever the composer said about the previous harness (or its absence)
+  // no longer applies once the context changes.
+  useEffect(() => {
+    setNeedsHarness(false)
+    setAttachmentError(null)
+  }, [harness?.id])
 
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -108,6 +125,13 @@ export function CopilotChat({
           <div className="copilot-welcome">
             <img className="copilot-welcome-mark" src={logo} alt="Hiveloom" width={42} height={42} />
             <h1>What are we working on today?</h1>
+            {!harness && onSelectHarness && (
+              <HarnessChoices
+                lead={harnesses.length ? 'Pick a harness to work on, or ask Hiveloom to create one.' : 'No harnesses yet — ask Hiveloom to create one.'}
+                harnesses={harnesses}
+                onSelect={onSelectHarness}
+              />
+            )}
           </div>
         ) : (
           workspace.messages.map((message, index) =>
@@ -225,7 +249,7 @@ export function CopilotChat({
             disabled={workspace.busy || uploading}
             onClick={() => {
               if (!harness) {
-                setAttachmentError('Select a harness before attaching a file.')
+                setNeedsHarness(true)
                 return
               }
               fileInput.current?.click()
@@ -260,15 +284,26 @@ export function CopilotChat({
           )}
         </div>
         {attachmentError && <div className="copilot-attachment-error">{attachmentError}</div>}
+        {needsHarness && !harness && onSelectHarness && (
+          <div className="copilot-needs-harness">
+            <HarnessChoices
+              lead={harnesses.length ? 'Files are added to a harness folder. Choose one first:' : 'Files are added to a harness folder — create a harness first.'}
+              harnesses={harnesses}
+              onSelect={onSelectHarness}
+            />
+            <button className="icon-btn" onClick={() => setNeedsHarness(false)} title="Dismiss">
+              <i className="ph ph-x" />
+            </button>
+          </div>
+        )}
         <div className="copilot-composer-tools">
-          <label>
-            <i className="ph ph-brain" />
-            <select aria-label="Copilot model" value={model} onChange={(event) => onModel(event.target.value)}>
-              {models.map((selector) => (
-                <option key={selector} value={selector}>{selector}</option>
-              ))}
-            </select>
-          </label>
+          <ModelPicker
+            variant="chip"
+            directory={directory}
+            value={model}
+            ariaLabel="Copilot model"
+            onChange={onModel}
+          />
           <span>⌘/Ctrl + Enter · framework actions are journalled</span>
         </div>
       </div>
@@ -283,6 +318,29 @@ export function CopilotChat({
         </div>
       )}
     </section>
+  )
+}
+
+const MAX_HARNESS_CHOICES = 6
+
+function HarnessChoices({ lead, harnesses, onSelect }: { lead: string; harnesses: Harness[]; onSelect: (id: string) => void }) {
+  const trunks = harnesses.filter((item) => !item.is_fork)
+  const shown = trunks.slice(0, MAX_HARNESS_CHOICES)
+  return (
+    <div className="harness-choices">
+      <span>{lead}</span>
+      {shown.length > 0 && (
+        <div>
+          {shown.map((item) => (
+            <button key={item.id} onClick={() => onSelect(item.id)} title={item.description || item.name}>
+              <i className="ph ph-hexagon" />
+              {item.name}
+            </button>
+          ))}
+          {trunks.length > shown.length && <em>+{trunks.length - shown.length} more in the sidebar</em>}
+        </div>
+      )}
+    </div>
   )
 }
 

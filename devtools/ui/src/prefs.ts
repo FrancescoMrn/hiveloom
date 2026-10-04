@@ -28,17 +28,6 @@ export interface Prefs {
    * is the right shape — it runs once per proposal, not once per turn.
    */
   evolveModel: string
-  /**
-   * The models the composer offers, whichever harness is open.
-   *
-   * A workbench setting, not a harness one: which models you are working with
-   * today follows you across harnesses, while the model a harness *runs* is
-   * part of what that harness is and travels with it to anyone else. A
-   * narrowing and nothing else — empty means every model a key here can reach,
-   * so a workbench nobody has configured has a full seat rather than an empty
-   * one, and the open harness's own model is always offered on top.
-   */
-  seatModels: string[]
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -46,7 +35,6 @@ export const DEFAULT_PREFS: Prefs = {
   trustOnCreate: true,
   theme: 'dark',
   evolveModel: '',
-  seatModels: [],
 }
 
 const KEY = 'hiveloom.workbench.prefs'
@@ -62,30 +50,10 @@ export function loadPrefs(): Prefs {
       theme:
         stored.theme === 'light' || stored.theme === 'system' ? stored.theme : DEFAULT_PREFS.theme,
       evolveModel: typeof stored.evolveModel === 'string' ? stored.evolveModel : '',
-      seatModels: seatModels(stored.seatModels),
     }
   } catch {
     return { ...DEFAULT_PREFS }
   }
-}
-
-/**
- * Storage is a text file a person can edit; read it as if they did.
- *
- * A stored object rather than a list is the shape this preference had while it
- * was per harness. Its values are folded together instead of dropped: the
- * models someone picked are the models they picked, and the id they were
- * picked under has simply stopped mattering.
- */
-function seatModels(raw: unknown): string[] {
-  const rows = Array.isArray(raw)
-    ? raw
-    : raw && typeof raw === 'object'
-      ? Object.values(raw as Record<string, unknown>).flatMap((value) =>
-          Array.isArray(value) ? value : [],
-        )
-      : []
-  return [...new Set(rows.filter((item): item is string => typeof item === 'string' && !!item))]
 }
 
 export function savePrefs(prefs: Prefs): void {
