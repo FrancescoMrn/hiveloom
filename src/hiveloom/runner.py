@@ -254,6 +254,14 @@ def dry_run(
         registry.close()
 
 
+def _resumed_task(history: list[dict[str, Any]]) -> str:
+    """The task a resumed thread started from: its first plain-text user message."""
+    for message in history:
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            return message["content"]
+    return ""
+
+
 def run_harness(
     harness_dir: str | Path,
     input_value: str | None = None,
@@ -370,9 +378,12 @@ def run_harness(
                 "comes from the parent journal, not from a new input"
             )
         history = list(resume_messages)
-        # The parent's task statement is already inside the folded thread; the
-        # trace records what this run re-entered rather than a fresh input.
-        run_input = (lineage or {}).get("parent_run_id", "")
+        # The parent's task statement is already inside the folded thread, and
+        # no new one is appended. It is still this run's input: validators
+        # read `run_context["input"]` to know what was asked, so recording the
+        # parent's run id here made a resumed fork fail verification with the
+        # very answer its parent passed on. Provenance travels in `lineage`.
+        run_input = _resumed_task(history) or (lineage or {}).get("parent_run_id", "")
     else:
         history, run_input = _resolve_conversation(
             base, input_value, conversation, literal_input=literal_input
