@@ -106,6 +106,7 @@ only-include = [
     "docs/evaluating.md",
     "docs/delegation.md",
     "docs/signal-driven-evolution.md",
+    "docs/research.md",
     "docs/journal.md",
     "docs/workbench.md",
     "docs/deploying-and-evolving.md",
