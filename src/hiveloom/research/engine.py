@@ -40,6 +40,7 @@ from hiveloom.evolve.evolver import MutationProposal, apply_proposal, gate
 from hiveloom.evolve.signal import locate_signal
 from hiveloom.logging.hive import Hive
 from hiveloom.spec.loader import dump_spec, load_spec, spec_to_dict
+from hiveloom.spec.schema import HarnessSpec
 
 from .concepts import ConceptsEngine, FrameTools
 from .execution import ResearchToolPolicy, resolve
@@ -164,7 +165,7 @@ class Engine(ConceptsEngine):
             "budget": pools,
             "stop_reason": state.get("stop_reason"),
             "confirmation": state.get("confirmation"),
-            "promotion": state.get("promotion"),
+            "promotion": _live_promotion(state.get("promotion")),
             "ledger": self.program.ledger.verify(),
             "mode": "concepts" if self.charter.concepts_mode else "eval",
             "awaiting": "contract" if state["unit"] == "approve" else None,
@@ -671,6 +672,38 @@ class Engine(ConceptsEngine):
         )
         return result
 
+    def _objective_expectations(
+        self, spec: HarnessSpec, target: str | None
+    ) -> list[dict[str, str]]:
+        """The metric objectives a research change is accountable to.
+
+        A harness that declares `evolution.objectives` only accepts a proposal
+        that names at least one of them (the gate's rule, so a change can be
+        assessed against what the harness is for). Without this every
+        experiment on such a harness was refused and the director spent its
+        rounds probing the gate. The direction always comes from the objective
+        itself; which objectives, in order of preference: the hypothesis's own
+        target when it is one, else the charter's goal metrics, else all.
+        """
+        objectives = {o.metric: o for o in spec.evolution.objectives}
+        if not objectives:
+            return []
+        wanted: list[str] = []
+        if target and target.startswith("metric:") and target[7:] in objectives:
+            wanted = [target[7:]]
+        if not wanted:
+            wanted = [key[7:] for key in self.charter.stop.goal
+                      if key.startswith("metric:") and key[7:] in objectives]
+        if not wanted:
+            wanted = list(objectives)
+        return [
+            {"metric": metric,
+             "expected_change": "increase" if objectives[metric].direction == "maximize"
+             else "decrease",
+             "rationale": "a configured objective this research program answers to"}
+            for metric in wanted
+        ]
+
     def make_experiment(self, state: dict[str, Any], base: str, hypothesis: dict[str, Any],
                         changes: list[dict[str, Any]], **extra: Any) -> tuple[dict, str]:
         """A candidate from ``base`` plus ``changes`` (gated), queued as an experiment."""
@@ -678,6 +711,8 @@ class Engine(ConceptsEngine):
         proposal = MutationProposal.model_validate({
             "rationale": hypothesis["claim"],
             "target": {"signal": hypothesis["target"], "expect": hypothesis["expect"]},
+            "objective_expectations": self._objective_expectations(
+                base_spec, hypothesis["target"]),
             "yaml_changes": changes,
         })
         verdict = gate(base_spec, proposal)
@@ -917,6 +952,8 @@ class Engine(ConceptsEngine):
                          f"evidence {strength}",
             "target": ({"signal": first["target"], "expect": first["expect"]}
                        if first else None),
+            "objective_expectations": self._objective_expectations(
+                live, first["target"] if first else None),
             "yaml_changes": changes,
         })
         result = gate(live, proposal)
@@ -1021,15 +1058,54 @@ class Engine(ConceptsEngine):
         findings = [f for h in state.get("handoffs", []) for f in h.get("findings", [])]
         if findings:
             lines += ["", "## Findings", ""] + [f"- {f}" for f in findings]
-        promotion = state.get("promotion")
+        promotion = _live_promotion(state.get("promotion"))
         lines += ["", "## Promotion", ""]
-        if promotion:
+        if promotion and promotion["status"] == "applied":
+            lines.append(f"Proposal `{promotion['proposal_id']}` was applied"
+                         + (f" as evolution #{promotion['counter']}" if promotion.get("counter")
+                            else "")
+                         + f" ({promotion['changes']} change(s)).")
+        elif promotion and promotion["status"] != "pending":
+            lines.append(f"Proposal `{promotion['proposal_id']}` was {promotion['status']}.")
+        elif promotion:
             lines.append(f"Proposal `{promotion['proposal_id']}` ({promotion['status']}, "
                          f"{promotion['changes']} change(s)). Review and apply with "
                          f"`hiveloom proposals apply . {promotion['proposal_id']} --yes`.")
         else:
             lines.append("Nothing to promote.")
         return "\n".join(lines) + "\n"
+
+
+def _live_promotion(promotion: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The promotion as it stands now, not as it stood when it was queued.
+
+    The program's state records the proposal it queued with status "pending",
+    and nothing writes back to it when that proposal is applied or rejected
+    through the review queue — so reporting the stored status said "waiting on
+    you" about a change that had already shipped. The Hive's proposal row is
+    the source of truth; the stored copy is kept as what was queued.
+    """
+    if not promotion or not promotion.get("proposal_id"):
+        return promotion
+    try:
+        with Hive() as hive:
+            row = hive.get_proposal(promotion["proposal_id"])
+    except Exception:  # noqa: BLE001 - a status read must not fail on the Hive
+        return promotion
+    if not row:
+        return promotion
+    live = {**promotion, "status": row.get("status") or promotion.get("status")}
+    if row.get("resolved_at"):
+        live["resolved_at"] = row["resolved_at"]
+    try:
+        applied = json.loads(row.get("apply_result_json") or "null") or {}
+    except (TypeError, ValueError):
+        applied = {}
+    if live["status"] == "applied" and isinstance(applied, dict):
+        for key in ("counter", "old_version_hash", "new_version_hash"):
+            if applied.get(key) is not None:
+                live[key] = applied[key]
+    return live
 
 
 def stats_alpha() -> float:

@@ -134,3 +134,35 @@ def test_sequential_rules_stop_for_harm_and_futility_but_not_for_benefit():
                        target_against=0, remaining=6) == "continue"
     assert decide_look(success_improved=6, success_worsened=0, target_toward=6,
                        target_against=0, remaining=0) == "complete"
+
+
+def test_a_promotion_reports_what_happened_to_its_proposal_not_what_was_queued():
+    """An applied promotion must not keep saying "pending — review and apply"."""
+    import json as _json
+
+    from hiveloom.logging.hive import Hive
+    from hiveloom.research.engine import _live_promotion
+
+    queued = {"proposal_id": "prop_live", "status": "pending", "changes": 1,
+              "strength": "supported"}
+    with Hive() as hive:
+        hive.insert_proposal({
+            "id": "prop_live", "harness_name": "hl-x", "spec_version_hash": "v1",
+            "dedup_key": "k", "status": "pending", "trigger": "research", "rationale": "",
+            "proposal_json": "{}", "gate_json": "{}", "evidence_json": None,
+            "apply_result_json": None, "created_at": "2026-09-28T15:34:18+00:00",
+            "resolved_at": None,
+        })
+    assert _live_promotion(queued)["status"] == "pending"
+
+    with Hive() as hive:
+        hive.update_proposal(
+            "prop_live", status="applied", resolved_at="2026-10-04T09:33:20+00:00",
+            apply_result_json=_json.dumps(
+                {"counter": 1, "old_version_hash": "v1", "new_version_hash": "v2"}
+            ),
+        )
+    live = _live_promotion(queued)
+    assert live["status"] == "applied" and live["counter"] == 1
+    assert live["new_version_hash"] == "v2"
+    assert queued["status"] == "pending", "the stored record of what was queued is untouched"

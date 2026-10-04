@@ -482,3 +482,43 @@ def test_the_brief_names_confirmed_fixes_that_are_not_in_the_incumbent():
                                  "verdict": "confirmed", "kept": True, "stacked_from": "e1",
                                  "changes": []})
     assert DirectorSession._unmerged(SimpleNamespace(state=state)) == []
+
+
+def test_research_changes_name_the_harness_objectives_so_the_gate_accepts_them():
+    """A harness with `evolution.objectives` refused every research experiment.
+
+    The engine built proposals without objective expectations; the gate
+    requires one for such a harness, so a program on ranked-retrieval designed
+    nothing and spent its rounds probing the refusal.
+    """
+    from types import SimpleNamespace
+
+    from hiveloom.evolve.evolver import MutationProposal, gate
+    from hiveloom.research.engine import Engine
+    from hiveloom.spec.loader import load_spec
+
+    spec = load_spec(Path(__file__).resolve().parents[1] / "harnesses" / "ranked-retrieval")
+    assert spec.evolution.objectives, "the fixture must declare metric objectives"
+    expect = Engine._objective_expectations
+
+    def owner(goal: dict) -> SimpleNamespace:
+        return SimpleNamespace(charter=SimpleNamespace(stop=SimpleNamespace(goal=goal)))
+
+    # The hypothesis's own target wins when it is an objective…
+    named = expect(owner({}), spec, "metric:ndcg_at_3")
+    assert [e["metric"] for e in named] == ["ndcg_at_3"]
+    # …else the charter's goal metrics, else every objective.
+    goal = expect(owner({"metric:recall_at_3": 0.9}), spec, "tool_error:search")
+    assert [e["metric"] for e in goal] == ["recall_at_3"]
+    every = expect(owner({}), spec, "success_rate")
+    assert {e["metric"] for e in every} == {o.metric for o in spec.evolution.objectives}
+    # Directions come from the objectives, never guessed.
+    assert {e["metric"]: e["expected_change"] for e in every}["hallucination_rate"] == "decrease"
+
+    proposal = MutationProposal.model_validate({
+        "rationale": "rephrase the query in the knowledge base's terms",
+        "target": {"signal": "metric:recall_at_3", "expect": "increase"},
+        "objective_expectations": goal,
+        "yaml_changes": [{"path": "system_prompt", "value": spec.system_prompt + "\\nMore."}],
+    })
+    assert not gate(spec, proposal).rejected
