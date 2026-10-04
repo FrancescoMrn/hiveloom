@@ -27,9 +27,9 @@
 // Explicit extension: this is the one module here that imports another at
 // runtime rather than for types alone, and `node --test`'s type stripping
 // resolves relative specifiers verbatim.
-import type { Harness, Proposal, RunRow, Stats } from './types'
+import type { ConstructionStep, Harness, Proposal, RunRow, Stats } from './types'
 
-export type VersionKind = 'initial' | 'evolved' | 'fork' | 'edited'
+export type VersionKind = 'initial' | 'evolved' | 'fork' | 'configured' | 'edited'
 
 export interface VersionChange {
   path: string
@@ -78,6 +78,8 @@ export interface VersionGraph {
  * @param proposals   its proposals; only applied ones produced a version
  * @param stats       the Hive's per-version run counts, which include versions
  *                    no folder holds any more
+ * @param constructions validated construction changes (`set model`, `set`,
+ *                    `add`, `remove`) that recorded the version they came from
  */
 export function buildVersionGraph(
   name: string,
@@ -85,6 +87,7 @@ export function buildVersionGraph(
   runs: RunRow[],
   proposals: Proposal[],
   stats: Stats | null,
+  constructions: ConstructionStep[] = [],
 ): VersionGraph {
   const runsByVersion = new Map<string, RunRow[]>()
   for (const run of runs) {
@@ -119,6 +122,17 @@ export function buildVersionGraph(
   const evolvedBy = new Map<string, { proposal: Proposal; result: AppliedShape }>()
   for (const row of applied) evolvedBy.set(row.result.new_version_hash, row)
 
+  // A construction change is not an evolution — nothing proposed or gated it —
+  // but its log entry states the version it started from, so the version it
+  // produced is drawn as that one's child. The latest record wins when the
+  // same version was reached twice (set, then set back).
+  const configuredBy = new Map<string, ConstructionStep>()
+  for (const step of constructions) {
+    remember(step.old_version_hash)
+    remember(step.new_version_hash)
+    configuredBy.set(step.new_version_hash, step)
+  }
+
   // A fork only becomes a *version* once it diverges. Copying a folder and
   // changing nothing produces an identical spec and therefore an identical
   // hash, so an unedited fork is the same version seen from a second folder —
@@ -149,6 +163,7 @@ export function buildVersionGraph(
     const own = runsByVersion.get(hash) ?? []
     const evolved = evolvedBy.get(hash)
     const fork = forkedBy.get(hash)
+    const configured = configuredBy.get(hash)
     const folder = folderOf.get(hash)
     return {
       hash,
@@ -156,10 +171,12 @@ export function buildVersionGraph(
         ...own.map((run) => run.started_at ?? ''),
         evolved?.proposal.resolved_at ?? '',
         fork?.fork?.created_at ?? '',
+        configured?.timestamp ?? '',
       ]),
       runs: own,
       evolved,
       fork,
+      configured,
       folder,
     }
   })
@@ -177,7 +194,7 @@ export function buildVersionGraph(
 
   const oldest = draft[draft.length - 1]?.hash ?? null
   const nodes: VersionNode[] = draft.map((row) => {
-    const { hash, evolved, fork, folder } = row
+    const { hash, evolved, fork, configured, folder } = row
     const common = {
       hash,
       createdAt: row.createdAt,
@@ -221,6 +238,19 @@ export function buildVersionGraph(
           from: null,
           to: renderValue(change.value),
         })),
+      }
+    }
+
+    if (configured) {
+      return {
+        ...common,
+        kind: 'configured' as const,
+        parent: configured.old_version_hash,
+        title: `Configured · ${describeStep(configured)}`,
+        note:
+          'Changed through the validated construction API (as `hiveloom set` would), not through ' +
+          'a proposal — so it is a step in the lineage, but not an evolution with a claim to assess.',
+        changes: stepChanges(configured),
       }
     }
 
@@ -380,4 +410,28 @@ function renderValue(value: unknown): string {
   } catch {
     return String(value)
   }
+}
+
+/** "set model → openrouter/deepseek/…", in the words of the command that ran. */
+function describeStep(step: ConstructionStep): string {
+  const args = step.args
+  if (step.command === 'set_model') {
+    const target = [args.provider, args.id].filter(Boolean).join('/')
+    return target ? `model → ${target}` : 'model changed'
+  }
+  const path = typeof args.path === 'string' ? args.path : ''
+  return [step.command.replace(/_/g, ' '), path].filter(Boolean).join(' ')
+}
+
+function stepChanges(step: ConstructionStep): VersionChange[] {
+  const args = step.args
+  if (step.command === 'set_model') {
+    return Object.entries(args)
+      .filter(([, value]) => value !== null && value !== undefined && value !== '')
+      .map(([key, value]) => ({ path: `model.${key}`, from: null, to: renderValue(value) }))
+  }
+  if (typeof args.path === 'string' && 'value' in args) {
+    return [{ path: args.path, from: null, to: renderValue(args.value) }]
+  }
+  return []
 }

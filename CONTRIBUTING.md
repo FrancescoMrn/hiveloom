@@ -20,8 +20,8 @@ Use the CLI construction commands when changing a harness. They validate and
 roll back invalid mutations:
 
 ```bash
-uv run hiveloom validate harnesses/example-summarizer
-uv run hiveloom run harnesses/example-summarizer --input notes.txt --dry-run
+uv run hiveloom validate tests/fixtures/harnesses/example-summarizer
+uv run hiveloom run tests/fixtures/harnesses/example-summarizer --input notes.txt --dry-run
 ```
 
 The demo harnesses in `harnesses/` are ordinary committed folders, each
@@ -37,7 +37,7 @@ provider or transport you changed:
 ```bash
 # Anthropic end-to-end smoke through a real example harness
 ANTHROPIC_API_KEY=... HIVELOOM_TRUST=always \
-  uv run hiveloom run harnesses/example-summarizer --input notes.txt --json
+  uv run hiveloom run tests/fixtures/harnesses/example-summarizer --input notes.txt --json
 
 # OpenAI-compatible three-turn/tool-call smoke
 HIVELOOM_LIVE_SMOKE=1 uv run python scripts/smoke_openai_compat.py \

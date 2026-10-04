@@ -28,7 +28,7 @@ from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 from hiveloom.spec.loader import dump_spec, load_spec
 from hiveloom.spec.schema import LoggingConfig, RetentionConfig
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 _VALID = json.dumps({"title": "T", "summary": "short.", "key_points": ["a"]})
 cli = CliRunner()
 

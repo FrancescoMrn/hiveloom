@@ -865,3 +865,91 @@ def test_model_capabilities_and_timeouts_must_be_positive(value):
         _YamlModelEntry(id="m", max_output_tokens=value)
     with pytest.raises(ValueError):
         _YamlProviderEntry(timeout_seconds=value)
+
+
+def test_a_models_yaml_reprice_keeps_a_builtin_legacy_model_legacy(monkeypatch, tmp_path: Path):
+    """Overriding a superseded model's price must not put it back on pickers."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    (tmp_path / "models.yaml").write_text(
+        "providers:\n"
+        "  claude:\n"
+        "    models:\n"
+        "      - {id: claude-opus-5, input_cost_per_mtok: 5.0, output_cost_per_mtok: 25.0}\n"
+        "      - {id: claude-sonnet-5, input_cost_per_mtok: 2.0, output_cost_per_mtok: 10.0,"
+        " legacy: false}\n",
+        encoding="utf-8",
+    )
+
+    opus, sonnet = ext.model_info("claude-opus-5"), ext.model_info("claude-sonnet-5")
+    assert opus is not None and opus.legacy, "the override silently un-retired the model"
+    assert sonnet is not None and not sonnet.legacy, "an explicit legacy: false was ignored"
+
+
+def test_models_yaml_can_offer_a_restricted_model_to_an_account_with_access(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    assert ext.model_info("claude-mythos-5-1").restricted
+    (tmp_path / "models.yaml").write_text(
+        "providers:\n  claude:\n    models:\n"
+        "      - {id: claude-mythos-5-1, input_cost_per_mtok: 10.0,"
+        " output_cost_per_mtok: 50.0, restricted: false}\n",
+        encoding="utf-8",
+    )
+    ext.reset()
+    assert not ext.model_info("claude-mythos-5-1").restricted
+
+
+def test_workbench_providers_yaml_registers_and_models_yaml_wins(monkeypatch, tmp_path: Path):
+    """The machine-written file adds providers; the hand-written one has the last word."""
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    (tmp_path / "providers.yaml").write_text(
+        "providers:\n"
+        "  acme:\n"
+        "    base_url: https://llm.acme.test/v1\n"
+        "    api_key_env: ACME_API_KEY\n"
+        "    label: Acme\n"
+        "    open_catalog: true\n"
+        "  rival:\n"
+        "    base_url: https://from-workbench.test/v1\n"
+        "    open_catalog: true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "models.yaml").write_text(
+        "providers:\n  rival:\n    base_url: https://by-hand.test/v1\n    open_catalog: true\n",
+        encoding="utf-8",
+    )
+    ext.reset()
+
+    acme = ext.provider_info("acme")
+    assert acme is not None and acme.label == "Acme" and acme.open_catalog
+    assert acme.api_key_env == "ACME_API_KEY"
+    assert ext.provider_info("rival").base_url == "https://by-hand.test/v1"
+    # Open catalog: any id the person names validates.
+    assert ModelConfig(provider="acme", id="whatever-they-serve").provider == "acme"
+
+
+def test_reload_user_providers_adds_and_removes_without_touching_the_rest(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setenv("HIVELOOM_HOME", str(tmp_path))
+    ext.reset()
+    ext.ensure_environment_loaded()
+    builtin_count = len(ext.providers())
+
+    file = tmp_path / "providers.yaml"
+    file.write_text(
+        "providers:\n  acme:\n    base_url: https://llm.acme.test/v1\n    open_catalog: true\n",
+        encoding="utf-8",
+    )
+    ext.reload_user_providers()
+    assert ext.provider_info("acme") is not None
+    assert len(ext.providers()) == builtin_count + 1
+
+    file.unlink()
+    ext.reload_user_providers()
+    assert ext.provider_info("acme") is None
+    assert ext.provider_info("claude") is not None
+    assert len(ext.providers()) == builtin_count

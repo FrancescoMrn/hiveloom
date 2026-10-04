@@ -14,7 +14,7 @@ import { categoryOf, formatMs, formatTokens, preview, projectTrajectory } from '
 import { runLabel } from '../runs'
 import { ForkDialog } from './ForkDialog'
 import { RunTotals, Timeline } from './Timeline'
-import { Label, Notice, Stat, StatRow, StatusPill, when } from './common'
+import { Label, Notice, Stat, StatRow, StatusPill, when, whenExact } from './common'
 
 type Filter = 'all' | EventCategory
 type InspectorTab = 'summary' | 'payload' | 'result' | 'context' | 'schema' | 'timing' | 'raw'
@@ -43,8 +43,11 @@ export function Trajectory({
   runs,
   onSelectRun,
   onOpenHarness,
+  onRunsChanged,
 }: {
   harness: HarnessDetail
+  /** Called when a run was added from here (a fork resumed from the fork dialog). */
+  onRunsChanged?: () => Promise<void> | void
   /** The run the shell has selected; null shows the harness overview. */
   runId: string | null
   runs: RunRow[] | null
@@ -305,6 +308,7 @@ export function Trajectory({
               setForking(null)
               await onOpenHarness(id)
             }}
+            onResumed={() => void onRunsChanged?.()}
           />
         )}
       </div>
@@ -378,12 +382,18 @@ export function Trajectory({
                   {runLabel(run)}
                 </td>
                 <td><StatusPill status={run.status} /></td>
-                <td>{when(run.started_at)}</td>
+                <td style={{ whiteSpace: 'nowrap' }} title={whenExact(run.started_at)}>{when(run.started_at)}</td>
                 <td>{run.turns}</td>
                 <td>${run.cost_usd.toFixed(4)}</td>
                 <td>{run.duration_seconds.toFixed(1)}s</td>
                 <td className="mono" style={{ fontSize: 12 }}>{run.harness_version_hash.slice(0, 12)}</td>
-                <td>{run.parent_run_id ? `fork @ ${run.forked_at_seq}` : 'root'}</td>
+                <td>
+                  {run.fork_folder
+                    ? `fork ${run.fork_folder} @ ${run.forked_at_seq ?? '?'}`
+                    : run.parent_run_id
+                      ? `fork @ ${run.forked_at_seq}`
+                      : 'root'}
+                </td>
               </tr>
             ))}
           </tbody>

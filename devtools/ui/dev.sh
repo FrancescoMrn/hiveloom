@@ -6,11 +6,16 @@
 # the browser origin instead and proxies /api to the Python process, so an edit
 # to either half reloads without a restart.
 #
-#   devtools/ui/dev.sh [--dir HARNESS ...] [--scan-dir ROOT ...] [--host 0.0.0.0]
+#   devtools/ui/dev.sh [--showcase] [--dir HARNESS ...] [--scan-dir ROOT ...] [--host 0.0.0.0]
 #
 # Harnesses come from the registry and a recursive scan of this checkout's
 # `harnesses/` directory. --dir adds one harness for this process;
 # --scan-dir adds another recursively discovered tree.
+#
+#   --showcase       serve seeded copies of the offline demos instead, with
+#                    runs, forks, evolutions, a research program and pending
+#                    proposals to explore (devtools/ui/showcase.py; seeded on
+#                    first use, `showcase.py --reset` to reseed).
 #
 #   --host 0.0.0.0   bind both servers on every interface. Needed whenever the
 #                    browser is not on this machine — a container, a VM, a
@@ -34,16 +39,30 @@ API_PORT="${HIVELOOM_UI_API_PORT:-8770}"
 WEB_PORT="${HIVELOOM_UI_PORT:-5173}"
 HOST="${HIVELOOM_UI_HOST:-127.0.0.1}"
 
-DIRS=(--scan-dir "$REPO/harnesses")
+SHOWCASE=0
+DIRS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --showcase) SHOWCASE=1; shift ;;
     --dir) DIRS+=(--dir "$2"); shift 2 ;;
     --scan-dir) DIRS+=(--scan-dir "$2"); shift 2 ;;
     --host) HOST="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+
+if [[ "$SHOWCASE" == 1 ]]; then
+  # The showcase has a home of its own, so its seeded history and the peer it
+  # registers never reach your Hive or registry — and the checkout's empty
+  # `harnesses/`, which share the showcase's ids, stay out of the rail.
+  uv run python devtools/ui/showcase.py
+  export HIVELOOM_HOME="$UI/.hiveloom/showcase/home"
+  export HIVELOOM_DB="$HIVELOOM_HOME/hive.db"
+  DIRS=(--scan-dir "$UI/.hiveloom/showcase/harnesses" "${DIRS[@]}")
+else
+  DIRS=(--scan-dir "$REPO/harnesses" "${DIRS[@]}")
+fi
 
 # --------------------------------------------------------------------- #
 # Fail early and legibly on the two things that actually go wrong.

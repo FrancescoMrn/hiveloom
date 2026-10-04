@@ -1,0 +1,11 @@
+{
+  "parcel_limit_kg": 70,
+  "eur_per_usd": 0.9,
+  "zones": {
+    "Z1": {"base": 4.5, "per_kg": 0.9},
+    "Z2": {"base": 6.0, "per_kg": 1.2},
+    "Z3": {"base": 8.0, "per_kg": 1.6},
+    "Z4": {"base": 11.0, "per_kg": 2.1}
+  },
+  "busy_customers": ["C-300", "C-301"]
+}

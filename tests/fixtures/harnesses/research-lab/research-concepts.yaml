@@ -1,0 +1,33 @@
+# A research charter in concepts mode: no eval, only what the user cares about.
+# The program drafts an evaluation contract and cases, waits for approval, has
+# an examiner write sealed cases, and asks for labels to calibrate its judges.
+#   hiveloom research init . --name concepts --charter research-concepts.yaml
+goal: Every quote has a price, in the JSON billing parses.
+concepts: concepts.md
+seeds: seeds.jsonl
+holdout: 0.25
+levers:
+  - system_prompt
+  - loop.max_turns
+budget:
+  usd: 1.0
+  rounds: 4
+  split: {data: 0.2, exploration: 0.25, experiments: 0.4, confirmation: 0.15}
+stop:
+  no_progress_rounds: 2
+execution:
+  tools:
+    rate_quote: allow
+models:
+  director: research_lab/director
+  examiner: research_lab/examiner
+  judges: [research_lab/judge-a, research_lab/judge-b]
+human:
+  questions: 12
+  batch: 6
+trust:
+  min_anchors: 4
+dataset:
+  cases_per_criterion: 6
+  sealed_per_criterion: 4
+experiments_per_round: 2

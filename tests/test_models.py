@@ -99,3 +99,41 @@ def test_opus_5_validates_in_a_spec():
         }
     )
     assert spec.model.id == "claude-opus-5"
+
+
+def test_legacy_models_stay_valid_and_priced_but_every_line_has_a_current_one():
+    """Legacy hides a model from pickers; it must never make it unusable.
+
+    And legacy is a statement that something newer exists, so a provider whose
+    every listed model is legacy has nothing left to offer.
+    """
+    from hiveloom import ext
+    from hiveloom.spec.schema import HarnessSpec
+
+    ext.ensure_environment_loaded()
+    for name in ("claude", "openai"):
+        models = ext.models_for_provider(name)
+        assert any(not m.legacy for m in models), name
+        for info in (m for m in models if m.legacy):
+            assert info.input_cost_per_mtok > 0, info.id
+            HarnessSpec.model_validate(
+                {
+                    "name": "t",
+                    "description": "d",
+                    "system_prompt": "sp",
+                    "model": {"provider": name, "id": info.id},
+                }
+            )
+
+
+def test_the_current_claude_generation_is_offered():
+    from hiveloom import ext
+
+    current = {
+        m.id for m in ext.models_for_provider("claude") if not (m.legacy or m.restricted)
+    }
+    assert {"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"} <= current
+    assert "claude-opus-5" not in current
+    # Project Glasswing only: valid for those with access, offered to nobody.
+    assert not any(mid.startswith("claude-mythos") for mid in current)
+    assert ext.model_info("claude-mythos-5-1") is not None

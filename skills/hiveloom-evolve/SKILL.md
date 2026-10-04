@@ -131,6 +131,36 @@ Compare the new hash's bucket against the old. Rollback is reverting the
 folder (one `git revert` if the harness is in git); the version hashes keep
 before/after comparable.
 
+## Evolve autonomously: `evolve --research`
+
+`evolve` is the deliberate step. When the user wants the harness improved
+without being there for every round, run the same step autonomously. A director
+model investigates, forms hypotheses and designs changes; the engine measures
+each change, keeps only what it confirms, and queues one proposal:
+
+```bash
+hiveloom evolve ./h --research --json          # research.yaml, else a charter from the harness
+hiveloom evolve ./h --research --model openrouter/openai/gpt-5-mini --budget 2 \
+    --tool http_get=replay --json               # classify each tool with effects
+hiveloom evolve ./h --research --program NAME --json   # resume after an interruption
+hiveloom proposals apply ./h <proposal_id> --yes --json
+```
+
+Exit code 3 with `--tool NAME=allow|replay|deny` in the message means a tool
+with effects needs classifying. The live harness is untouched unless you pass
+`--yes`, and even then only when the evidence is confirmed or supported. A
+`ceiling` stop means no lever reaches what still fails: read its
+recommendation instead of raising the budget. `hiveloom research
+status|report|stop` gives the full view. Reference: `hiveloom guide research`.
+
+No eval yet? Give the charter `concepts` (and optional `seeds`) instead of
+`eval`, plus `models.examiner` and `models.judges`. The program drafts an
+evaluation contract and **waits for the user's approval**
+(`research contract`, then `research approve`). Its judged criteria count only
+once the user's labels back them (`research questions`, `research answer <id>
+pass|fail`). Relay those questions to the user: never answer a label on their
+behalf.
+
 ## When evolve is the wrong tool
 
 - The harness was **misconstructed** (wrong tool set, missing validator):

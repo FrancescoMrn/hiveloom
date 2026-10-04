@@ -581,3 +581,19 @@ def test_add_skill_quotes_a_description_that_is_not_plain_yaml(harness_dir):
     assert spec.skills == ["house-style"]
     [skill] = load_skills(spec, harness_dir)
     assert skill.description == description
+
+
+def test_a_construction_change_records_the_version_it_came_from(harness_dir: Path):
+    """So a version graph can draw it as a child, not an unattributed edit."""
+    from hiveloom.logging.trace import spec_version_hash
+    from hiveloom.spec.loader import load_spec
+
+    before = spec_version_hash(load_spec(harness_dir / "harness.yaml"), harness_dir)
+    construct.set_field(harness_dir, "loop.max_turns", value="15")
+    after = spec_version_hash(load_spec(harness_dir / "harness.yaml"), harness_dir)
+
+    log = harness_dir / ".hiveloom" / "traces" / "construction.jsonl"
+    event = json.loads(log.read_text().splitlines()[-1])
+    assert event["command"] == "set"
+    assert (event["old_version_hash"], event["new_version_hash"]) == (before, after)
+    assert before != after

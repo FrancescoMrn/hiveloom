@@ -14,7 +14,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "validators-src"))
 import page_audit as pa  # noqa: E402
 
-TOOL = ROOT / ".." / ".." / "harnesses" / "article-extractor" / "tools" / "fetch_clean.py"
+TOOL = (
+    ROOT / ".." / ".." / "tests" / "fixtures" / "harnesses" / "article-extractor"
+    / "tools" / "fetch_clean.py"
+)
 spec = importlib.util.spec_from_file_location("fetch_clean", TOOL)
 fc = importlib.util.module_from_spec(spec)
 try:

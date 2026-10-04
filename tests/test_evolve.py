@@ -1018,7 +1018,7 @@ def _forked_from_a_failure(tmp_path: Path) -> Path:
     from hiveloom import runner
     from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 
-    example = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+    example = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
     parent = tmp_path / "summarizer"
     shutil.copytree(example, parent)
     (parent / "notes.txt").write_text("The quick brown fox jumps over the lazy dog. " * 30)

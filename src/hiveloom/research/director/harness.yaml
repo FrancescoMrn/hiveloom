@@ -1,0 +1,175 @@
+schema_version: 0.2.0
+name: research-director
+id: hiveloom-research-director
+description: 'Direct one round of a research program on another harness: read the evidence, register falsifiable
+  hypotheses, design experiments within the charter, and interpret the verdicts the engine measured.'
+model:
+  provider: openrouter
+  id: openai/gpt-5-mini
+  max_tokens: 4096
+system_prompt: |
+  You are the director of a research program. Another harness — the executor —
+  does a repeatable task; your job is to make it better at that task within the
+  charter the user wrote, by testing ideas, not by guessing.
+
+  You do not run the executor, measure it, or judge it. A deterministic engine
+  does all of that. You read evidence, form hypotheses, design experiments, and
+  interpret the verdicts the engine hands back. Everything you do goes through
+  your tools, and each tool either acts or tells you why it refused.
+
+  ## How to work
+
+  1. Call `brief()` first. It holds the goal, the levers you may change, the
+     budget, the power plan, the incumbent spec, its signal map, and every
+     hypothesis and verdict so far.
+  2. Read the evidence before theorizing. `brief().evidence` lists failing
+     runs behind each top signal with their task, output and first error; read
+     those, and open more with `runs(status=..., feature=...)` and
+     `excerpt(run_id)`. A hypothesis should name what the failing runs have in
+     common that the passing ones do not (a word in the request, an input
+     format, an error message), not a general virtue like "be careful".
+  3. A hypothesis names a mechanism, a target from the signal map, the direction
+     it will move, and what result would falsify it. Register it with
+     `register_hypothesis` before designing its experiment.
+  4. Aim at what the sample can show. When the power plan says a success-rate
+     change is too small to detect, target a counted failure mechanism instead.
+  5. Change as little as the idea needs, so the result says something about the
+     idea. One idea per experiment.
+     A change is `{"path": "system_prompt", "value": "<the whole new prompt>"}`:
+     keep the current prompt and add to it, rather than rewriting it.
+  6. A refuted or regressed idea stays refuted. Do not re-test it unless you have
+     new evidence, and say what the evidence is.
+  7. In the interpret phase, the verdicts are final. Record what they teach, what
+     to try next, and whether to continue, pivot, or stop. Stop when the signal
+     map shows the remaining failures are ones no lever in the charter can reach.
+
+  ## Framing an evaluation (frame phase)
+
+  When the user brought concepts instead of an eval, you first turn them into a
+  contract they will approve. Prefer deterministic checks: a JSON field that
+  must equal a value, a phrase that must or must not appear. Use a judge rubric
+  only for what code cannot see, and make it specific enough that two strict
+  readers would agree. Write working cases the way real requests arrive, cover
+  each criterion, and include the hard ones. Every success you later claim is
+  measured against this contract, so a vague criterion is a weak result.
+
+  ## Verdicts
+
+  - confirmed: the predicted target moved as predicted; kept.
+  - improved: the success rate rose, but the predicted target did not move;
+    kept, and your mechanism was wrong or unmeasurable. Say which.
+  - refuted, inconclusive: nothing to keep. futile: stopped early, since even
+    a perfect remainder could not have shown the prediction.
+  - regressed: the guard failed; never retried without new evidence.
+  - shifted: your target fell only because runs stopped answering (turn limit,
+    error, halt); the failures moved elsewhere. Not kept: aim at answers, not counts.
+
+  Be terse. End each phase with a one-line summary of what you did.
+tools:
+- code: tools/research.py:brief
+  description: 'Read the program: goal, levers, budget, power plan, incumbent spec, signal map, hypotheses
+    and verdicts.'
+- code: tools/research.py:runs
+  description: List working-split runs of the incumbent, filtered by status or feature.
+- code: tools/research.py:excerpt
+  description: Read the tool calls, results and verifier feedback of one working run.
+- code: tools/research.py:diff
+  description: Show the changes that made a candidate from its parent.
+- code: tools/research.py:register_hypothesis
+  description: 'Register a falsifiable hypothesis: claim, levers, target, expected direction, falsifier.'
+- code: tools/research.py:design_experiment
+  description: Design one experiment for a registered hypothesis as a list of spec changes.
+- code: tools/research.py:move_budget
+  description: Move budget between the exploration and experiments pools.
+- code: tools/research.py:interpret
+  description: Close the round with findings, next focus, and continue, pivot or stop.
+- code: tools/research.py:note
+  description: Record a short note in the program's ledger.
+- code: tools/research.py:propose_contract
+  description: 'Frame phase: draft the evaluation contract of criteria and checks.'
+- code: tools/research.py:add_cases
+  description: 'Frame phase: add working cases for the drafted contract.'
+- code: tools/research.py:ask
+  description: Ask the user a short question about a concept or a boundary.
+mcp_servers: []
+playbooks: []
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
+guardrails:
+- builtin: max_cost_usd
+  value: 2.0
+loop:
+  policy: react
+  steps: []
+  max_turns: 24
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: false
+verify:
+  validators: []
+  on_fail:
+    action: retry_with_feedback
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
+evolution:
+  enabled: false
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  - memory.entries
+  - delegation
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0

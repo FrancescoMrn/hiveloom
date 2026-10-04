@@ -1,0 +1,3 @@
+# Eval data and run output stay local. Files already tracked stay tracked.
+*.json
+*.log

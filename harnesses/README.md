@@ -1,78 +1,70 @@
 # Demo harnesses
 
-Each folder is a complete harness: a `harness.yaml`, the code it declares, its
-data, and a README that states **what it proves**, which capabilities it
-exercises, how to run it, what evidence to look for, and what to try next. They
-were built — and are changed — only through the CLI (`init`, `add`, `set`,
-`memory`), never by editing `harness.yaml` by hand.
+Three harnesses that each solve a real task, end to end, with a real model.
+Each folder is complete: a `harness.yaml`, the code it declares, its data, and
+a README that states **what it proves**, how to run it, and what evidence to
+look for. They were built — and are changed — only through the CLI (`init`,
+`add`, `set`), never by editing `harness.yaml` by hand.
 
-**Offline** demos run on a scripted provider shipped in their `extensions/`:
-no API key, and the same journal every time. The scripts never carry the
-answer — they react only to what they are actually shown (their prompt, their
-tool results, the signal map), so the evidence is real. **Live** demos need an
-API key for their provider (any provider works via `--provider/--model`).
-
-| demo | proves | runs |
+| demo | the job | what it proves |
 |---|---|---|
-| [quickstart](quickstart) | a harness with no tools still adds a journal, a hashed spec, spending and turn ceilings, and a safety layer that keeps a credential out of the request, the trace and the answer | live |
-| [example-summarizer](example-summarizer) | a model held to a contract — shape, content and a house style it loads as a skill — and retried with feedback until the output earns a success | live |
-| [article-extractor](article-extractor) | code parses, the model judges, and the answer is checked against the live page so invented headings fail | live |
-| [log-forensics](log-forensics) | an allowlisted, confined shell command produces more than the context holds and the harness still answers from its last line | live |
-| [ranked-retrieval](ranked-retrieval) | structure beats model size: enforced phases, verify-first search and grounded ids make a 3B model reliable, measured by a local eval | live |
-| [ticket-triage](ticket-triage) | an MCP server as the only data source, reads fanned out in parallel, one validated report with no invented ids | live |
-| [routing-lab](routing-lab) | playbooks change the model *and* the tools mid-run on a pinned plan; forks re-enter a run at any call; an aimed evolution is confirmed by measurement | offline |
-| [memory-lab](memory-lab) | a small executor works over more data than its context holds — narrowing it in place, keeping notes, exporting by handle — and learns only through review | offline |
-| [signal-lab](signal-lab) | the harness finds where its failures come from, drafts an aimed fix on its own, and keeps a change only when its eval confirms it | offline |
-| [delegation-lab](delegation-lab) | a harness hands a task to a peer only once the peer has earned it in measured runs, verifies the answer itself, and otherwise names the peer | offline |
+| [ticket-triage](ticket-triage) | triage a 26-ticket support queue read from an MCP ticket system | an external MCP server as the only data source, reads fanned out in parallel, and a report checked against the system of record — every open ticket once, no invented ids |
+| [ranked-retrieval](ranked-retrieval) | answer engineering questions from a 25-record knowledge base, in the words people actually use | enforced phases, a verify-first search tool and grounded ids keep a small model honest; a local eval measures recall and nDCG, and a research program attacks the vocabulary gap with measured experiments |
+| [log-forensics](log-forensics) | find the dominant failure, error count and build digest in a 77 KB production log | a confined, allowlisted shell whose output is larger than the context, spilled whole and read back by handle; a second run recalls the first |
+
+All three need an API key for their provider (`ANTHROPIC_API_KEY` by default;
+any provider works through `hiveloom set model provider/model-id`). On a small
+model a run costs well under a cent.
+
+## In the workbench
+
+`devtools/ui/dev.sh --showcase` seeds copies of the three on a real model —
+runs, a fork resumed from its report turn, an eval, a measured evolution round
+and a research program waiting for review — so every tab of the workbench has
+something real to show. See [devtools/ui/showcase.py](../devtools/ui/showcase.py).
 
 ## By capability
 
 | capability | where to see it |
 |---|---|
-| journal, version hash, `stats` | every demo; [quickstart](quickstart) is the minimal case |
-| guardrails: cost, wall clock | [quickstart](quickstart), [example-summarizer](example-summarizer), [article-extractor](article-extractor) |
-| guardrails: `regex_output_filter`, `max_turns_hard_cap` | [quickstart](quickstart) |
-| guardrails: `tool_allowlist` | [example-summarizer](example-summarizer), [article-extractor](article-extractor) |
-| guardrails: `no_network_write` | [article-extractor](article-extractor) |
-| redaction (`logging.redact`) | [quickstart](quickstart), [example-summarizer](example-summarizer) |
-| provider egress screening | [quickstart](quickstart), [log-forensics](log-forensics) |
-| confinement of spawned processes | [log-forensics](log-forensics) |
-| verification: `output_schema`, retry with feedback | [example-summarizer](example-summarizer), [routing-lab](routing-lab), [memory-lab](memory-lab) |
-| verification: code validators | [example-summarizer](example-summarizer), [article-extractor](article-extractor) |
-| verification: `grounded_references` | [ranked-retrieval](ranked-retrieval) |
-| verification: `regex_match` | [ticket-triage](ticket-triage), [signal-lab](signal-lab), [delegation-lab](delegation-lab) |
-| verification: `file_exists`, `command_succeeds` | [memory-lab](memory-lab) |
-| custom `@tool` | [article-extractor](article-extractor), [ranked-retrieval](ranked-retrieval), [signal-lab](signal-lab) |
-| output hooks (`strip_json_fence`) | [article-extractor](article-extractor), [log-forensics](log-forensics), [ranked-retrieval](ranked-retrieval) |
-| skills and `load_skill` | [example-summarizer](example-summarizer) |
+| journal, version hash, `stats`, `trace --verify` | all three |
+| guardrails: cost, wall clock | all three |
 | MCP servers as tools | [ticket-triage](ticket-triage) |
-| serving a harness (`package`, `serve`, `mcp serve`) | [quickstart](quickstart), [delegation-lab](delegation-lab) |
-| loop: `plan_then_act` | [routing-lab](routing-lab) |
-| loop: `sequential_steps` | [ranked-retrieval](ranked-retrieval), [log-forensics](log-forensics) |
 | loop: parallel tool execution | [ticket-triage](ticket-triage) |
-| playbooks, per-playbook models | [routing-lab](routing-lab) |
-| forking and `--resume` | [routing-lab](routing-lab), [memory-lab](memory-lab) |
-| spill, handles, `transform_result` | [memory-lab](memory-lab), [log-forensics](log-forensics) |
-| `notes` | [memory-lab](memory-lab) |
+| verification: code validators against the system of record | [ticket-triage](ticket-triage) |
+| forking a run and `--resume` | [ticket-triage](ticket-triage) (any run of any harness) |
+| custom `@tool` | [ranked-retrieval](ranked-retrieval) |
+| loop: `sequential_steps` | [ranked-retrieval](ranked-retrieval), [log-forensics](log-forensics) |
+| verification: `output_schema`, `grounded_references` | [ranked-retrieval](ranked-retrieval) |
+| evals, datasets, scorers, metric objectives | [ranked-retrieval](ranked-retrieval) |
+| `evolve --experiment`, `hiveloom assess` | [ranked-retrieval](ranked-retrieval) |
+| research programs (`hiveloom research`) | [ranked-retrieval](ranked-retrieval) |
+| confinement of spawned processes, provider egress screening | [log-forensics](log-forensics) |
+| spill, handles, `search_tool_result` / `read_tool_result` | [log-forensics](log-forensics) |
 | `recall_runs` | [log-forensics](log-forensics) |
-| durable memory: `memory.entries`, `propose_memory` | [memory-lab](memory-lab) |
-| durable memory: relevance selection, `search_memory` | [signal-lab](signal-lab) |
-| reflection (`evolution.reflect`) | [signal-lab](signal-lab) |
-| `hiveloom signal` | [signal-lab](signal-lab), [routing-lab](routing-lab) |
-| aimed proposals, `evolve --propose`, `proposals apply` | [routing-lab](routing-lab), [memory-lab](memory-lab), [signal-lab](signal-lab) |
-| auto-propose with trace excerpts | [signal-lab](signal-lab) |
-| `evolve --experiment`, `hiveloom assess` | [signal-lab](signal-lab) (offline), [ranked-retrieval](ranked-retrieval) (live) |
-| evals, datasets, scorers, metric objectives | [ranked-retrieval](ranked-retrieval), [signal-lab](signal-lab) |
-| delegation between harnesses, referrals, lineage | [delegation-lab](delegation-lab) |
 
-`best_of_n` is experimental and not in a demo: its plurality vote needs
-answers that can be compared verbatim, which none of these tasks produce.
-`http_get` with pre-declared hosts is documented in
-[spec.md](../docs/spec.md).
+## More worked examples
+
+The test suite keeps further harnesses in
+[`tests/fixtures/harnesses/`](../tests/fixtures/harnesses/). Most run offline on
+a scripted provider (no API key, the same journal every time), which is why the
+tests and CI drive them; they are good reading for capabilities the three
+demos above do not exercise:
+
+| example | shows |
+|---|---|
+| [quickstart](../tests/fixtures/harnesses/quickstart) | the minimal harness: no tools, redaction, `regex_output_filter`, `max_turns_hard_cap` |
+| [example-summarizer](../tests/fixtures/harnesses/example-summarizer) | skills and `load_skill`, schema plus code verification |
+| [article-extractor](../tests/fixtures/harnesses/article-extractor) | a validator that re-fetches the page to catch invention (the subject of `evals/article-extractor`) |
+| [routing-lab](../tests/fixtures/harnesses/routing-lab) | playbooks, `plan_then_act`, aimed evolution — offline |
+| [memory-lab](../tests/fixtures/harnesses/memory-lab) | `notes`, `transform_result`, `propose_memory`, `memory.entries` — offline |
+| [signal-lab](../tests/fixtures/harnesses/signal-lab) | `hiveloom signal`, reflection, auto-propose, relevance-selected memory — offline |
+| [delegation-lab](../tests/fixtures/harnesses/delegation-lab) | delegation between harnesses, referrals, lineage — offline |
+| [research-lab](../tests/fixtures/harnesses/research-lab) | a research program with a scripted director, start to promotion — offline |
 
 ## Verified
 
-`scripts/package_e2e.py` builds the wheel, installs it in a clean
-environment, and drives every offline demo end to end, validating and
-dry-running the live ones (a CI step). With `--live` and an OpenRouter key it
-also runs the live demos on small models.
+`scripts/package_e2e.py` builds the wheel, installs it in a clean environment,
+and drives every offline example end to end, validating and dry-running the
+live ones (a CI step). With `--live` and an OpenRouter key it also runs the
+live harnesses on small models.

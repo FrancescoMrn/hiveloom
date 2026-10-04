@@ -21,7 +21,7 @@ from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 from hiveloom.serve.mcp import _sanitize, build_mcp_server
 from hiveloom.spec.loader import harness_path, load_spec
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 PEER_SERVER = str(Path(__file__).parent / "fixtures" / "mcp_peer_harness_server.py")
 
 _SOURCE = "The quick brown fox jumps over the lazy dog. " * 20

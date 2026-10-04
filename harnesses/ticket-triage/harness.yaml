@@ -69,8 +69,8 @@ loop:
   require_verification: true
 verify:
   validators:
-  - builtin: regex_match
-    pattern: '"tickets"'
+  - code: validators/check_triage.py:validate
+    description: Every open ticket once, no unknown or closed ids, legal labels
   on_fail:
     action: retry_with_feedback
     max_retries: 2

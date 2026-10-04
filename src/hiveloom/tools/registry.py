@@ -248,6 +248,11 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def unregister(self, name: str) -> None:
+        """Remove a tool entirely (a research execution policy denying it)."""
+        self._tools.pop(name, None)
+        self._active.discard(name)
+
     def names(self) -> list[str]:
         """All registered tool names, including deferred ones."""
         return list(self._tools)

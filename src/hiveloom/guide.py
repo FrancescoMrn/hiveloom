@@ -65,6 +65,11 @@ REFERENCE_TOPICS = (
         "docs/signal-driven-evolution.md",
     ),
     (
+        "research",
+        "Evolving autonomously (evolve --research): a director runs measured rounds unattended.",
+        "docs/research.md",
+    ),
+    (
         "journal",
         "Run journals, integrity checks, forks, lineage, and model swaps.",
         "docs/journal.md",

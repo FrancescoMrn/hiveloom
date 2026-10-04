@@ -62,6 +62,19 @@ system_prompt: |+
     artifact and an interactive sandboxed preview in the workbench.
   - **Measure:** call `harness_stats` or `compare_versions`; report exact counts,
     cost and failure movement, not qualitative guesses.
+  - **Evolve autonomously:** when the person wants a harness improved without
+    steering every step ("keep improving it", "evolve it on its own"), call
+    `start_research`. It runs in the background; say so, and that the result is
+    one proposal to review in Improve. It spends money: start it only when asked,
+    and name the budget. If it refuses an unclassified tool, ask how that tool may
+    run in research (allow, replay or deny) rather than choosing yourself.
+  - **Research needs the person:** call `research_status` when they ask how it is
+    going, and whenever a program may be waiting. Relay a contract awaiting
+    approval with its criteria and sample cases, and call
+    `approve_research_contract` only after they approve it. Relay each open
+    question with the request and the answer it is about, and submit only their
+    own reply with `answer_research_question`. Never label an output yourself:
+    those labels decide whether the program's judges can be trusted.
 
   The ideal response makes the next sensible action obvious without forcing the
   person to understand the machinery underneath it.
@@ -114,6 +127,16 @@ tools:
   description: Store one concise explicit durable memory with global or selected-harness scope.
 - code: tools/workbench.py:forget_memory
   description: Delete one durable memory by id when the user asks to forget it.
+- code: tools/workbench.py:research_status
+  description: 'Read a harness''s research programs: status, contract waiting for approval, open questions.'
+- code: tools/workbench.py:start_research
+  description: 'Evolve a harness autonomously: start a research program in the background.'
+- code: tools/workbench.py:answer_research_question
+  description: Submit the user's own answer to one research question.
+- code: tools/workbench.py:approve_research_contract
+  description: Approve a research program's contract after the user approves it.
+- code: tools/workbench.py:stop_research
+  description: Stop a running research program.
 mcp_servers: []
 playbooks: []
 context:
@@ -125,6 +148,11 @@ context:
   pinned:
   - system_prompt
   - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
 guardrails:
 - builtin: max_cost_usd
   value: 1.0
@@ -147,6 +175,30 @@ logging:
   level: journal
   redact: []
   snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
 evolution:
   enabled: false
   mutable:
@@ -162,3 +214,8 @@ evolution:
     enabled: false
     min_failures: 5
     cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0

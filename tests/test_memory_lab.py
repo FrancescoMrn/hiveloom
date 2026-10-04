@@ -20,7 +20,7 @@ from hiveloom.cli import app
 from hiveloom.logging.journal import read_events
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MEMORY_LAB = REPO_ROOT / "harnesses" / "memory-lab"
+MEMORY_LAB = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "memory-lab"
 TASK = "Investigate data/service.log and report the three facts."
 EXPECTED = {
     "dominant_failure_code": "POOL_EXHAUSTED",

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end test of the *installed* hiveloom package against the demo harnesses.
+"""End-to-end test of the *installed* hiveloom package against the example harnesses.
 
 Unit tests run the source tree. This runs the wheel a user would install, in
 an isolated environment with no checkout on its path, and drives the CLI the
 way a builder agent would: every call with --json, every exit code checked.
 
-Offline (default, no credentials, no network beyond building):
+Offline (default, no credentials, no network beyond building). The demos live in
+`harnesses/`; the offline labs and small live examples are test fixtures in
+`tests/fixtures/harnesses/`, copied side by side into one work folder:
   * the wheel installs, imports, reports its version, and ships every guide topic;
   * every demo harness validates and dry-runs;
   * memory-lab runs, its journal verifies, the signal map reads it, the lesson
@@ -18,7 +20,10 @@ Offline (default, no credentials, no network beyond building):
   * signal-lab's measured loop locates its failing tool, reverts a refuted
     change, keeps the confirmed one, and the evolved harness then succeeds;
   * delegation-lab refers an unmeasured peer, then hands the task to it once
-    measured, verifies the answer, and records the lineage.
+    measured, verifies the answer, and records the lineage;
+  * research-lab runs a research program with the packaged director harness:
+    the fix is confirmed and kept, the generic idea is not, the program stops
+    at the ceiling, and its promotion lands on the live harness.
 
 Live (--live, needs OPENROUTER_API_KEY; spends real money, bounded):
   * ranked-retrieval, moved onto a small OpenRouter executor, is measured on its
@@ -126,10 +131,10 @@ def offline(hl: Hiveloom, work: Path) -> None:
             raise Check(f"installed {version} does not match the source tree")
         return version
 
-    @step("guide ships every topic, including signal")
+    @step("guide ships every topic, including signal and research")
     def guide():
         topics = {t["name"] for t in hl("guide", "--list", "--json")["topics"]}
-        missing = {"agents", "build", "run", "evolve", "signal", "spec"} - topics
+        missing = {"agents", "build", "run", "evolve", "signal", "research", "spec"} - topics
         if missing:
             raise Check(f"missing topics {missing}")
         return f"{len(topics)} topics"
@@ -289,9 +294,72 @@ def offline(hl: Hiveloom, work: Path) -> None:
         children = hl("lineage", second["run_id"], "--json")["children"]
         return f"referred, then delegated; {len(children)} delegation child in lineage"
 
+    research_lab = work / "harnesses" / "research-lab"
+
+    @step("research-lab: a director program keeps the fix, stops at the ceiling, promotes")
+    def research_loop():
+        hl("research", "init", str(research_lab), "--name", "quotes", "--charter",
+           str(research_lab / "research.yaml"), "--approve", "--json")
+        status = hl("research", "run", str(research_lab), "--name", "quotes", "--json")["status"]
+        decided = [(e["verdict"], e["kept"]) for e in status["experiments"]]
+        stop = status["stop_reason"]["condition"]
+        if decided != [("confirmed", True), ("inconclusive", False)] or stop != "ceiling":
+            raise Check(f"experiments {decided}, stopped: {stop}")
+        if not status["ledger"]["ok"]:
+            raise Check("the program's ledger does not verify")
+        proposal = status["promotion"]["proposal_id"]
+        hl("proposals", "apply", str(research_lab), proposal, "--yes", "--json")
+        after = hl("run", str(research_lab), "--input-text",
+                   "Quote shipping for a 2500 g parcel to zone 2 for customer C-100.", "--json")
+        if after["status"] != "success":
+            raise Check(f"gram quote after promotion: {after['status']}")
+        return "confirmed + kept, inconclusive not kept; ceiling; promoted and applied"
+
+    @step("research-lab concepts mode: frame, approve, examine, labels, trusted judge, goal")
+    def research_concepts():
+        lab = work / "harnesses" / "research-lab"
+        common = ("--name", "concepts", "--json")
+        hl("research", "init", str(lab), "--charter", str(lab / "research-concepts.yaml"),
+           "--approve", *common)
+        waiting = hl("research", "run", str(lab), *common)["status"]
+        if waiting["awaiting"] != "contract":
+            raise Check(f"expected the approval gate, got unit {waiting['unit']}")
+        hl("research", "approve", str(lab), *common)
+        hl("research", "run", str(lab), "--until", "unit", *common)  # examine
+        hl("research", "run", str(lab), "--until", "unit", *common)  # baseline
+        questions = hl("research", "questions", str(lab), *common)["questions"]
+        for question in questions:
+            try:
+                data = json.loads(question["output"] or "")
+            except json.JSONDecodeError:
+                data = None
+            good = isinstance(data, dict) and set(data) == {"zone", "weight_kg", "price"}
+            hl("research", "answer", question["id"], "pass" if good else "fail",
+               "--dir", str(lab), *common)
+        status = hl("research", "run", str(lab), *common)["status"]
+        contract = hl("research", "contract", str(lab), *common)
+        trusted = [row["criterion"] for row in contract["trust"] if row["measured"]]
+        if status["stop_reason"]["condition"] != "goal" or "one-json" not in trusted:
+            raise Check(f"stopped {status['stop_reason']}, measured {trusted}")
+        return f"{len(questions)} labels; judged criterion trusted; goal reached"
+
+    @step("evolve --research: evolution's autonomous mode, from the installed CLI")
+    def evolve_research():
+        lab = work / "harnesses" / "research-lab"
+        out = hl("evolve", str(lab), "--research", "--program", "auto", "--json")
+        status = out["status"]
+        if out["mode"] != "research" or status["status"] != "done":
+            raise Check(f"mode {out.get('mode')}, status {status.get('status')}")
+        if not status["ledger"]["ok"] or not out["report"]:
+            raise Check("no verified ledger or no report")
+        again = hl("evolve", str(lab), "--research", "--program", "auto", "--json", expect=3)
+        if "already finished" not in again["error"]:
+            raise Check(f"a finished program was not refused: {again}")
+        return f"stopped: {status['stop_reason']['condition']}; a finished program is refused"
+
     for check in (install, guide, demos, lab_run, lab_signal, lab_lesson, lab_assess,
                   lab_evolve, lab_selection, routing_run, routing_evolve, signal_lab_loop,
-                  delegation_loop):
+                  delegation_loop, research_loop, research_concepts, evolve_research):
         check()
 
 
@@ -452,10 +520,14 @@ def main() -> int:
     wheel = wheel.resolve()
     work = args.keep or Path(tempfile.mkdtemp(prefix="hiveloom-e2e-"))
     work.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        ROOT / "harnesses", work / "harnesses", dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns(".hiveloom", "__pycache__", ".env", "runtime"),
-    )
+    # The three demos, plus the harnesses the test suite keeps as fixtures
+    # (the offline labs and the small live examples): together they exercise
+    # every capability end to end, side by side in one folder as before.
+    for source in (ROOT / "harnesses", ROOT / "tests" / "fixtures" / "harnesses"):
+        shutil.copytree(
+            source, work / "harnesses", dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".hiveloom", "__pycache__", ".env", "runtime"),
+        )
     env = {}
     if args.live:
         if not os.environ.get("OPENROUTER_API_KEY"):

@@ -16,7 +16,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "article-extractor"
+_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "article-extractor"
 _VALIDATOR = _HARNESS / "validators" / "article_on_page.py"
 _SCHEMA = _HARNESS / "schemas" / "output.json"
 

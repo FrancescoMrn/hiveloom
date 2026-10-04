@@ -1,0 +1,103 @@
+schema_version: 0.2.0
+name: research-lab
+id: hl-9fa2e10278b6
+description: 'Quote the shipping price for one parcel: read the zone, weight and customer from the request,
+  look up the rate, and answer with JSON.'
+extensions:
+- extensions/research_lab.py
+model:
+  provider: research_lab
+  id: desk-clerk
+  max_tokens: 4096
+system_prompt: |
+  You are the shipping desk. For each request, read the parcel's zone and weight
+  and the customer, call rate_quote once, and answer with one JSON object:
+  {"zone": <int>, "weight_kg": <number>, "price": <number>}. If the rate table
+  cannot quote the parcel, answer {"price": null, "error": "<why>"}.
+tools:
+- code: tools/rate_quote.py:rate_quote
+  description: The list price for one parcel by zone and weight in kilograms.
+mcp_servers: []
+playbooks: []
+context:
+  max_input_tokens: 30000
+  strategy: rolling
+  compaction:
+    trigger_at_pct: 80
+    method: summarize
+  pinned:
+  - system_prompt
+  - task_statement
+  tool_results:
+    max_inline_bytes: 16384
+    preview_head_bytes: 2048
+    preview_tail_bytes: 1024
+    transforms: true
+guardrails:
+- builtin: max_cost_usd
+  value: 1.0
+loop:
+  policy: react
+  steps: []
+  max_turns: 6
+  on_tool_error: retry_once
+  tool_execution: sequential
+  require_verification: true
+verify:
+  validators:
+  - code: validators/billing_check.py:validate
+    description: The quote must equal what billing will invoice, contracts included.
+  on_fail:
+    action: abort
+    max_retries: 2
+logging:
+  trace_dir: ./.hiveloom/traces
+  level: journal
+  redact: []
+  snapshot_files: false
+confinement:
+  mode: auto
+  network: false
+  writable: true
+  hide_home: true
+  env_passthrough: []
+  timeout_seconds: 30
+  max_output_bytes: 1048576
+  max_memory_mb: 2048
+  max_processes: 0
+egress:
+  mode: redact
+  detect_credentials: true
+  patterns: []
+delegation:
+  enabled: false
+  directory: local
+  when:
+  - model_choice
+  min_peer_success_rate: 0.0
+  min_peer_runs: 0
+  max_depth: 2
+  budget_share: 0.5
+  exclude: []
+evolution:
+  enabled: true
+  mutable:
+  - system_prompt
+  - loop.max_turns
+  - loop.policy
+  - context.strategy
+  - tools
+  - memory.entries
+  - delegation
+  frozen:
+  - guardrails
+  - model
+  auto_propose:
+    enabled: false
+    min_failures: 5
+    cooldown_hours: 24.0
+  reflect:
+    enabled: false
+    'on': failure
+    max_lessons: 1
+    cooldown_minutes: 30.0

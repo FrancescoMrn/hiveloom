@@ -1,0 +1,17 @@
+# What this harness needs to run. The folder is the harness; this file pins
+# the runtime that executes it, plus anything its tools, validators and
+# extensions import.
+#
+#     uv sync                        # or: pip install hiveloom==1.2.0
+[project]
+name = "research-lab"
+version = "0.1.0"
+description = "Quote the shipping price for one parcel: read the zone, weight and customer from the request, look up the rate, and answer with JSON."
+requires-python = ">=3.11"
+dependencies = [
+    "hiveloom==1.2.0",
+]
+
+# Not a library: nothing here is built or installed, only the pins resolved.
+[tool.uv]
+package = false
