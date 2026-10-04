@@ -24,13 +24,15 @@ at this sample size, and one is slightly worse. Which is the point:
 [the evidence is measured per task and model](#measured-performance), not
 assumed.
 
-> **Status:** `1.2.0`. The spec, CLI, Python SDK, runtime, journal/Hive
+> **Status:** `1.3.0`. The spec, CLI, Python SDK, runtime, journal/Hive
 > memory, generation, gated evolution, packaging, MCP integration, and HTTP
 > serving surfaces are implemented, along with playbooks, structured artifacts,
 > run control, delegation between harnesses, run-scoped notes and durable
 > memory that is selected per task and learned through reviewed reflection,
 > signal-driven evolution that locates where failures concentrate and checks
-> every change against its own prediction, and a tamper-evident run journal you
+> every change against its own prediction, research programs in which a
+> director model improves a harness through experiments a deterministic engine
+> measures, and a tamper-evident run journal you
 > can fork from, replay, and read in [the workbench](#the-workbench).
 
 ## Why hiveloom: task confinement

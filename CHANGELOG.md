@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-04
+
+The research and real-demos release. Research programs let a director model
+improve a harness through experiments a deterministic engine measures, and now
+work on harnesses that declare metric objectives. The examples became three
+demos that solve real tasks on a real model — support-queue triage over MCP,
+knowledge-base retrieval in people's own words, production-log forensics — with
+the offline labs kept as test fixtures. The workbench gained provider and key
+management, a current model catalog, fork resume, and diffs for every proposal.
+Workbench 0.2.0 ships alongside and needs hiveloom 1.3.0.
+
 ### Added
 
 - **`hiveloom evolve --research`: evolution's autonomous mode.** The step
@@ -79,8 +90,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compares a research program against `evolve --experiment` with the same
   model.
 
+### Changed
+
+- **Three demos that solve real tasks.** `harnesses/` now holds
+  `ticket-triage`, `ranked-retrieval` and `log-forensics`, each run end to end
+  on a real model. ticket-triage triages a 26-ticket queue and its report is
+  checked against the system of record by a code validator (every open ticket
+  once, no unknown or closed ids, legal labels) instead of a bare regex;
+  ranked-retrieval answers questions from a 25-record knowledge base in the
+  words people actually use, with a ten-case eval and a research charter. The
+  other examples — the offline labs, `quickstart`, `example-summarizer`,
+  `article-extractor` — moved to `tests/fixtures/harnesses/`, where they keep
+  backing the tests and CI without an API key.
+- **The workbench showcase runs the three demos on a real model**
+  (`devtools/ui/dev.sh --showcase`, OpenRouter): triage runs and a resumed
+  fork, an eval, a measured evolution round and a research program. A reset
+  keeps the showcase's keys and providers.
+- **Workbench providers.** Settings is about the workbench, not a harness:
+  add Anthropic, OpenAI, Mistral, OpenRouter or any OpenAI-compatible endpoint
+  with its key (stored in `~/.hiveloom/.env`, owner-only; custom providers in
+  the new machine-written `~/.hiveloom/providers.yaml`), choose the models the
+  composer offers, and a default model. A harness whose provider has no key
+  runs on the default for that run only; its spec is never changed. A harness's
+  own run model moved to a Settings tab in its workspace.
+- **Current model catalog.** Claude Opus 5.5, Sonnet 5.5, Fable 5.1 and
+  OpenAI's GPT-6 lineup are listed; superseded models are kept valid and priced
+  but marked `legacy`, Mythos models `restricted`, and pickers offer neither
+  unless one is in use. The generator and evolver default to Claude Opus 5.5
+  and stream with a real output budget.
+
 ### Fixed
 
+- **Research programs on a harness with metric objectives designed nothing.**
+  Every experiment was refused by the gate for naming no objective; the engine
+  now derives objective expectations (the hypothesis's target, else the
+  charter's goal metrics, else all objectives, directions from the objectives).
+- **Forking.** A resumed fork recorded its parent's run id as the task, so a
+  validator reading the task failed the very answer the parent passed with; a
+  fork now also carries the files the harness's code reads (`data/`), not just
+  the code; the workbench can resume a fork again (the dialog and a fork
+  banner), lists a harness's forks and their runs, and refreshes after a resume.
+- **Lineage after a construction change.** `set`/`add`/`remove` record the
+  version they started from and produced, so the version graph draws a model
+  change as a configured step instead of an orphaned hand edit; a research
+  promotion reports its proposal's live status instead of "pending" forever.
+- **Improve shows what an applied proposal changed:** the evolution it
+  produced and the spec diff recorded at apply time.
 - The workbench copilot's model saw only a one-line summary of each tool result
   (the data went to the interface), so it could not act on ids and names it had
   just read. It now also reads a compact copy of the data. Choosing a non-Claude
