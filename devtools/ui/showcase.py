@@ -1,27 +1,43 @@
-"""Seed a workbench showcase: the offline demos, with history to look at.
+"""Seed a workbench showcase: the three demos, with real history to look at.
 
 A checkout's `harnesses/` are clean folders — no runs, no forks, no proposals —
-so every workbench tab opens empty on them. This copies the offline demos
-(they run on scripted providers: no API key, the same journals every time) and
-drives each through the scenario its README describes, so the Runs, Trace,
-Versions and Improve tabs, the fork rail and lineage all have something real
-to show. The steps are the ones `scripts/package_e2e.py` checks in CI.
+so every workbench tab opens empty on them. This copies the three demos and
+drives each through a short scenario on a real model, so the Runs, Trace,
+Versions, Improve and Research tabs, the fork rail and lineage all have
+something to show — produced by the harness doing its actual job:
+
+* ticket-triage — triages a support queue it reads from an MCP server, every
+  open ticket checked against the system of record; one run is forked at its
+  report turn and resumed, and a support lead's request ("urgent first")
+  waits in Improve as a gated proposal to review and apply.
+* ranked-retrieval — answers engineering questions from a knowledge base; an
+  eval measures it, a measured evolution round tries a change and keeps it only
+  if the eval confirms it, and a research program attacks the vocabulary gap
+  and queues what it confirmed for review in Improve.
+* log-forensics — investigates a 77 KB production log through a confined shell,
+  the oversized output spilled and read back by handle; the second run recalls
+  the first.
+
+Each copy is first moved onto the showcase model with `set model` — the same
+validated change the workbench makes — so the version graph opens on a
+configured step rather than a lone first version.
 
     uv run python devtools/ui/showcase.py            # seed once; a no-op after
     uv run python devtools/ui/showcase.py --reset    # throw it away and reseed
     devtools/ui/dev.sh --showcase                    # seed if needed, then serve it
 
+Real model calls: it needs `OPENROUTER_API_KEY` (from the environment, the
+showcase's own `home/.env`, or `~/.hiveloom/.env`). On the default model
+(`openrouter/deepseek/deepseek-v4.1-flash`) a full seed costs a few cents; every
+demo keeps its own `max_cost_usd` guardrail and the research program its
+charter budget, so nothing here can run away. `--model` picks another
+OpenRouter model.
+
 Everything lands in `devtools/ui/.hiveloom/showcase/` (gitignored): the copies
 under `harnesses/`, and a `home/` of their own — Hive, trust store, registry —
 so the seeded history never mixes with your own runs of the same harnesses,
-which share their ids. The home links your `~/.hiveloom/.env`, `models.yaml`
-and `extensions/` when you have them, so the copilot keeps its key.
-
-Some things are left for you to do in the interface rather than done here:
-the research program's proposal and memory-lab's lessons stay pending, to
-review and apply from Improve; research-lab's `concepts` program waits for its
-contract to be approved in the Research tab; and every demo has runs to fork
-from.
+which share their ids. A reset keeps the home's `.env` and the providers you
+set up in Settings → Models, so the workbench keeps its keys.
 """
 
 from __future__ import annotations
@@ -40,28 +56,81 @@ HARNESSES = ROOT / "harnesses"
 HOME = ROOT / "home"
 DONE = ROOT / "seeded.json"
 
-OFFLINE = ["memory-lab", "routing-lab", "signal-lab", "research-lab", "delegation-lab"]
+DEMOS = ["ticket-triage", "ranked-retrieval", "log-forensics"]
+DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4.1-flash"
+
+# Survives --reset: what the person configured, not what the seed produced.
+KEEP = [Path(".env"), Path("workbench") / "providers.json"]
+
+# A task each demo answers, shown in its interface to copy or adapt.
+EXAMPLES = {
+    "ticket-triage": "Triage all currently open tickets.",
+    "ranked-retrieval": (
+        "Our service keeps running out of database connections whenever traffic spikes."
+    ),
+    "log-forensics": "Investigate data/service.log and report the three facts.",
+}
+
+
+TRIAGE_NOTE = (
+    "Support leads read the report top-down during the morning stand-up: list urgent "
+    "tickets first, then high, normal, low, so on-call sees what to act on at the top."
+)
 
 
 class Failed(RuntimeError):
     pass
 
 
-def hl(*args: str, expect: tuple[int, ...] = (0,)) -> dict:
-    """The checkout's CLI against the showcase home; JSON in, JSON out."""
-    env = {**os.environ, "HIVELOOM_HOME": str(HOME), "HIVELOOM_DB": str(HOME / "hive.db")}
+def _openrouter_key() -> str:
+    """The key, from wherever it already is; never printed."""
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return os.environ["OPENROUTER_API_KEY"]
+    from dotenv import dotenv_values
+
+    for env_file in (HOME / ".env", Path("~/.hiveloom/.env").expanduser()):
+        if env_file.is_file():
+            value = dotenv_values(env_file).get("OPENROUTER_API_KEY")
+            if value:
+                return value
+    raise Failed(
+        "the showcase runs real models and needs OPENROUTER_API_KEY — export it, or add "
+        "OpenRouter in the workbench (Settings → Models) and reseed"
+    )
+
+
+def hl(*args: str, expect: tuple[int, ...] = (0, 1)) -> dict:
+    """The checkout's CLI against the showcase home; JSON in, JSON out.
+
+    Exit 1 (verification failed) is an outcome a showcase run may honestly
+    have, not a seeding error.
+    """
+    env = {
+        **os.environ,
+        "HIVELOOM_HOME": str(HOME),
+        "HIVELOOM_DB": str(HOME / "hive.db"),
+        "OPENROUTER_API_KEY": _openrouter_key(),
+    }
     env.pop("VIRTUAL_ENV", None)
     env.pop("HIVELOOM_TRUST", None)
     command = [str(Path(sys.executable).parent / "hiveloom"), *args, "--json"]
-    proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=900)
+    proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=1800)
     if proc.returncode not in expect:
         raise Failed(f"hiveloom {' '.join(args)} exited {proc.returncode}: "
                      f"{(proc.stdout or proc.stderr)[-600:]}")
-    return json.loads(proc.stdout)
+    out = proc.stdout
+    # Some commands print a progress line before the JSON document.
+    return json.loads(out[out.find("{"):]) if "{" in out else {}
 
 
-def _home() -> None:
+def _home(kept: dict[Path, bytes]) -> None:
     HOME.mkdir(parents=True, exist_ok=True)
+    for relative, body in kept.items():
+        target = HOME / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        if relative.name == ".env":
+            target.chmod(0o600)
     user = Path(os.environ.get("HIVELOOM_HOME", "~/.hiveloom")).expanduser()
     for name in (".env", "models.yaml", "extensions"):
         if (user / name).exists() and not (HOME / name).exists():
@@ -70,108 +139,67 @@ def _home() -> None:
 
 def _copy() -> dict[str, Path]:
     dirs = {}
-    for name in OFFLINE:
+    for name in DEMOS:
         target = HARNESSES / name
         shutil.copytree(REPO / "harnesses" / name, target,
-                        ignore=shutil.ignore_patterns(".hiveloom", "__pycache__", "out"))
+                        ignore=shutil.ignore_patterns(".hiveloom", "__pycache__", "out", ".env"))
         dirs[name] = target
     return dirs
 
 
-def _fork(run_id: str, name: str, *extra: str) -> dict:
-    """Fork at the middle model call, so the replayed prefix has something in it."""
-    points = hl("fork", run_id, "--list")["fork_points"]
-    at = points[len(points) // 2]["seq"]
-    return hl("fork", run_id, "--at", str(at), "--name", name, *extra)
+def _run(d: Path, task: str) -> dict:
+    return hl("run", str(d), "--input-text", task)
 
 
-def memory_lab(d: Path) -> str:
-    task = "Investigate data/service.log and report the three facts."
-    first = hl("run", str(d), "--input-text", task)
-    hl("run", str(d), "--input-text", task)
-    hl("evolve", str(d), "--propose", "--model", "memory_lab/qa-evolver",
-       "--note", "The build digest is only ever on the last SUMMARY line.")
-    fork = _fork(first["run_id"], "probe")
-    hl("run", fork["directory"], "--resume")
-    pending = [p for p in hl("proposals", "list", str(d))["proposals"] if p["status"] == "pending"]
-    return f"2 runs, fork 'probe' resumed, {len(pending)} proposal(s) pending"
+def ticket_triage(d: Path, model: str) -> str:
+    hl("set", "model", model, "--dir", str(d))
+    first = _run(d, "Triage all currently open tickets.")
+    second = _run(d, "Triage all currently open tickets.")
+    # Fork at the last model call — the report turn — and resume it: the same
+    # reads replayed, the report written again on the fork.
+    points = hl("fork", second["run_id"], "--list")["fork_points"]
+    fork = hl("fork", second["run_id"], "--at", str(points[-1]["seq"]), "--name", "report-retake")
+    resumed = hl("run", fork["directory"], "--resume")
+    # Every run passed, so there are no failures to learn from — changes also
+    # come from people. An operator's finding becomes a gated proposal that
+    # waits in Improve for someone to review and apply.
+    proposal = hl("evolve", str(d), "--propose", "--model", model, "--note", TRIAGE_NOTE)
+    return (f"2 triage runs ({first['status']}, {second['status']}), "
+            f"fork 'report-retake' resumed ({resumed.get('status')}), "
+            f"proposal {proposal.get('status', '?')} in Improve")
 
 
-def routing_lab(d: Path) -> str:
-    base = hl("run", str(d), "--input", str(d / "incident.txt"))
-    forced = "FORCE_FAIL: handle incident.txt"
-    for _ in range(3):
-        hl("run", str(d), "--input-text", forced, expect=(1,))
-    proposal = hl("evolve", str(d), "--propose", "--model", "routing_lab/qa-evolver")
-    hl("proposals", "apply", str(d), proposal["id"], "--yes")
-    for _ in range(5):
-        hl("run", str(d), "--input-text", forced)
-    verdict = hl("assess", str(d))["assessments"][0]["verdict"]
-    # Assessed before the forks: a resumed fork replays the pre-evolution
-    # version under the same key, and would be read as one more sample of it.
-    replay = _fork(base["run_id"], "replay")
-    hl("run", replay["directory"], "--resume")
-    alt = hl("fork", base["run_id"], "--name", "on-alt", "--model", "qa-alt",
-             "--provider", "routing_lab")
-    hl("run", alt["directory"], "--resume")
-    return f"3 failures, evolution applied and {verdict}, forks 'replay' and 'on-alt'"
-
-
-def signal_lab(d: Path) -> str:
-    # One lookup that works, then lowercase ids that fail: a reflection, and at
-    # the third failure an auto-drafted proposal, both left pending.
-    for invoice in ("INV-1003", "inv-1004", "inv-1001", "inv-1002"):
-        hl("run", str(d), "--input-text", f"Look up invoice {invoice} and report its amount.",
-           expect=(0, 1))
-    hl("eval", "run", str(d / "eval.yaml"), "--approve")
-    result = hl("evolve", str(d), "--experiment", str(d / "eval.yaml"), "--yes",
-                "--rounds", "2", "--model", "signal_lab/qa-evolver")
-    hl("run", str(d), "--input-text", "Look up invoice inv-1010 and report its amount.")
-    rounds = ", ".join(r["status"] for r in result["rounds"])
-    return f"eval, then evolve --experiment rounds: {rounds}"
-
-
-def research_lab(d: Path) -> str:
-    for text in ("Quote shipping for a 2500 g parcel to zone 2 for customer C-100.",
-                 "Quote shipping for a 1.2 kg parcel to zone 1 for customer C-201."):
-        hl("run", str(d), "--input-text", text, expect=(0, 1))
-    hl("research", "init", str(d), "--name", "quotes", "--charter",
+def ranked_retrieval(d: Path, model: str) -> str:
+    hl("set", "model", model, "--dir", str(d))
+    _run(d, "Rank up to three records about PostgreSQL query performance.")
+    _run(d, EXAMPLES["ranked-retrieval"])
+    hl("eval", "validate", str(d / "eval.yaml"), "--approve")
+    baseline = hl("eval", "run", str(d / "eval.yaml"))
+    evolved = hl("evolve", str(d), "--experiment", str(d / "eval.yaml"), "--rounds", "1",
+                 "--yes", "--model", model)
+    hl("research", "init", str(d), "--name", "vocabulary", "--charter",
        str(d / "research.yaml"), "--approve")
-    status = hl("research", "run", str(d), "--name", "quotes")["status"]
-    stop = status["stop_reason"]["condition"]
-    # A second program in concepts mode, left at its approval gate: the
-    # Research tab's contract card and, once approved, its label questions.
-    hl("research", "init", str(d), "--name", "concepts", "--charter",
-       str(d / "research-concepts.yaml"), "--approve")
-    waiting = hl("research", "run", str(d), "--name", "concepts")["status"]
-    return (f"research 'quotes' stopped at {stop}; proposal left pending; "
-            f"'concepts' waiting for {waiting['awaiting']} approval")
+    research = hl("research", "run", str(d), "--name", "vocabulary")
+    status = hl("research", "status", str(d), "--name", "vocabulary")
+    promotion = (status.get("promotion") or {}).get("status") or "nothing to promote"
+    del research  # its outcome is read back through `status`, below
+    tested = len(status.get("experiments") or [])
+    return (f"2 queries, eval {baseline.get('eval_run_id', '?')}, "
+            f"experiment kept {evolved.get('kept', 0)}, research {status.get('status')} "
+            f"after {tested} experiment(s) ({promotion})")
 
 
-def delegation_lab(d: Path) -> str:
-    peer = d / "peers" / "ledger-desk"
-    hl("trust", str(peer))
-    hl("registry", "add", str(peer))
-    question = "What is the amount of invoice INV-1003?"
-    hl("run", str(d), "--input-text", question)
-    for invoice in ("INV-1001", "inv-1005", "INV-1009"):
-        hl("run", str(peer), "--input-text", f"Amount of invoice {invoice}?")
-    hl("run", str(d), "--input-text", question)
-    return "referred while the peer was unmeasured, then delegated"
+def log_forensics(d: Path, model: str) -> str:
+    hl("set", "model", model, "--dir", str(d))
+    task = EXAMPLES["log-forensics"]
+    first = _run(d, task)
+    # The second run of the same version finds the first through recall_runs.
+    second = _run(d, task)
+    return f"2 investigations ({first['status']}, {second['status']})"
 
 
-SCENARIOS = {"memory-lab": memory_lab, "routing-lab": routing_lab, "signal-lab": signal_lab,
-             "research-lab": research_lab, "delegation-lab": delegation_lab}
-
-# A task each demo answers offline, shown in its interface to copy or adapt.
-EXAMPLES = {
-    "memory-lab": "Investigate data/service.log and report the three facts.",
-    "routing-lab": "Handle incident.txt",
-    "signal-lab": "Look up invoice INV-1003 and report its amount.",
-    "research-lab": "Quote shipping for a 2500 g parcel to zone 2 for customer C-100.",
-    "delegation-lab": "What is the amount of invoice INV-1003?",
-    "delegation-lab/peers/ledger-desk": "Amount of invoice INV-1001?",
-}
+SCENARIOS = {"ticket-triage": ticket_triage, "ranked-retrieval": ranked_retrieval,
+             "log-forensics": log_forensics}
 
 
 def interfaces() -> None:
@@ -207,8 +235,15 @@ def interfaces() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--reset", action="store_true", help="discard the showcase and reseed")
+    parser.add_argument("--model", default=DEFAULT_MODEL,
+                        help=f"provider/model-id the demos run on (default {DEFAULT_MODEL})")
     args = parser.parse_args()
 
+    kept = {
+        relative: (HOME / relative).read_bytes()
+        for relative in KEEP
+        if (HOME / relative).is_file() and not (HOME / relative).is_symlink()
+    }
     if args.reset:
         shutil.rmtree(ROOT, ignore_errors=True)
     if DONE.is_file():
@@ -218,15 +253,20 @@ def main() -> int:
     # A half-seeded showcase from an interrupted run is not worth resuming.
     shutil.rmtree(ROOT, ignore_errors=True)
 
-    _home()
+    _home(kept)
+    try:
+        _openrouter_key()
+    except Failed as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     dirs = _copy()
     for directory in dirs.values():
         hl("trust", str(directory))
     summary = {}
     for name, scenario in SCENARIOS.items():
-        print(f"  {name:<15}", end="", flush=True)
+        print(f"  {name:<17}", end="", flush=True)
         try:
-            summary[name] = scenario(dirs[name])
+            summary[name] = scenario(dirs[name], args.model)
         except Failed as exc:
             print(f"failed\n{exc}", file=sys.stderr)
             return 1
