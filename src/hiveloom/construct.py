@@ -54,6 +54,7 @@ def _log_construction(
     args: dict[str, Any],
     outcome: str,
     error: str | None = None,
+    versions: tuple[str | None, str | None] | None = None,
 ) -> None:
     trace_dir = directory / TRACE_SUBDIR
     trace_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,11 @@ def _log_construction(
     }
     if error is not None:
         event["error"] = error
+    if versions is not None:
+        # The version this change started from and the one it produced: the
+        # record that lets a version graph draw this step as a child of its
+        # parent instead of as an unattributed edit.
+        event["old_version_hash"], event["new_version_hash"] = versions
     with (trace_dir / CONSTRUCTION_LOG).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event) + "\n")
 
@@ -80,13 +86,17 @@ def _commit(
     command: str,
     args: dict[str, Any],
 ) -> HarnessSpec:
+    from hiveloom.logging.trace import spec_version_hash
+
     try:
         # Trust gate first: validation imports hook/extension code.
         trust.ensure_trusted(directory)
+        old_hash = _current_version_hash(directory)
         spec = spec_from_dict(raw, source=str(harness_path(directory)), base_dir=directory)
         resolve_hooks(spec, directory)
         atomic_write_text(harness_path(directory), dump_spec(spec))
-        _log_construction(directory, command, args, "ok")
+        new_hash = spec_version_hash(spec, directory)
+        _log_construction(directory, command, args, "ok", versions=(old_hash, new_hash))
         return spec
     except Exception as exc:  # noqa: BLE001 - rollback is part of the construct contract
         for path in created:
@@ -101,6 +111,17 @@ def _commit(
         if isinstance(exc, HiveloomError):
             raise
         raise HiveloomError(f"could not {command}: {type(exc).__name__}: {exc}") from exc
+
+
+def _current_version_hash(directory: Path) -> str | None:
+    """The version on disk before a change, or None when it does not load."""
+    from hiveloom.logging.trace import spec_version_hash
+    from hiveloom.spec.loader import load_spec
+
+    try:
+        return spec_version_hash(load_spec(harness_path(directory)), directory)
+    except Exception:  # noqa: BLE001 - a broken spec has no version to descend from
+        return None
 
 
 # --------------------------------------------------------------------------- #
