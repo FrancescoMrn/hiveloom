@@ -97,6 +97,13 @@ class ModelInfo(BaseModel):
     supports_tool_calling: bool | None = None
     supports_structured_output: bool | None = None
     supports_reasoning_replay: bool | None = None
+    # Still served and still priced, but superseded: validation and the cost
+    # estimator keep accepting it so existing harnesses run unchanged, while
+    # pickers stop offering it for new work.
+    legacy: bool = False
+    # Served only to an access program (Claude Mythos: Project Glasswing).
+    # Valid and priced for whoever has access; never offered to everyone else.
+    restricted: bool = False
 
 
 class ProviderInfo(BaseModel):
@@ -508,16 +515,18 @@ def providers() -> list[ProviderInfo]:
     return [_registry.provider_meta[name] for name in sorted(_registry.provider_meta)]
 
 
-def models_for_provider(name: str) -> list[ModelInfo]:
+def models_for_provider(name: str, *, in_order: bool = False) -> list[ModelInfo]:
     """Registered models belonging to ``name``, id-sorted.
+
+    ``in_order`` keeps registration order instead: the order a builtin lists
+    them in, recommended model first, which is what a picker should show.
 
     An open-catalog provider accepts ids beyond these; the list is a starting
     point with known pricing, not a limit.
     """
     ensure_environment_loaded()
-    return sorted(
-        (m for m in _registry.models.values() if m.provider == name), key=lambda m: m.id
-    )
+    models = [m for m in _registry.models.values() if m.provider == name]
+    return models if in_order else sorted(models, key=lambda m: m.id)
 
 
 def model_info(model_id: str) -> ModelInfo | None:
@@ -706,8 +715,19 @@ def _iter_entry_points():
 # Bedrock and Vertex are partner-operated with their own pricing; a harness
 # routed through one of those should carry its rates in ~/.hiveloom/models.yaml
 # rather than inherit these.
+#
+# Prices and lifecycle checked 2026-10-04 against
+# https://platform.claude.com/docs/en/about-claude/model-deprecations: every
+# id below is still Active, so none may be dropped from this closed catalog.
+#
+# Listed in the order a picker offers them — the recommended model first —
+# which is also what a workbench with no default model falls back to.
 _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
+    "claude-fable-5-1": (10.00, 50.00),
+    "claude-mythos-5-1": (10.00, 50.00),
     # Sonnet 5 launched at introductory (2.00, 10.00) pricing; Anthropic later
     # made that the standard rate and cancelled the scheduled 2026-09-01
     # increase to (3.00, 15.00) — see the note on
@@ -719,11 +739,36 @@ _CLAUDE_MODELS: dict[str, tuple[float, float]] = {
     "claude-opus-4-7": (5.00, 25.00),
     "claude-opus-4-6": (5.00, 25.00),
     "claude-fable-5": (10.00, 50.00),
-    # Project Glasswing only. Registered because `models/claude.py` already
-    # handles its API surface, so leaving it out of the catalog would reject a
-    # model the runtime can actually drive for anyone who has access.
     "claude-mythos-5": (10.00, 50.00),
 }
+
+# Project Glasswing only. Registered because `models/claude.py` handles their
+# API surface, so leaving them out would reject a model the runtime can drive
+# for anyone who has access — but not offered, since most accounts do not.
+_CLAUDE_RESTRICTED = frozenset({"claude-mythos-5", "claude-mythos-5-1"})
+
+# Documented 128K output ceilings (every model here except Haiku 4.5, whose
+# ceiling is left undeclared rather than guessed). A declared ceiling is what
+# lets the evolver ask for a real proposal budget — see
+# `generate/llm.py:strong_max_tokens`.
+_CLAUDE_MAX_OUTPUT: dict[str, int] = {
+    mid: 128_000 for mid in _CLAUDE_MODELS if mid != "claude-haiku-4-5"
+}
+
+# Superseded within their own line (Sonnet 5.5, Opus 5.5, Fable 5.1, Mythos
+# 5.1). Kept valid and priced above; hidden from pickers.
+_CLAUDE_LEGACY = frozenset(
+    {
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-fable-5",
+        "claude-mythos-5",
+    }
+)
 
 
 def _env_file_values(base: Path | None) -> dict[str, str]:
@@ -789,6 +834,8 @@ class _BuiltinProvider:
     label: str
     models: dict[str, tuple[float, float]] = field(default_factory=dict)
     default_price: tuple[float, float] | None = None
+    # Listed ids that are superseded: priced, accepted, not offered.
+    legacy: frozenset[str] = frozenset()
 
 
 _OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
@@ -796,13 +843,22 @@ _OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
         base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
         label="OpenAI",
+        # Current lineup per https://developers.openai.com/api/docs/models,
+        # priced from https://developers.openai.com/api/docs/pricing
+        # (2026-10-04). These are the short-context (<=272K input) rates;
+        # OpenAI bills longer prompts higher, which this flat table cannot
+        # express — set a models.yaml override if a harness runs long prompts.
         models={
+            "gpt-6.1-sol": (2.00, 10.00),
+            "gpt-6-astra": (10.00, 50.00),
+            "gpt-6-luna": (0.10, 0.50),
             "gpt-4o": (2.50, 10.00),
             "gpt-4o-mini": (0.15, 0.60),
             "gpt-4.1": (2.00, 8.00),
             "gpt-4.1-mini": (0.40, 1.60),
             "gpt-4.1-nano": (0.10, 0.40),
         },
+        legacy=frozenset({"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"}),
     ),
     "gemini": _BuiltinProvider(
         # Google exposes an OpenAI-compatible surface at this path. Tool-call
@@ -887,7 +943,9 @@ def _register_builtin_providers() -> None:
         label="Anthropic Claude",
         models=[
             ModelInfo(id=mid, provider="claude", input_cost_per_mtok=inp,
-                      output_cost_per_mtok=out)
+                      output_cost_per_mtok=out, legacy=mid in _CLAUDE_LEGACY,
+                      restricted=mid in _CLAUDE_RESTRICTED,
+                      max_output_tokens=_CLAUDE_MAX_OUTPUT.get(mid))
             for mid, (inp, out) in _CLAUDE_MODELS.items()
         ],
     )
@@ -903,7 +961,7 @@ def _register_builtin_providers() -> None:
             open_catalog=True,
             models=[
                 ModelInfo(id=mid, provider=name, input_cost_per_mtok=inp,
-                          output_cost_per_mtok=out)
+                          output_cost_per_mtok=out, legacy=mid in entry.legacy)
                 for mid, (inp, out) in entry.models.items()
             ],
         )
@@ -918,6 +976,12 @@ class _YamlModelEntry(BaseModel):
     supports_tool_calling: bool | None = None
     supports_structured_output: bool | None = None
     supports_reasoning_replay: bool | None = None
+    # Unset inherits the builtin's flag: re-pricing a superseded model must not
+    # quietly put it back on every picker.
+    legacy: bool | None = None
+    # Same inheritance as `legacy`; `restricted: false` offers a Glasswing
+    # model on a machine whose account has access.
+    restricted: bool | None = None
 
 
 class _YamlProviderEntry(BaseModel):
@@ -931,11 +995,44 @@ class _YamlProviderEntry(BaseModel):
     # frontier APIs; a queued trial endpoint or a local server generating at a
     # few tokens a second needs more, or every call fails as "unreachable".
     timeout_seconds: int | None = Field(default=None, gt=0)
+    # Display name; defaults to the builtin's label, or the provider's name.
+    label: str | None = None
     models: list[_YamlModelEntry] = []
 
 
 def _load_models_yaml() -> None:
-    """Register providers/models declared in ``~/.hiveloom/models.yaml``.
+    """Load the workbench's ``providers.yaml``, then the hand-written ``models.yaml``."""
+    _load_provider_file(paths.providers_yaml_path(), "providers.yaml")
+    _load_provider_file(paths.models_yaml_path(), "models.yaml")
+
+
+def reload_user_providers() -> None:
+    """Re-read ``providers.yaml`` and ``models.yaml`` in place.
+
+    For a provider added or removed while a process is running (the
+    workbench). Unlike :func:`reset`, nothing an extension or pack registered
+    is disturbed: only what ``providers.yaml`` declared is dropped before the
+    files are read again, and ``models.yaml`` is re-applied after it so a
+    hand-written entry keeps the last word.
+    """
+    ensure_environment_loaded()
+    for name, meta in list(_registry.provider_meta.items()):
+        if meta.source != "providers.yaml":
+            continue
+        del _registry.provider_meta[name]
+        _registry.providers.pop(name, None)
+        for model_id in [m for m, info in _registry.models.items() if info.provider == name]:
+            del _registry.models[model_id]
+    _registry.errors[:] = [
+        error
+        for error in _registry.errors
+        if error.get("source") not in ("providers.yaml", "models.yaml")
+    ]
+    _load_models_yaml()
+
+
+def _load_provider_file(yaml_path: Path, source: str) -> None:
+    """Register the providers/models one file declares (``providers.yaml`` or ``models.yaml``).
 
     Format::
 
@@ -950,12 +1047,10 @@ def _load_models_yaml() -> None:
                 input_cost_per_mtok: 0
                 output_cost_per_mtok: 0
     """
-    yaml_path = paths.models_yaml_path()
     if not yaml_path.exists():
         return
     import yaml as _yaml
 
-    source = "models.yaml"
     try:
         data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
         providers = data.get("providers") or {}
@@ -988,7 +1083,7 @@ def _load_models_yaml() -> None:
                 ),
                 base_url=entry.base_url,
                 api_key_env=entry.api_key_env or "",
-                label=builtin.label if builtin else name,
+                label=entry.label or (builtin.label if builtin else name),
                 # Declared entries are closed by default — the user listed the
                 # models they meant, so a typo should fail. Overriding a builtin
                 # keeps the builtin's policy unless the entry says otherwise.
@@ -1035,7 +1130,24 @@ def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) ->
         supports_tool_calling=entry.supports_tool_calling,
         supports_structured_output=entry.supports_structured_output,
         supports_reasoning_replay=entry.supports_reasoning_replay,
+        legacy=(
+            entry.legacy
+            if entry.legacy is not None
+            else _builtin_model_is_legacy(provider, entry.id)
+        ),
+        restricted=(
+            entry.restricted
+            if entry.restricted is not None
+            else provider == "claude" and entry.id in _CLAUDE_RESTRICTED
+        ),
     )
+
+
+def _builtin_model_is_legacy(provider: str, model_id: str) -> bool:
+    if provider == "claude":
+        return model_id in _CLAUDE_LEGACY
+    builtin = _OPENAI_COMPAT_PROVIDERS.get(provider)
+    return bool(builtin and model_id in builtin.legacy)
 
 
 def _openai_compat_factory(

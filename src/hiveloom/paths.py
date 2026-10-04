@@ -24,3 +24,14 @@ def user_extensions_dir() -> Path:
 def models_yaml_path() -> Path:
     """The user-level model/provider declaration file."""
     return hiveloom_home() / "models.yaml"
+
+
+def providers_yaml_path() -> Path:
+    """Providers added through the workbench: same format as ``models.yaml``.
+
+    A separate file because it is machine-written. ``models.yaml`` is edited by
+    hand and carries comments a program would destroy by rewriting it; this one
+    is rewritten whole on every change, and loads first so a hand-written entry
+    for the same provider still wins.
+    """
+    return hiveloom_home() / "providers.yaml"

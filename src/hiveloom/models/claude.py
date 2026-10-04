@@ -34,7 +34,8 @@ _CACHE_CONTROL = {"type": "ephemeral"}
 
 # Models whose API surface rejects sampling parameters: Opus 4.7 onward,
 # Sonnet 5, and the Fable/Mythos tier return 400 for a non-default
-# `temperature` (the spec default of 0.0 is non-default to the API).
+# `temperature` (the spec default of 0.0 is non-default to the API). These are
+# prefixes, so Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 are covered.
 _NO_SAMPLING_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-8",
