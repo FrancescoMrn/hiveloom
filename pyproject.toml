@@ -35,7 +35,7 @@ dependencies = [
     "jsonschema>=4.0",
     "starlette>=1.0",
     "uvicorn>=0.30",
-    "pyjwt[crypto]>=2.8",
+    "pyjwt[crypto]>=2.15.1",
     "cryptography>=42.0",
 ]
 
