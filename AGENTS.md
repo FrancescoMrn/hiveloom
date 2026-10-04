@@ -97,27 +97,17 @@ lessons the run itself offered, reviewed the same way and curated with
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — eleven worked examples to imitate, indexed by
-  capability in [harnesses/README.md](harnesses/README.md): `quickstart`
-  (no tools; output filter, hard turn cap, redaction), `example-summarizer`
-  (tools, verification, a skill loaded on demand),
-  `article-extractor` (a custom tool + anti-hallucination validator),
-  `routing-lab` (playbooks, `plan_then_act`, forking, aimed evolution —
-  offline, no API key),
-  `ticket-triage` (an MCP server as the only data source, parallel reads),
-  `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
-  synthetic data), `log-forensics` (confinement around an allowlisted
-  shell, an oversized tool result spilled and read back by handle),
-  `memory-lab` (run-scoped `notes`, `transform_result` over a spilled
-  handle, a handle passed to `file_write`, `propose_memory`, and
-  `memory.entries` grown only through an applied proposal, artifact
-  validators — offline), `signal-lab` (`signal` locating the failing tool,
-  reflection, auto-propose with trace excerpts, an `evolve --experiment` that
-  reverts a refuted change and keeps a confirmed one, `assess`, and
-  relevance-selected memory — offline), `delegation-lab` (a peer referred
-  until measured, then handed the task and verified — offline), and
-  `research-lab` (a research program: a scripted director, a kept and a
-  discarded experiment, a ceiling stop, promotion — offline).
+- [harnesses/](harnesses/) — three demos to imitate, each solving a real task
+  with a real model, indexed by capability in
+  [harnesses/README.md](harnesses/README.md): `ticket-triage` (an MCP server
+  as the only data source, parallel reads, a code validator against the
+  system of record), `ranked-retrieval` (structured phases, grounded IDs, a
+  local eval with ranked metrics, measured evolution and a research program),
+  and `log-forensics` (confinement around an allowlisted shell, an oversized
+  tool result spilled and read back by handle, `recall_runs`). Further worked
+  examples — the offline labs for playbooks, memory, signals, delegation and
+  research — live with the tests in
+  [tests/fixtures/harnesses/](tests/fixtures/harnesses/).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 

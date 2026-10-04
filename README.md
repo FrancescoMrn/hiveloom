@@ -293,25 +293,21 @@ Full tour: [docs/workbench.md](https://github.com/FrancescoMrn/hiveloom/blob/mai
 
 ## Demo harnesses
 
-Eleven worked examples live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses),
-each the smallest thing that shows one layer of the runtime, with a README that
-states what it proves and the evidence to look for. The
-[gallery](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses#by-capability)
-indexes them by capability.
+Three demos live in [`harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses), each solving a real task
+end to end with a real model, with a README that states what it proves and the
+evidence to look for. The [gallery](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses#by-capability) indexes them
+by capability.
 
-| harness | what it shows |
+| harness | the job, and what it shows |
 |---|---|
-| [`quickstart`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/quickstart) | a harness with no tools — journal, hashed spec, cost and hard turn ceilings, and a safety layer that keeps a credential out of the request, the trace and the answer; how to package and serve it |
-| [`example-summarizer`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/example-summarizer) | builtin tools, schema *and* code verification, retry-with-feedback, and a house-style skill loaded on demand with `load_skill` |
-| [`article-extractor`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/article-extractor) | a custom `@tool`, an output hook, a validator that re-fetches to catch invention |
-| [`routing-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/routing-lab) | playbooks that move the model *and* the tool set mid-run on a `plan_then_act` plan; forking; an aimed evolution confirmed by `assess` — offline, no API key |
-| [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | an MCP server (FastMCP over stdio) as the harness's only data source, its tools joining the loop as `mcp__tickets__*`, read in parallel |
-| [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | structured tool phases, a deterministic search-and-verify tool, grounded IDs, and local ranked metrics over synthetic data |
-| [`log-forensics`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/log-forensics) | OS confinement around an allowlisted shell, a 77 KB tool result spilled and read back by handle, and `recall_runs` scoped to one harness version |
-| [`memory-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/memory-lab) | the three memory layers on one task: a spilled log narrowed in place with `transform_result`, findings kept in `notes` across compaction and a fork, a derived object handed to `file_write` by handle, and `memory.entries` that grow only through an applied proposal — offline, no API key |
-| [`signal-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/signal-lab) | signal-driven evolution: `hiveloom signal` locates the failing tool, reflection drafts a lesson for review, `evolve --experiment` reverts a refuted change and keeps the confirmed one pair by pair, `assess` reports both, and relevance-selected memory shows the learned rule only where it applies — offline, no API key |
-| [`delegation-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/delegation-lab) | a front desk refers a ledger specialist until the peer has earned a measured record, then hands it the task, re-verifies the answer, and records the lineage — offline, no API key |
-| [`research-lab`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/research-lab) | a research program: a director model finds a planted defect from the runs behind a signal, the engine confirms and keeps the fix, discards a generic idea, stops at the ceiling no prompt can reach, and queues the result for review — offline, no API key |
+| [`ticket-triage`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ticket-triage) | triages a 26-ticket support queue read from an MCP ticket system (FastMCP over stdio, tools joining the loop as `mcp__tickets__*`), reads fanned out in parallel, the report checked against the system of record — every open ticket once, no invented ids |
+| [`ranked-retrieval`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/ranked-retrieval) | answers engineering questions from a knowledge base in the words people actually use: structured tool phases, a deterministic search-and-verify tool and grounded IDs, measured by a local eval (recall, nDCG, hallucination rate) and improved by a research program |
+| [`log-forensics`](https://github.com/FrancescoMrn/hiveloom/tree/main/harnesses/log-forensics) | investigates a 77 KB production log through OS confinement around an allowlisted shell, the oversized result spilled and read back by handle, with `recall_runs` scoped to one harness version |
+
+`devtools/ui/dev.sh --showcase` seeds copies of all three in the workbench with
+real history — runs, a resumed fork, an eval, a measured evolution and a
+research program — and further worked examples, most of them offline, live
+with the test suite in [`tests/fixtures/harnesses/`](https://github.com/FrancescoMrn/hiveloom/tree/main/tests/fixtures/harnesses).
 
 Each was built through the same `init`/`add`/`set` CLI path a user gets —
 nothing hand-writes `harness.yaml` — and is committed as a plain folder: clone
