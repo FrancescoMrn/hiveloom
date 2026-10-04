@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 from hiveloom.cli import app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RESEARCH_LAB = REPO_ROOT / "harnesses" / "research-lab"
+RESEARCH_LAB = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "research-lab"
 GRAMS = "Quote shipping for a 2500 g parcel to zone 2 for customer C-100."
 
 

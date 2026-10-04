@@ -12,7 +12,7 @@ Summarizes a text into one JSON object with `title`, `summary` and
 - **Two independent verifications** — `schemas/output.json` checks the
   *shape*; `validators/check_summary.py` checks the *content*: fields carry
   something, the summary is shorter than its source, and the house style's
-  countable rules hold. ([spec.md](../../docs/spec.md))
+  countable rules hold. ([spec.md](../../../../docs/spec.md))
 - **Retry with feedback** — a failed check puts the validator's own message
   back into the conversation, up to twice. The messages say what to change.
 - **Skills, loaded on demand** — `skills/house-style/SKILL.md` stays out of the

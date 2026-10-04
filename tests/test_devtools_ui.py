@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER = REPO_ROOT / "devtools" / "ui" / "server.py"
-EXAMPLE = REPO_ROOT / "harnesses" / "example-summarizer"
+EXAMPLE = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "example-summarizer"
 
 
 def _load():
@@ -800,7 +800,7 @@ def test_a_harness_extension_provider_is_scoped_to_its_own_harness(
     monkeypatch.setattr(ui.registry_mod, "registered", lambda: [])
     monkeypatch.setenv("HIVELOOM_DB", str(harness_copy.parent / "ui-hive.db"))
     monkeypatch.setenv("HIVELOOM_HOME", str(harness_copy.parent / "hiveloom-home"))
-    routing_lab = REPO_ROOT / "harnesses" / "routing-lab"
+    routing_lab = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "routing-lab"
     client = TestClient(ui.build_app([str(harness_copy), str(routing_lab)]))
 
     def demo(harness_id: str) -> dict:
@@ -2017,7 +2017,7 @@ def test_the_npm_package_manifest_ships_the_api_and_not_the_source() -> None:
 # --------------------------------------------------------------------------- #
 # Research programs
 # --------------------------------------------------------------------------- #
-RESEARCH_LAB = REPO_ROOT / "harnesses" / "research-lab"
+RESEARCH_LAB = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "research-lab"
 
 
 @pytest.fixture

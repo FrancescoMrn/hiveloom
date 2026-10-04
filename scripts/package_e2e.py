@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end test of the *installed* hiveloom package against the demo harnesses.
+"""End-to-end test of the *installed* hiveloom package against the example harnesses.
 
 Unit tests run the source tree. This runs the wheel a user would install, in
 an isolated environment with no checkout on its path, and drives the CLI the
 way a builder agent would: every call with --json, every exit code checked.
 
-Offline (default, no credentials, no network beyond building):
+Offline (default, no credentials, no network beyond building). The demos live in
+`harnesses/`; the offline labs and small live examples are test fixtures in
+`tests/fixtures/harnesses/`, copied side by side into one work folder:
   * the wheel installs, imports, reports its version, and ships every guide topic;
   * every demo harness validates and dry-runs;
   * memory-lab runs, its journal verifies, the signal map reads it, the lesson
@@ -518,10 +520,14 @@ def main() -> int:
     wheel = wheel.resolve()
     work = args.keep or Path(tempfile.mkdtemp(prefix="hiveloom-e2e-"))
     work.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        ROOT / "harnesses", work / "harnesses", dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns(".hiveloom", "__pycache__", ".env", "runtime"),
-    )
+    # The three demos, plus the harnesses the test suite keeps as fixtures
+    # (the offline labs and the small live examples): together they exercise
+    # every capability end to end, side by side in one folder as before.
+    for source in (ROOT / "harnesses", ROOT / "tests" / "fixtures" / "harnesses"):
+        shutil.copytree(
+            source, work / "harnesses", dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".hiveloom", "__pycache__", ".env", "runtime"),
+        )
     env = {}
     if args.live:
         if not os.environ.get("OPENROUTER_API_KEY"):

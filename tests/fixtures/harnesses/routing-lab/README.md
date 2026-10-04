@@ -11,16 +11,16 @@ every command below produces the same journal every time.
 ## Capabilities
 
 - **Playbooks** — two stages, each with its own model *and* tool set, switched
-  inside one run and one conversation. ([spec.md](../../docs/spec.md))
+  inside one run and one conversation. ([spec.md](../../../../docs/spec.md))
 - **`plan_then_act`** — a planning turn first; the plan is pinned into the
   system prompt for the rest of the run, so compaction cannot drop it.
 - **Output schema verification** — `decide` must end in one JSON object.
 - **Forking** — re-enter a finished run at one of its model calls and replay
   the identical prefix against a changed harness or model.
-  ([journal.md](../../docs/journal.md))
+  ([journal.md](../../../../docs/journal.md))
 - **Signal-driven evolution** — `signal` locates the failure, `evolve` proposes
   an aimed fix, `assess` checks it against its prediction.
-  ([signal-driven-evolution.md](../../docs/signal-driven-evolution.md))
+  ([signal-driven-evolution.md](../../../../docs/signal-driven-evolution.md))
 
 | playbook | model         | tools                          |
 |----------|---------------|--------------------------------|

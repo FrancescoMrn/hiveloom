@@ -20,7 +20,7 @@ from hiveloom.cli import app
 from hiveloom.logging.journal import read_events
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SIGNAL_LAB = REPO_ROOT / "harnesses" / "signal-lab"
+SIGNAL_LAB = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "signal-lab"
 UPPER = "Look up invoice INV-1003 and report its amount."
 LOWER = "Look up invoice inv-1004 and report its amount."
 

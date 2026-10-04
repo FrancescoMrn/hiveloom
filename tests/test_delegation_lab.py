@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 from hiveloom.cli import app
 from hiveloom.logging.journal import read_events
 
-LAB = Path(__file__).resolve().parents[1] / "harnesses" / "delegation-lab"
+LAB = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "delegation-lab"
 INVOICE = "What is the amount of invoice INV-1003?"
 
 

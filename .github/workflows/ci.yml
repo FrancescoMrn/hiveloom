@@ -95,15 +95,15 @@ jobs:
           enable-cache: true
       - name: Install project
         run: uv sync --extra dev
-      - name: Validate every harness in harnesses/
+      - name: Validate every demo and fixture harness
         run: |
-          for harness in harnesses/*/; do
+          for harness in harnesses/*/ tests/fixtures/harnesses/*/; do
             uv run hiveloom validate "$harness"
           done
       - name: Dry-run the example summarizer
         run: >
-          uv run hiveloom run harnesses/example-summarizer
-          --input harnesses/example-summarizer/notes.txt --dry-run
+          uv run hiveloom run tests/fixtures/harnesses/example-summarizer
+          --input tests/fixtures/harnesses/example-summarizer/notes.txt --dry-run
 
   workbench:
     name: Workbench (frontend + distribution)

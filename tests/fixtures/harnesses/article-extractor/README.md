@@ -11,7 +11,7 @@ URL in, strict JSON metadata out: `source_url`, `title`, `description`,
 
 - **A custom `@tool`** — `tools/fetch_clean.py`, plain Python, returns a
   labelled digest that always fits the tool-result budget.
-  ([extending.md](../../docs/extending.md))
+  ([extending.md](../../../../docs/extending.md))
 - **Anti-hallucination verification** — `validators/article_on_page.py`
   re-fetches the page and checks the title and headings really occur on it.
 - **Output hook** — `strip_json_fence` removes a Markdown fence before

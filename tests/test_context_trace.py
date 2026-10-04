@@ -464,7 +464,7 @@ def test_compaction_max_tokens_caps_only_the_summary_call(tmp_path: Path):
     from hiveloom.models.fake import text_response, tool_response
 
     harness = tmp_path / "h"
-    source = Path(__file__).resolve().parent.parent / "harnesses" / "example-summarizer"
+    source = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
     shutil.copytree(source, harness)
     (harness / "notes.txt").write_text("The quick brown fox. " * 400)
     construct.set_field(harness, "context.max_input_tokens", "600")

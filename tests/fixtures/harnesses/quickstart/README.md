@@ -12,15 +12,15 @@ add is layered onto this.
 ## Capabilities
 
 - **Journal and version hash** — every run is recorded against the exact spec
-  it ran under. ([journal.md](../../docs/journal.md))
+  it ran under. ([journal.md](../../../../docs/journal.md))
 - **Guardrails** — `max_cost_usd` and `max_wall_clock_seconds`;
   `max_turns_hard_cap`, a ceiling even evolution cannot lift (it may raise
   `loop.max_turns`, never a guardrail); `regex_output_filter`, which blocks an
   answer that contains a credential and makes the model rewrite it.
-  ([spec.md](../../docs/spec.md))
+  ([spec.md](../../../../docs/spec.md))
 - **Redaction and egress** — `logging.redact` keeps the same credential
   patterns out of the trace, and provider egress screens them out of the
-  request before it leaves the machine. ([task-confinement.md](../../docs/task-confinement.md))
+  request before it leaves the machine. ([task-confinement.md](../../../../docs/task-confinement.md))
 - **Shipping** — the folder packages, serves over HTTP, and serves to other
   agents over MCP as it is.
 
@@ -65,7 +65,7 @@ hiveloom serve . --port 8080                            # POST /runs, GET /healt
 hiveloom mcp serve .                                    # a run_quickstart tool for any MCP client
 ```
 
-See [deploying-and-evolving.md](../../docs/deploying-and-evolving.md).
+See [deploying-and-evolving.md](../../../../docs/deploying-and-evolving.md).
 
 ## Try this
 

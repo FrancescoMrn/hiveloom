@@ -19,7 +19,7 @@ import yaml
 
 EVAL_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CANONICAL_HARNESS = REPO_ROOT / "harnesses" / "article-extractor"
+CANONICAL_HARNESS = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "article-extractor"
 DATASET_PATH = EVAL_ROOT / "dataset" / "samples.jsonl"
 
 # Anthropic first-party rates, USD per 1M tokens (input, output).

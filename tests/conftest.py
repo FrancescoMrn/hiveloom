@@ -9,7 +9,7 @@ import pytest
 from hiveloom import construct, ext
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_HARNESS = REPO_ROOT / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = REPO_ROOT / "tests" / "fixtures" / "harnesses" / "example-summarizer"
 
 
 @pytest.fixture(autouse=True)

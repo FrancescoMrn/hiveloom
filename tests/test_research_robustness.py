@@ -15,8 +15,8 @@ from hiveloom.models.provider import ModelProvider
 from hiveloom.research.engine import Engine
 from hiveloom.research.program import Program, init_program
 
-SIGNAL_LAB = Path(__file__).resolve().parents[1] / "harnesses" / "signal-lab"
-RESEARCH_LAB = Path(__file__).resolve().parents[1] / "harnesses" / "research-lab"
+SIGNAL_LAB = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "signal-lab"
+RESEARCH_LAB = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "research-lab"
 
 
 @pytest.fixture()

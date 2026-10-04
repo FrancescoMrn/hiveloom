@@ -25,7 +25,7 @@ what it learns.
 ## Capabilities
 
 - **Spill and handles** — an oversized result is stored whole and returned as
-  a preview plus a handle. ([spec.md](../../docs/spec.md))
+  a preview plus a handle. ([spec.md](../../../../docs/spec.md))
 - **`transform_result`** — `count`, `grep`, `tail` and friends over a handle,
   in place; oversized output becomes a *derived* handle.
 - **`notes`** — run-scoped findings outside the conversation, indexed in the
@@ -37,7 +37,7 @@ what it learns.
   code the answer reports.
 - **Durable memory (L3)** — `memory.entries`, grown only through reviewed
   proposals: `propose_memory` from the executor, `evolve --propose` from the
-  evolver. ([signal-driven-evolution.md](../../docs/signal-driven-evolution.md))
+  evolver. ([signal-driven-evolution.md](../../../../docs/signal-driven-evolution.md))
 
 ## Run it
 

@@ -42,7 +42,7 @@ charter ──► init ──► baseline ──► survey ──► hypothesize
                      a stop condition ──► confirm (sealed, once) ──► report ──► proposal
 ```
 
-[`harnesses/research-lab`](../harnesses/research-lab) runs the whole loop
+[`tests/fixtures/harnesses/research-lab`](../tests/fixtures/harnesses/research-lab) runs the whole loop
 offline, with no API key: it finds a planted defect from the runs behind a
 signal, keeps the fix, discards a generic idea, and stops at a ceiling that no
 prompt can reach. The design, including the milestones still to come, is in

@@ -14,7 +14,7 @@ descriptions it is given.
 ## Capabilities
 
 - **Delegation, `on_start` mode** — one enforced routing call before the first
-  turn; the model does not get to skip it. ([delegation.md](../../docs/delegation.md))
+  turn; the model does not get to skip it. ([delegation.md](../../../../docs/delegation.md))
 - **Fitness floors** — `min_peer_runs: 3`, `min_peer_success_rate: 0.8`: an
   unmeasured peer is never chosen automatically, only referred.
 - **Referrals** — `referrals` on the result say which harness would fit and why

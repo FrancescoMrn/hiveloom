@@ -42,7 +42,7 @@ watch a model do the same job.
   user, and the **ceiling**.
 - **Promotion**: the kept changes are queued as a `trigger=research`
   proposal on the live harness, applied only by `proposals apply`.
-  ([autoresearch.md](../../docs/design/autoresearch.md))
+  ([autoresearch.md](../../../../docs/design/autoresearch.md))
 
 ## Run it
 

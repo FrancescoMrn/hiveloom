@@ -20,7 +20,7 @@ history, and draft a lesson only when the run's own evidence supports one.
 
 - **`hiveloom signal`** — failing and successful runs contrasted feature by
   feature, loss classes, and how much the sample can show; free.
-  ([signal-driven-evolution.md](../../docs/signal-driven-evolution.md))
+  ([signal-driven-evolution.md](../../../../docs/signal-driven-evolution.md))
 - **Reflection** (`evolution.reflect`) — a failed run is read and a lesson is
   drafted into the review queue.
 - **Auto-propose with trace excerpts** — after 3 failures, a proposal is

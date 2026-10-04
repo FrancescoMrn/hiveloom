@@ -15,7 +15,7 @@ from hiveloom.logging.hive import Hive
 from hiveloom.logging.journal import read_events, state_at_model_call
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 
 _VALID_SUMMARY = json.dumps(
     {"title": "Fox", "summary": "A fox jumps a dog.", "key_points": ["fox", "dog"]}

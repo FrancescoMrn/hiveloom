@@ -17,7 +17,7 @@ from hiveloom.research.engine import DirectorSession, Engine
 from hiveloom.research.program import Program, init_program
 from hiveloom.spec.loader import load_spec
 
-SIGNAL_LAB = Path(__file__).resolve().parents[1] / "harnesses" / "signal-lab"
+SIGNAL_LAB = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "signal-lab"
 
 
 @pytest.fixture()

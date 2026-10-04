@@ -21,7 +21,7 @@ from hiveloom.loop.control import RunControl
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 from hiveloom.serve import HarnessServer
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 
 _VALID_SUMMARY = json.dumps(
     {"title": "Fox", "summary": "A fox jumps a dog.", "key_points": ["fox", "dog"]}

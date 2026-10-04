@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from hiveloom.cli import app
 from hiveloom.spec.loader import load_spec
 
-RESEARCH_LAB = Path(__file__).resolve().parents[1] / "harnesses" / "research-lab"
+RESEARCH_LAB = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "research-lab"
 
 
 @pytest.fixture()

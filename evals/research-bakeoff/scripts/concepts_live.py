@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
-LAB = REPO / "harnesses" / "research-lab"
+LAB = REPO / "tests" / "fixtures" / "harnesses" / "research-lab"
 
 CONTRACT = {
     "criteria": [

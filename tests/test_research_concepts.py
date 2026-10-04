@@ -19,7 +19,7 @@ from hiveloom.research.judges import JudgePanel, cohen_kappa, parse_verdict
 from hiveloom.research.program import Program, init_program
 from hiveloom.research.questions import QuestionBox
 
-RESEARCH_LAB = Path(__file__).resolve().parents[1] / "harnesses" / "research-lab"
+RESEARCH_LAB = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "research-lab"
 
 
 def _criterion(**check):
