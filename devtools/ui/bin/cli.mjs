@@ -130,17 +130,26 @@ function findPython(explicit) {
     // Last resort and the reason a user with no Python project still gets a
     // working workbench: uv fetches an interpreter and hiveloom on demand,
     // into its own cache rather than into anything of theirs.
-    candidates.push({ command: 'uv', args: ['run', '--quiet', '--with', 'hiveloom', 'python'] })
+    candidates.push({ command: 'uv', args: ['run', '--quiet', '--with', `hiveloom>=${MIN_HIVELOOM}`, 'python'] })
   }
 
   for (const candidate of candidates) {
-    const probe = spawnSync(candidate.command, [...candidate.args, '-c', 'import hiveloom'], {
+    // An environment with an older hiveloom is skipped, not used: this
+    // workbench calls APIs that only exist from MIN_HIVELOOM on.
+    const probe = spawnSync(candidate.command, [...candidate.args, '-c', PROBE], {
       stdio: 'ignore',
     })
     if (!probe.error && probe.status === 0) return candidate
   }
   return null
 }
+
+/** The oldest hiveloom this workbench runs against; server.py checks it too. */
+const MIN_HIVELOOM = '1.3.0'
+const PROBE =
+  'import re, sys, hiveloom\n' +
+  'found = tuple(int(p) for p in re.findall(r"\\d+", hiveloom.__version__)[:3])\n' +
+  `sys.exit(0 if found >= (${MIN_HIVELOOM.split('.').join(', ')}) else 3)`
 
 /** A free loopback port, asked of the OS rather than guessed. */
 function freePort() {

@@ -114,7 +114,28 @@ _MAX_COPILOT_FILE_BYTES = 256 * 1024
 # The distribution's version, read from here by its build backend so there is
 # one place to bump. Independent of ``hiveloom``'s: the workbench is released on
 # its own cadence and only ever depends on the framework's public API.
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+# The oldest framework this workbench runs against: it calls APIs hiveloom
+# 1.3.0 introduced (workbench providers and `providers.yaml`, legacy and
+# restricted model flags, construction steps with version hashes). The
+# launcher skips an older install; this catches a direct `python server.py`.
+MIN_HIVELOOM = (1, 3, 0)
+
+
+def _require_hiveloom() -> None:
+    import hiveloom
+
+    found = tuple(int(part) for part in re.findall(r"\d+", hiveloom.__version__)[:3])
+    if found < MIN_HIVELOOM:
+        wanted = ".".join(map(str, MIN_HIVELOOM))
+        raise SystemExit(
+            f"hiveloom-workbench {__version__} needs hiveloom >= {wanted}, found "
+            f"{hiveloom.__version__}. Upgrade it: uv add 'hiveloom>={wanted}'"
+        )
+
+
+_require_hiveloom()
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -854,27 +875,6 @@ def _load_workbench_env(adopted: set[str]) -> set[str]:
 
 
 # --------------------------------------------------------------------- #
-# Error shape
-# --------------------------------------------------------------------- #
-def _error(message: str, status: int, *, code: str = "error", **extra: Any) -> JSONResponse:
-    """One error envelope, so the client has a single thing to render.
-
-    ``code`` is what the UI branches on — notably ``trust_required``, which is
-    an actionable state with a button rather than a failure.
-    """
-    return JSONResponse({"error": {"code": code, "message": message, **extra}}, status)
-
-
-def _guarded(handler):
-    """Map hiveloom's exceptions to the error envelope, once, for every route."""
-
-    async def wrapped(request: Request) -> Response:
-        try:
-            return await handler(request)
-        except LookupError as exc:
-            return _error(str(exc), 404, code="not_found")
-        # There is no dedicated trust exception — the gate raises SpecError like
-# --------------------------------------------------------------------- #
 # Workbench providers
 # --------------------------------------------------------------------- #
 # The providers this machine develops with: which ones were added, the key
@@ -1219,6 +1219,27 @@ def _construction_steps(directory: Path) -> list[dict[str, Any]]:
     return steps
 
 
+# --------------------------------------------------------------------- #
+# Error shape
+# --------------------------------------------------------------------- #
+def _error(message: str, status: int, *, code: str = "error", **extra: Any) -> JSONResponse:
+    """One error envelope, so the client has a single thing to render.
+
+    ``code`` is what the UI branches on — notably ``trust_required``, which is
+    an actionable state with a button rather than a failure.
+    """
+    return JSONResponse({"error": {"code": code, "message": message, **extra}}, status)
+
+
+def _guarded(handler):
+    """Map hiveloom's exceptions to the error envelope, once, for every route."""
+
+    async def wrapped(request: Request) -> Response:
+        try:
+            return await handler(request)
+        except LookupError as exc:
+            return _error(str(exc), 404, code="not_found")
+        # There is no dedicated trust exception — the gate raises SpecError like
         # any other spec problem — so trust is checked explicitly where it
         # applies (see run_endpoint) rather than caught by type here.
         except (HiveloomError, ValueError) as exc:
@@ -1899,6 +1920,9 @@ def build_app(
                 "name": spec.name,
                 "description": spec.description,
                 "model": f"{spec.model.provider}/{spec.model.id}",
+                # What an unset evolution model resolves to, so the picker can
+                # name it instead of saying "the default".
+                "strong_model": f"claude/{DEFAULT_STRONG_MODEL}",
                 "version_hash": spec_version_hash(spec, copilot_dir),
                 "suggestions": [
                     "Create a harness that extracts structured data from a document",
@@ -1920,9 +1944,6 @@ def build_app(
         body = json.loads(await request.body() or b"{}")
         if body:
             raise ValueError("conversation creation takes an empty object")
-                # What an unset evolution model resolves to, so the picker can
-                # name it instead of saying "the default".
-                "strong_model": f"claude/{DEFAULT_STRONG_MODEL}",
         return JSONResponse(
             await asyncio.to_thread(conversations.create), status_code=201
         )
@@ -2018,6 +2039,15 @@ def build_app(
             # The copilot starts on the chosen model: a mid-run swap would first
             # build the copilot's default (Claude) provider, and fail without its
             # key even though the person picked another model.
+        else:
+            copilot_spec = await asyncio.to_thread(validate_harness, copilot_dir)
+            provider_override, model_override, _ = await asyncio.to_thread(
+                _run_model,
+                copilot_spec.model.provider,
+                copilot_spec.model.id,
+                None,
+                workbench_keys,
+            )
 
         def on_event(event: Any) -> None:
             events.put(event.model_dump_json())
@@ -2039,15 +2069,6 @@ def build_app(
                 )
                 payload = runner_mod.run_result_payload(result)
                 payload["verdicts"] = [
-        else:
-            copilot_spec = await asyncio.to_thread(validate_harness, copilot_dir)
-            provider_override, model_override, _ = await asyncio.to_thread(
-                _run_model,
-                copilot_spec.model.provider,
-                copilot_spec.model.id,
-                None,
-                workbench_keys,
-            )
                     {
                         "verifier": verdict.verifier,
                         "passed": verdict.passed,
@@ -2139,6 +2160,7 @@ def build_app(
                 # the browser can mark when the harness moved between runs.
                 payload["version_hash"] = spec_version_hash(spec, Path(entry["path"]))
                 payload["stats"] = _stats(entry)
+            payload["constructions"] = _construction_steps(Path(entry["path"]))
             return payload
 
         return JSONResponse(await asyncio.to_thread(work))
@@ -2160,7 +2182,6 @@ def build_app(
 
         def work() -> dict[str, Any]:
             yaml_path = harness_path(entry["path"])
-            payload["constructions"] = _construction_steps(Path(entry["path"]))
             previous = yaml_path.read_text(encoding="utf-8")
             yaml_path.write_text(text, encoding="utf-8")
             try:
@@ -2275,6 +2296,8 @@ def build_app(
                                 "context_window": model.context_window,
                                 "input_cost_per_mtok": model.input_cost_per_mtok,
                                 "output_cost_per_mtok": model.output_cost_per_mtok,
+                                "legacy": model.legacy,
+                                "restricted": model.restricted,
                             }
                             for model in ext.models_for_provider(provider.name)
                         ],
@@ -2285,29 +2308,6 @@ def build_app(
 
         return JSONResponse(await asyncio.to_thread(work))
 
-    @_guarded
-    async def put_model(request: Request) -> Response:
-        """Move a harness to another provider/model, and its sampling limits.
-
-        Through ``construct``, never by writing YAML here: provider and id
-        validate against each other, so they have to move in one commit — and
-        that commit is the same transactional, rolled-back-on-error path
-        `hiveloom set model` uses. The two numeric fields go through
-        ``set_value`` for the same reason, one commit each, so an out-of-range
-        temperature is refused by the schema rather than left on disk.
-
-                                "legacy": model.legacy,
-                                "restricted": model.restricted,
-        The field list is closed on purpose. This is not a generic "write any
-        spec path" endpoint — the Spec tab is that, with a validating save and
-        a rollback — it is the three fields the Models pane owns.
-        """
-        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
-        body = json.loads(await request.body() or b"{}")
-        selector = str(body.get("selector") or "").strip()
-        temperature = body.get("temperature")
-        max_input_tokens = body.get("max_input_tokens")
-        if not selector and temperature is None and max_input_tokens is None:
     # ---------------- workbench providers ---------------- #
     @_guarded
     async def get_workbench_providers(request: Request) -> Response:
@@ -2416,6 +2416,27 @@ def build_app(
 
         return JSONResponse(await asyncio.to_thread(work))
 
+    @_guarded
+    async def put_model(request: Request) -> Response:
+        """Move a harness to another provider/model, and its sampling limits.
+
+        Through ``construct``, never by writing YAML here: provider and id
+        validate against each other, so they have to move in one commit — and
+        that commit is the same transactional, rolled-back-on-error path
+        `hiveloom set model` uses. The two numeric fields go through
+        ``set_value`` for the same reason, one commit each, so an out-of-range
+        temperature is refused by the schema rather than left on disk.
+
+        The field list is closed on purpose. This is not a generic "write any
+        spec path" endpoint — the Spec tab is that, with a validating save and
+        a rollback — it is the three fields the Models pane owns.
+        """
+        entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
+        body = json.loads(await request.body() or b"{}")
+        selector = str(body.get("selector") or "").strip()
+        temperature = body.get("temperature")
+        max_input_tokens = body.get("max_input_tokens")
+        if not selector and temperature is None and max_input_tokens is None:
             raise ValueError(
                 "nothing to set: pass 'selector', 'temperature', or 'max_input_tokens'"
             )
@@ -2506,6 +2527,8 @@ def build_app(
         # as a `model_swap` like every other one. The harness on disk is
         # untouched, which is the whole point.
         selector = str(body.get("model") or "").strip()
+        run_provider = run_model_id = None
+        fallback: dict[str, Any] | None = None
         if selector:
             provider, _, model_id = selector.partition("/")
             if not model_id:
@@ -2513,29 +2536,6 @@ def build_app(
             control.switch_model(
                 model_id, provider=provider, reason="run model, set in the workbench"
             )
-
-        def on_event(event: Any) -> None:
-            events.put(event.model_dump_json())
-
-        def work() -> None:
-            _LIVE.register(run_id, control)
-            try:
-                result = runner_mod.run_harness(
-                    entry["path"],
-                    text,
-                    conversation=conversation,
-                    on_event=on_event,
-                    literal_input=True,
-                    run_id=run_id,
-        run_provider = run_model_id = None
-        fallback: dict[str, Any] | None = None
-                    control=control,
-                )
-                payload = runner_mod.run_result_payload(result)
-                payload["verdicts"] = [
-                    {"verifier": v.verifier, "passed": v.passed, "feedback": v.feedback}
-                    for v in result.verdicts
-                ]
         else:
             # The harness's own model, unless its provider has no key here:
             # then the workbench default, for this run only. Started on it
@@ -2549,6 +2549,29 @@ def build_app(
                 Path(entry["path"]),
                 workbench_keys,
             )
+
+        def on_event(event: Any) -> None:
+            events.put(event.model_dump_json())
+
+        def work() -> None:
+            _LIVE.register(run_id, control)
+            try:
+                result = runner_mod.run_harness(
+                    entry["path"],
+                    text,
+                    conversation=conversation,
+                    model_override=run_model_id,
+                    provider_override=run_provider,
+                    on_event=on_event,
+                    literal_input=True,
+                    run_id=run_id,
+                    control=control,
+                )
+                payload = runner_mod.run_result_payload(result)
+                payload["verdicts"] = [
+                    {"verifier": v.verifier, "passed": v.passed, "feedback": v.feedback}
+                    for v in result.verdicts
+                ]
                 events.put(json.dumps({"type": "run_result", **payload}))
             except Exception as exc:  # noqa: BLE001 - already streaming; report inline
                 events.put(json.dumps({"type": "error", "error": f"{type(exc).__name__}: {exc}"}))
@@ -2560,8 +2583,6 @@ def build_app(
 
         threading.Thread(target=work, daemon=True).start()
 
-                    model_override=run_model_id,
-                    provider_override=run_provider,
         async def stream():
             opening: dict[str, Any] = {"type": "run_accepted", "run_id": run_id}
             if fallback:
@@ -2678,6 +2699,21 @@ def build_app(
                         rows.append(run)
                 # Newest first by when it ran: run ids are random, so the file
                 # name says nothing about order.
+                # A fork is an experiment on this harness and lives inside it
+                # (`.hiveloom/forks/<name>`), so its runs belong in this list
+                # too — tagged, so they read as "the fork's run", never as the
+                # trunk's. Without them a resumed fork left no visible trace.
+                for fork_dir in _fork_dirs(entry["path"]):
+                    fork_aliases = _read_aliases(str(fork_dir))
+                    for path in _trace_files(str(fork_dir)):
+                        hive.ingest_trace_file(path)
+                        run = hive.get_run(path.stem)
+                        if run is not None:
+                            run["alias"] = fork_aliases.get(run["run_id"]) or aliases.get(
+                                run["run_id"]
+                            )
+                            run["fork_folder"] = fork_dir.name
+                            rows.append(run)
                 rows.sort(key=lambda run: run.get("started_at") or "", reverse=True)
                 return rows
 
@@ -2699,21 +2735,6 @@ def build_app(
         if len(alias) > 64:
             raise ValueError("an alias is at most 64 characters")
 
-                # A fork is an experiment on this harness and lives inside it
-                # (`.hiveloom/forks/<name>`), so its runs belong in this list
-                # too — tagged, so they read as "the fork's run", never as the
-                # trunk's. Without them a resumed fork left no visible trace.
-                for fork_dir in _fork_dirs(entry["path"]):
-                    fork_aliases = _read_aliases(str(fork_dir))
-                    for path in _trace_files(str(fork_dir)):
-                        hive.ingest_trace_file(path)
-                        run = hive.get_run(path.stem)
-                        if run is not None:
-                            run["alias"] = fork_aliases.get(run["run_id"]) or aliases.get(
-                                run["run_id"]
-                            )
-                            run["fork_folder"] = fork_dir.name
-                            rows.append(run)
         def work() -> dict[str, Any]:
             aliases = _read_aliases(entry["path"])
             if alias:
@@ -2958,6 +2979,7 @@ def build_app(
         new task statement is added: the seeded thread already ends where the
         parent was, which is what makes the two runs comparable.
         """
+        _load_workbench_env(workbench_keys)
         entry = await asyncio.to_thread(resolve, request.path_params["harness_id"])
         body = json.loads(await request.body() or b"{}")
         if body:
@@ -2975,28 +2997,6 @@ def build_app(
                 path=entry["path"],
             )
 
-        events: queue.Queue = queue.Queue()
-        run_id = runner_mod.new_run_id()
-        control = RunControl()
-
-        _load_workbench_env(workbench_keys)
-        def on_event(event: Any) -> None:
-            events.put(event.model_dump_json())
-
-        def work() -> None:
-            _LIVE.register(run_id, control)
-            try:
-                result = runner_mod.run_harness(
-                    entry["path"],
-                    resume_messages=load_fork_context(entry["path"]),
-                    lineage={
-                        "parent_run_id": record.get("parent_run_id", ""),
-                        "forked_at_seq": record.get("at_seq"),
-                        "parent_line_hash": record.get("parent_line_hash", ""),
-                    },
-                    on_event=on_event,
-                    run_id=run_id,
-                    control=control,
         # Same rule as a fresh run: the fork's own model when it can run here,
         # otherwise the workbench default for this run only.
         fork_spec = await asyncio.to_thread(validate_harness, entry["path"])
@@ -3008,6 +3008,29 @@ def build_app(
             workbench_keys,
         )
 
+        events: queue.Queue = queue.Queue()
+        run_id = runner_mod.new_run_id()
+        control = RunControl()
+
+        def on_event(event: Any) -> None:
+            events.put(event.model_dump_json())
+
+        def work() -> None:
+            _LIVE.register(run_id, control)
+            try:
+                result = runner_mod.run_harness(
+                    entry["path"],
+                    resume_messages=load_fork_context(entry["path"]),
+                    model_override=run_model_id,
+                    provider_override=run_provider,
+                    lineage={
+                        "parent_run_id": record.get("parent_run_id", ""),
+                        "forked_at_seq": record.get("at_seq"),
+                        "parent_line_hash": record.get("parent_line_hash", ""),
+                    },
+                    on_event=on_event,
+                    run_id=run_id,
+                    control=control,
                 )
                 payload = runner_mod.run_result_payload(result)
                 payload["verdicts"] = [
@@ -3021,8 +3044,6 @@ def build_app(
                 _LIVE.release(run_id)
                 events.put(_STREAM_DONE)
 
-                    model_override=run_model_id,
-                    provider_override=run_provider,
         threading.Thread(target=work, daemon=True).start()
 
         async def stream():
@@ -3464,6 +3485,18 @@ def build_app(
         Route("/api/harnesses", list_harnesses, methods=["GET"]),
         Route("/api/catalog", get_catalog, methods=["GET"]),
         Route("/api/providers", list_providers, methods=["GET"]),
+        Route("/api/workbench/providers", get_workbench_providers, methods=["GET"]),
+        Route(
+            "/api/workbench/providers/{name}",
+            put_workbench_provider,
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/workbench/providers/{name}",
+            delete_workbench_provider,
+            methods=["DELETE"],
+        ),
+        Route("/api/workbench/default-model", put_default_model, methods=["PUT"]),
         Route("/api/harnesses/{harness_id}", get_harness, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/spec", put_spec, methods=["PUT"]),
         Route("/api/harnesses/{harness_id}/model", put_model, methods=["PUT"]),
@@ -3485,18 +3518,6 @@ def build_app(
         Route("/api/harnesses/{harness_id}/proposals", list_proposals, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/research", list_research, methods=["GET"]),
         Route("/api/harnesses/{harness_id}/research", create_research, methods=["POST"]),
-        Route("/api/workbench/providers", get_workbench_providers, methods=["GET"]),
-        Route(
-            "/api/workbench/providers/{name}",
-            put_workbench_provider,
-            methods=["PUT"],
-        ),
-        Route(
-            "/api/workbench/providers/{name}",
-            delete_workbench_provider,
-            methods=["DELETE"],
-        ),
-        Route("/api/workbench/default-model", put_default_model, methods=["PUT"]),
         Route("/api/harnesses/{harness_id}/research/{name}", get_research, methods=["GET"]),
         Route(
             "/api/harnesses/{harness_id}/research/{name}/run", run_research, methods=["POST"]
@@ -3581,6 +3602,14 @@ def _ingest_entry_traces(hive: Hive, entry: dict[str, Any]) -> None:
         hive.ingest_trace_file(trace_file)
 
 
+def _fork_dirs(harness_dir: str) -> list[Path]:
+    """The forks this harness contains: `.hiveloom/forks/<name>` with a fork record."""
+    forks = Path(harness_dir) / ".hiveloom" / "forks"
+    if not forks.is_dir():
+        return []
+    return sorted(d for d in forks.iterdir() if d.is_dir() and (d / "fork.yaml").is_file())
+
+
 def _trace_files(harness_dir: str) -> list[Path]:
     traces = Path(harness_dir) / ".hiveloom" / "traces"
     if not traces.is_dir():
@@ -3602,14 +3631,6 @@ def main() -> int:
     parser.add_argument(
         "--scan-dir",
         action="append",
-def _fork_dirs(harness_dir: str) -> list[Path]:
-    """The forks this harness contains: `.hiveloom/forks/<name>` with a fork record."""
-    forks = Path(harness_dir) / ".hiveloom" / "forks"
-    if not forks.is_dir():
-        return []
-    return sorted(d for d in forks.iterdir() if d.is_dir() and (d / "fork.yaml").is_file())
-
-
         default=[],
         dest="scan_dirs",
         help="Recursively discover harness.yaml files below this directory.",
