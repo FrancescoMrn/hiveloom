@@ -4,14 +4,21 @@
 > search tool and grounded ids make a small model reliable, and a local eval
 > measures it with ranked metrics.
 
-Ranks synthetic knowledge records, returns only IDs seen in current-run tool
-evidence, and scores the result with Recall@3, nDCG@3 and hallucination rate.
-The data, tool, validators and scorers are local and deterministic; the runs
-need a model (live, an API key).
+Answers engineering questions from a 25-record knowledge base (22 published
+and verified, plus a draft and an unverified runbook that look relevant and must
+never be returned), returns only IDs seen in current-run tool evidence, and
+scores the result with Recall@3, nDCG@3 and hallucination rate. The eval's ten
+cases are mostly phrased the way people describe problems — "our service keeps
+running out of database connections", "a container keeps getting killed" —
+while the records are written in their authors' terms ("connection pooling",
+"OOMKilled"): the vocabulary gap every internal search has. The data, tool,
+validators and scorers are local and deterministic; the runs need a model.
 
-Measured in the 1.2.0 release checks through OpenRouter: Ministral 8B passed
-9 of 9 eval cells and Ministral 3B 4 of 4 ad-hoc queries, with no hallucinated
-ids. The contracts below, not the model, carry most of that.
+Measured on `deepseek/deepseek-v4.1-flash` via OpenRouter: 20 of 20 eval cells
+succeed with **zero hallucinated ids**, nDCG@3 0.92 and Recall@3 0.73 — the
+best record is found every time, the supporting ones are often missed because
+the person's words are not the record's. The contracts below, not the model,
+carry the zero; the recall gap is what the improvement loop is for.
 
 ## Capabilities
 
@@ -69,9 +76,19 @@ hiveloom eval run eval.yaml --json
 ## Try this
 
 - Measured evolution against the objectives:
-  `hiveloom evolve . --experiment eval.yaml --yes --rounds 2` (in the release
-  checks both rounds aimed at `recall_at_3` and were reverted as inconclusive
-  at 9 pairs — raise `repetitions` in `eval.yaml` for more power).
+  `hiveloom evolve . --experiment eval.yaml --yes --rounds 2`. A change is kept
+  only when the eval confirms it: on the reference model two unguided rounds
+  were reverted, and a round guided with `--note` ("pass the search the
+  question rewritten into the knowledge base's terms") moved Recall@3 from
+  0.795 to 0.817 — the right direction, not significant at 20 pairs, so also
+  reverted. Raise `repetitions` in `eval.yaml` for the power to confirm a
+  small effect.
+- A research program on the vocabulary gap:
+  `hiveloom research init . --name vocabulary --charter research.yaml`, then
+  `hiveloom research run . --name vocabulary`. A director model designs the
+  experiments and the engine measures them; with every run succeeding and the
+  gap in ranking quality rather than in failures, expect it to test an idea,
+  stop it for futility, and say why rather than promote an unproven change.
 - Run it on a smaller model (`--provider openrouter --model
   mistralai/ministral-3b-2512`) and compare.
 

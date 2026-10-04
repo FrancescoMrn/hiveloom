@@ -1,0 +1,24 @@
+# A research program for the vocabulary gap: people describe problems in their
+# own words ("we keep running out of database connections"), while the
+# knowledge base is written in its authors' terms ("connection pooling"). Start
+# it with `hiveloom research init . --name vocabulary --charter research.yaml`.
+goal: Find the records that answer a question, however the person phrases it.
+eval: eval.yaml
+holdout: 0.25            # sealed cases, read once at the end
+levers:                  # the only spec paths the director may change
+  - system_prompt
+guard:
+  success_rate: no_regression
+budget:
+  usd: 0.6
+  rounds: 3
+stop:
+  goal:
+    metric:recall_at_3: 0.9
+  no_progress_rounds: 2
+execution:
+  tools:
+    search_and_verify_records: allow   # deterministic, read-only, local
+models:
+  director: openrouter/deepseek/deepseek-v4.1-flash
+experiments_per_round: 2
