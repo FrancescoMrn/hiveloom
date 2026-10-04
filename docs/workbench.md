@@ -54,6 +54,14 @@ registry plus a recursive scan of this checkout's `harnesses/`. A checkout keeps
 its state in `devtools/ui/.hiveloom/` rather than under `~/.hiveloom`, so
 development never writes into the directory an installed workbench uses.
 
+`devtools/ui/dev.sh --showcase` serves seeded copies of the three demos instead,
+driven on a real model (OpenRouter; a full seed costs a few cents): triage runs
+and a fork resumed from its report turn, an operator's request waiting in
+Improve, a retrieval eval, a measured evolution round and a research program,
+and two log investigations — so every tab has something real to show
+(`devtools/ui/showcase.py`; `--reset` to reseed, which keeps the showcase's
+keys and providers).
+
 ![The workbench: the copilot conversation on the left, the selected harness's workspace on the right](assets/workbench-chat.png)
 
 ## One conversation, and evidence beside it
@@ -69,8 +77,8 @@ a separate, journalled run owned by that target harness, so copilot reasoning
 never pollutes the target's fitness data.
 
 Chat stays the front door, but it is never the only route to a fact. Selecting a
-harness opens its workspace beside the conversation, with seven tabs that show
-the framework's exact state rather than the copilot's paraphrase of it:
+harness opens its workspace beside the conversation, with tabs that show the
+framework's exact state rather than the copilot's paraphrase of it:
 
 | Tab | What it is |
 |---|---|
@@ -78,9 +86,11 @@ the framework's exact state rather than the copilot's paraphrase of it:
 | **Overview** | contract, model, tools, guardrails, verification at a glance |
 | **Runs** | every recorded run, with outcome, cost, and turns |
 | **Trace** | the complete journal: filters, integrity, payloads, context, timing, fork |
-| **Versions** | the version graph, tags, and side-by-side comparison |
+| **Versions** | the version graph — evolved, forked and configured steps — tags, and side-by-side comparison |
 | **Spec** | the validated spec, editable through the same construction API |
-| **Improve** | the evolution proposal queue and its human gate |
+| **Improve** | the evolution proposal queue and its human gate, each change shown as a diff |
+| **Research** | research programs: a director's hypotheses, the engine's measured experiments, budget and stop reason |
+| **Settings** | this harness's own run model (from the models set up on this workbench) and its scoped memory |
 
 Opening a workspace collapses the navigation rail to an icon strip; drag the
 divider (or focus it and use the arrow keys) to resize the evidence area.
@@ -91,9 +101,32 @@ live in a local SQLite database (`~/.hiveloom/workbench/workbench.db`, or
 Git (`HIVELOOM_UI_DB` moves it). A browser refresh or an API restart resumes the
 same conversation instead of opening an empty one.
 
+## Models and providers
+
+Workbench **Settings** is about this machine, never about a harness. Under
+**Settings → Models** you add a provider — Anthropic, OpenAI, Mistral,
+OpenRouter, or any other OpenAI-compatible endpoint — with its API key, and
+choose which of its models the composer offers (for OpenRouter and custom
+endpoints you name the model ids). Keys are written to `~/.hiveloom/.env`,
+readable only by you, and never sent back to the browser; a key already in that
+file or exported in the environment shows the provider as added. A custom
+endpoint is written to `~/.hiveloom/providers.yaml`, the machine-written
+companion of `models.yaml`, so `hiveloom run` on this machine can use it too.
+
+A harness keeps the model its spec names. When that model's provider has no key
+here, a run falls back to the workbench's **default model** for that run only —
+the spec is untouched, the stream's `run_accepted` frame says what was expected
+and what ran, and adding the key puts the harness back on its own model. The
+**Evolution model** that drafts proposals is chosen here too.
+
+Superseded models stay valid and priced but are marked `legacy`, and
+access-program models `restricted`; pickers offer neither unless a harness is
+already on one. A provider a harness's own extension registers — an offline
+stand-in — is never listed.
+
 Cross-conversation memory is separate and explicit. Global and harness-scoped
 memories share that database, are inspectable and deletable under
-**Settings → Memory**, and reach the copilot through `recall_memories`,
+**Settings → Memory** (and per harness in its workspace's Settings tab), and reach the copilot through `recall_memories`,
 `remember_memory`, and `forget_memory`. The copilot is instructed to save only
 requested or clearly durable preferences; ordinary conversation content is never
 silently promoted into memory.
@@ -142,17 +175,23 @@ workbench is a client of it, not a privileged path.
 
 The Versions tab puts two versions side by side with deltas and the failure
 signatures that appeared or disappeared between them. The fork controls turn a
-failed run into an experiment: pick a model call, name the fork, optionally
-override the model, and resume it.
+failed run into an experiment: pick a model call in the Trace tab, name the
+fork, optionally override the model, and **Resume from turn N** right in the
+fork dialog — the parent's conversation up to that call is replayed verbatim
+and the run continues on the fork. Every fork's workspace carries the same
+Resume button in a banner naming the run and turn it came from.
 
 ![The Versions tab: two harness versions compared, with deltas and changed failure signatures](assets/workbench-versions.png)
 
 Forks are nested under the harness that contains them. Catalog rows carry
 `root_path`, `is_fork`, and `parent_id`, and the rail groups by **containment**
 rather than by name — so a renamed fork stays with its harness, and two
-unrelated harnesses that share a name stay two harnesses. A fork's target name
-is slug-checked and resolved beside its parent: a fork writes files, and a
-browser must never choose where.
+unrelated harnesses that share a name stay two harnesses. The rail lists a
+harness's forks under it, each with its own run count, and a fork's runs appear
+among the harness's runs marked as such. A fork's target name is slug-checked
+and resolved beside its parent: a fork writes files, and a browser must never
+choose where. A fork carries the harness's files as they ran, plus the
+untracked files its code reads (data, fixtures) — never its `.env`.
 
 `POST /api/harnesses/{id}/resume` re-runs a fork from the journal point it was
 created at.
@@ -185,6 +224,59 @@ The UI applies accepted YAML changes explicitly and leaves code changes
 unapproved unless you select them — silence is a refusal, not consent. Frozen
 safety fields remain protected by hiveloom's evolution gate, which the UI cannot
 bypass because it goes through the same `construct` API everything else does.
+
+Every change reads as a diff. A pending proposal's text change is shown as the
+lines it adds or removes against the harness as it is now; an applied one opens
+on the evolution it produced (`#1 · a1f28b1c → 5d292573`) and the spec diff
+recorded at apply time. A change made through the construction API — `set
+model`, say — is not an evolution, but its log entry records the version it
+started from, so the Versions graph draws it as a **configured** step on its
+parent instead of an unattributed edit.
+
+## Research programs: evolving autonomously
+
+The **Research** tab runs a [research program](research.md), evolve's autonomous
+mode, on the selected harness. The Improve tab's **Evolve autonomously** button
+leads there.
+
+- **New program** opens a form built from the harness:
+  - the goal, from its description, and the eval that runs it;
+  - the levers evolution allows, with the safe ones ticked;
+  - the budget, rounds, and sealed share;
+  - a director picked from the models in Settings;
+  - one choice per tool with effects (allow, replay or deny). The program
+    cannot start until each is chosen.
+
+  **Edit YAML** shows the same charter as text, and offers the harness's own
+  `research*.yaml` files, which is how a concepts-mode program starts.
+- **Step**, **Run a round** and **Run to the end** run the program in the
+  background.
+  - A progress bar follows the eval in flight (for example, "experiment e3 ·
+    14/30 cells").
+  - A program the workbench was running when its server stopped is resumed when
+    the server starts again, and continues its interrupted eval instead of
+    starting over.
+- For each program the tab shows:
+  - the budget by pool and every experiment's verdict;
+  - each experiment's cases, with the base version's run beside the
+    candidate's. Each status opens that run in **Trace**;
+  - the director's findings, the stop reason with the ceiling's
+    recommendation, the sealed confirmation, the report, and the hash-chained
+    ledger.
+- A concepts-mode program shows its contract for approval, with sample cases,
+  and its label questions as cards.
+- The rail badges a harness whose program waits on you (a contract to approve,
+  questions to answer), is blocked, or is evolving.
+- The **copilot** can do the same in conversation:
+  - start a program when asked ("keep improving this on its own, $1");
+  - report how it is going;
+  - relay a contract with its criteria and sample cases, and each question with
+    the output it is about;
+  - submit only your own answers and approvals.
+
+  Its cards open the Research tab.
+- The program never touches the harness. Its kept changes arrive as a
+  `research` proposal. **Open in Improve** takes you there to apply or reject it.
 
 ## Generated interfaces
 

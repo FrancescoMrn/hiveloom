@@ -9,8 +9,11 @@ import type {
   VersionTags,
 } from '../types'
 import { Evolve } from './Evolve'
+import { Research } from './Research'
 import { InterfacePreview } from './CopilotCanvas'
 import { SpecEditor } from './SpecEditor'
+import { ForkResume } from './ForkResume'
+import { HarnessSettings } from './HarnessSettings'
 import { Trajectory } from './Trajectory'
 import { Versions } from './Versions'
 import { Label, Notice, Stat, StatRow } from './common'
@@ -22,7 +25,9 @@ export type InspectorView =
   | 'versions'
   | 'spec'
   | 'improve'
+  | 'research'
   | 'interface'
+  | 'settings'
 
 const VIEWS: { id: InspectorView; label: string; icon: string }[] = [
   { id: 'interface', label: 'Use', icon: 'ph-play-circle' },
@@ -32,6 +37,8 @@ const VIEWS: { id: InspectorView; label: string; icon: string }[] = [
   { id: 'versions', label: 'Versions', icon: 'ph-git-branch' },
   { id: 'spec', label: 'Spec', icon: 'ph-file-code' },
   { id: 'improve', label: 'Improve', icon: 'ph-sparkle' },
+  { id: 'research', label: 'Research', icon: 'ph-flask' },
+  { id: 'settings', label: 'Settings', icon: 'ph-sliders-horizontal' },
 ]
 
 /**
@@ -130,6 +137,26 @@ export function ContextInspector({
         </button>
       </header>
 
+      {harness?.fork && (
+        <div className="fork-banner">
+          <i className="ph ph-git-fork" />
+          <span>
+            Fork of <span className="mono">{harness.fork.parent_run_id}</span> at turn{' '}
+            {harness.fork.at_turn}
+            {harness.fork.model_override ? ` · model → ${harness.fork.model_override}` : ''}
+          </span>
+          <ForkResume
+            compact
+            harnessId={harness.id}
+            turn={harness.fork.at_turn}
+            onFinished={(id) => {
+              void changed()
+              if (id) onSelectRun(id)
+            }}
+          />
+        </div>
+      )}
+
       <nav className="context-inspector-tabs" aria-label="Harness information">
         {VIEWS.map((item) => (
           <button
@@ -151,6 +178,8 @@ export function ContextInspector({
           <div className="empty">Loading harness information…</div>
         ) : view === 'overview' ? (
           <HarnessOverview harness={harness} />
+        ) : view === 'settings' ? (
+          <HarnessSettings harness={harness} onSaved={changed} />
         ) : view === 'runs' ? (
           <Trajectory
             harness={harness}
@@ -161,6 +190,7 @@ export function ContextInspector({
               if (id) setView('trace')
             }}
             onOpenHarness={onOpenHarness}
+            onRunsChanged={changed}
           />
         ) : view === 'trace' && runId ? (
           <Trajectory
@@ -172,6 +202,7 @@ export function ContextInspector({
               if (!id) setView('runs')
             }}
             onOpenHarness={onOpenHarness}
+            onRunsChanged={changed}
           />
         ) : view === 'versions' ? (
           <Versions
@@ -197,6 +228,16 @@ export function ContextInspector({
             evolveModel={loadPrefs().evolveModel}
             onApplied={changed}
             onCompare={() => setView('versions')}
+            onOpenResearch={() => setView('research')}
+          />
+        ) : view === 'research' ? (
+          <Research
+            harness={harness}
+            onOpenImprove={() => setView('improve')}
+            onOpenRun={(id) => {
+              onSelectRun(id)
+              setView('trace')
+            }}
           />
         ) : view === 'interface' ? (
           harnessInterface?.exists ? (

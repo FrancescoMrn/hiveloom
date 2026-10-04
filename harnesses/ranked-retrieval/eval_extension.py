@@ -76,7 +76,7 @@ def hiveloom_extension(hive):
     hive.register_dataset(
         "synthetic_retrieval_cases",
         lambda _params, context: SyntheticRetrievalCases(context.base),
-        description="Load three synthetic ranked-retrieval cases.",
+        description="Load the synthetic ranked-retrieval cases (data/eval_cases.json).",
     )
     hive.register_scorer(
         "ranked_retrieval_metrics",

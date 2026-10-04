@@ -1,0 +1,218 @@
+[
+  {
+    "id": "case-01",
+    "input": "Quote shipping for a 0.4 kg parcel to zone 2 for customer C-102.",
+    "expected": {
+      "zone": 2,
+      "weight_kg": 0.4,
+      "price": 6.48
+    }
+  },
+  {
+    "id": "case-02",
+    "input": "Quote shipping for a 400 g parcel to zone 4 for customer C-100.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 0.4,
+      "price": 11.84
+    }
+  },
+  {
+    "id": "case-03",
+    "input": "Quote shipping for a 1.2 kg parcel to zone 1 for customer C-201.",
+    "expected": {
+      "zone": 1,
+      "weight_kg": 1.2,
+      "price": 4.91
+    }
+  },
+  {
+    "id": "case-04",
+    "input": "Quote shipping for a 1200 g parcel to zone 4 for customer C-102.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 1.2,
+      "price": 13.52
+    }
+  },
+  {
+    "id": "case-05",
+    "input": "Quote shipping for a 3.8 kg parcel to zone 1 for customer C-102.",
+    "expected": {
+      "zone": 1,
+      "weight_kg": 3.8,
+      "price": 7.92
+    }
+  },
+  {
+    "id": "case-06",
+    "input": "Quote shipping for a 750 g parcel to zone 2 for customer C-102.",
+    "expected": {
+      "zone": 2,
+      "weight_kg": 0.75,
+      "price": 6.9
+    }
+  },
+  {
+    "id": "case-07",
+    "input": "Quote shipping for a 5 kg parcel to zone 2 for customer C-200.",
+    "expected": {
+      "zone": 2,
+      "weight_kg": 5.0,
+      "price": 10.56
+    }
+  },
+  {
+    "id": "case-08",
+    "input": "Quote shipping for a 0.4 kg parcel to zone 1 for customer C-200.",
+    "expected": {
+      "zone": 1,
+      "weight_kg": 0.4,
+      "price": 4.28
+    }
+  },
+  {
+    "id": "case-09",
+    "input": "Quote shipping for a 7.5 kg parcel to zone 4 for customer C-101.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 7.5,
+      "price": 26.75
+    }
+  },
+  {
+    "id": "case-10",
+    "input": "Quote shipping for a 12 kg parcel to zone 4 for customer C-201.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 12.0,
+      "price": 31.86
+    }
+  },
+  {
+    "id": "case-11",
+    "input": "Quote shipping for a 2500 g parcel to zone 3 for customer C-100.",
+    "expected": {
+      "zone": 3,
+      "weight_kg": 2.5,
+      "price": 12.0
+    }
+  },
+  {
+    "id": "case-12",
+    "input": "Quote shipping for a 750 g parcel to zone 2 for customer C-102.",
+    "expected": {
+      "zone": 2,
+      "weight_kg": 0.75,
+      "price": 6.9
+    }
+  },
+  {
+    "id": "case-13",
+    "input": "Quote shipping for a 12 kg parcel to zone 3 for customer C-101.",
+    "expected": {
+      "zone": 3,
+      "weight_kg": 12.0,
+      "price": 27.2
+    }
+  },
+  {
+    "id": "case-14",
+    "input": "Quote shipping for a 3.8 kg parcel to zone 4 for customer C-102.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 3.8,
+      "price": 18.98
+    }
+  },
+  {
+    "id": "case-15",
+    "input": "Quote shipping for a 0.75 kg parcel to zone 1 for customer C-102.",
+    "expected": {
+      "zone": 1,
+      "weight_kg": 0.75,
+      "price": 5.17
+    }
+  },
+  {
+    "id": "case-16",
+    "input": "Quote shipping for a 1200 g parcel to zone 4 for customer C-101.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 1.2,
+      "price": 13.52
+    }
+  },
+  {
+    "id": "case-17",
+    "input": "Quote shipping for a 12 kg parcel to zone 2 for customer C-101.",
+    "expected": {
+      "zone": 2,
+      "weight_kg": 12.0,
+      "price": 20.4
+    }
+  },
+  {
+    "id": "case-18",
+    "input": "Quote shipping for a 750 g parcel to zone 1 for customer C-102.",
+    "expected": {
+      "zone": 1,
+      "weight_kg": 0.75,
+      "price": 5.17
+    }
+  },
+  {
+    "id": "case-19",
+    "input": "Quote shipping for a 5 kg parcel to zone 3 for customer C-102.",
+    "expected": {
+      "zone": 3,
+      "weight_kg": 5.0,
+      "price": 16.0
+    }
+  },
+  {
+    "id": "case-20",
+    "input": "Quote shipping for a 12 kg parcel to zone 3 for customer C-102.",
+    "expected": {
+      "zone": 3,
+      "weight_kg": 12.0,
+      "price": 27.2
+    }
+  },
+  {
+    "id": "case-21",
+    "input": "Quote shipping for a 0.75 kg parcel to zone 4 for customer C-200.",
+    "expected": {
+      "zone": 4,
+      "weight_kg": 0.75,
+      "price": 11.07
+    }
+  },
+  {
+    "id": "case-22",
+    "input": "Quote shipping for a 12000 g parcel to zone 3 for customer C-102.",
+    "expected": {
+      "zone": 3,
+      "weight_kg": 12.0,
+      "price": 27.2
+    }
+  },
+  {
+    "id": "case-23",
+    "input": "Quote shipping for a 0.4 kg parcel to zone 1 for customer C-102.",
+    "expected": {
+      "zone": 1,
+      "weight_kg": 0.4,
+      "price": 4.86
+    }
+  },
+  {
+    "id": "case-24",
+    "input": "Quote shipping for a 12000 g parcel to zone 3 for customer C-101.",
+    "expected": {
+      "zone": 3,
+      "weight_kg": 12.0,
+      "price": 27.2
+    }
+  }
+]

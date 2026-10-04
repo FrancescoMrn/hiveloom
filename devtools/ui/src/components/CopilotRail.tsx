@@ -1,7 +1,7 @@
 import logo from '../../../../docs/assets/logo.png'
 import type { ConversationSummary, Harness, RunRow } from '../types'
 import { runLabel } from '../runs'
-import { statusColor, when } from './common'
+import { statusColor, when, whenExact, whenShort } from './common'
 
 export function CopilotRail({
   harnesses,
@@ -117,6 +117,11 @@ export function CopilotRail({
             .filter((item) => !item.is_fork)
             .map((item) => {
               const selected = selectedHarness === item.id
+              // Forks are experiments on this harness: listed under it rather
+              // than as harnesses of their own, and the group stays open while
+              // one of them is the selection.
+              const forks = harnesses.filter((fork) => fork.is_fork && fork.parent_id === item.id)
+              const expanded = selected || forks.some((fork) => fork.id === selectedHarness)
               return (
                 <div className="copilot-harness-group" key={item.id}>
                   <button
@@ -135,12 +140,35 @@ export function CopilotRail({
                           : 'No runs yet'}
                       </small>
                     </span>
+                    <ResearchBadge research={item.research} />
                     <span className="copilot-harness-use">
                       <i className="ph ph-play" /> Use
                     </span>
                   </button>
 
-                  {selected && (
+                  {expanded && forks.length > 0 && (
+                    <div className="copilot-fork-list">
+                      {forks.map((fork) => (
+                        <button
+                          key={fork.id}
+                          className="copilot-fork-row"
+                          data-on={selectedHarness === fork.id ? '1' : '0'}
+                          onClick={() => onSelectHarness(fork.id)}
+                          title={
+                            fork.fork
+                              ? `Fork of ${fork.fork.parent_run_id} at turn ${fork.fork.at_turn} — open to resume it`
+                              : fork.folder
+                          }
+                        >
+                          <i className="ph ph-git-fork" />
+                          <span className="ellipsis">{fork.folder}</span>
+                          <small>{forkRunCount(fork, selectedHarness, runs)}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {expanded && (
                     <div className="copilot-run-list">
                       {runs === null ? (
                         <div className="rail-note">Loading runs…</div>
@@ -153,13 +181,18 @@ export function CopilotRail({
                             className="copilot-run-row"
                             data-on={selectedRun === run.run_id ? '1' : '0'}
                             onClick={() => onSelectRun(run.run_id)}
-                            title={[run.status, run.run_id, run.task].filter(Boolean).join(' · ')}
+                            title={[run.status, whenExact(run.started_at), run.run_id, run.task].filter(Boolean).join(' · ')}
                           >
                             <span
                               className="dot"
                               style={{ background: statusColor(run.status) }}
                             />
-                            <span className="ellipsis">{runLabel(run)}</span>
+                            <span className="ellipsis">
+                              {run.fork_folder && (
+                                <i className="ph ph-git-fork copilot-run-fork" title={`Run of fork ${run.fork_folder}`} />
+                              )}
+                              {runLabel(run)}
+                            </span>
                             <span
                               role="button"
                               className="copilot-run-rename"
@@ -175,7 +208,7 @@ export function CopilotRail({
                             >
                               <i className="ph ph-pencil-simple" />
                             </span>
-                            <small>{when(run.started_at).split(',')[0]}</small>
+                            <small>{whenShort(run.started_at)}</small>
                           </button>
                         ))
                       )}
@@ -203,4 +236,39 @@ function harnessColor(item: Harness): string {
   if (item.stats.success_rate >= 0.8) return 'var(--ok)'
   if (item.stats.success_rate < 0.5) return 'var(--err)'
   return 'var(--warn)'
+}
+
+/** Research programs that need the person (a contract, questions) or are running. */
+function ResearchBadge({ research }: { research: Harness['research'] }) {
+  if (!research) return null
+  const needs = research.awaiting + research.questions
+  const title = [
+    research.awaiting ? `${research.awaiting} contract(s) to approve` : '',
+    research.questions ? `${research.questions} question(s) for you` : '',
+    research.blocked ? `${research.blocked} blocked` : '',
+    research.running ? `${research.running} evolving autonomously` : '',
+  ].filter(Boolean).join(' · ')
+  return (
+    <span
+      className="research-badge"
+      data-needs={needs || research.blocked ? '1' : '0'}
+      title={`Research: ${title}`}
+    >
+      <i className={`ph ${research.running && !needs ? 'ph-circle-notch spin' : 'ph-flask'}`} />
+      {needs ? needs : research.blocked ? '!' : ''}
+    </span>
+  )
+}
+
+/**
+ * A fork's own runs. Not its Hive stats: a fork shares its parent's identity,
+ * so those count every run of the harness. The parent's run list tags each
+ * fork run with its folder, and a selected fork lists only its own runs.
+ */
+function forkRunCount(fork: Harness, selected: string | null, runs: RunRow[] | null): string {
+  if (runs === null) return ''
+  const own =
+    selected === fork.id ? runs.length : runs.filter((run) => run.fork_folder === fork.folder).length
+  if (selected !== fork.id && selected !== fork.parent_id) return ''
+  return own ? `${own} run${own === 1 ? '' : 's'}` : 'not resumed'
 }

@@ -494,3 +494,24 @@ def test_transforms_can_be_switched_off_for_a_control_arm(tmp_path: Path):
         "read_tool_result",
         "search_tool_result",
     ]
+
+
+def test_a_code_tool_with_postponed_annotations_gets_its_typeddict_item_schema(tmp_path):
+    from hiveloom.spec.loader import import_hook
+    from hiveloom.tools.registry import schema_from_function
+
+    (tmp_path / "t.py").write_text(
+        "from __future__ import annotations\n"
+        "from typing import Any\n"
+        "from typing_extensions import TypedDict\n"
+        "from hiveloom.tools import tool\n\n"
+        "class Change(TypedDict):\n"
+        "    path: str\n"
+        "    value: Any\n\n"
+        "@tool(description='apply changes')\n"
+        "def apply(changes: list[Change]) -> str:\n"
+        "    return str(len(changes))\n"
+    )
+    schema = schema_from_function(import_hook("t.py:apply", tmp_path))
+    assert schema["properties"]["changes"]["items"] == {"$ref": "#/$defs/Change"}
+    assert schema["$defs"]["Change"]["required"] == ["path", "value"]

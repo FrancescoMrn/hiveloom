@@ -254,6 +254,14 @@ def dry_run(
         registry.close()
 
 
+def _resumed_task(history: list[dict[str, Any]]) -> str:
+    """The task a resumed thread started from: its first plain-text user message."""
+    for message in history:
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            return message["content"]
+    return ""
+
+
 def run_harness(
     harness_dir: str | Path,
     input_value: str | None = None,
@@ -277,6 +285,7 @@ def run_harness(
     providers: dict[str, ModelProvider] | None = None,
     approve_network: Callable[[str], bool] | None = None,
     cost_cap_usd: float | None = None,
+    tool_policy: Any = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -334,6 +343,11 @@ def run_harness(
     delegated child is confined to a share of its parent's remaining budget
     (see :mod:`hiveloom.delegation`).
 
+    ``tool_policy`` (an object with ``apply(registry)``) adjusts the built tool
+    registry before the run starts, and may only tighten it: a research
+    program's execution policy uses it to deny tools or replace them with
+    recorded results (see :mod:`hiveloom.research.execution`).
+
     ``approve_network`` is the run-scoped decision point for an undeclared
     ``http_get`` hostname. It receives only the normalized hostname and returns
     true to allow that host for the rest of this run. Without a callback the
@@ -364,9 +378,12 @@ def run_harness(
                 "comes from the parent journal, not from a new input"
             )
         history = list(resume_messages)
-        # The parent's task statement is already inside the folded thread; the
-        # trace records what this run re-entered rather than a fresh input.
-        run_input = (lineage or {}).get("parent_run_id", "")
+        # The parent's task statement is already inside the folded thread, and
+        # no new one is appended. It is still this run's input: validators
+        # read `run_context["input"]` to know what was asked, so recording the
+        # parent's run id here made a resumed fork fail verification with the
+        # very answer its parent passed on. Provenance travels in `lineage`.
+        run_input = _resumed_task(history) or (lineage or {}).get("parent_run_id", "")
     else:
         history, run_input = _resolve_conversation(
             base, input_value, conversation, literal_input=literal_input
@@ -377,6 +394,10 @@ def run_harness(
         base, spec, trace_dir=trace_dir, hive_path=hive_path
     )
     registry = build_registry(spec, base, run_boundary=run_boundary)
+    if tool_policy is not None:
+        # A research execution policy (hiveloom.research.execution) may only
+        # tighten the tool set: deny a tool or swap it for recorded results.
+        tool_policy.apply(registry)
     # An explicitly required process sandbox is checked before any paid model
     # turn. The default `auto` policy is opportunistic and never blocks a run.
     gap = confine.unavailable_reason(spec.confinement)

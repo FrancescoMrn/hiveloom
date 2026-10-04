@@ -17,7 +17,7 @@ from hiveloom.models.provider import ModelConfig
 from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.spec.loader import load_spec
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 
 _VALID_SUMMARY = json.dumps(
     {"title": "Fox", "summary": "A fox jumps a dog.", "key_points": ["fox", "dog"]}

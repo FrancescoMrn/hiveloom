@@ -6,9 +6,9 @@ import type { InspectorView } from './components/ContextInspector'
 import { CopilotCanvas } from './components/CopilotCanvas'
 import { CopilotChat } from './components/CopilotChat'
 import { CopilotRail } from './components/CopilotRail'
-import { Settings, useProviders } from './components/Settings'
+import { Settings } from './components/Settings'
 import { Notice } from './components/common'
-import { workbenchModels } from './models'
+import { useWorkbenchDirectory } from './workbench'
 import { applyTheme, loadPrefs, savePrefs } from './prefs'
 import type { Prefs } from './prefs'
 import type {
@@ -17,7 +17,6 @@ import type {
   ConversationSummary,
   CopilotInfo,
   Harness,
-  HarnessDetail,
   RunRow,
 } from './types'
 import { useCopilot } from './useCopilot'
@@ -43,14 +42,13 @@ export function App() {
   const [inspectorView, setInspectorView] = useState<InspectorView>('interface')
   const [inspectorViewKey, setInspectorViewKey] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsHarness, setSettingsHarness] = useState<HarnessDetail | null>(null)
   const [prefs, setPrefs] = useState(loadPrefs)
   const [copilotModel, setCopilotModel] = useState('')
   const [error, setError] = useState<string | null>(null)
   const workspaceElement = useRef<HTMLDivElement | null>(null)
   const selectionSaveQueue = useRef<Promise<void>>(Promise.resolve())
   const selectionSaveVersion = useRef(0)
-  const providers = useProviders(selectedHarness)
+  const directory = useWorkbenchDirectory()
 
   useEffect(() => {
     applyTheme(prefs.theme)
@@ -76,6 +74,14 @@ export function App() {
     }
   }, [])
 
+  // While a research program runs or waits on the person, keep the rail's badges current.
+  const researchActive = (harnesses ?? []).some((row) => row.research)
+  useEffect(() => {
+    if (!researchActive) return
+    const timer = window.setInterval(() => void refreshHarnesses(), 8000)
+    return () => window.clearInterval(timer)
+  }, [refreshHarnesses, researchActive])
+
   const refreshConversations = useCallback(async () => {
     try {
       setConversations(await api.conversations())
@@ -96,6 +102,17 @@ export function App() {
     setInspectorOpen(Boolean(record.selection.harness_id))
     setMobileRail(false)
   }, [])
+
+  // A conversation remembers the harness it was attached to; if that harness
+  // has since been deleted or moved (a removed fork, a renamed folder), drop
+  // the selection instead of asking the API for it on every refresh.
+  useEffect(() => {
+    if (!selectedHarness || harnesses === null) return
+    if (harnesses.some((item) => item.id === selectedHarness)) return
+    setSelectedHarness(null)
+    setSelectedRun(null)
+    setInspectorOpen(false)
+  }, [harnesses, selectedHarness])
 
   const newConversation = useCallback(async () => {
     const created = await api.createConversation()
@@ -131,25 +148,24 @@ export function App() {
     return () => { live = false }
   }, [newConversation, openConversation, refreshHarnesses])
 
+  // The composer offers the models of the providers set up here, so the
+  // copilot starts on its own model only when that is one of them — otherwise
+  // on the workbench default. (With nothing set up at all, the server's own
+  // fallback rule decides, and says so.)
   useEffect(() => {
-    let live = true
-    if (!selectedHarness) {
-      setSettingsHarness(null)
-      return () => { live = false }
-    }
-    setSettingsHarness((current) => current?.id === selectedHarness ? current : null)
-    void api.harness(selectedHarness)
-      .then((detail) => live && setSettingsHarness(detail))
-      .catch(() => live && setSettingsHarness(null))
-    return () => { live = false }
-  }, [selectedHarness])
+    if (copilotModel || !info?.model || directory === null) return
+    setCopilotModel(
+      directory.enabled_models.includes(info.model) ? info.model : directory.effective_default,
+    )
+  }, [copilotModel, info?.model, directory])
 
-  useEffect(() => {
-    if (info?.model && !copilotModel) setCopilotModel(info.model)
-  }, [copilotModel, info?.model])
-
+  // Only for a harness the list knows: a conversation can remember one that
+  // has since been deleted, and asking for its runs is a guaranteed 404.
+  const selectedKnown = Boolean(
+    selectedHarness && harnesses?.some((item) => item.id === selectedHarness),
+  )
   const refreshRuns = useCallback(async () => {
-    if (!selectedHarness) {
+    if (!selectedHarness || !selectedKnown) {
       setRuns(null)
       return
     }
@@ -158,7 +174,7 @@ export function App() {
     } catch {
       setRuns([])
     }
-  }, [selectedHarness])
+  }, [selectedHarness, selectedKnown])
 
   const refresh = useCallback(async () => {
     await Promise.all([refreshHarnesses(), refreshRuns(), refreshConversations()])
@@ -211,10 +227,24 @@ export function App() {
       })
   }, [conversation, refreshConversations, selection])
 
+  /** A research program's card opens that harness's Research tab, not a canvas. */
+  const openResearch = useCallback((next: Artifact): boolean => {
+    const data = record(next.data)
+    if (next.kind !== 'research_program' || typeof data.harness_id !== 'string') return false
+    setSelectedHarness(data.harness_id)
+    setSelectedRun(null)
+    setArtifact(null)
+    setInspectorView('research')
+    setInspectorViewKey((value) => value + 1)
+    setInspectorOpen(true)
+    setRailCollapsed(true)
+    return true
+  }, [])
+
   const onCopilotFinished = useCallback(
     (artifacts: Artifact[]) => {
       const newest = artifacts.at(-1)
-      if (newest) {
+      if (newest && !openResearch(newest)) {
         setArtifact(newest)
         setInspectorOpen(true)
         setRailCollapsed(true)
@@ -228,7 +258,7 @@ export function App() {
       }
       void refresh()
     },
-    [refresh],
+    [openResearch, refresh],
   )
 
   const conversationPersisted = useCallback(async () => {
@@ -253,13 +283,6 @@ export function App() {
 
   const harness = (harnesses ?? []).find((item) => item.id === selectedHarness) ?? null
   const run = (runs ?? []).find((item) => item.run_id === selectedRun) ?? null
-  const copilotModels = useMemo(() => {
-    const reachable = workbenchModels(providers)
-    const narrowed = prefs.seatModels.length
-      ? reachable.filter((selector) => prefs.seatModels.includes(selector))
-      : reachable
-    return [...new Set([info?.model, copilotModel, ...narrowed].filter(Boolean) as string[])]
-  }, [copilotModel, info?.model, prefs.seatModels, providers])
 
   const selectHarness = (id: string) => {
     setSelectedHarness(id || null)
@@ -371,7 +394,16 @@ export function App() {
                 </button>
               </>
             ) : (
-              <span className="copilot-context-empty">No harness selected</span>
+              <label className="copilot-context-picker" title="Attach a harness to this conversation">
+                <i className="ph ph-hexagon" />
+                <select aria-label="Attach a harness" value="" onChange={(event) => selectHarness(event.target.value)}>
+                  <option value="" disabled>Choose a harness…</option>
+                  {(harnesses ?? []).filter((item) => !item.is_fork).map((item) => (
+                    <option key={item.id} value={item.id}>{item.name}</option>
+                  ))}
+                </select>
+                <i className="ph ph-caret-down" />
+              </label>
             )}
             {workspace.busy && <span className="live-chip"><span className="dot" /> working</span>}
           </div>
@@ -411,9 +443,11 @@ export function App() {
           <CopilotChat
             info={info}
             harness={harness}
+            harnesses={harnesses ?? []}
+            onSelectHarness={selectHarness}
             run={run}
             workspace={workspace}
-            models={copilotModels}
+            directory={directory}
             model={copilotModel}
             onModel={setCopilotModel}
             onOpenRun={(id) => selectRun(id)}
@@ -425,6 +459,7 @@ export function App() {
               }
             }}
             onArtifact={(next) => {
+              if (openResearch(next)) return
               setArtifact(next)
               setInspectorOpen(true)
               setRailCollapsed(true)
@@ -457,7 +492,7 @@ export function App() {
               onChanged={refresh}
             />
           )}
-          {showingInspector && !artifact && selectedHarness && (
+          {showingInspector && !artifact && selectedHarness && harness && (
             <ContextInspector
               harnessId={selectedHarness}
               harnesses={harnesses ?? []}
@@ -472,7 +507,12 @@ export function App() {
                 setRailCollapsed(false)
               }}
               onSelectRun={selectRun}
-              onOpenHarness={async (id) => selectHarness(id)}
+              onOpenHarness={async (id) => {
+                // A fork made a moment ago is not in the list yet; without the
+                // refresh the header and the copilot would not know it is open.
+                await refreshHarnesses()
+                selectHarness(id)
+              }}
               onRefresh={refresh}
             />
           )}
@@ -480,23 +520,10 @@ export function App() {
       </main>
       {settingsOpen && (
         <Settings
-          harness={settingsHarness}
-          providers={providers}
+          strongModel={info?.strong_model}
           prefs={prefs}
           onPrefs={updatePrefs}
           onClose={() => setSettingsOpen(false)}
-          onSaved={async () => {
-            if (selectedHarness) setSettingsHarness(await api.harness(selectedHarness))
-            await refresh()
-          }}
-          onOpenSpec={() => {
-            if (!selectedHarness) return
-            setArtifact(null)
-            setInspectorView('spec')
-            setInspectorViewKey((value) => value + 1)
-            setInspectorOpen(true)
-            setRailCollapsed(true)
-          }}
         />
       )}
     </div>

@@ -30,6 +30,20 @@ container. Ports can be changed with `HIVELOOM_UI_PORT` and
 `HIVELOOM_UI_API_PORT`. A checkout keeps its state in `devtools/ui/.hiveloom/`,
 never in the directory an installed workbench uses.
 
+The checkout's `harnesses/` have no history, so most tabs open empty on them.
+To explore the interface with something in it, `devtools/ui/dev.sh --showcase`
+serves seeded copies of the three demos instead, run on a real model through
+OpenRouter (it needs `OPENROUTER_API_KEY`; a full seed costs a few cents). Its
+history: ticket-triage runs and a fork resumed from its report turn, with a
+support lead's request waiting in **Improve** as a gated proposal;
+ranked-retrieval queries, an eval, a measured evolution round and a research
+program in **Research**; and two log-forensics investigations. Every showcase
+harness has a generated interface under **Use** with an example task. The seed
+(`devtools/ui/showcase.py`, `--reset` to redo it, `--model` for another
+OpenRouter model) keeps its copies and its own Hive, trust store and registry
+under `devtools/ui/.hiveloom/showcase/`; a reset keeps the showcase's keys and
+the providers set up in Settings → Models.
+
 ## Product model
 
 There is one primary interaction: a conversation with the bundled

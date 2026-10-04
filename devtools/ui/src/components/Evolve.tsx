@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApplyResult, HarnessDetail, Proposal } from '../types'
+import { lineDiff } from '../diff'
 import { Label, Notice, when } from './common'
 
 export function Evolve({
@@ -25,12 +26,15 @@ export function Evolve({
   evolveModel,
   onApplied,
   onCompare,
+  onOpenResearch,
 }: {
   harness: HarnessDetail
   /** `provider/model-id` to draft with, or '' for hiveloom's strong-model default. */
   evolveModel: string
   onApplied: () => Promise<void>
   onCompare: () => void
+  /** Evolve autonomously: a research program, in the Research tab. */
+  onOpenResearch?: () => void
 }) {
   const [proposals, setProposals] = useState<Proposal[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -44,7 +48,13 @@ export function Evolve({
     try {
       const rows = await api.proposals(harness.id)
       setProposals(rows)
-      setSelected((current) => current ?? rows.find((row) => row.status === 'pending')?.id ?? null)
+      // Open what needs a decision first; failing that, the latest outcome —
+      // an applied proposal is where its change is shown, so a tab that opened
+      // on nothing hid exactly what someone came here to look at.
+      setSelected(
+        (current) =>
+          current ?? rows.find((row) => row.status === 'pending')?.id ?? rows[0]?.id ?? null,
+      )
     } catch (exc) {
       setError(String(exc))
       setProposals([])
@@ -160,6 +170,17 @@ export function Evolve({
               Propose from parent's failures
             </button>
           )}
+          {onOpenResearch && (
+            <button
+              className="v-btn"
+              onClick={onOpenResearch}
+              disabled={busy !== null}
+              title="A director model runs measured rounds unattended and queues one proposal here"
+            >
+              <i className="ph ph-flask" />
+              Evolve autonomously
+            </button>
+          )}
         </div>
       </div>
 
@@ -218,7 +239,9 @@ export function Evolve({
                 <span className={`proposal-status ${row.status}`}>{row.status}</span>
                 <span className="proposal-title">{row.rationale || row.proposal.rationale}</span>
                 <span className="mono proposal-meta">
-                  {row.spec_version_hash.slice(0, 8)} · {row.trigger} · {when(row.created_at)}
+                  {row.evolution
+                    ? `#${row.evolution.counter} · ${row.evolution.old_version_hash.slice(0, 8)} → ${row.evolution.new_version_hash.slice(0, 8)} · ${row.trigger} · applied ${when(row.evolution.created_at)}`
+                    : `${row.spec_version_hash.slice(0, 8)} · ${row.trigger} · ${when(row.created_at)}`}
                 </span>
               </button>
             ))}
@@ -227,6 +250,7 @@ export function Evolve({
           {open && (
             <ProposalDetail
               proposal={open}
+              spec={harness.spec}
               approved={approved}
               busy={busy}
               onToggleCode={(file) =>
@@ -248,6 +272,7 @@ export function Evolve({
 
 function ProposalDetail({
   proposal,
+  spec,
   approved,
   busy,
   onToggleCode,
@@ -255,6 +280,8 @@ function ProposalDetail({
   onReject,
 }: {
   proposal: Proposal
+  /** The harness as it is now: what a pending text change is diffed against. */
+  spec?: Record<string, unknown>
   approved: string[]
   busy: string | null
   onToggleCode: (file: string) => void
@@ -267,15 +294,36 @@ function ProposalDetail({
     <div className="proposal-detail">
       <div className="inspector-callout">{proposal.proposal.rationale || proposal.rationale}</div>
 
+      {proposal.evolution && (
+        <section>
+          <Label>
+            Applied as evolution #{proposal.evolution.counter} ·{' '}
+            {proposal.evolution.old_version_hash.slice(0, 12)} →{' '}
+            {proposal.evolution.new_version_hash.slice(0, 12)} · {when(proposal.evolution.created_at)}
+          </Label>
+          {proposal.evolution.yaml_diff ? (
+            <SpecDiff diff={proposal.evolution.yaml_diff} />
+          ) : (
+            <p className="evolve-note">No diff was recorded for this evolution.</p>
+          )}
+        </section>
+      )}
+
       <section>
-        <Label>Accepted by the gate · {gate.accepted.length}</Label>
+        <Label>{proposal.evolution ? 'Proposed values' : 'Accepted by the gate'} · {gate.accepted.length}</Label>
         {gate.accepted.length === 0 ? (
           <p className="evolve-note">Nothing in this proposal cleared the gate.</p>
         ) : (
           gate.accepted.map((change) => (
             <div className="change-row" key={change.path}>
               <code>{change.path}</code>
-              <pre>{JSON.stringify(change.value, null, 2)}</pre>
+              {typeof change.value === 'string' &&
+              typeof valueAt(spec, change.path) === 'string' &&
+              proposal.status === 'pending' ? (
+                <SpecDiff diff={lineDiff(valueAt(spec, change.path) as string, change.value)} />
+              ) : (
+                <pre>{JSON.stringify(change.value, null, 2)}</pre>
+              )}
               {change.rationale && <span className="evolve-note">{change.rationale}</span>}
             </div>
           ))
@@ -341,4 +389,36 @@ function ProposalDetail({
       )}
     </div>
   )
+}
+
+/**
+ * A unified diff of harness.yaml, the way it was recorded when the change was
+ * applied: only the lines that moved, so a one-line prompt fix reads as one
+ * line rather than as the whole rewritten prompt.
+ */
+function SpecDiff({ diff }: { diff: string }) {
+  const lines = diff.split('\n').filter((line) => !line.startsWith('---') && !line.startsWith('+++'))
+  return (
+    <pre className="spec-diff">
+      {lines.map((line, index) => (
+        <span
+          key={index}
+          data-kind={line.startsWith('@@') ? 'hunk' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : 'ctx'}
+        >
+          {line || ' '}
+          {'\n'}
+        </span>
+      ))}
+    </pre>
+  )
+}
+
+/** The value at a dotted spec path (`system_prompt`, `loop.max_turns`, `tools.0.name`). */
+function valueAt(spec: Record<string, unknown> | undefined, path: string): unknown {
+  let node: unknown = spec
+  for (const key of path.split('.')) {
+    if (node === null || typeof node !== 'object') return undefined
+    node = (node as Record<string, unknown>)[key]
+  }
+  return node
 }

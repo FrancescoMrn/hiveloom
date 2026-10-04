@@ -13,7 +13,24 @@
         "record-query-plans",
         "record-cache-basics",
         "record-incident-checklist",
-        "record-api-contracts"
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
       ]
     }
   },
@@ -29,7 +46,24 @@
         "record-query-plans",
         "record-cache-basics",
         "record-incident-checklist",
-        "record-api-contracts"
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
       ]
     }
   },
@@ -45,7 +79,262 @@
         "record-query-plans",
         "record-cache-basics",
         "record-incident-checklist",
-        "record-api-contracts"
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "connection-exhaustion",
+    "input": "Our service keeps running out of database connections whenever traffic spikes.",
+    "expected": {
+      "relevance": {
+        "record-connection-pooling": 3,
+        "record-postgres-indexes": 1
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "certificate-swap",
+    "input": "How do we swap our site's certificates before they expire without taking it down?",
+    "expected": {
+      "relevance": {
+        "record-tls-rotation": 3,
+        "record-blue-green": 1
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "container-killed",
+    "input": "A container in our cluster keeps getting killed and restarted with exit code 137.",
+    "expected": {
+      "relevance": {
+        "record-k8s-oom": 3
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "forget-customer",
+    "input": "A customer asked us to delete everything we hold about them. What do we do?",
+    "expected": {
+      "relevance": {
+        "record-gdpr-erasure": 3,
+        "record-log-retention": 1
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "pager-noise",
+    "input": "We get paged so often that people have started ignoring the alerts.",
+    "expected": {
+      "relevance": {
+        "record-alert-fatigue": 3,
+        "record-slo-budgets": 2,
+        "record-oncall-handoff": 1
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "risky-change",
+    "input": "We want to ship a risky change to 5% of users first and widen it if nothing breaks.",
+    "expected": {
+      "relevance": {
+        "record-feature-flags": 3,
+        "record-blue-green": 2
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
+      ]
+    }
+  },
+  {
+    "id": "stale-assets",
+    "input": "After a release, customers still see the old JavaScript until they hard-refresh.",
+    "expected": {
+      "relevance": {
+        "record-cdn-invalidation": 3,
+        "record-cache-basics": 1
+      },
+      "eligible_ids": [
+        "record-postgres-indexes",
+        "record-query-plans",
+        "record-cache-basics",
+        "record-incident-checklist",
+        "record-api-contracts",
+        "record-connection-pooling",
+        "record-tls-rotation",
+        "record-blue-green",
+        "record-k8s-oom",
+        "record-oncall-handoff",
+        "record-postmortem",
+        "record-rate-limiting",
+        "record-feature-flags",
+        "record-secrets",
+        "record-log-retention",
+        "record-gdpr-erasure",
+        "record-backup-drills",
+        "record-cdn-invalidation",
+        "record-oauth-refresh",
+        "record-latency-profiling",
+        "record-slo-budgets",
+        "record-alert-fatigue"
       ]
     }
   }

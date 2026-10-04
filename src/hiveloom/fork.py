@@ -291,6 +291,54 @@ def _materialize_files(
     return warnings
 
 
+# Never carried into a fork: caches and environments are rebuilt, not copied.
+_SUPPORT_SKIP = frozenset({"__pycache__", "node_modules", "venv", "harness.yaml", "fork.yaml"})
+_SUPPORT_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _copy_supporting_files(source: Path, target: Path) -> list[str]:
+    """Copy what the harness's code reads but its version does not track.
+
+    The snapshot restores the spec and the code it references — the files a
+    version hash covers. A tool or validator that *reads* a file (a rate
+    table, a fixture, a prompt asset) depends on it just the same, and a fork
+    without it fails in ways its parent never did: research-lab's billing
+    check raised on a missing ``data/rates.json`` inside every fork.
+
+    So the rest of the folder comes along from the working copy. Hidden
+    entries stay behind — ``.hiveloom`` (where forks themselves live), ``.env``
+    secrets, VCS metadata — and nothing the snapshot already wrote is
+    overwritten. These files are not in the manifest, so unlike code they are
+    not checked against the parent run: if one changed since, the fork reads
+    today's copy.
+    """
+    warnings: list[str] = []
+
+    def skip(name: str) -> bool:
+        return name.startswith(".") or name in _SUPPORT_SKIP
+
+    for root, dirs, files in os.walk(source):
+        here = Path(root)
+        dirs[:] = sorted(d for d in dirs if not skip(d))
+        for name in sorted(files):
+            if skip(name) or name.endswith((".pyc", ".pyo")):
+                continue
+            origin = here / name
+            relative = origin.relative_to(source)
+            destination = target / relative
+            if destination.exists() or origin.is_symlink():
+                continue
+            try:
+                if origin.stat().st_size > _SUPPORT_MAX_BYTES:
+                    warnings.append(f"{relative} is over 50 MB and was not copied into the fork")
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(origin, destination)
+            except OSError as exc:
+                warnings.append(f"{relative} could not be copied into the fork: {exc}")
+    return warnings
+
+
 def find_harness_source(trace_path: str | Path) -> Path | None:
     """Walk up from a trace file to the harness folder that owns it."""
     current = Path(trace_path).resolve().parent
@@ -635,6 +683,8 @@ def create_fork(
 
     source = Path(source_dir) if source_dir is not None else find_harness_source(trace_path)
     warnings.extend(_materialize_files(snapshot, source, target, allow_drift=allow_drift))
+    if source is not None:
+        warnings.extend(_copy_supporting_files(source, target))
 
     # The spec comes from the journal, never from the folder: what ran is what
     # gets forked, even if the folder has moved on since.

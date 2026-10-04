@@ -13,25 +13,31 @@
  */
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { useWorkbenchDirectory } from '../workbench'
 import type { ForkPoint, ForkResult, Provider } from '../types'
 import { Label, Notice } from './common'
+import { ForkResume } from './ForkResume'
 
 export function ForkDialog({
   runId,
   point,
   onClose,
   onOpenHarness,
+  onResumed,
 }: {
   runId: string
   point: ForkPoint
   onClose: () => void
   /** Select the fork in the rail — it is registered as it is created. */
   onOpenHarness: (harnessId: string) => Promise<void>
+  /** A resume from this dialog finished: the parent's run list has a new row. */
+  onResumed?: () => void
 }) {
   const short = runId.replace(/^run_/, '').slice(0, 8)
   const [name, setName] = useState(`${short}-turn${point.turn}`)
   const [override, setOverride] = useState('')
   const [providers, setProviders] = useState<Provider[] | null>(null)
+  const directory = useWorkbenchDirectory()
   const [result, setResult] = useState<ForkResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -104,6 +110,11 @@ export function ForkDialog({
                 <dd>{result.trust_inherited ? 'inherited from the parent' : 'not trusted yet'}</dd>
               </div>
             </dl>
+            {result.harness_id && (
+              <div style={{ marginTop: 16 }}>
+                <ForkResume harnessId={result.harness_id} turn={result.turn} onFinished={() => onResumed?.()} />
+              </div>
+            )}
             {result.warnings.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <Notice
@@ -143,14 +154,9 @@ export function ForkDialog({
                 onChange={(event) => setOverride(event.target.value)}
               />
               <datalist id="fork-models">
-                {(providers ?? []).flatMap((provider) =>
-                  provider.models.map((model) => (
-                    <option
-                      key={`${provider.name}/${model.id}`}
-                      value={`${provider.name}/${model.id}`}
-                    />
-                  )),
-                )}
+                {(directory?.enabled_models ?? []).map((selector) => (
+                  <option key={selector} value={selector} />
+                ))}
               </datalist>
               <div style={{ fontSize: 12, color: 'var(--mut)', marginTop: 5 }}>
                 Changing exactly one variable is the point of a fork — this is usually it.
@@ -171,7 +177,7 @@ export function ForkDialog({
           </button>
           {result?.harness_id && (
             <button
-              className="v-btn v-btn-primary"
+              className="v-btn"
               onClick={() => void onOpenHarness(result.harness_id)}
             >
               <i className="ph ph-arrow-right" />

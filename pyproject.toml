@@ -35,7 +35,7 @@ dependencies = [
     "jsonschema>=4.0",
     "starlette>=1.0",
     "uvicorn>=0.30",
-    "pyjwt[crypto]>=2.8",
+    "pyjwt[crypto]>=2.15.1",
     "cryptography>=42.0",
 ]
 
@@ -79,6 +79,7 @@ packages = ["src/hiveloom"]
 "docs/evaluating.md" = "hiveloom/agent_docs/docs/evaluating.md"
 "docs/delegation.md" = "hiveloom/agent_docs/docs/delegation.md"
 "docs/signal-driven-evolution.md" = "hiveloom/agent_docs/docs/signal-driven-evolution.md"
+"docs/research.md" = "hiveloom/agent_docs/docs/research.md"
 "docs/journal.md" = "hiveloom/agent_docs/docs/journal.md"
 "docs/workbench.md" = "hiveloom/agent_docs/docs/workbench.md"
 "docs/deploying-and-evolving.md" = "hiveloom/agent_docs/docs/deploying-and-evolving.md"
@@ -105,6 +106,7 @@ only-include = [
     "docs/evaluating.md",
     "docs/delegation.md",
     "docs/signal-driven-evolution.md",
+    "docs/research.md",
     "docs/journal.md",
     "docs/workbench.md",
     "docs/deploying-and-evolving.md",

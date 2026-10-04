@@ -314,7 +314,7 @@ def test_run_dry_run_needs_no_api_key():
     import shutil
     from pathlib import Path as _P
 
-    example = _P(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+    example = _P(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:

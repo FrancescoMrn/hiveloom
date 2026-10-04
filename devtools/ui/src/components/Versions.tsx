@@ -38,6 +38,7 @@ const KIND_COLOR: Record<string, string> = {
   initial: 'var(--mut)',
   evolved: 'var(--acc)',
   fork: 'var(--evo)',
+  configured: 'var(--ck)',
   edited: 'var(--dim)',
 }
 
@@ -91,8 +92,16 @@ export function Versions({
   )
 
   const graph = useMemo(
-    () => buildVersionGraph(harness.name, branches, runs ?? [], proposals, harness.stats),
-    [branches, harness.name, harness.stats, proposals, runs],
+    () =>
+      buildVersionGraph(
+        harness.name,
+        branches,
+        runs ?? [],
+        proposals,
+        harness.stats,
+        harness.constructions ?? [],
+      ),
+    [branches, harness.constructions, harness.name, harness.stats, proposals, runs],
   )
 
   const open =

@@ -1,0 +1,23 @@
+# A research charter: what the program is for and what it may touch. Start it
+# with `hiveloom research init . --name quotes --charter research.yaml`.
+goal: Every quote is what billing will invoice.
+eval: eval.yaml
+holdout: 0.25            # sealed cases, read once at the end
+levers:                  # the only spec paths the director may change
+  - system_prompt
+  - loop.max_turns
+guard:
+  success_rate: no_regression
+budget:
+  usd: 1.0
+  rounds: 4
+stop:
+  goal:
+    success_rate: 0.95
+  no_progress_rounds: 2
+execution:
+  tools:
+    rate_quote: allow    # read-only lookup of a local table
+models:
+  director: research_lab/director
+experiments_per_round: 2

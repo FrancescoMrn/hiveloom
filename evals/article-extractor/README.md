@@ -56,7 +56,7 @@ if it is not reachable). Both providers must be registered in
 [docs/extending.md](../../docs/extending.md).
 
 The per-arm harness dirs under `harnesses/` are generated (not committed) from
-the canonical `../../harnesses/article-extractor` by
+the canonical `../../tests/fixtures/harnesses/article-extractor` by
 `./scripts/setup_harnesses.sh` — run_all_arms.sh calls it automatically. Only
 the `model:` block differs per arm (verify with
 `diff harnesses/harness-haiku/harness.yaml harnesses/harness-qwen/harness.yaml`);

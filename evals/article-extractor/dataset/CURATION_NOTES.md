@@ -1,7 +1,7 @@
 # Curation notes — article-extractor golden dataset
 
 Method: for every URL below, `fetch_clean(url)` was called for real (via
-`importlib` against `harnesses/article-extractor/tools/fetch_clean.py`, no
+`importlib` against `tests/fixtures/harnesses/article-extractor/tools/fetch_clean.py`, no
 mocking) on 2026-07-29. Golden JSON was authored from the digest text alone —
 title/description/headings were extracted programmatically from the exact
 digest lines (no hand-retyping, to avoid corrupting unicode punctuation);

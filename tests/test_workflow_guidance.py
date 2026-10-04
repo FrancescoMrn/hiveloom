@@ -50,8 +50,7 @@ def test_ranked_retrieval_example_validates_and_exposes_enforced_phases(
         [],
     ]
     assert plan["steps"][0]["require_tool_calls"] == ["search_and_verify_records"]
-    assert validated_eval.case_count == 3
-    assert len(cases) == 3
+    assert validated_eval.case_count == len(cases) >= 3
 
 
 def test_ranked_retrieval_workflow_and_metrics_run_offline(tmp_path: Path, monkeypatch):

@@ -332,3 +332,47 @@ test('a fork that changed nothing is a second folder, not a second version', () 
   // The trunk wins the folder that a new run would run.
   assert.equal(graph.nodes[0].folder, 'summarizer')
 })
+
+test('a construction change is a child of the version it started from', () => {
+  // The research-lab case: an applied proposal (v1 → v2), then `set model`
+  // (v2 → v3) through the construction API — v3 must not float off as a hand edit.
+  const graph = buildVersionGraph(
+    'summarizer',
+    [trunk({ version_hash: 'v3' })] as never,
+    [
+      run({ run_id: 'r1', harness_version_hash: 'v1', started_at: '2026-09-28T15:34:00Z' }),
+      run({ run_id: 'r3', harness_version_hash: 'v3', started_at: '2026-10-04T10:31:00Z' }),
+    ] as never,
+    [
+      proposal({
+        resolved_at: '2026-10-04T09:33:20Z',
+        apply_result: {
+          old_version_hash: 'v1',
+          new_version_hash: 'v2',
+          counter: 1,
+          rationale: 'grams to kilograms',
+          applied_yaml: [{ path: 'system_prompt', value: 'convert grams' }],
+        },
+      }),
+    ] as never,
+    null,
+    [
+      {
+        timestamp: '2026-10-04T09:35:14Z',
+        command: 'set_model',
+        args: { provider: 'openrouter', id: 'deepseek/deepseek-v4-flash-0731' },
+        old_version_hash: 'v2',
+        new_version_hash: 'v3',
+      },
+    ],
+  )
+  const byHash = new Map(graph.nodes.map((node) => [node.hash, node]))
+  assert.equal(byHash.get('v3')?.kind, 'configured')
+  assert.equal(byHash.get('v3')?.parent, 'v2')
+  assert.match(byHash.get('v3')?.title ?? '', /model → openrouter\/deepseek/)
+  assert.deepEqual(
+    ancestryOf(graph, 'v3').map((node) => node.hash),
+    ['v3', 'v2', 'v1'],
+    'the lineage is one unbroken chain back to the first version',
+  )
+})

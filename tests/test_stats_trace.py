@@ -15,7 +15,7 @@ from hiveloom.errors import ExitCode
 from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 cli = CliRunner()
 
 _VALID = json.dumps({"title": "T", "summary": "short.", "key_points": ["a"]})

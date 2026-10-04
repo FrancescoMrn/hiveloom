@@ -23,8 +23,20 @@ def _service(run_context: dict[str, Any]):
     return service
 
 
+#: How much of a tool's data the copilot model reads beside the summary. The
+#: artifact carries all of it to the interface; the model needs the ids, names,
+#: statuses and questions to act on, not whole specs or traces.
+_MODEL_DATA_CHARS = 6000
+
+
 def _result(kind: str, data: dict[str, Any], summary: str) -> ToolResult:
-    return ToolResult(content=summary, artifacts=[Artifact(kind=kind, data=data)])
+    import json
+
+    compact = json.dumps(data, ensure_ascii=False, default=str, separators=(",", ":"))
+    if len(compact) > _MODEL_DATA_CHARS:
+        compact = compact[:_MODEL_DATA_CHARS] + "…(truncated; the full artifact is in the UI)"
+    return ToolResult(content=f"{summary}\n\n{compact}",
+                      artifacts=[Artifact(kind=kind, data=data)])
 
 
 @tool(
@@ -307,3 +319,120 @@ def create_interface(
         data,
         f"Created a standalone interface for {data['harness_name']!r}.",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Evolving autonomously (research programs)
+# --------------------------------------------------------------------------- #
+def _research_summary(data: dict[str, Any]) -> str:
+    program = data.get("program") or {}
+    if not program:
+        return f"{data.get('harness_name', 'This harness')} has no research programs yet."
+    parts = [f"Program {program.get('name')}: {program.get('status')}, unit "
+             f"{program.get('unit')}, round {program.get('round')}."]
+    if program.get("contract_to_approve"):
+        parts.append("It is waiting for the user to approve its evaluation contract.")
+    if program.get("open_questions"):
+        parts.append(f"{len(program['open_questions'])} question(s) wait for the user.")
+    if program.get("stop_reason"):
+        parts.append(f"Stopped: {program['stop_reason'].get('condition')}.")
+    if program.get("promotion"):
+        parts.append(f"Proposal {program['promotion'].get('proposal_id')} is "
+                     f"{program['promotion'].get('status')}.")
+    return " ".join(parts)
+
+
+@tool(
+    description=(
+        "Read a harness's research programs (its autonomous evolution): status, budget, "
+        "experiments, the stop reason, a contract waiting for approval, and the questions "
+        "waiting for the user. Call before relaying or answering anything about them."
+    ),
+    tags=["read", "research"],
+)
+def research_status(harness_id: str = "", run_context: dict[str, Any] | None = None) -> ToolResult:
+    data = _service(run_context or {}).research_status(harness_id)
+    return _result("research_program", data, _research_summary(data))
+
+
+@tool(
+    description=(
+        "Evolve a harness autonomously: start a research program that runs unattended in "
+        "the background (a director model forms hypotheses, the engine measures each "
+        "change and keeps only what it confirms) and ends in one proposal to review. Uses "
+        "the harness's research.yaml, or a charter built from it. harness_id: an id from "
+        "workspace_context or list_harnesses (empty = the selected harness). program: "
+        "optional short name, a-z 0-9 and dashes. director: leave empty unless the user "
+        "names a model (provider/model-id); the harness's charter or default decides. "
+        "budget: USD. tools: {name: allow|replay|deny} for tools with effects. Only when "
+        "the user asked for it: it spends money."
+    ),
+    tags=["write", "research"],
+)
+def start_research(
+    harness_id: str = "",
+    program: str = "",
+    director: str = "",
+    budget: float = 0.0,
+    rounds: int = 0,
+    tools: dict[str, str] | None = None,
+    run_context: dict[str, Any] | None = None,
+) -> ToolResult:
+    if director and "/" not in director:
+        # A made-up name, not a model: the charter (or the default) decides.
+        raise ToolError("director must be a provider/model-id the user named; leave it "
+                        "empty to use the harness's charter or the default director")
+    data = _service(run_context or {}).start_research(
+        harness_id, program=program, director=director, budget=budget, rounds=rounds,
+        tools=tools)
+    return _result("research_program", data,
+                   f"Started research program {data.get('started')}. " + _research_summary(data))
+
+
+@tool(
+    description=(
+        "Submit the USER's answer to one research question, exactly as they gave it: "
+        "'pass' or 'fail' for a label or audit, words or an option otherwise. Never answer "
+        "a question yourself: labels are the user's judgement."
+    ),
+    tags=["write", "research"],
+)
+def answer_research_question(
+    program: str,
+    question_id: str,
+    answer: str,
+    harness_id: str = "",
+    run_context: dict[str, Any] | None = None,
+) -> ToolResult:
+    data = _service(run_context or {}).answer_research(harness_id, program, question_id, answer)
+    return _result("research_program", data,
+                   f"Recorded the user's answer to {question_id}. " + _research_summary(data))
+
+
+@tool(
+    description=(
+        "Approve a research program's drafted evaluation contract and let it continue. "
+        "Only after showing the user the criteria and sample cases and hearing them "
+        "approve: everything the program later calls better is measured against it."
+    ),
+    tags=["write", "research"],
+)
+def approve_research_contract(
+    program: str, harness_id: str = "", run_context: dict[str, Any] | None = None
+) -> ToolResult:
+    data = _service(run_context or {}).approve_research(harness_id, program)
+    return _result("research_program", data,
+                   f"Approved the contract of {program}; it continues. "
+                   + _research_summary(data))
+
+
+@tool(
+    description="Stop a running research program; it confirms what it kept and reports.",
+    tags=["write", "research"],
+)
+def stop_research(
+    program: str, harness_id: str = "", run_context: dict[str, Any] | None = None
+) -> ToolResult:
+    data = _service(run_context or {}).stop_research(harness_id, program)
+    return _result("research_program", data,
+                   f"Asked {program} to stop. " + _research_summary(data))

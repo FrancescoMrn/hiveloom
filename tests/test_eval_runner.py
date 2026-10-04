@@ -540,3 +540,55 @@ def test_run_eval_rejects_invalid_scheduling_limits(
 
     with pytest.raises(ValueError, match=message):
         run_eval(eval_file, execute_cell=_completed_result, model_probe=probe, **kwargs)
+
+
+def test_a_run_can_be_restricted_to_some_cases(tmp_path: Path):
+    """A working split and a held-out split of one eval keep one identity."""
+    from hiveloom.eval_runner import case_key_for
+
+    eval_file, probe = _fixture(tmp_path, case_count=4)
+    subset = run_eval(
+        eval_file,
+        execute_cell=_completed_result,
+        model_probe=probe,
+        case_ids={"case-0", "case-2"},
+    )
+    assert subset.case_ids == ["case-0", "case-2"]
+    assert {cell.case_key for cell in subset.cells} == {
+        case_key_for("case-0"), case_key_for("case-2")
+    }
+    rest = run_eval(
+        eval_file,
+        execute_cell=_completed_result,
+        model_probe=probe,
+        case_ids=["case-1", "case-3"],
+    )
+    assert rest.eval_identity == subset.eval_identity
+    with pytest.raises(ValueError, match="no case"):
+        run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
+                 case_ids={"case-9"})
+
+
+def test_a_restricted_run_resumes_only_its_own_cases(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=4)
+    partial = run_eval(
+        eval_file, execute_cell=_completed_result, model_probe=probe,
+        case_ids={"case-1", "case-3"}, max_cells=1,
+    )
+    assert partial.status == "incomplete"
+    done = resume_eval(partial.eval_run_id, execute_cell=_completed_result, model_probe=probe)
+    assert done.status == "completed" and len(done.cells) == 2
+
+
+def test_a_whole_eval_manifest_stays_readable_by_older_releases(tmp_path: Path):
+    """Releases before subset runs forbid unknown manifest fields: omit case_ids when unused."""
+    import json
+
+    from hiveloom.eval_runner import manifest_path
+
+    eval_file, probe = _fixture(tmp_path, case_count=2)
+    whole = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe)
+    assert "case_ids" not in json.loads(manifest_path(whole.eval_run_id).read_text())
+    subset = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
+                      case_ids=["case-0"])
+    assert json.loads(manifest_path(subset.eval_run_id).read_text())["case_ids"] == ["case-0"]

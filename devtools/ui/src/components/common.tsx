@@ -34,6 +34,31 @@ export function when(iso: string | null | undefined): string {
       })
 }
 
+/**
+ * A stamp short enough for a rail row that still orders runs on the same day:
+ * "10:31" today, "Oct 4 10:31" earlier this year, "Oct 4, 2025" before that.
+ */
+export function whenShort(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  if (date.toDateString() === now.toDateString()) return time
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`
+  }
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+/** The exact moment, to the second, for a tooltip. */
+export function whenExact(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+}
+
 export function Label({ children }: { children: React.ReactNode }) {
   return <div className="v-label">{children}</div>
 }

@@ -13,10 +13,12 @@ from pathlib import Path
 
 from hiveloom.errors import SpecError
 
-# The build spec names ``claude-sonnet-4-6`` as the generator default. That model
-# is still active; ``claude-sonnet-5`` is its current drop-in replacement. Kept
-# as a single constant so it is trivial to bump.
-DEFAULT_STRONG_MODEL = "claude-sonnet-4-6"
+# The generator/evolver default: the current Opus, which drafts once per
+# proposal rather than once per turn, so its price buys quality where it counts.
+# Its thinking is always on, which is why the call below streams with a real
+# output budget rather than the 4096-token fallback. Kept as a single constant
+# so it is trivial to bump.
+DEFAULT_STRONG_MODEL = "claude-opus-5-5"
 
 # Known model capabilities permit a larger proposal budget. Unknown models
 # retain the compatible historical default; a high guessed limit can cause 400s.
@@ -40,6 +42,10 @@ def strong_max_tokens(model_id: str, requested: int | None = None) -> int:
 class StrongModel(ABC):
     """A strong text model: given a system + user prompt, return text."""
 
+    #: What this model's calls were billed so far, where the provider reports
+    #: it (0.0 where it cannot be known), so a caller can charge a round for it.
+    spent_usd: float = 0.0
+
     @abstractmethod
     def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
         """Return the model's text response.
@@ -60,12 +66,15 @@ class ClaudeStrongModel(StrongModel):
         self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     def generate(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
-        response = self._client.messages.create(
+        # Streamed: a proposal budget this size is past what the SDK will send
+        # as one blocking request, and thinking spends from the same budget.
+        with self._client.messages.stream(
             model=self._model_id,
             max_tokens=strong_max_tokens(self._model_id, max_tokens),
             system=system,
             messages=[{"role": "user", "content": user}],
-        )
+        ) as stream:
+            response = stream.get_final_message()
         return "".join(block.text for block in response.content if block.type == "text")
 
 
@@ -93,6 +102,7 @@ class ProviderStrongModel(StrongModel):
                 max_tokens=strong_max_tokens(self._model_id, max_tokens),
             ),
         )
+        self.spent_usd += float(response.billed_cost or 0.0)
         return response.text
 
 

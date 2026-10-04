@@ -25,6 +25,8 @@ export interface ForkRecord {
 export interface Harness {
   id: string
   path: string
+  /** Research programs that need the person, or are running; absent when none. */
+  research?: { running: number; awaiting: number; questions: number; blocked: number } | null
   /** The directory's own name — what tells a fork from the parent it copied. */
   folder: string
   /** Where this folder was forked from, when it was. */
@@ -57,6 +59,17 @@ export interface HarnessDetail extends Harness {
   spec?: Record<string, unknown>
   /** The version a run started now would be recorded under. */
   version_hash?: string
+  /** Construction-API changes (set/add/remove/set model) and the versions they linked. */
+  constructions?: ConstructionStep[]
+}
+
+/** One validated construction change, from the harness's construction log. */
+export interface ConstructionStep {
+  timestamp: string
+  command: string
+  args: Record<string, unknown>
+  old_version_hash: string
+  new_version_hash: string
 }
 
 export interface CatalogEntry {
@@ -158,6 +171,8 @@ export interface RunRow {
   /** How this run hangs off its parent: a delegated peer run, or a fork. */
   lineage_kind?: 'delegation' | 'fork' | null
   forked_at_seq?: number | null
+  /** Set when the run belongs to a fork this harness contains: the fork's folder. */
+  fork_folder?: string | null
   model_path?: string
   verifications?: Verification[]
   guardrail_triggers?: GuardrailTrigger[]
@@ -207,6 +222,8 @@ export interface CopilotInfo {
   name: string
   description: string
   model: string
+  /** `provider/id` an unset evolution model resolves to. */
+  strong_model?: string
   version_hash: string
   suggestions: string[]
 }
@@ -299,6 +316,57 @@ export interface ProviderModel {
   context_window: number | null
   input_cost_per_mtok: number
   output_cost_per_mtok: number
+  /** Superseded but still valid and priced: kept off pickers unless in use. */
+  legacy?: boolean
+  /** Access-program only (e.g. Project Glasswing): kept off pickers unless in use. */
+  restricted?: boolean
+}
+
+/** One model a workbench provider offers, priced from hiveloom's registry. */
+export interface WorkbenchModel {
+  id: string
+  label: string
+  context_window: number | null
+  /** null for an id the registry does not price (OpenRouter routes, custom ids). */
+  input_cost_per_mtok: number | null
+  output_cost_per_mtok: number | null
+}
+
+/** A provider this workbench was set up with (Settings → Models). */
+export interface WorkbenchProvider {
+  name: string
+  label: string
+  custom: boolean
+  base_url: string
+  api_key_env: string
+  /** Whether a key is present — never the key itself. */
+  key_set: boolean
+  /** `workbench` (~/.hiveloom/.env), `process` (the API's environment), or ''. */
+  key_from: 'workbench' | 'process' | 'none' | ''
+  /** False for a key exported in the environment: it is removed there. */
+  removable: boolean
+  /** `catalog`: pick from hiveloom's list. `ids`: name the model ids yourself. */
+  model_entry: 'catalog' | 'ids'
+  models: WorkbenchModel[]
+}
+
+/** A provider that can be added: the four named ones (plus "Other" in the UI). */
+export interface ProviderOffer {
+  name: string
+  label: string
+  models: 'catalog' | 'ids'
+  api_key_env: string
+  choices: WorkbenchModel[]
+}
+
+export interface WorkbenchDirectory {
+  catalog: ProviderOffer[]
+  providers: WorkbenchProvider[]
+  /** `provider/id` for every model of a provider whose key is set. */
+  enabled_models: string[]
+  default_model: string
+  /** What a run falls back to when its harness's own model cannot run here. */
+  effective_default: string
 }
 
 export interface Provider {
@@ -383,6 +451,15 @@ export interface Proposal {
   /** What the gate allowed: frozen fields never reach `accepted`. */
   gate: { accepted: YamlChange[]; rejected: { path: string; reason: string }[]; code_changes: CodeChange[] }
   apply_result: Record<string, unknown> | null
+  /** For an applied proposal: the evolution it produced, with its spec diff. */
+  evolution?: {
+    counter: number
+    old_version_hash: string
+    new_version_hash: string
+    created_at: string
+    /** Unified diff of harness.yaml, before → after (capped when recorded). */
+    yaml_diff: string
+  } | null
 }
 
 export interface ApplyResult {
@@ -457,4 +534,118 @@ export class HiveloomApiError extends Error {
   get needsTrust(): boolean {
     return this.info.code === 'trust_required'
   }
+}
+
+/** One research program of a harness, as the rail of the Research view lists it. */
+export interface ResearchProgramRow {
+  name: string
+  status: string
+  unit: string
+  round: number
+  incumbent: string
+  started_at: string
+  updated_at: string
+  running: boolean
+}
+
+export interface ResearchJob {
+  running: boolean
+  until: 'unit' | 'round' | 'done'
+  started_at: string
+  finished_at: string | null
+  error: string | null
+  detail?: string
+  steps: { unit: string; outcome?: string }[]
+}
+
+export interface ResearchExperiment {
+  id: string
+  round: number
+  hypothesis: string
+  candidate: string
+  base: string
+  changes: { path: string; value: unknown; rationale?: string }[]
+  verdict: string
+  kept: boolean
+  stopped_early: string | null
+  guard_ok: boolean
+  measured_effect: number
+  success_gain?: number
+  success: string
+  target_measure: string
+  summary: string
+}
+
+export interface ResearchHypothesis {
+  id: string
+  round: number
+  claim: string
+  levers: string[]
+  target: string
+  expect: 'increase' | 'decrease'
+  by: number | null
+  prior: number
+  falsifier: string
+  status: string
+}
+
+export interface ResearchDetail {
+  name: string
+  status: string
+  unit: string
+  round: number
+  incumbent: string
+  goal: string
+  charter: Record<string, unknown> & { levers: string[]; models: { director: string } }
+  split: { working: number; holdout: number }
+  budget: Record<string, { size: number; spent: number; left: number }>
+  hypotheses: ResearchHypothesis[]
+  experiments: ResearchExperiment[]
+  pending_experiments: string[]
+  calibration: { hypothesis: string; predicted: number; measured: number; gap: number }[]
+  handoffs: { round: number; findings: string[]; next_focus: string[]; decision: string; stop_reason: string | null }[]
+  stop_reason: { condition: string; detail: string; recommendation?: string } | null
+  confirmation: { ran: boolean; strength: string | null; reason?: string; success?: string } | null
+  promotion: { proposal_id: string; status: string; strength: string; changes: number } | null
+  ledger: { ok: boolean; checked: number; broken_at: number | null }
+  report: string | null
+  ledger_tail: { seq: number; ts: string; kind: string; data: Record<string, unknown> }[]
+  job: ResearchJob | null
+  progress?: { purpose: string | null; unit: string; completed: number; total: number } | null
+  mode?: 'eval' | 'concepts'
+  awaiting?: 'contract' | null
+  blocked_reason?: string | null
+  contract?: ResearchContract | null
+  contract_version?: number | null
+  draft_contract?: ResearchContract | null
+  sample_cases?: { id: string; input: string; expected: Record<string, unknown>; criteria: string[]; provenance: string }[] | null
+  trust?: { criterion: string; measured: boolean; how: string; kappa?: number | null; anchors?: number }[]
+  question_list?: ResearchQuestion[]
+  working_cases?: number
+  experiment_runs?: Record<string, {
+    case: string
+    before_run: string | null
+    before_status: string | null
+    after_run: string | null
+    after_status: string | null
+  }[]>
+}
+
+export interface ResearchContract {
+  criteria: { id: string; says: string; check: { kind: string; field?: string | null; pattern?: string | null; rubric?: string | null }; weight?: number }[]
+  goal_thresholds: Record<string, number>
+}
+
+export interface ResearchQuestion {
+  id: string
+  kind: 'label' | 'audit' | 'disambiguate' | 'confirm'
+  text: string
+  criterion: string | null
+  options: string[]
+  request: string | null
+  output: string | null
+  judges: Record<string, string | null>
+  asked_by: 'engine' | 'director'
+  status: 'open' | 'answered' | 'withdrawn'
+  answer: string | null
 }

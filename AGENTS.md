@@ -59,6 +59,7 @@ reference documents below also ship as guide topics: for example,
 | Define, run, report, or compare an eval | [`skills/hiveloom-eval`](skills/hiveloom-eval/SKILL.md) | `eval schema`, `catalog datasets\|scorers`, `eval validate`, `eval run\|status\|resume`, `eval report\|compare`, `metrics` |
 | Re-run a failure from where it broke | [`skills/hiveloom-run`](skills/hiveloom-run/SKILL.md) | `fork <run_id> [--list\|--at]`, `run <dir> --resume`, `lineage` |
 | Improve a failing harness | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `signal`, `evolve [--yes\|--propose\|--experiment]`, `assess`, `proposals list\|show\|apply\|reject`, `memory list\|show\|add\|forget`, `stats` |
+| Improve a harness autonomously (evolve's unattended mode) | [`skills/hiveloom-evolve`](skills/hiveloom-evolve/SKILL.md) | `evolve --research`, `research init\|step\|run\|status\|report\|stop`, `research contract\|approve\|questions\|answer` (concepts mode), `proposals apply` |
 | Add capabilities / custom LLM provider | [`skills/hiveloom-extend`](skills/hiveloom-extend/SKILL.md) | `extensions`, `models probe`, `ExtensionAPI`, `~/.hiveloom/models.yaml` |
 | Ship / receive / deploy-and-evolve loop | [`skills/hiveloom-ship`](skills/hiveloom-ship/SKILL.md) | `package [--docker]`, `trust`, `stats` |
 
@@ -89,29 +90,24 @@ lessons the run itself offered, reviewed the same way and curated with
 - [docs/signal-driven-evolution.md](docs/signal-driven-evolution.md) — where
   the evidence points (`signal`), aimed proposals, `assess`, the measured
   `evolve --experiment` loop, relevance-selected memory and reflection.
+- [docs/research.md](docs/research.md) — research programs: a director model,
+  an engine that measures, research-safe execution, stop conditions, and
+  promotion through the review queue.
 - [docs/journal.md](docs/journal.md) — the run journal, `trace --verify`,
   forking a run, `--resume`, lineage, and mid-run model swaps.
 - [docs/workbench.md](docs/workbench.md) — the development UI: chat plus the
   harness workspace, live run control, fork and compare.
-- [harnesses/](harnesses/) — ten worked examples to imitate, indexed by
-  capability in [harnesses/README.md](harnesses/README.md): `quickstart`
-  (no tools; output filter, hard turn cap, redaction), `example-summarizer`
-  (tools, verification, a skill loaded on demand),
-  `article-extractor` (a custom tool + anti-hallucination validator),
-  `routing-lab` (playbooks, `plan_then_act`, forking, aimed evolution —
-  offline, no API key),
-  `ticket-triage` (an MCP server as the only data source, parallel reads),
-  `ranked-retrieval` (structured phases, grounded IDs, and ranked metrics over
-  synthetic data), `log-forensics` (confinement around an allowlisted
-  shell, an oversized tool result spilled and read back by handle),
-  `memory-lab` (run-scoped `notes`, `transform_result` over a spilled
-  handle, a handle passed to `file_write`, `propose_memory`, and
-  `memory.entries` grown only through an applied proposal, artifact
-  validators — offline), `signal-lab` (`signal` locating the failing tool,
-  reflection, auto-propose with trace excerpts, an `evolve --experiment` that
-  reverts a refuted change and keeps a confirmed one, `assess`, and
-  relevance-selected memory — offline), and `delegation-lab` (a peer referred
-  until measured, then handed the task and verified — offline).
+- [harnesses/](harnesses/) — three demos to imitate, each solving a real task
+  with a real model, indexed by capability in
+  [harnesses/README.md](harnesses/README.md): `ticket-triage` (an MCP server
+  as the only data source, parallel reads, a code validator against the
+  system of record), `ranked-retrieval` (structured phases, grounded IDs, a
+  local eval with ranked metrics, measured evolution and a research program),
+  and `log-forensics` (confinement around an allowlisted shell, an oversized
+  tool result spilled and read back by handle, `recall_runs`). Further worked
+  examples — the offline labs for playbooks, memory, signals, delegation and
+  research — live with the tests in
+  [tests/fixtures/harnesses/](tests/fixtures/harnesses/).
   Change one through the CLI (`hiveloom set`/`add`/`remove`) rather than
   editing its `harness.yaml` by hand.
 

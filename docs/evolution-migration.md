@@ -149,4 +149,4 @@ during that migration.
 - `uv build` produced both sdist and wheel; the wheel includes the evolution
   contract and guidance, and contains no ARC assets.
 - Isolated-home JSON CLI checks passed: schema emission, validation of
-  `harnesses/example-summarizer`, and its `run --dry-run`.
+  `tests/fixtures/harnesses/example-summarizer`, and its `run --dry-run`.

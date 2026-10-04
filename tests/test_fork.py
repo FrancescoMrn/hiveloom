@@ -15,7 +15,7 @@ from hiveloom.logging.hive import Hive
 from hiveloom.logging.journal import read_events, state_at_model_call
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
 
-EXAMPLE_HARNESS = Path(__file__).resolve().parents[1] / "harnesses" / "example-summarizer"
+EXAMPLE_HARNESS = Path(__file__).resolve().parent / "fixtures" / "harnesses" / "example-summarizer"
 
 _VALID_SUMMARY = json.dumps(
     {"title": "Fox", "summary": "A fox jumps a dog.", "key_points": ["fox", "dog"]}
@@ -558,3 +558,41 @@ def test_a_fork_of_an_untrusted_folder_is_not_trusted(tmp_path: Path, monkeypatc
     forked = fork_mod.create_fork(result.trace_path, tmp_path / "f")
 
     assert not forked.trust_inherited
+
+
+def test_a_resumed_run_keeps_the_parents_task_as_its_input(tmp_path: Path):
+    """Validators read the task from `run_context["input"]`.
+
+    A resumed fork used to record the parent's *run id* there, so a validator
+    that checks the answer against the request (research-lab's billing check)
+    failed the fork on the exact output its parent passed with.
+    """
+    _, result = _failing_parent(tmp_path)
+    forked = fork_mod.create_fork(result.trace_path, tmp_path / "fork")
+
+    resumed = runner.run_harness(
+        forked.directory,
+        resume_messages=fork_mod.load_fork_context(forked.directory),
+        lineage={"parent_run_id": result.run_id, "forked_at_seq": forked.at_seq},
+        provider=FakeModelProvider([text_response(_VALID_SUMMARY)]),
+        ingest=False,
+    )
+
+    parent_input = read_events(result.trace_path)[0]["payload"]["input"]
+    resumed_input = read_events(resumed.trace_path)[0]["payload"]["input"]
+    assert resumed_input == parent_input
+    assert resumed_input != result.run_id
+
+
+def test_a_fork_carries_the_files_its_code_reads(tmp_path: Path):
+    """Data a tool or validator opens at run time must exist in the fork too."""
+    harness, result = _failing_parent(tmp_path)
+    (harness / "data").mkdir()
+    (harness / "data" / "rates.json").write_text('{"zone": 1}', encoding="utf-8")
+    (harness / ".env").write_text("SECRET_KEY=never-copied\n", encoding="utf-8")
+
+    forked = fork_mod.create_fork(result.trace_path, tmp_path / "fork")
+
+    assert (forked.directory / "data" / "rates.json").read_text() == '{"zone": 1}'
+    assert not (forked.directory / ".env").exists(), "secrets stay with the parent"
+    assert not (forked.directory / ".hiveloom" / "forks").exists()
