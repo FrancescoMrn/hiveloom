@@ -15,6 +15,11 @@ because the previous one left a question open.
 
 ## The shared method
 
+The [research PPC pilot](research-ppc/README.md) is a separate synthetic fixture
+for comparing autonomous search, A/B selection and evidence-based composition.
+It includes saved-page inputs and a controlled comparison protocol. No
+real-model result is claimed for it.
+
 - **One prompt, one tool, one loop policy.** In article-digest and page-audit
   the raw arms run through hiveloom too, with only the validators and
   `loop.require_verification` removed. The measured delta is therefore

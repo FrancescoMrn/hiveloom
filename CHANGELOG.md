@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `ppc` research strategy: independent procedure/domain proposals,
+  working-case probe comparisons, and one evidence-cited composition before
+  selection. `ppc_select` provides the no-composer ablation. Existing budget,
+  mutation gates, sealed confirmation and review-queue promotion still apply.
+  Includes a synthetic saved-page extraction pilot; real-model benefit has
+  not been measured.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model

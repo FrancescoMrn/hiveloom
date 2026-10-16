@@ -318,6 +318,8 @@ def init_program(
             "measure the harness it changes (use 'harness: .')"
         )
     working, holdout = _split(validated.identity.eval_id, [c.id for c in cases], charter.holdout)
+    if charter.strategy != "autonomous" and not holdout:
+        raise SpecError("PPC requires at least one held-out case; add cases or increase holdout")
     if len(working) < MIN_WORKING_CASES:
         raise SpecError(
             f"the eval has {len(cases)} case(s); after the {charter.holdout:.0%} holdout only "
