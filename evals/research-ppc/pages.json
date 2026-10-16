@@ -1,0 +1,110 @@
+[
+  {
+    "id": "page-01",
+    "input": "URL: https://pages.invalid/pilot/1\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Harbor timetable</h1><p>Statement:</p><blockquote>The first ferry leaves at six, including Sundays.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Harbor timetable",
+      "quote": "The first ferry leaves at six, including Sundays.",
+      "url": "https://pages.invalid/pilot/1"
+    }
+  },
+  {
+    "id": "page-02",
+    "input": "URL: https://pages.invalid/pilot/2\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Library opening</h1><p>Statement:</p><blockquote>We will reopen on Monday, after the repairs are complete.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Library opening",
+      "quote": "We will reopen on Monday, after the repairs are complete.",
+      "url": "https://pages.invalid/pilot/2"
+    }
+  },
+  {
+    "id": "page-03",
+    "input": "URL: https://pages.invalid/pilot/3\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Orchard trial</h1><p>Statement:</p><blockquote>The northern plot used less water, but produced fewer apples.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Orchard trial",
+      "quote": "The northern plot used less water, but produced fewer apples.",
+      "url": "https://pages.invalid/pilot/3"
+    }
+  },
+  {
+    "id": "page-04",
+    "input": "URL: https://pages.invalid/pilot/4\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Museum archive</h1><p>Statement:</p><blockquote>The letters are originals, while the photographs are reproductions.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Museum archive",
+      "quote": "The letters are originals, while the photographs are reproductions.",
+      "url": "https://pages.invalid/pilot/4"
+    }
+  },
+  {
+    "id": "page-05",
+    "input": "URL: https://pages.invalid/pilot/5\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Station repairs</h1><p>Statement:</p><blockquote>Platform two remains closed until the inspection is finished.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Station repairs",
+      "quote": "Platform two remains closed until the inspection is finished.",
+      "url": "https://pages.invalid/pilot/5"
+    }
+  },
+  {
+    "id": "page-06",
+    "input": "URL: https://pages.invalid/pilot/6\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>River survey</h1><p>Statement:</p><blockquote>The upstream sample was clear, but the downstream sample was cloudy.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "River survey",
+      "quote": "The upstream sample was clear, but the downstream sample was cloudy.",
+      "url": "https://pages.invalid/pilot/6"
+    }
+  },
+  {
+    "id": "page-07",
+    "input": "URL: https://pages.invalid/pilot/7\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>School garden</h1><p>Statement:</p><blockquote>The seeds were planted in March, after the last frost.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "School garden",
+      "quote": "The seeds were planted in March, after the last frost.",
+      "url": "https://pages.invalid/pilot/7"
+    }
+  },
+  {
+    "id": "page-08",
+    "input": "URL: https://pages.invalid/pilot/8\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Market schedule</h1><p>Statement:</p><blockquote>The market moves indoors on Friday if rain continues.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Market schedule",
+      "quote": "The market moves indoors on Friday if rain continues.",
+      "url": "https://pages.invalid/pilot/8"
+    }
+  },
+  {
+    "id": "page-09",
+    "input": "URL: https://pages.invalid/pilot/9\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Theatre season</h1><p>Statement:</p><blockquote>The evening performance starts at eight, with no interval.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Theatre season",
+      "quote": "The evening performance starts at eight, with no interval.",
+      "url": "https://pages.invalid/pilot/9"
+    }
+  },
+  {
+    "id": "page-10",
+    "input": "URL: https://pages.invalid/pilot/10\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Clinic access</h1><p>Statement:</p><blockquote>The side entrance stays open while the main entrance is repaired.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Clinic access",
+      "quote": "The side entrance stays open while the main entrance is repaired.",
+      "url": "https://pages.invalid/pilot/10"
+    }
+  },
+  {
+    "id": "page-11",
+    "input": "URL: https://pages.invalid/pilot/11\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Mountain path</h1><p>Statement:</p><blockquote>The lower path is open, but the summit route remains closed.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Mountain path",
+      "quote": "The lower path is open, but the summit route remains closed.",
+      "url": "https://pages.invalid/pilot/11"
+    }
+  },
+  {
+    "id": "page-12",
+    "input": "URL: https://pages.invalid/pilot/12\nHTML: <nav><h1>Latest news</h1><blockquote>Subscribe today.</blockquote></nav><article><h1>Water report</h1><p>Statement:</p><blockquote>The reading fell overnight, although it remains above the seasonal average.</blockquote></article><aside><h1>Related story</h1><blockquote>Everything has changed.</blockquote></aside>",
+    "expected": {
+      "title": "Water report",
+      "quote": "The reading fell overnight, although it remains above the seasonal average.",
+      "url": "https://pages.invalid/pilot/12"
+    }
+  }
+]
