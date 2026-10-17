@@ -1282,6 +1282,14 @@ def run(
     run_id: str = typer.Option(
         None, "--run-id", help="Use this caller-allocated run id."
     ),
+    deadline: float = typer.Option(
+        None,
+        "--deadline",
+        help=(
+            "Bound the whole run to this many seconds, including model calls and "
+            "their retries. Can only tighten max_wall_clock_seconds."
+        ),
+    ),
     trace_dir: str = typer.Option(
         None, "--trace-dir", help="Write this run's trace under a durable directory."
     ),
@@ -1426,6 +1434,7 @@ def run(
                 trace_dir=trace_dir,
                 model_override=model,
                 provider_override=provider,
+                deadline_seconds=deadline,
                 approve_trust=_trust_prompt(json_output or stream),
                 approve_network=_network_prompt(json_output or stream),
             )
@@ -1439,6 +1448,7 @@ def run(
                 trace_dir=trace_dir,
                 model_override=model,
                 provider_override=provider,
+                deadline_seconds=deadline,
                 approve_trust=_trust_prompt(json_output or stream),
                 approve_network=_network_prompt(json_output or stream),
             )

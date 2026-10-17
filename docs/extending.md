@@ -191,6 +191,37 @@ The pre-1.1 underscore names remain aliases for compatibility, not extension
 API. Reasoning fields normalized by this codec are replayed only to the same
 OpenAI-compatible provider and are dropped by Hiveloom at a model swap.
 
+The config a provider receives carries `max_retries` (`None` = the provider's
+own default); a provider that retries should honour it.
+
+### Honouring the run deadline
+
+A run may have a deadline (the `max_wall_clock_seconds` guardrail, or
+`hiveloom run --deadline`) and a cooperative stop (`RunControl.request_stop`).
+A provider that waits on the network or retries should draw on both, so a call
+never outlives the run. `hiveloom.ext` exports the helpers; with no run bounds
+active they are no-ops, so a provider also works outside a run:
+
+```python
+from hiveloom import ext
+
+def complete(self, *, system, messages, tools, config):
+    retries = 3 if config.max_retries is None else config.max_retries
+    for attempt in range(retries + 1):
+        ext.check_run_bounds()                    # raises when out of time or stopped
+        timeout = ext.remaining_seconds(120.0)    # min(120, time left); raises at 0
+        try:
+            return self._call(timeout=timeout)
+        except TransientError:
+            if attempt == retries:
+                raise
+            ext.wait_backoff(2 ** attempt)        # capped; wakes early on a stop
+```
+
+`DeadlineExceeded` ends the run as a guardrail halt and `RunStopped` as
+`stopped`; do not catch them. A request already in flight is not interrupted by
+a stop.
+
 Generate/evolve can use any provider too: `--model ollama/qwen3:32b`
 (`provider/model-id`). Note `model` stays in `ALWAYS_FROZEN` — the registry
 widens what a human or generator may choose, never what evolution can mutate.
@@ -350,4 +381,11 @@ result = run_harness("./h", "notes.txt", on_event=lambda e: print(e.type))
 ```
 
 `$HIVELOOM_HOME` relocates everything user-level (extensions, models.yaml,
-blueprints, trust.json, the default Hive DB) — useful for tests and CI.
+blueprints, trust.json, the default Hive DB) — useful for tests and CI. An
+empty value counts as unset (`~/.hiveloom`), and a relative value is made
+absolute when read, so it cannot drift if the process changes directory. The
+same empty-means-unset rule applies to `$HIVELOOM_DB`.
+
+For a host running under a hard time budget, pass `deadline_seconds=` to
+`run_harness` and keep `control.request_stop` for its heartbeat; see
+[Run deadline](spec.md#run-deadline).

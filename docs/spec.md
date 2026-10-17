@@ -20,7 +20,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 |---|---|---|
 | `schema_version` | Harness document format | defaults to `0.2.0`; legacy `version` still loads and `hiveloom migrate HARNESS --json` rewrites it atomically |
 | `name` / `description` | Identity (Hive + packaging) | required |
-| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens` (validated against registered `max_output_tokens` when known), `params` (bounded provider fields; see [models.md](models.md#provider-request-parameters)), `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated) |
+| `model` | The executor model | `provider` (builtin: `claude`), `id` (default `claude-haiku-4-5`), `max_tokens` (validated against registered `max_output_tokens` when known), `params` (bounded provider fields; see [models.md](models.md#provider-request-parameters)), `temperature` (optional; unset = omitted from API calls — current Anthropic models reject it as deprecated), `max_retries` (optional, 0–10; unset = the provider default of 3; `0` makes every call a single attempt, for a gateway that already retries or falls back; see [Run deadline](#run-deadline)) |
 | `system_prompt` | System prompt for the executor | required; the evolver may rewrite it |
 | `tools` | Tools available to the loop | list of `{builtin: name}` or `{code: path.py:fn, description: ...}` |
 | `mcp_servers` | MCP servers whose tools join the loop | `transport: stdio\|http`; discovered eagerly (incl. `run --dry-run`); **always frozen** |
@@ -65,7 +65,8 @@ for each new hostname during a plain CLI run.
   `notes` (run-scoped scratch storage that survives compaction),
   `propose_memory` (offer a durable lesson to the review queue — never to the
   spec).
-- **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds`, `max_turns_hard_cap`,
+- **Guardrails:** `max_cost_usd`, `max_wall_clock_seconds` (checked before each
+  model call; see [Run deadline](#run-deadline) for bounding a call in flight), `max_turns_hard_cap`,
   `tool_allowlist`, `no_network_write`, `regex_output_filter`. All but
   `regex_output_filter` are *singletons*: only one entry is meaningful, so
   `hiveloom add guardrail` replaces an existing one (including the injected
@@ -195,6 +196,44 @@ Construct the list with `hiveloom set evolution.objectives '...' --dir ./h
 list. Optional `source`, `scope`, and `unit` filters narrow the series. A finite
 `floor` or `ceiling` is a hard per-observation constraint, not a weighted
 preference. Objective policy is frozen from evolution.
+
+## Run deadline
+
+`max_wall_clock_seconds` is a guardrail, so it is checked before a model call
+starts. On its own it cannot stop a call already in flight: one provider
+timeout plus its retries and exponential backoff can run many times past it.
+The runner therefore also turns the budget into one monotonic **run deadline**
+that model calls draw on:
+
+- The deadline is the tighter of `max_wall_clock_seconds` (from run start) and
+  the caller's `--deadline SECONDS` (CLI) / `deadline_seconds=` (`run_harness`),
+  measured from when the run was requested. A caller deadline can only tighten
+  the spec; it never extends it. It is reported under
+  `runtime_config.requested.deadline_seconds` when given.
+- Each provider attempt's timeout is capped to the time left, a backoff wait is
+  capped likewise, and no new attempt starts once the deadline has passed. The
+  builtin OpenAI-compatible and Claude providers do this; the Claude provider
+  also turns off the SDK's own hidden retries under a deadline or an explicit
+  `model.max_retries`. `shell` and `http_get` cap their own timeout too, and a
+  tool that reaches the deadline ends the run the same way instead of
+  returning a tool error. A delegated child also stops when its parent does.
+- Expiry ends the run exactly as the guardrail does: status `guardrail_halt`,
+  exit code `2`, reason `wall clock ...`. It is not a runtime error.
+- No signals are involved, so it works from any thread.
+
+`RunControl.request_stop` is also honoured between retry attempts: a provider
+waiting out a backoff wakes on the stop and the run finishes as `stopped`,
+instead of after the last retry. An HTTP request **already in flight is not
+interrupted** — its timeout is the remaining budget at most. A host that needs a
+hard bound must still supervise the process and kill it.
+
+`model.max_retries` sets how many times a provider retries a transient failure
+(default 3). Set `0` when an upstream gateway already retries or falls back, so
+retries are not hidden from per-request budget accounting.
+
+Extension providers take part with the helpers in `hiveloom.ext`; see
+[extending.md](extending.md#honouring-the-run-deadline).
+
 ## Large tool results
 
 A tool result above `context.tool_results.max_inline_bytes` (16 KB by default)

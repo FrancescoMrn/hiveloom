@@ -26,6 +26,15 @@ hiveloom run ./h --input-file case.txt \
   --run-id case-17 --trace-dir ./eval-traces --json
 ```
 
+Bound a run's wall time with `--deadline SECONDS` (positive, finite). It covers
+model calls, their retries and backoff, not only the gap between turns, and can
+only tighten the spec's `max_wall_clock_seconds`. Expiry is a guardrail halt
+(status `guardrail_halt`, exit `2`), and the request is echoed in
+`runtime_config.requested.deadline_seconds`. A request already in flight is not
+interrupted by a stop, so a host that needs a hard bound still supervises the
+process. Set `model.max_retries` (`hiveloom set model.max_retries 0`) when a
+gateway already retries.
+
 The JSON result's `runtime_config` keeps explicit `requested` overrides apart
 from the validated `resolved` model and provider. A runtime model override is
 included in that run's harness snapshot and version hash, so Hive statistics
@@ -66,7 +75,7 @@ or `HIVELOOM_TRUST=always` in CI.
 ## Inspecting memory (the Hive)
 
 Every run appends a JSONL trace to `./h/.hiveloom/traces/<run_id>.jsonl` and
-auto-ingests it into the Hive (`~/.hiveloom/hive.db`, override `$HIVELOOM_DB`),
+auto-ingests it into the Hive (`~/.hiveloom/hive.db`, override `$HIVELOOM_DB`; an empty `$HIVELOOM_HOME` or `$HIVELOOM_DB` counts as unset),
 idempotently by `run_id`.
 
 ```bash

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A run deadline that bounds model calls from the inside.** `hiveloom run
+  --deadline SECONDS` and `run_harness(..., deadline_seconds=)` give the run one
+  monotonic deadline, the tighter of the caller's and `max_wall_clock_seconds`.
+  Each provider attempt's timeout and every retry backoff draw on it, and
+  expiry ends the run as the wall-clock guardrail does (`guardrail_halt`, exit
+  `2`). The request is reported in `runtime_config.requested`. No signals, so it
+  works off the main thread. `shell` and `http_get` cap their timeout to it too.
+- **`model.max_retries`** (0–10, default: the provider's 3). `0` makes each call
+  a single attempt for a gateway that already falls back. Providers built by
+  `register_provider` read it from the config they receive.
+- **Extension providers can honour the budget:** `hiveloom.ext` exports
+  `remaining_seconds`, `check_run_bounds`, `wait_backoff`, `DeadlineExceeded`
+  and `RunStopped`.
+- **`RunControl.request_stop` ends a retry sequence early.** A provider waiting
+  out a backoff wakes on a stop instead of after the last retry. A request
+  already in flight is not interrupted.
+
+### Fixed
+
+- An empty `HIVELOOM_HOME=""` no longer resolves to the working directory (it
+  put the trust store there); it counts as unset. A relative value is made
+  absolute when read, so a later `chdir` cannot move it.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model

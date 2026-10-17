@@ -59,6 +59,10 @@ class MaxWallClockGuardrail(Guardrail):
     def __init__(self, value: int):
         self._limit = float(value)
 
+    @property
+    def limit_seconds(self) -> float:
+        return self._limit
+
     def before_model_call(self, state: RunState) -> Decision:
         if state.elapsed_seconds() > self._limit:
             return Halt(f"wall clock exceeded {self._limit:.0f}s")

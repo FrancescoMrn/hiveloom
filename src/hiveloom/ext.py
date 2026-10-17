@@ -40,6 +40,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hiveloom import catalog, paths
+from hiveloom.deadline import (  # noqa: F401 - the public budget helpers for providers
+    DeadlineExceeded,
+    RunStopped,
+    check_run_bounds,
+    remaining_seconds,
+    wait_backoff,
+)
 from hiveloom.errors import CatalogError, HiveloomError, SpecError
 
 

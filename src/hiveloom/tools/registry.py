@@ -22,6 +22,7 @@ from typing import Any, get_type_hints
 
 from pydantic import BaseModel, Field, create_model, field_validator
 
+from hiveloom.deadline import DeadlineExceeded, RunStopped
 from hiveloom.errors import HiveloomError
 from hiveloom.models.provider import ToolCall
 from hiveloom.package import resolve_trace_dir, trace_dir_relative_to
@@ -338,6 +339,9 @@ class ToolRegistry:
             if isinstance(result, ToolResult):
                 return result
             return ToolResult(content=result)
+        except (DeadlineExceeded, RunStopped):
+            # The run's bounds, not the tool's failure: the loop ends the run.
+            raise
         except ToolError as exc:
             return ToolResult(content=f"tool error: {exc}", is_error=True)
         except Exception as exc:  # noqa: BLE001 - tools must never crash the loop

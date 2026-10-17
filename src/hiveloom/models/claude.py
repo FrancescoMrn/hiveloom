@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from hiveloom.deadline import check_run_bounds, has_deadline, remaining_seconds, wait_backoff
 from hiveloom.models.provider import (
     ContextOverflowError,
     Message,
@@ -28,6 +29,9 @@ from hiveloom.models.provider import (
 )
 
 _MAX_RETRIES = 3
+# The Anthropic SDK's own request timeout, used as the ceiling when a run
+# deadline shortens it.
+_DEFAULT_TIMEOUT = 600.0
 _BASE_DELAY = 1.0
 
 _CACHE_CONTROL = {"type": "ephemeral"}
@@ -115,6 +119,7 @@ class ClaudeProvider(ModelProvider):
             body["temperature"] = config.temperature
         extra = {"extra_body": body} if body else {}
         raw = self._call_with_backoff(
+            max_retries=config.max_retries,
             model=config.id,
             max_tokens=config.max_tokens,
             **extra,
@@ -143,8 +148,13 @@ class ClaudeProvider(ModelProvider):
             return super().count_tokens(system=system, messages=messages, tools=tools)
 
     # ------------------------------------------------------------------ #
-    def _call_with_backoff(self, **kwargs):
+    def _call_with_backoff(self, *, max_retries: int | None = None, **kwargs):
         anthropic = self._anthropic
+        retries = _MAX_RETRIES if max_retries is None else max_retries
+        # The SDK retries underneath this loop by default. Under a deadline, or
+        # with an explicit retry count, those hidden retries would escape the
+        # budget, so this loop is the only one and the SDK makes one attempt.
+        sdk_retries_off = max_retries is not None or has_deadline()
         retriable = (
             anthropic.RateLimitError,
             anthropic.InternalServerError,
@@ -156,20 +166,28 @@ class ClaudeProvider(ModelProvider):
             ),
         )
         last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
+        for attempt in range(retries + 1):
+            # Outside the try: a spent deadline is not a transport failure.
+            check_run_bounds()
+            options: dict[str, Any] = {}
+            if sdk_retries_off:
+                options["max_retries"] = 0
+            if has_deadline():
+                options["timeout"] = remaining_seconds(_DEFAULT_TIMEOUT)
+            client = self._client.with_options(**options) if options else self._client
             try:
                 params = {k: v for k, v in kwargs.items() if v not in (None, "")}
-                return self._client.messages.create(**params)
+                return client.messages.create(**params)
             except retriable as exc:  # type: ignore[misc]
                 last_exc = exc
-                if attempt == _MAX_RETRIES:
+                if attempt == retries:
                     break
-                self._sleep(_BASE_DELAY * (2**attempt))
+                wait_backoff(_BASE_DELAY * (2**attempt), self._sleep)
             except anthropic.BadRequestError as exc:
                 if _is_overflow(str(exc)):
                     raise ContextOverflowError(str(exc)) from exc
                 raise
-        raise RuntimeError(f"model call failed after {_MAX_RETRIES} retries: {last_exc}")
+        raise RuntimeError(f"model call failed after {retries} retries: {last_exc}")
 
     def _normalize(self, raw: Any) -> ModelResponse:
         text_parts: list[str] = []

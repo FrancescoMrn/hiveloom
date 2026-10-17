@@ -190,6 +190,9 @@ class ModelConfig(BaseModel):
     id: str
     max_tokens: int = 4096
     temperature: float | None = None
+    # Retries after a transient failure; None means the provider's own default.
+    # Providers built by `register_provider` read it from the config they get.
+    max_retries: int | None = Field(default=None, ge=0, le=10)
     # Extra provider request fields from spec `model.params`, merged into the
     # call verbatim. Empty for every provider that does not need them.
     params: dict[str, Any] = Field(default_factory=dict)

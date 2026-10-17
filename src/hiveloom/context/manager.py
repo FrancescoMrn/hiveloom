@@ -202,6 +202,7 @@ class ContextManager:
             id=spec.model.id,
             max_tokens=spec.model.max_tokens,
             temperature=spec.model.temperature,
+            max_retries=spec.model.max_retries,
             provider=spec.model.provider,
         )
         self._system_prompt = spec.system_prompt
