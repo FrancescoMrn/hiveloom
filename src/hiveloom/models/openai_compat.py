@@ -117,8 +117,15 @@ class OpenAICompatProvider(ModelProvider):
         tools: list[dict[str, Any]],
         config: ModelConfig,
     ) -> ModelResponse:
-        reasoning_fields = openai_compat_reasoning_fields(self._reasoning_style, config.reasoning)
         params = validate_model_params(config.params)
+        # An explicit reasoning switch in `model.params`, under either name,
+        # takes control: sending the mapped one too would hand the host two
+        # conflicting settings.
+        reasoning_fields = (
+            {}
+            if {"reasoning", "reasoning_effort"} & params.keys()
+            else openai_compat_reasoning_fields(self._reasoning_style, config.reasoning)
+        )
         payload: dict[str, Any] = {
             # The reasoning mapping goes first, so an explicit `model.params`
             # key beats it, and the spec-declared fields beat both — the keys
@@ -126,9 +133,9 @@ class OpenAICompatProvider(ModelProvider):
             # somehow bypassed.
             **reasoning_fields,
             **params,
-            # An object both set (`chat_template_kwargs`, `reasoning`) is merged
-            # key by key: unrelated explicit settings must not silently drop the
-            # switch the mapping set.
+            # An object both set (`chat_template_kwargs`) is merged key by key:
+            # unrelated explicit settings must not silently drop the switch the
+            # mapping set.
             **{
                 key: {**value, **params[key]}
                 for key, value in reasoning_fields.items()

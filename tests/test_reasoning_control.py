@@ -134,6 +134,18 @@ def test_an_explicit_object_param_keeps_the_mapped_switch(monkeypatch):
     assert sent["chat_template_kwargs"] == {"enable_thinking": True}
 
 
+def test_an_explicit_switch_under_another_name_replaces_the_mapping(monkeypatch):
+    sent, response = _complete(
+        monkeypatch,
+        style="chat_template",
+        reasoning="none",
+        params={"reasoning_effort": "low"},
+    )
+    assert sent["reasoning_effort"] == "low"
+    assert "chat_template_kwargs" not in sent
+    assert response.reasoning_sent == {"reasoning_effort": "low"}
+
+
 def test_default_reasoning_leaves_the_payload_untouched(monkeypatch):
     sent, response = _complete(monkeypatch, style="openrouter")
     assert not {"reasoning", "reasoning_effort", "chat_template_kwargs"} & set(sent)

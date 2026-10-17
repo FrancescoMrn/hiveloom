@@ -330,8 +330,10 @@ Details worth knowing:
   not worked around.
 - An explicit key in `model.params` (`reasoning`, `reasoning_effort`,
   `chat_template_kwargs`, `thinking`, `output_config`) beats the mapping — the
-  escape hatch for a host that needs something else. When both set an
-  object (`reasoning`, `chat_template_kwargs`, Claude's `output_config`), the
+  escape hatch for a host that needs something else. An explicit `reasoning`
+  or `reasoning_effort` takes over the switch entirely: the mapped fields are
+  not sent next to it. When both set an
+  object (`chat_template_kwargs`, Claude's `output_config`), the
   two are merged key by key and the explicit keys win: a structured-output
   format or an unrelated template flag never silently drops the mapped
   switch. Set the same nested key (say `enable_thinking`) to override it.
