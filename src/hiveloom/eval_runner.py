@@ -196,6 +196,7 @@ def _resolve_model(
         max_tokens=harness.model.max_tokens,
         temperature=harness.model.temperature,
         params=harness.model.params,
+        reasoning=harness.model.reasoning,
     )
 
 

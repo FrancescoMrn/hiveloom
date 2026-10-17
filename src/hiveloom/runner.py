@@ -33,7 +33,7 @@ from hiveloom.package import resolve_trace_dir
 from hiveloom.playbooks import PlaybookManager, load_playbooks
 from hiveloom.private import RunBoundary
 from hiveloom.skills import load_skills
-from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks
+from hiveloom.spec.loader import harness_path, load_spec, resolve_hooks, spec_warnings
 from hiveloom.tools.registry import build_registry
 from hiveloom.verify.builtin import build_verifiers
 
@@ -244,6 +244,7 @@ def dry_run(
             "model": spec.model.id,
             "provider": spec.model.provider,
             "runtime_config": runtime_config,
+            "warnings": spec_warnings(spec),
             "system": system,
             "messages": messages,
             "tools": registry.anthropic_payload(),
@@ -439,6 +440,7 @@ def run_harness(
                 # run to whichever upstream an aggregator picks, which shows up
                 # as model variance and is not.
                 params=spec.model.params,
+                reasoning=spec.model.reasoning,
             ),
             provider,
             providers=providers,
@@ -697,6 +699,7 @@ def _apply_runtime_model_overrides(
         provider=provider_override or spec.model.provider,
         max_tokens=spec.model.max_tokens,
         temperature=spec.model.temperature,
+        reasoning=spec.model.reasoning,
         params=spec.model.params,
     )
     return spec.model_copy(update={"model": model})

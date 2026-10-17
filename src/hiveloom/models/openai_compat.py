@@ -32,6 +32,11 @@ from hiveloom.models.provider import (
     estimate_tokens,
     validate_model_params,
 )
+from hiveloom.models.reasoning import (
+    DEFAULT_REASONING_STYLE,
+    REASONING_REQUEST_KEYS,
+    openai_compat_reasoning_fields,
+)
 
 
 def _first_nonblank(*values: Any) -> str:
@@ -96,7 +101,9 @@ class OpenAICompatProvider(ModelProvider):
         *,
         timeout: int = 120,
         sleep=time.sleep,
+        reasoning_style: str = DEFAULT_REASONING_STYLE,
     ):
+        self._reasoning_style = reasoning_style
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
@@ -110,10 +117,23 @@ class OpenAICompatProvider(ModelProvider):
         tools: list[dict[str, Any]],
         config: ModelConfig,
     ) -> ModelResponse:
+        reasoning_fields = openai_compat_reasoning_fields(self._reasoning_style, config.reasoning)
+        params = validate_model_params(config.params)
         payload: dict[str, Any] = {
-            # Spec-declared provider fields first, so the keys the harness owns
-            # always win even if `model.params` validation is somehow bypassed.
-            **validate_model_params(config.params),
+            # The reasoning mapping goes first, so an explicit `model.params`
+            # key beats it, and the spec-declared fields beat both — the keys
+            # the harness owns always win even if `model.params` validation is
+            # somehow bypassed.
+            **reasoning_fields,
+            **params,
+            # An object both set (`chat_template_kwargs`, `reasoning`) is merged
+            # key by key: unrelated explicit settings must not silently drop the
+            # switch the mapping set.
+            **{
+                key: {**value, **params[key]}
+                for key, value in reasoning_fields.items()
+                if isinstance(value, dict) and isinstance(params.get(key), dict)
+            },
             "model": config.id,
             "max_tokens": config.max_tokens,
             **({} if config.temperature is None else {"temperature": config.temperature}),
@@ -122,10 +142,14 @@ class OpenAICompatProvider(ModelProvider):
         if tools:
             payload["tools"] = [to_openai_tool(t) for t in tools]
         data = self._post("/chat/completions", payload)
-        return normalize_openai_response(
+        response = normalize_openai_response(
             data,
             estimated_input_tokens=self.count_tokens(system=system, messages=messages, tools=tools),
         )
+        response.reasoning_sent = {
+            key: payload[key] for key in REASONING_REQUEST_KEYS if key in payload
+        }
+        return response
 
     # ------------------------------------------------------------------ #
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -364,10 +388,15 @@ def normalize_openai_response(
     cached = details.get("cached_tokens") if isinstance(details, dict) else None
     cache_read = int(cached) if isinstance(cached, (int, float)) else 0
     cache_read = min(cache_read, input_tokens)
+    # Included in completion_tokens; reported so a run that spent its budget
+    # thinking can say so.
+    output_details = raw_usage.get("completion_tokens_details")
+    reasoning = output_details.get("reasoning_tokens") if isinstance(output_details, dict) else None
     usage = Usage(
         input_tokens=input_tokens - cache_read,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read,
+        reasoning_tokens=int(reasoning) if isinstance(reasoning, (int, float)) else 0,
     )
     finish = choice.get("finish_reason") or "stop"
     raw_cost = raw_usage.get("cost")

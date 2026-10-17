@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`model.reasoning`: one setting for how much the model thinks.** `none`,
+  `minimal`, `low`, `medium` or `high` is mapped to the field each host reads
+  (OpenAI `reasoning_effort`, OpenRouter's `reasoning` object, vLLM-style
+  `reasoning_effort` plus `chat_template_kwargs.enable_thinking`, Claude's
+  adaptive thinking and effort). Providers declare a `reasoning_style` in
+  `models.yaml` or `register_provider`; a host with no control rejects a level
+  instead of ignoring it, and an explicit `model.params` key still wins. The
+  default, `default`, sends nothing, so existing harnesses run unchanged.
+- **Reasoning is visible in the run record.** `usage.reasoning_tokens` (already
+  part of `output_tokens`, cost unchanged), and per provider call `stop_reason`,
+  `output_empty` and `reasoning_sent`.
+- **An empty turn cut off at `model.max_tokens` is named.** The run ends
+  `truncated` with a reason that says the budget was spent with no answer, and
+  how many reasoning tokens it went on.
+- **`validate` and `run --dry-run` warn** when a model known to reason
+  (`reasoning: true` in the model registry) runs with `model.reasoning` left at
+  `default` and `model.max_tokens` under 2048. `validate --json` and the dry-run
+  output gain a `warnings` list.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model

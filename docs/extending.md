@@ -134,6 +134,7 @@ def setup(hive):
         api_key_env="MYLAB_API_KEY",
         base_url="https://api.mylab.example/v1",
         open_catalog=False,              # only the ids below validate
+        reasoning_style="openai",        # which field carries `model.reasoning`
         models=[{"id": "mylab-small", "input_cost_per_mtok": 0.1,
                  "output_cost_per_mtok": 0.4,
                  "supports_tool_calling": True,
@@ -141,6 +142,16 @@ def setup(hive):
                  "supports_reasoning_replay": True}],
     )
 ```
+
+`reasoning_style` (`openai`, `openrouter`, `chat_template` or `none`; default
+`openai`) says which request field carries `model.reasoning` on that host, and
+`none` makes a non-default level a validation error; the same key works on a
+`models.yaml` provider entry, and a model entry may set `reasoning: true` so
+`hiveloom validate` can warn about a small `max_tokens`. The built-in
+OpenAI-compatible adapter honors the style; a custom `ModelProvider` receives
+`config.reasoning` and decides for itself, and should return the fields it sent
+in `ModelResponse.reasoning_sent`. See
+[models.md](models.md#reasoning-control).
 
 Registering a name that already exists raises, so two packs cannot silently
 fight over one provider name; only `models.yaml` may override a builtin.

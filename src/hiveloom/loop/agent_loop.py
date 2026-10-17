@@ -248,6 +248,7 @@ class AgentLoop:
                 temperature=spec.model.temperature,
                 provider=spec.model.provider,
                 params=spec.model.params,
+                reasoning=spec.model.reasoning,
             ),
             provider,
         )
@@ -883,6 +884,11 @@ class AgentLoop:
             "requested_model": self._router.config.id,
             "effective_model": response.model or None,
             "provider_request_id": response.provider_request_id or None,
+            "stop_reason": response.stop_reason,
+            # No text and no tool call: what a turn that spent its budget
+            # reasoning looks like from outside.
+            "output_empty": not response.text.strip() and not response.tool_calls,
+            "reasoning_sent": response.reasoning_sent,
             "usage": response.usage.model_dump(),
             "cost_usd": cost,
             "cost_source": cost_source,
@@ -922,6 +928,7 @@ class AgentLoop:
             billed_currency=response.billed_currency or None,
             billed_cost_usd=response.billed_cost_usd,
             provider_metadata=response.provider_metadata,
+            reasoning_sent=response.reasoning_sent,
         )
         self._events.emit(
             "after_model_response",
@@ -978,6 +985,17 @@ class AgentLoop:
 
     def _truncation_reason(self, *, verified: bool | None = None) -> str:
         tail = "; the last one's partial output did not verify" if verified is False else ""
+        last = self._provider_calls[-1] if self._provider_calls else {}
+        if last.get("stop_reason") == "max_tokens" and last.get("output_empty"):
+            # Name the cause rather than the symptom: a validator downstream of
+            # an empty answer would otherwise report only that nothing matched.
+            reasoning = last["usage"].get("reasoning_tokens", 0)
+            spent = f" ({reasoning} reasoning tokens)" if reasoning else ""
+            return (
+                f"the model's last turn hit model.max_tokens "
+                f"({self._router.config.max_tokens}) with no answer{spent}: raise "
+                f"model.max_tokens or set model.reasoning{tail}"
+            )
         return (
             f"{self._state.truncated_turns} consecutive turns hit the "
             f"{self._router.config.max_tokens}-token output ceiling{tail}"

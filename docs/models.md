@@ -277,6 +277,91 @@ The default timeout is 120 seconds per HTTP request. Retries can consume
 additional time. Runtime wall-clock guardrails are checked at loop boundaries;
 they do not cancel a blocking HTTP request.
 
+## Reasoning control
+
+Open reasoning models spend their output budget thinking unless told not to,
+and a reasoning token counts against `model.max_tokens`. A harness with a small
+budget can then get back an empty answer. `model.reasoning` is the one
+provider-neutral setting for it:
+
+```console
+hiveloom set model.reasoning low --dir ./harness --json
+```
+
+Values: `default` (send nothing — the model's own behavior, and what every
+existing harness has), `none`, `minimal`, `low`, `medium`, `high`. Hiveloom maps
+the level to the field the host actually reads, chosen by the provider's
+**reasoning style**, because a host that does not recognise a field usually
+ignores it without an error:
+
+| Style | Sends | `none` sends |
+|---|---|---|
+| `openai` | `reasoning_effort: <level>` | `reasoning_effort: "none"` |
+| `openrouter` | `reasoning: {effort: <level>}` | `reasoning: {enabled: false}` |
+| `chat_template` | `reasoning_effort: <level>` | `reasoning_effort: "none"` and `chat_template_kwargs: {enable_thinking: false}` |
+| `none` | nothing: any non-default level is rejected | rejected |
+| `anthropic` (`claude` only) | `thinking: {type: adaptive}` and `output_config: {effort: <level>}` | `thinking: {type: disabled}` (`between_tools` on Sonnet 5.5) |
+
+Builtin assignments: `openrouter` is `openrouter`; `vllm` is `chat_template`;
+`openai`, `gemini`, `xai`, `groq`, `together`, `fireworks` and `ollama` are
+`openai`; `mistral`, `deepseek` and `moonshot` are `none` (hiveloom does not
+know of a control there, so asking for one is an error rather than a silent
+no-op); `claude` is `anthropic`. A provider declared in `models.yaml` or
+through `register_provider` and naming no style is `openai`. Correct any of
+them with `reasoning_style` (`openai`, `openrouter`, `chat_template`, `none`)
+on the provider entry:
+
+```yaml
+providers:
+  gateway:
+    base_url: https://gateway.internal.example/v1
+    open_catalog: true
+    reasoning_style: chat_template
+  mistral:                       # extend a builtin: keeps its endpoint
+    reasoning_style: openai
+```
+
+Details worth knowing:
+
+- Exact accepted values vary by model (`minimal` is not valid everywhere).
+  The level is passed through, so a host that refuses it answers with its own
+  error, and the run reports it. OpenRouter models that cannot turn reasoning
+  off answer `none` with a 400 ("Reasoning is mandatory"); that is surfaced,
+  not worked around.
+- An explicit key in `model.params` (`reasoning`, `reasoning_effort`,
+  `chat_template_kwargs`, `thinking`, `output_config`) beats the mapping — the
+  escape hatch for a host that needs something else. When both set an
+  object (`reasoning`, `chat_template_kwargs`, Claude's `output_config`), the
+  two are merged key by key and the explicit keys win: a structured-output
+  format or an unrelated template flag never silently drops the mapped
+  switch. Set the same nested key (say `enable_thinking`) to override it.
+- On Claude, `minimal` is sent as `low`; models whose thinking is always on
+  (Opus 5.5, Fable, Mythos) reject `none`; models without effort control
+  (Haiku 4.5) accept only `none` and `default`. These are rejected when the
+  spec is validated.
+- Every provider call records what was sent (`reasoning_sent` in `provider_calls`
+  and the trace), its `stop_reason`, whether the response was empty
+  (`output_empty`), and `usage.reasoning_tokens` when the host reports them
+  (OpenAI-compatible `completion_tokens_details.reasoning_tokens`). Reasoning
+  tokens are already part of `output_tokens`; cost is unchanged.
+- A run whose last turn hit `model.max_tokens` with no answer ends `truncated`,
+  with a reason that names the budget and the reasoning tokens spent.
+- `hiveloom validate` and `run --dry-run` warn when `model.reasoning` is
+  `default`, `model.max_tokens` is under 2048 and the model is known to reason.
+  A model is known to reason when its registry entry says `reasoning: true`
+  (builtin: the thinking-by-default Claude ids, `deepseek-reasoner`,
+  `gemini-2.5-*`, `grok-3-mini`); set it for your own models in `models.yaml`:
+
+```yaml
+providers:
+  openrouter:
+    models:
+      - id: z-ai/glm-4.6
+        input_cost_per_mtok: 0.5
+        output_cost_per_mtok: 1.5
+        reasoning: true
+```
+
 ## Generation and evolution models
 
 `hiveloom generate` and `hiveloom evolve` use a *strong* model, separate from

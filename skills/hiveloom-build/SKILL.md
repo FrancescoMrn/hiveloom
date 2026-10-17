@@ -99,6 +99,21 @@ set. A required call must succeed. Hidden calls are blocked before dispatch,
 and a per-step limit ends the run with exit 4. Read the dry-run `steps` array
 before spending model budget. Legacy strings keep their existing behavior.
 
+If the executor is a reasoning model, its thinking is spent from
+`model.max_tokens`: a small budget can come back empty. `validate` and
+`--dry-run` warn about this when the model is known to reason. Bound the
+thinking with `model.reasoning` instead of host-specific `model.params`:
+
+```bash
+hiveloom set model.reasoning low --dir ./h   # none | minimal | low | medium | high
+```
+
+`default` (the initial value) sends nothing. Hiveloom maps the level to the
+field the provider's host reads; a host with no known control rejects a level
+rather than ignoring it (`hiveloom guide models`, "Reasoning control"). A run
+that ends `truncated` with "hit model.max_tokens ... with no answer" needs a
+larger `model.max_tokens` or a lower `model.reasoning`.
+
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
 
 - **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`

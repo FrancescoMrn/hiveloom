@@ -191,6 +191,17 @@ class ModelRouter:
         # Validates the target and caches the instance before anything changes.
         self._provider_for(target_provider)
 
+        # The harness's reasoning level travels with the switch, so the target
+        # has to be able to apply it: fail here, where the caller is told, not
+        # as a ReasoningUnsupportedError on the next model call.
+        if self.config.reasoning != "default":
+            from hiveloom import ext
+            from hiveloom.models.reasoning import check_reasoning
+
+            target_info = ext.provider_info(target_provider)
+            if target_info is not None:
+                check_reasoning(target_info.reasoning_style, self.config.reasoning, target_model)
+
         self.config = ModelConfig(
             id=target_model,
             provider=target_provider,
@@ -199,6 +210,7 @@ class ModelRouter:
             # A model switch changes which model runs, not how the harness was
             # declared to call it.
             params=self.config.params,
+            reasoning=self.config.reasoning,
         )
         entry = ModelSwitch(
             turn=turn, model=target_model, provider=target_provider, reason=reason

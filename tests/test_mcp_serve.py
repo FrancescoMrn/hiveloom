@@ -620,7 +620,7 @@ def test_openai_compatible_providers_do_not_bleed_keys_either(tmp_path: Path, mo
     monkeypatch.setattr(
         openai_compat,
         "OpenAICompatProvider",
-        lambda base_url, api_key=None: seen.append(api_key),
+        lambda base_url, api_key=None, **_: seen.append(api_key),
     )
 
     first = _harness_with_key(tmp_path, "one", "OPENAI_API_KEY", "sk-one")

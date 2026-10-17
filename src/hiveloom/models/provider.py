@@ -23,6 +23,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from hiveloom.models.reasoning import ReasoningLevel
+
 Message = dict[str, Any]
 
 PROVIDER_METADATA_MAX_BYTES = 16 * 1024
@@ -73,6 +75,10 @@ class Usage(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Informational: tokens the model spent reasoning, when the provider reports
+    # them. Already counted in ``output_tokens`` — never add the two, and cost
+    # math ignores this field.
+    reasoning_tokens: int = 0
 
     def __add__(self, other: Usage) -> Usage:
         """Add provider-call usage without losing cache accounting."""
@@ -81,6 +87,7 @@ class Usage(BaseModel):
             output_tokens=self.output_tokens + other.output_tokens,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
         )
 
 
@@ -136,6 +143,13 @@ class ModelResponse(BaseModel):
     provider_metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Bounded JSON-safe routing/provenance metadata owned by the provider.",
+    )
+    reasoning_sent: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "The reasoning-control request fields this call actually sent "
+            "(keys and values; empty when none), after `model.params` overrides."
+        ),
     )
 
     @field_validator("billed_cost", "billed_cost_usd")
@@ -193,6 +207,9 @@ class ModelConfig(BaseModel):
     # Extra provider request fields from spec `model.params`, merged into the
     # call verbatim. Empty for every provider that does not need them.
     params: dict[str, Any] = Field(default_factory=dict)
+    # The spec's `model.reasoning`. "default" sends nothing; any other level is
+    # mapped to the field the provider's host reads (see models/reasoning.py).
+    reasoning: ReasoningLevel = "default"
 
     @field_validator("params")
     @classmethod
