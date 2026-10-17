@@ -28,7 +28,7 @@ from hiveloom import catalog as catalog_mod
 from hiveloom import construct
 from hiveloom.errors import ExitCode, HiveloomError, ProposalQueueError, SpecError
 from hiveloom.spec import annotate
-from hiveloom.spec.loader import validate_harness
+from hiveloom.spec.loader import spec_warnings, validate_harness
 
 _RUN_STATUS_EXIT = {
     "success": ExitCode.OK,
@@ -593,10 +593,15 @@ def validate(
     with _guard(json_output):
         trust_mod.ensure_trusted(harness_dir, _trust_prompt(json_output))
         spec = validate_harness(harness_dir)
+        warnings = spec_warnings(spec)
         if json_output:
-            _emit_json({"ok": True, "name": spec.name, "message": "harness is valid"})
+            _emit_json(
+                {"ok": True, "name": spec.name, "message": "harness is valid", "warnings": warnings}
+            )
         else:
             _console.print(f"[green]valid[/green] — {spec.name}")
+            for warning in warnings:
+                _console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
 @app.command()
@@ -1377,6 +1382,8 @@ def run(
                 _emit_json({"ok": True, "dry_run": True, **info})
             else:
                 _console.print(f"[bold]dry run[/bold] — {info['name']} ({info['model']})")
+                for warning in info["warnings"]:
+                    _console.print(f"[yellow]warning:[/yellow] {warning}")
                 _console.print(f"system:\n{info['system']}")
                 _console.print(f"tools: {[t['name'] for t in info['tools']]}")
                 if info.get("steps"):

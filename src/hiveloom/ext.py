@@ -35,12 +35,17 @@ import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from hiveloom import catalog, paths
 from hiveloom.errors import CatalogError, HiveloomError, SpecError
+from hiveloom.models.reasoning import (
+    ANTHROPIC_REASONING_STYLE,
+    DEFAULT_REASONING_STYLE,
+    REASONING_STYLES,
+)
 
 
 class ExtensionError(HiveloomError):
@@ -97,6 +102,10 @@ class ModelInfo(BaseModel):
     supports_tool_calling: bool | None = None
     supports_structured_output: bool | None = None
     supports_reasoning_replay: bool | None = None
+    # True when the model reasons before answering by default, so a small
+    # `model.max_tokens` can be spent entirely on thinking. Unset means unknown,
+    # and unknown never warns.
+    reasoning: bool | None = None
     # Still served and still priced, but superseded: validation and the cost
     # estimator keep accepting it so existing harnesses run unchanged, while
     # pickers stop offering it for new work.
@@ -126,6 +135,10 @@ class ProviderInfo(BaseModel):
     open_catalog: bool = False
     source: str = ""
     label: str = ""
+    # Which request field carries `model.reasoning` on this host; see
+    # `models/reasoning.py`. A host that declares nothing is assumed to read
+    # OpenAI's `reasoning_effort`.
+    reasoning_style: str = DEFAULT_REASONING_STYLE
 
 
 # A factory builds a runtime object from a ref's inline params and a context.
@@ -336,6 +349,7 @@ class ExtensionAPI:
         api_key_env: str = "",
         open_catalog: bool = False,
         label: str = "",
+        reasoning_style: str = DEFAULT_REASONING_STYLE,
         replace: bool = False,
     ) -> None:
         """Register a model provider. ``factory(ctx)`` must return a ``ModelProvider``.
@@ -348,6 +362,11 @@ class ExtensionAPI:
         """
         if name in _registry.providers and not replace:
             raise ExtensionError(f"provider '{name}' is already registered")
+        if reasoning_style not in (*REASONING_STYLES, ANTHROPIC_REASONING_STYLE):
+            raise ExtensionError(
+                f"provider '{name}': unknown reasoning_style '{reasoning_style}' "
+                f"(valid: {', '.join(REASONING_STYLES)})"
+            )
         _registry.providers[name] = factory
         _registry.provider_meta[name] = ProviderInfo(
             name=name,
@@ -357,6 +376,7 @@ class ExtensionAPI:
             open_catalog=open_catalog,
             source=self.source,
             label=label or name,
+            reasoning_style=reasoning_style,
         )
         _registry.registrations.append({"source": self.source, "kind": "providers", "name": name})
         for model in models:
@@ -755,6 +775,18 @@ _CLAUDE_MAX_OUTPUT: dict[str, int] = {
     mid: 128_000 for mid in _CLAUDE_MODELS if mid != "claude-haiku-4-5"
 }
 
+# Claude ids that think by default (adaptive thinking runs when `thinking` is
+# omitted), so a small `model.max_tokens` can be spent on thinking alone. The
+# older lines run without thinking unless asked, and Haiku 4.5 never thinks
+# unprompted. Prefixes, like `_NO_SAMPLING_PREFIXES` in `models/claude.py`.
+_CLAUDE_THINKS_BY_DEFAULT = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos",
+    "claude-haiku-5",
+)
+
 # Superseded within their own line (Sonnet 5.5, Opus 5.5, Fable 5.1, Mythos
 # 5.1). Kept valid and priced above; hidden from pickers.
 _CLAUDE_LEGACY = frozenset(
@@ -836,6 +868,13 @@ class _BuiltinProvider:
     default_price: tuple[float, float] | None = None
     # Listed ids that are superseded: priced, accepted, not offered.
     legacy: frozenset[str] = frozenset()
+    # Listed ids that reason by default (see `ModelInfo.reasoning`).
+    reasoning_models: frozenset[str] = frozenset()
+    # Which request field carries `model.reasoning` on this host. `none` is the
+    # honest answer where hiveloom does not know of one: asking for a level is
+    # then an error instead of a setting the host silently ignores. Correct it
+    # per provider with `reasoning_style` in models.yaml.
+    reasoning_style: str = DEFAULT_REASONING_STYLE
 
 
 _OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
@@ -859,6 +898,7 @@ _OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
             "gpt-4.1-nano": (0.10, 0.40),
         },
         legacy=frozenset({"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"}),
+        reasoning_style="openai",
     ),
     "gemini": _BuiltinProvider(
         # Google exposes an OpenAI-compatible surface at this path. Tool-call
@@ -871,6 +911,8 @@ _OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
             "gemini-2.5-flash": (0.30, 2.50),
             "gemini-2.5-pro": (1.25, 10.00),
         },
+        reasoning_models=frozenset({"gemini-2.5-flash", "gemini-2.5-pro"}),
+        reasoning_style="openai",
     ),
     "mistral": _BuiltinProvider(
         base_url="https://api.mistral.ai/v1",
@@ -880,55 +922,67 @@ _OPENAI_COMPAT_PROVIDERS: dict[str, _BuiltinProvider] = {
             "mistral-small-latest": (0.20, 0.60),
             "mistral-large-latest": (2.00, 6.00),
         },
+        reasoning_style="none",
     ),
     "deepseek": _BuiltinProvider(
         base_url="https://api.deepseek.com/v1",
         api_key_env="DEEPSEEK_API_KEY",
         label="DeepSeek",
         models={"deepseek-chat": (0.27, 1.10), "deepseek-reasoner": (0.55, 2.19)},
+        reasoning_models=frozenset({"deepseek-reasoner"}),
+        reasoning_style="none",
     ),
     "xai": _BuiltinProvider(
         base_url="https://api.x.ai/v1",
         api_key_env="XAI_API_KEY",
         label="xAI Grok",
         models={"grok-3": (3.00, 15.00), "grok-3-mini": (0.30, 0.50)},
+        reasoning_models=frozenset({"grok-3-mini"}),
+        reasoning_style="openai",
     ),
     "moonshot": _BuiltinProvider(
         base_url="https://api.moonshot.ai/v1",
         api_key_env="MOONSHOT_API_KEY",
         label="Moonshot AI",
+        reasoning_style="none",
     ),
     "groq": _BuiltinProvider(
         base_url="https://api.groq.com/openai/v1",
         api_key_env="GROQ_API_KEY",
         label="Groq",
+        reasoning_style="openai",
     ),
     "openrouter": _BuiltinProvider(
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
         label="OpenRouter",
+        reasoning_style="openrouter",
     ),
     "together": _BuiltinProvider(
         base_url="https://api.together.xyz/v1",
         api_key_env="TOGETHER_API_KEY",
         label="Together AI",
+        reasoning_style="openai",
     ),
     "fireworks": _BuiltinProvider(
         base_url="https://api.fireworks.ai/inference/v1",
         api_key_env="FIREWORKS_API_KEY",
         label="Fireworks AI",
+        reasoning_style="openai",
     ),
     "ollama": _BuiltinProvider(
         base_url="http://localhost:11434/v1",
         api_key_env="",
         label="Ollama (local)",
         default_price=(0.0, 0.0),
+        reasoning_style="openai",
     ),
     "vllm": _BuiltinProvider(
         base_url="http://localhost:8000/v1",
         api_key_env="",
         label="vLLM (local)",
         default_price=(0.0, 0.0),
+        reasoning_style="chat_template",
     ),
 }
 
@@ -941,11 +995,13 @@ def _register_builtin_providers() -> None:
         api="anthropic",
         api_key_env="ANTHROPIC_API_KEY",
         label="Anthropic Claude",
+        reasoning_style=ANTHROPIC_REASONING_STYLE,
         models=[
             ModelInfo(id=mid, provider="claude", input_cost_per_mtok=inp,
                       output_cost_per_mtok=out, legacy=mid in _CLAUDE_LEGACY,
                       restricted=mid in _CLAUDE_RESTRICTED,
-                      max_output_tokens=_CLAUDE_MAX_OUTPUT.get(mid))
+                      max_output_tokens=_CLAUDE_MAX_OUTPUT.get(mid),
+                      reasoning=True if mid.startswith(_CLAUDE_THINKS_BY_DEFAULT) else None)
             for mid, (inp, out) in _CLAUDE_MODELS.items()
         ],
     )
@@ -954,14 +1010,16 @@ def _register_builtin_providers() -> None:
             _registry.provider_default_price[name] = entry.default_price
         api.register_provider(
             name,
-            _openai_compat_factory(entry.base_url, entry.api_key_env or None),
+            _openai_compat_factory(name, entry.base_url, entry.api_key_env or None),
             base_url=entry.base_url,
             api_key_env=entry.api_key_env,
             label=entry.label,
             open_catalog=True,
+            reasoning_style=entry.reasoning_style,
             models=[
                 ModelInfo(id=mid, provider=name, input_cost_per_mtok=inp,
-                          output_cost_per_mtok=out, legacy=mid in entry.legacy)
+                          output_cost_per_mtok=out, legacy=mid in entry.legacy,
+                          reasoning=True if mid in entry.reasoning_models else None)
                 for mid, (inp, out) in entry.models.items()
             ],
         )
@@ -976,6 +1034,9 @@ class _YamlModelEntry(BaseModel):
     supports_tool_calling: bool | None = None
     supports_structured_output: bool | None = None
     supports_reasoning_replay: bool | None = None
+    # Reasons before answering by default; drives the small-`max_tokens`
+    # warning. Unset inherits the builtin's flag, else "unknown".
+    reasoning: bool | None = None
     # Unset inherits the builtin's flag: re-pricing a superseded model must not
     # quietly put it back on every picker.
     legacy: bool | None = None
@@ -997,6 +1058,9 @@ class _YamlProviderEntry(BaseModel):
     timeout_seconds: int | None = Field(default=None, gt=0)
     # Display name; defaults to the builtin's label, or the provider's name.
     label: str | None = None
+    # Which request field carries `model.reasoning` on this host. Unset keeps a
+    # builtin's style, and is `openai` for a new provider.
+    reasoning_style: Literal["openai", "openrouter", "chat_template", "none"] | None = None
     models: list[_YamlModelEntry] = []
 
 
@@ -1064,6 +1128,15 @@ def _load_provider_file(yaml_path: Path, source: str) -> None:
                 )
             models = [_model_info_from_yaml(m, name, source) for m in entry.models]
             builtin = _registry.provider_meta.get(name)
+            # A builtin's style is inherited only when it is a declarable one:
+            # an entry that re-points `claude` at an OpenAI-compatible gateway
+            # must not carry the Anthropic mapping onto that provider.
+            inherited = (
+                builtin.reasoning_style
+                if builtin and builtin.reasoning_style in REASONING_STYLES
+                else DEFAULT_REASONING_STYLE
+            )
+            style = entry.reasoning_style or inherited
             if entry.base_url is None:
                 # Extend-only: the entry adds models or corrects pricing for a
                 # provider that already exists. Without a builtin to extend
@@ -1073,16 +1146,27 @@ def _load_provider_file(yaml_path: Path, source: str) -> None:
                         f"provider '{name}': base_url is required "
                         "(no builtin provider of that name to extend)"
                     )
+                if entry.reasoning_style is not None:
+                    if builtin.api != "openai_compat":
+                        raise ExtensionError(
+                            f"provider '{name}': its reasoning mapping is fixed and "
+                            "cannot be declared"
+                        )
+                    # The factory reads the style at build time.
+                    _registry.provider_meta[name] = builtin.model_copy(
+                        update={"reasoning_style": style}
+                    )
                 for model in models:
                     api.register_model(model, provider=name)
                 continue
             api.register_provider(
                 name,
                 _openai_compat_factory(
-                    entry.base_url, entry.api_key_env, entry.timeout_seconds
+                    name, entry.base_url, entry.api_key_env, entry.timeout_seconds
                 ),
                 base_url=entry.base_url,
                 api_key_env=entry.api_key_env or "",
+                reasoning_style=style,
                 label=entry.label or (builtin.label if builtin else name),
                 # Declared entries are closed by default — the user listed the
                 # models they meant, so a typo should fail. Overriding a builtin
@@ -1112,6 +1196,7 @@ def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) ->
                 ),
             }
         )
+    existing = _registry.models.get(entry.id)
     return ModelInfo(
         id=entry.id,
         provider=provider,
@@ -1130,6 +1215,11 @@ def _model_info_from_yaml(entry: _YamlModelEntry, provider: str, source: str) ->
         supports_tool_calling=entry.supports_tool_calling,
         supports_structured_output=entry.supports_structured_output,
         supports_reasoning_replay=entry.supports_reasoning_replay,
+        reasoning=(
+            entry.reasoning
+            if entry.reasoning is not None
+            else (existing.reasoning if existing and existing.provider == provider else None)
+        ),
         legacy=(
             entry.legacy
             if entry.legacy is not None
@@ -1151,7 +1241,7 @@ def _builtin_model_is_legacy(provider: str, model_id: str) -> bool:
 
 
 def _openai_compat_factory(
-    base_url: str, api_key_env: str | None, timeout: int | None = None
+    name: str, base_url: str, api_key_env: str | None, timeout: int | None = None
 ) -> ProviderFactory:
     def factory(ctx: BuildContext) -> Any:
         # Same precedence as before (process environment first), same
@@ -1166,9 +1256,16 @@ def _openai_compat_factory(
             )
         from hiveloom.models.openai_compat import OpenAICompatProvider
 
+        # Read at build time, so a models.yaml `reasoning_style` that extends a
+        # builtin applies without re-registering it.
+        reasoning_style = _registry.provider_meta[name].reasoning_style
         if timeout is None:
-            return OpenAICompatProvider(base_url, api_key=api_key)
-        return OpenAICompatProvider(base_url, api_key=api_key, timeout=timeout)
+            return OpenAICompatProvider(
+                base_url, api_key=api_key, reasoning_style=reasoning_style
+            )
+        return OpenAICompatProvider(
+            base_url, api_key=api_key, timeout=timeout, reasoning_style=reasoning_style
+        )
 
     return factory
 

@@ -26,6 +26,7 @@ from hiveloom.models.provider import (
     Usage,
     validate_model_params,
 )
+from hiveloom.models.reasoning import claude_reasoning_fields
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0
@@ -110,7 +111,18 @@ class ClaudeProvider(ModelProvider):
         send_temperature = config.temperature is not None and not config.id.startswith(
             _NO_SAMPLING_PREFIXES
         )
-        body = dict(validate_model_params(config.params))
+        # The reasoning mapping first, so an explicit `model.params` key beats it.
+        reasoning_fields = claude_reasoning_fields(config.id, config.reasoning)
+        body = {**reasoning_fields, **validate_model_params(config.params)}
+        # `output_config` also carries unrelated settings (structured output); an
+        # explicit one must not silently drop the effort the mapping set.
+        if isinstance(reasoning_fields.get("output_config"), dict) and isinstance(
+            config.params.get("output_config"), dict
+        ):
+            body["output_config"] = {
+                **reasoning_fields["output_config"],
+                **config.params["output_config"],
+            }
         if send_temperature:
             body["temperature"] = config.temperature
         extra = {"extra_body": body} if body else {}
@@ -122,7 +134,11 @@ class ClaudeProvider(ModelProvider):
             messages=_with_cache_breakpoint(messages),
             tools=tools_param,
         )
-        return self._normalize(raw)
+        response = self._normalize(raw)
+        response.reasoning_sent = {
+            key: body[key] for key in ("thinking", "output_config") if key in body
+        }
+        return response
 
     def count_tokens(
         self,

@@ -55,6 +55,9 @@ def spec_to_dict(spec: HarnessSpec) -> dict[str, Any]:
     # An unused provider-params field must not invalidate existing run cohorts.
     if not data.get("model", {}).get("params"):
         data["model"].pop("params", None)
+    # Likewise the reasoning level: 'default' sends nothing.
+    if data["model"].get("reasoning") == "default":
+        data["model"].pop("reasoning")
     # Sampling is opt-in; its default must not change other policies' hashes.
     loop = data.get("loop", {})
     if loop.get("policy") != "best_of_n" and loop.get("attempts") == 3:
@@ -307,3 +310,29 @@ def validate_harness(path: str | Path) -> HarnessSpec:
     spec = load_spec(yaml_path)
     resolve_hooks(spec, yaml_path.parent)
     return spec
+
+
+# Below this, a model that reasons by default can spend the whole output budget
+# thinking and return nothing. A heuristic, not a limit: it only drives a
+# warning, never a rejection.
+SMALL_REASONING_BUDGET_TOKENS = 2048
+
+
+def spec_warnings(spec: HarnessSpec) -> list[str]:
+    """Problems that do not stop a harness from running but probably should be fixed."""
+    from hiveloom import ext
+
+    warnings: list[str] = []
+    info = ext.model_info(spec.model.id)
+    if (
+        spec.model.reasoning == "default"
+        and spec.model.max_tokens < SMALL_REASONING_BUDGET_TOKENS
+        and info is not None
+        and info.reasoning
+    ):
+        warnings.append(
+            f"model '{spec.model.id}' reasons before answering and model.max_tokens is only "
+            f"{spec.model.max_tokens}: it can spend the whole budget thinking and return "
+            "nothing. Raise model.max_tokens or set model.reasoning."
+        )
+    return warnings

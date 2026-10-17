@@ -29,6 +29,7 @@ from pydantic import (
 )
 
 from hiveloom import catalog
+from hiveloom.models.reasoning import ReasoningLevel
 
 
 # --------------------------------------------------------------------------- #
@@ -412,6 +413,20 @@ class ModelConfig(BaseModel):
         default=None, ge=0.0, le=1.0,
         description="Sampling temperature. None omits it — required for models that deprecate it.",
     )
+    reasoning: ReasoningLevel = Field(
+        default="default",
+        description=(
+            "How much the model may reason before answering: none | minimal | "
+            "low | medium | high. 'default' sends nothing and leaves the model's "
+            "own behavior (fully backward compatible). Hiveloom maps the level to "
+            "the field each host reads (see the provider's reasoning_style); a host "
+            "with no reasoning control rejects a non-default level instead of "
+            "ignoring it. An explicit `params` key wins over the mapping. Reasoning "
+            "tokens count against max_tokens: a reasoning model left on 'default' "
+            "with a small max_tokens can spend the whole budget thinking and return "
+            "nothing, so raise max_tokens or lower this."
+        ),
+    )
     params: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -442,6 +457,20 @@ class ModelConfig(BaseModel):
         from hiveloom.models.provider import validate_model_params
 
         return validate_model_params(value)
+
+    @model_validator(mode="after")
+    def _check_reasoning_is_supported(self) -> ModelConfig:
+        """Reject a level the provider or model has no way to apply."""
+        from hiveloom import ext
+        from hiveloom.models.reasoning import check_reasoning
+
+        provider = ext.provider_info(self.provider)
+        if self.reasoning != "default" and provider is not None:
+            try:
+                check_reasoning(provider.reasoning_style, self.reasoning, self.id)
+            except ValueError as exc:
+                raise ValueError(f"model.reasoning: {exc}") from exc
+        return self
 
     @field_validator("provider")
     @classmethod

@@ -115,6 +115,9 @@ providers:
 ```
 
 Programmatically: `hive.register_provider(name, factory, models=[...])`.
+A provider entry (either way) may declare `reasoning_style` (`openai`,
+`openrouter`, `chat_template`, `none`) so `model.reasoning` reaches the field
+that host reads; a model entry may set `reasoning: true`.
 Model entries may declare `supports_tool_calling`,
 `supports_structured_output`, and `supports_reasoning_replay`. A custom adapter
 may override `probe_capabilities()` when the generic tool/reasoning probe is
