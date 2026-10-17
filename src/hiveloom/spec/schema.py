@@ -412,6 +412,17 @@ class ModelConfig(BaseModel):
         default=None, ge=0.0, le=1.0,
         description="Sampling temperature. None omits it — required for models that deprecate it.",
     )
+    max_retries: int | None = Field(
+        default=None,
+        ge=0,
+        le=10,
+        description=(
+            "Retries after a transient provider failure (rate limit, 5xx, dropped "
+            "connection). None uses the provider default (3); 0 makes every model "
+            "call a single attempt, for a gateway that already retries or falls "
+            "back. Retries share the run deadline (`hiveloom run --deadline`)."
+        ),
+    )
     params: dict[str, Any] = Field(
         default_factory=dict,
         description=(

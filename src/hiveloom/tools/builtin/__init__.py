@@ -35,6 +35,7 @@ from hiveloom.confine import (
     run_confined,
 )
 from hiveloom.context.notes import DEFAULT_MAX_NOTES, NotesTool
+from hiveloom.deadline import remaining_seconds
 from hiveloom.package import is_sensitive_path
 from hiveloom.private import RunBoundary, env_files, is_private
 from hiveloom.spec.schema import (
@@ -391,12 +392,15 @@ class ShellTool(Tool):
             ]
         )
         self._refuse_runtime_state(parts, masked)
+        # Never outlives the run's deadline, when one is active.
+        timeout = remaining_seconds(self._confinement.timeout_seconds)
         try:
             result = run_confined(
                 parts,
                 cwd=self._base,
                 config=self._confinement,
                 mask=masked,
+                timeout=timeout,
             )
         except ConfinementUnavailable as exc:
             raise ToolError(str(exc)) from exc
@@ -406,7 +410,7 @@ class ShellTool(Tool):
         notes = []
         if result.timed_out:
             notes.append(
-                f"the command was killed after {self._confinement.timeout_seconds}s"
+                f"the command was killed after {timeout:g}s"
             )
         if result.truncated:
             notes.append(
@@ -527,7 +531,7 @@ class HttpGetTool(Tool):
         )
         try:
             opener = urlrequest.build_opener(_SafeRedirectHandler(self.allowed_hosts))
-            with opener.open(request, timeout=30) as resp:  # noqa: S310 - validated URL and redirects
+            with opener.open(request, timeout=remaining_seconds(30)) as resp:  # noqa: S310 - validated URL and redirects
                 body = resp.read(_MAX_HTTP_BYTES)
         except (urlerror.URLError, ValueError) as exc:
             raise ToolError(f"http_get failed: {exc}") from exc

@@ -20,6 +20,7 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from hiveloom.deadline import check_run_bounds, remaining_seconds, wait_backoff
 from hiveloom.models.provider import (
     PROVIDER_REASONING_MAX_BYTES,
     ContextOverflowError,
@@ -121,14 +122,20 @@ class OpenAICompatProvider(ModelProvider):
         }
         if tools:
             payload["tools"] = [to_openai_tool(t) for t in tools]
-        data = self._post("/chat/completions", payload)
+        # Only passed when set, so a subclass or test double that overrides
+        # `_post(path, payload)` keeps working.
+        retry_kwargs = {} if config.max_retries is None else {"max_retries": config.max_retries}
+        data = self._post("/chat/completions", payload, **retry_kwargs)
         return normalize_openai_response(
             data,
             estimated_input_tokens=self.count_tokens(system=system, messages=messages, tools=tools),
         )
 
     # ------------------------------------------------------------------ #
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(
+        self, path: str, payload: dict[str, Any], *, max_retries: int | None = None
+    ) -> dict[str, Any]:
+        retries = _MAX_RETRIES if max_retries is None else max_retries
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -139,9 +146,15 @@ class OpenAICompatProvider(ModelProvider):
             method="POST",
         )
         last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
+        for attempt in range(retries + 1):
+            # The run's deadline (and stop request) bounds every attempt: no new
+            # one starts once it is spent, and its socket timeout never exceeds
+            # what is left. Outside the try so it is never mistaken for a
+            # transport failure and retried.
+            check_run_bounds()
+            timeout = remaining_seconds(self._timeout)
             try:
-                with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
+                with urlrequest.urlopen(request, timeout=timeout) as resp:  # noqa: S310
                     body = json.loads(resp.read().decode("utf-8"))
                 embedded = _embedded_error(body)
                 if embedded is None:
@@ -172,9 +185,9 @@ class OpenAICompatProvider(ModelProvider):
                 # connection in that window lands here.
                 last_exc = RuntimeError(f"provider unreachable at {self._base_url}: {exc}")
                 retryable = True
-            if not retryable or attempt == _MAX_RETRIES:
+            if not retryable or attempt == retries:
                 break
-            self._sleep(_BASE_DELAY * (2**attempt))
+            wait_backoff(_BASE_DELAY * (2**attempt), self._sleep)
         raise RuntimeError(f"model call failed on attempt {attempt + 1}: {last_exc}") from last_exc
 
 

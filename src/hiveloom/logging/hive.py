@@ -405,7 +405,10 @@ def derive_features(
 
 
 def default_db_path() -> Path:
-    """The default Hive database path (``$HIVELOOM_DB`` or ``<hiveloom home>/hive.db``)."""
+    """The default Hive database path (``$HIVELOOM_DB`` or ``<hiveloom home>/hive.db``).
+
+    An empty ``HIVELOOM_DB`` counts as unset.
+    """
     override = os.environ.get("HIVELOOM_DB")
     if override:
         return Path(override)

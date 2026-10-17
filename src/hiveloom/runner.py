@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import errno
 import logging
+import math
 import re
+import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -21,8 +23,10 @@ from typing import TYPE_CHECKING, Any
 from hiveloom import __version__, confine, trust
 from hiveloom.confine import ConfinementUnavailable
 from hiveloom.context.manager import ContextManager
+from hiveloom.deadline import run_bounds
+from hiveloom.errors import SpecError
 from hiveloom.events import build_event_bus
-from hiveloom.guardrails.builtin import build_guardrails
+from hiveloom.guardrails.builtin import MaxWallClockGuardrail, build_guardrails
 from hiveloom.logging.trace import TraceWriter, spec_version_hash
 from hiveloom.loop.agent_loop import AgentLoop, RunResult
 from hiveloom.loop.control import RunControl
@@ -286,6 +290,7 @@ def run_harness(
     approve_network: Callable[[str], bool] | None = None,
     cost_cap_usd: float | None = None,
     tool_policy: Any = None,
+    deadline_seconds: float | None = None,
 ) -> RunResult:
     """Run a harness end to end and return the :class:`RunResult`.
 
@@ -348,6 +353,15 @@ def run_harness(
     program's execution policy uses it to deny tools or replace them with
     recorded results (see :mod:`hiveloom.research.execution`).
 
+    ``deadline_seconds`` bounds the whole run, measured from this call, and is
+    enforced *inside* model calls: each provider attempt's timeout and every
+    retry backoff draw on what is left (see :mod:`hiveloom.deadline`). It can
+    only tighten the spec's ``max_wall_clock_seconds``, never extend it, and an
+    expiry ends the run as that guardrail does (``guardrail_halt``). A
+    ``control.request_stop`` also ends a provider's retry sequence at the next
+    attempt boundary; an HTTP request already in flight is not interrupted, so
+    a host that needs a hard bound must still supervise the process.
+
     ``approve_network`` is the run-scoped decision point for an undeclared
     ``http_get`` hostname. It receives only the normalized hostname and returns
     true to allow that host for the rest of this run. Without a callback the
@@ -360,13 +374,18 @@ def run_harness(
     the server as "read this file" would be an arbitrary file read, so those
     ``input`` fields are always literal text.
     """
+    deadline_seconds = _validated_deadline(deadline_seconds)
+    run_started = time.monotonic()
     yaml_path = harness_path(harness_dir)
     base = yaml_path.parent
     trust.ensure_trusted(base, approve_trust)
     spec = load_spec(yaml_path)
     spec = _apply_runtime_model_overrides(spec, model_override, provider_override)
     runtime_config = _runtime_config(
-        spec, model_override=model_override, provider_override=provider_override
+        spec,
+        model_override=model_override,
+        provider_override=provider_override,
+        deadline_seconds=deadline_seconds,
     )
     run_id = validate_run_id(run_id) if run_id is not None else new_run_id()
     resolve_hooks(spec, base)
@@ -432,6 +451,7 @@ def run_harness(
                 id=spec.model.id,
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
+                max_retries=spec.model.max_retries,
                 provider=spec.model.provider,
                 # Every model field the spec declares has to appear here. This
                 # is the config the router actually calls with, so anything
@@ -489,7 +509,15 @@ def run_harness(
             run_boundary=run_boundary,
             approve_network=approve_network,
         )
-        result = loop.run()
+        deadline, reason = _run_deadline(
+            guardrails, loop.state.started_at, run_started, deadline_seconds
+        )
+        with run_bounds(
+            deadline=deadline,
+            stop=control.stop_event if control is not None else None,
+            reason=reason,
+        ):
+            result = loop.run()
     finally:
         registry.close()
         if router is not None:
@@ -697,6 +725,7 @@ def _apply_runtime_model_overrides(
         provider=provider_override or spec.model.provider,
         max_tokens=spec.model.max_tokens,
         temperature=spec.model.temperature,
+        max_retries=spec.model.max_retries,
         params=spec.model.params,
     )
     return spec.model_copy(update={"model": model})
@@ -707,11 +736,49 @@ def _runtime_config(
     *,
     model_override: str | None,
     provider_override: str | None,
+    deadline_seconds: float | None = None,
 ) -> dict[str, Any]:
+    requested: dict[str, Any] = {"model": model_override, "provider": provider_override}
+    if deadline_seconds is not None:
+        # Only when asked for, so runs without one keep their fingerprint.
+        requested["deadline_seconds"] = deadline_seconds
     return {
-        "requested": {"model": model_override, "provider": provider_override},
+        "requested": requested,
         "resolved": {"model": spec.model.id, "provider": spec.model.provider},
     }
+
+
+def _validated_deadline(deadline_seconds: float | None) -> float | None:
+    if deadline_seconds is None:
+        return None
+    if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+        raise SpecError(f"deadline_seconds must be positive and finite, got {deadline_seconds}")
+    return float(deadline_seconds)
+
+
+def _run_deadline(
+    guardrails: list[Any],
+    guardrail_started: float,
+    caller_started: float,
+    deadline_seconds: float | None,
+) -> tuple[float | None, str]:
+    """The tighter of the spec's wall-clock guardrail and the caller's deadline.
+
+    Both are monotonic instants. The guardrail counts from the run's own start
+    (its ``RunState``), the caller's deadline from when ``run_harness`` was
+    called. The reason names whichever one won.
+    """
+    candidates: list[tuple[float, str]] = [
+        (guardrail_started + g.limit_seconds, f"wall clock exceeded {g.limit_seconds:.0f}s")
+        for g in guardrails
+        if isinstance(g, MaxWallClockGuardrail)
+    ]
+    if deadline_seconds is not None:
+        reason = f"wall clock deadline exceeded {deadline_seconds:g}s"
+        candidates.append((caller_started + deadline_seconds, reason))
+    if not candidates:
+        return None, ""
+    return min(candidates)
 
 
 def resolve_and_ingest(target: str | Path, hive) -> str:

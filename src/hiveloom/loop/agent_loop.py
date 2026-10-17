@@ -14,6 +14,7 @@ tool calls, patch results, transform context). Guardrails always run first.
 
 from __future__ import annotations
 
+import contextvars
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,7 @@ from hiveloom.context.notes import (
 )
 from hiveloom.context.notes import NOTES_TOOL, NotesStore, NotesTool
 from hiveloom.context.spill import SpillError, SpillStore
+from hiveloom.deadline import DeadlineExceeded, RunStopped, check_run_bounds
 from hiveloom.delegation import DelegationRecord, PeerCandidate
 from hiveloom.egress import EgressFilter
 from hiveloom.egress import policy_name as egress_policy_name
@@ -246,6 +248,7 @@ class AgentLoop:
                 id=spec.model.id,
                 max_tokens=spec.model.max_tokens,
                 temperature=spec.model.temperature,
+                max_retries=spec.model.max_retries,
                 provider=spec.model.provider,
                 params=spec.model.params,
             ),
@@ -495,6 +498,8 @@ class AgentLoop:
                 delegated = self._delegate_whole_task(mode="on_start")
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
+            except RunStopped:
+                return self._finish_stopped()
             if delegated is not None:
                 return delegated
         try:
@@ -503,6 +508,8 @@ class AgentLoop:
             return self._finish("step_failed", reason=str(exc))
         except GuardrailHalt as exc:
             return self._finish("guardrail_halt", reason=str(exc))
+        except RunStopped:
+            return self._finish_stopped()
         except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
             return self._finish("error", reason=f"policy failed: {type(exc).__name__}: {exc}")
 
@@ -538,6 +545,10 @@ class AgentLoop:
                 return self._finish("step_failed", reason=str(exc))
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
+            except RunStopped:
+                # A stop that arrived while a provider was backing off between
+                # retries; the turn-boundary check above covers the rest.
+                return self._finish_stopped()
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
                 return self._finish("error", reason=f"{type(exc).__name__}: {exc}")
 
@@ -550,6 +561,11 @@ class AgentLoop:
                     return self._finish("step_failed", reason=str(exc))
                 except ToolAbort as exc:
                     return self._finish("error", reason=str(exc))
+                except DeadlineExceeded as exc:
+                    # A tool reached the run deadline: same halt as a model call.
+                    return self._finish("guardrail_halt", reason=str(self._deadline_halt(exc)))
+                except RunStopped:
+                    return self._finish_stopped()
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
@@ -861,12 +877,20 @@ class AgentLoop:
                     {"system": system, "messages": messages, "tools": tools}
                 ),
             )
-        response = self._router.provider.complete(
-            system=system,
-            messages=messages,
-            tools=tools,
-            config=config,
-        )
+        try:
+            # The run deadline can be tighter than the wall-clock guardrail (a
+            # caller deadline) and is also spent *inside* the provider's
+            # retries; either way the run ends as the guardrail does.
+            check_run_bounds()
+            response = self._router.provider.complete(
+                system=system,
+                messages=messages,
+                tools=tools,
+                config=config,
+            )
+        except DeadlineExceeded as exc:
+            self._state.pending_cost_usd = 0.0
+            raise self._deadline_halt(exc) from exc
         self._state.model_calls += 1
         self._state.turns = self._state.model_calls
         self._usage = self._usage + response.usage
@@ -1082,14 +1106,20 @@ class AgentLoop:
 
         runnable = [(i, call) for i, (call, blocked) in enumerate(plan) if blocked is None]
         executed: dict[int, Any] = {}
-        abort: ToolAbort | None = None
+        # A tool abort, or a run deadline/stop reached inside a tool.
+        abort: Exception | None = None
         if runnable:
             with ThreadPoolExecutor(max_workers=len(runnable)) as pool:
-                futures = [(i, pool.submit(self._execute_call, call)) for i, call in runnable]
+                # Each call runs in a copy of this thread's context, so a tool
+                # sees the run's deadline (see hiveloom.deadline).
+                futures = [
+                    (i, pool.submit(contextvars.copy_context().run, self._execute_call, call))
+                    for i, call in runnable
+                ]
                 for i, future in futures:
                     try:
                         executed[i] = future.result()
-                    except ToolAbort as exc:
+                    except (ToolAbort, DeadlineExceeded, RunStopped) as exc:
                         # Keep draining so no worker outlives the batch; the
                         # first abort in source order is the one reported.
                         abort = abort if abort is not None else exc
@@ -1684,16 +1714,19 @@ class AgentLoop:
                 "delegation_skipped", mode=mode, reason=delegation.NO_CANDIDATES
             )
             return None
-        selection = delegation.select_peer(
-            self._router.provider,
-            self._router.config,
-            task,
-            candidates,
-            self._delegation,
-            screen=lambda system, messages, tools: self._screen_egress(
-                system, messages, tools, f"delegation_{mode}"
-            ),
-        )
+        try:
+            selection = delegation.select_peer(
+                self._router.provider,
+                self._router.config,
+                task,
+                candidates,
+                self._delegation,
+                screen=lambda system, messages, tools: self._screen_egress(
+                    system, messages, tools, f"delegation_{mode}"
+                ),
+            )
+        except DeadlineExceeded as exc:
+            raise self._deadline_halt(exc) from exc
         # The selection call is the parent's own model on the parent's own
         # budget, so it is charged like any other turn.
         self._state.cost_usd += selection.cost_usd
@@ -1858,6 +1891,23 @@ class AgentLoop:
             return self._delegate_whole_task(mode="on_verify_fail")
         except GuardrailHalt as exc:
             return self._finish("guardrail_halt", reason=str(exc))
+        except RunStopped:
+            return self._finish_stopped()
+
+    def _deadline_halt(self, exc: DeadlineExceeded) -> GuardrailHalt:
+        """Journal a spent run deadline as the guardrail halt it ends the run as."""
+        self._trace.emit(
+            "guardrail_triggered", guardrail="run_deadline", kind="halt", reason=str(exc)
+        )
+        return GuardrailHalt(str(exc))
+
+    def _finish_stopped(self) -> RunResult:
+        """End the run as ``stopped`` after a stop surfaced inside a provider call."""
+        return self._finish(
+            "stopped",
+            output=self._state.output or "",
+            reason=self._control.stop_reason if self._control else "stopped",
+        )
 
     def _handle_delegate(
         self, candidate: PeerCandidate, task: str

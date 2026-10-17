@@ -6,7 +6,10 @@ want to stop the run, say something the agent should take into account
 going in circles — finish it on Opus"), or put it into a different playbook.
 All of these arrive here and are consumed by the loop at the next turn
 boundary — never mid-model-call and never mid-tool — so the run always stops or
-adjusts at a point where its state is coherent.
+adjusts at a point where its state is coherent. One exception for stopping: a
+provider waiting between retry attempts also watches the stop flag (see
+:mod:`hiveloom.deadline`), so a stop does not sit out the remaining retries. A
+request already in flight is not interrupted.
 
 Queued steering messages are **addressable**: each carries an id, and an
 operator UI can list, edit, or withdraw one before the loop reaches its next
@@ -131,6 +134,11 @@ class RunControl:
 
     def stop_requested(self) -> bool:
         return self._stop.is_set()
+
+    @property
+    def stop_event(self) -> threading.Event:
+        """The stop flag itself, so a provider's backoff wait can end on it."""
+        return self._stop
 
     @property
     def stop_reason(self) -> str:
