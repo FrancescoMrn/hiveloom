@@ -173,6 +173,19 @@ which one ran, so "these processes were isolated" is a checkable claim about a
 particular run rather than a property of the configuration. See
 [Process confinement](spec.md#process-confinement).
 
+### Invalid tool arguments
+
+OpenAI-compatible providers keep `ToolCall.arguments_error` when they normalize malformed
+arguments to an empty object: `invalid_json` for an unreadable JSON string, or `not_object` for
+a value that is not an argument object. A valid empty object has no error. The original malformed
+payload is not retained.
+
+For dispatched calls, `tool_call.payload.arguments_error` carries the nonempty diagnostic in
+both sequential and parallel execution. Valid calls keep the existing event shape. This field
+describes provider input, even if a hook later repairs the arguments; it does not change tool
+execution or classify calls blocked before dispatch. Evaluators can count malformed calls
+without treating every empty argument object as malformed.
+
 ### Spilled tool results
 
 A tool result too large to inline is stored whole under `trace_dir/spill/` and

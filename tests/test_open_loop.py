@@ -12,6 +12,7 @@ from hiveloom.context.manager import CompactionMethod, ContextManager
 from hiveloom.errors import SpecError
 from hiveloom.events import EventBus, build_event_bus
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
+from hiveloom.models.openai_compat import normalize_openai_response
 from hiveloom.spec.loader import load_spec, validate_harness
 from hiveloom.spec.schema import CompactionConfig, HarnessSpec, LoopConfig
 from hiveloom.tools.registry import Tool, ToolResult, build_registry
@@ -23,6 +24,28 @@ def _events(trace_path: str) -> list[dict]:
 
 def _no_verify(harness_dir: Path) -> None:
     construct.set_field(harness_dir, "loop.require_verification", "false")
+
+
+@pytest.mark.parametrize("execution", ["sequential", "parallel"])
+def test_tool_trace_preserves_argument_diagnostics_without_raw_payload(harness_dir, execution):
+    _no_verify(harness_dir)
+    construct.set_field(harness_dir, "loop.tool_execution", execution)
+    construct.add_tool(harness_dir, builtin="file_read")
+    (harness_dir / "notes.txt").write_text("a valid read")
+    response = normalize_openai_response({"choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": "", "tool_calls": [
+            {"id": "bad", "function": {"name": "file_read", "arguments": "{PRIVATE-ARGUMENT"}},
+            {"id": "ok", "function": {"name": "file_read", "arguments": '{"path":"notes.txt"}'}},
+        ]}}]})
+    provider = FakeModelProvider([response, text_response("done")])
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+    calls = [event["payload"] for event in _events(result.trace_path)
+             if event["type"] == "tool_call"]
+    assert calls == [
+        {"id": "bad", "name": "file_read", "input": {}, "arguments_error": "invalid_json"},
+        {"id": "ok", "name": "file_read", "input": {"path": "notes.txt"}},
+    ]
+    assert "PRIVATE-ARGUMENT" not in Path(result.trace_path).read_text()
 
 
 def _tool_result_blocks(provider: FakeModelProvider) -> list[dict]:

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- OpenAI-compatible tool calls retain a fixed diagnostic when malformed arguments
+  are normalized to an empty object. Dispatched calls expose it in the journal,
+  so evaluators can distinguish invalid JSON from a valid empty argument object
+  without storing the malformed payload or changing dispatch behavior.
 - Eval resume now preserves complete returned results, including artifacts added
   by an SDK `execute_cell` callback after the trace was written. Atomic, redacted
   result checkpoints let scoring resume without executing the agent again, even

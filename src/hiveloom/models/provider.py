@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import math
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -96,6 +96,7 @@ class ToolCall(BaseModel):
     id: str
     name: str
     input: dict[str, Any] = Field(default_factory=dict)
+    arguments_error: Literal["", "invalid_json", "not_object"] = ""
 
 
 class ModelResponse(BaseModel):
