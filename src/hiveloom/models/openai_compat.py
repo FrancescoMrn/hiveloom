@@ -369,18 +369,22 @@ def normalize_openai_response(
     for raw_call in message.get("tool_calls") or []:
         function = raw_call.get("function") or {}
         raw_arguments = function.get("arguments")
+        arguments_error = ""
         if isinstance(raw_arguments, dict):
             arguments = raw_arguments
+        elif raw_arguments is not None and not isinstance(raw_arguments, str):
+            arguments, arguments_error = {}, "not_object"
         else:
             try:
                 arguments = json.loads(raw_arguments or "{}")
             except (json.JSONDecodeError, TypeError):
-                arguments = {}
+                arguments, arguments_error = {}, "invalid_json"
         # A lenient backend can emit arguments that parse to a valid-but-non-object
         # JSON value (`"null"`, `"[1]"`, `"42"`); ToolCall.input requires a dict.
         if not isinstance(arguments, dict):
-            arguments = {}
-        call = ToolCall(id=raw_call.get("id", ""), name=function.get("name", ""), input=arguments)
+            arguments, arguments_error = {}, "not_object"
+        call = ToolCall(id=raw_call.get("id", ""), name=function.get("name", ""),
+                        input=arguments, arguments_error=arguments_error)
         tool_calls.append(call)
         content_blocks.append(
             {"type": "tool_use", "id": call.id, "name": call.name, "input": call.input}

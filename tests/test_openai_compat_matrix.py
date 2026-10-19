@@ -179,6 +179,7 @@ def test_openai_compat_tool_call_arguments_as_dict_are_tolerated():
     result = _normalize(vllm_dict_arguments)
     assert result.tool_calls[0].name == "get_weather"
     assert result.tool_calls[0].input == {"city": "Rome"}
+    assert result.tool_calls[0].arguments_error == ""
 
 
 def test_openai_compat_tool_call_arguments_malformed_string_falls_back_to_empty_dict():
@@ -202,6 +203,7 @@ def test_openai_compat_tool_call_arguments_malformed_string_falls_back_to_empty_
     }
     result = _normalize(response)
     assert result.tool_calls[0].input == {}
+    assert result.tool_calls[0].arguments_error == "invalid_json"
 
 
 @pytest.mark.parametrize("arguments", ["null", "42", '"hi"', "[1, 2]"])
@@ -229,6 +231,7 @@ def test_openai_compat_tool_call_arguments_valid_json_non_object_falls_back(argu
     }
     result = _normalize(response)
     assert result.tool_calls[0].input == {}
+    assert result.tool_calls[0].arguments_error == "not_object"
 
 
 def test_openai_compat_null_usage_counts_do_not_crash():
