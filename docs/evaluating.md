@@ -161,7 +161,9 @@ index continue to contain receipts rather than model or tool payloads.
 executing the cell again, including runs with tracing disabled. Scorers must
 therefore accept redacted values during recovery. Artifact references are
 preserved; the callback remains responsible for keeping their files available.
-A malformed checkpoint stops recovery. Runs without a result checkpoint,
+A malformed or unreadable checkpoint records an `InvalidCheckpoint` recovery
+error and leaves the eval incomplete, without executing the cell again. Restore
+a valid checkpoint from backup before resuming that cell. Runs without a result checkpoint,
 including older evals and interruptions before a callback returns, retain
 trace-based recovery. Keep the eval directory with the traces when moving or
 backing up a run; older HiveLoom releases do not read result checkpoints.
