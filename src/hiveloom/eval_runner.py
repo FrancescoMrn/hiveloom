@@ -29,7 +29,7 @@ from hiveloom.evals import (
 from hiveloom.execution import RunExecutionEnvelope, VerificationSummary
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.journal import read_events
-from hiveloom.logging.trace import spec_version_hash
+from hiveloom.logging.trace import TraceRedactor, spec_version_hash
 from hiveloom.loop.agent_loop import RunResult
 from hiveloom.models.capabilities import (
     ModelProbeResult,
@@ -303,6 +303,23 @@ def _result_from_trace(path: str | Path) -> RunResult | None:
     )
 
 
+def _result_path(manifest: EvalManifest, cell: EvalCell) -> Path:
+    # Keep payloads out of the public manifest and Hive index. A deterministic
+    # path also survives interruption between writing the result and manifest.
+    return _eval_dir(manifest.eval_run_id) / "results" / f"{_digest(cell.cell_id)}.json"
+
+
+def _save_result(manifest: EvalManifest, cell: EvalCell, result: RunResult) -> None:
+    redaction = load_spec(manifest.harness_path).logging.redact
+    redactor = TraceRedactor(
+        patterns=redaction.patterns, keys=redaction.keys, paths=redaction.paths
+    )
+    payload = redactor.redact(result.model_dump(mode="json"))
+    path = _result_path(manifest, cell)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(payload, allow_nan=False, indent=2) + "\n")
+
+
 def _default_execute(
     *,
     manifest: EvalManifest,
@@ -400,7 +417,13 @@ def _run_one_cell(
     execute: CellExecutor,
     lock: threading.Lock,
 ) -> None:
-    recovered = _result_from_trace(cell.trace_path) if cell.trace_path else None
+    result_path = _result_path(manifest, cell)
+    if result_path.is_file():
+        # An invalid checkpoint is an error, not permission to bill another run
+        # or silently discard callback artifacts by falling back to the trace.
+        recovered = RunResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+    else:
+        recovered = _result_from_trace(cell.trace_path) if cell.trace_path else None
     if recovered is not None:
         with lock:
             _apply_result(cell, recovered)
@@ -458,6 +481,7 @@ def _run_one_cell(
                     cell.error = str(exc)[:1000]
                 _save_manifest(manifest, lock)
                 continue
+        _save_result(manifest, cell, result)
         with lock:
             _apply_result(cell, result)
         _save_manifest(manifest, lock)
