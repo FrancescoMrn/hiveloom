@@ -565,6 +565,7 @@ def test_result_checkpoint_uses_the_harness_redaction_policy(
     assert "synthetic-key-value" not in content
     assert "synthetic-path-value" not in content
     assert checkpoint.stat().st_mode & 0o777 == 0o600
+    assert checkpoint.parent.stat().st_mode & 0o777 == 0o700
     public_manifest = manifest_path(partial.eval_run_id).read_text()
     assert "/durable/workspace.tar" not in public_manifest
     resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
@@ -576,11 +577,13 @@ def test_result_checkpoint_uses_the_harness_redaction_policy(
     assert scored[0].artifacts[0]["data"]["label"] == "synthetic-pattern"
 
 
+@pytest.mark.parametrize("corruption", ["json", "directory"])
 def test_corrupt_checkpoint_never_discards_artifacts_or_reexecutes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
 ):
     eval_file, probe = _fixture(tmp_path, case_count=1)
     calls = []
+    original_score = eval_runner._score_cell
 
     def execute(**kwargs):
         calls.append(kwargs["cell"].cell_id)
@@ -592,9 +595,25 @@ def test_corrupt_checkpoint_never_discards_artifacts_or_reexecutes(
     monkeypatch.setattr(eval_runner, "_score_cell", unavailable)
     partial = run_eval(eval_file, execute_cell=execute, model_probe=probe)
     [checkpoint] = (manifest_path(partial.eval_run_id).parent / "results").glob("*.json")
-    checkpoint.write_text("invalid json")
-    with pytest.raises(ValueError, match="Invalid JSON"):
-        resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+    original = checkpoint.read_bytes()
+    if corruption == "json":
+        checkpoint.write_text("invalid json")
+    else:
+        checkpoint.unlink()
+        checkpoint.mkdir()
+    resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+    assert resumed.status == "incomplete"
+    assert resumed.cells[0].status == "infrastructure_error"
+    assert resumed.cells[0].error_phase == "recovery"
+    assert resumed.cells[0].error_type == "InvalidCheckpoint"
+    assert len(calls) == 1
+    if checkpoint.is_dir():
+        checkpoint.rmdir()
+    checkpoint.write_bytes(original)
+    monkeypatch.setattr(eval_runner, "_score_cell", original_score)
+    assert resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe).status == (
+        "completed"
+    )
     assert len(calls) == 1
 
 
@@ -607,7 +626,10 @@ def test_checkpoint_survives_interruption_before_manifest_update(
 
     def execute(**kwargs):
         calls.append(kwargs["cell"].cell_id)
-        return _completed_result(**kwargs)
+        result = _completed_result(**kwargs)
+        Path(result.trace_path).unlink()
+        result.trace_path = ""
+        return result
 
     def interrupt(*args):
         raise OSError("interrupted after durable result")

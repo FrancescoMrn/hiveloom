@@ -316,7 +316,7 @@ def _save_result(manifest: EvalManifest, cell: EvalCell, result: RunResult) -> N
     )
     payload = redactor.redact(result.model_dump(mode="json"))
     path = _result_path(manifest, cell)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(payload, allow_nan=False, indent=2) + "\n")
 
 
@@ -418,10 +418,19 @@ def _run_one_cell(
     lock: threading.Lock,
 ) -> None:
     result_path = _result_path(manifest, cell)
-    if result_path.is_file():
+    if result_path.exists():
         # An invalid checkpoint is an error, not permission to bill another run
         # or silently discard callback artifacts by falling back to the trace.
-        recovered = RunResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        try:
+            recovered = RunResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            with lock:
+                cell.status = "infrastructure_error"
+                cell.error_phase = "recovery"
+                cell.error_type = "InvalidCheckpoint"
+                cell.error = "restore a valid result checkpoint before resuming this cell"
+            _save_manifest(manifest, lock)
+            return
     else:
         recovered = _result_from_trace(cell.trace_path) if cell.trace_path else None
     if recovered is not None:
