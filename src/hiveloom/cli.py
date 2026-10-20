@@ -2471,6 +2471,10 @@ def eval_run_command(
 @eval_app.command("resume")
 def eval_resume_command(
     eval_run_id: str = typer.Argument(..., help="Eval run id from the manifest."),
+    infrastructure_retries: int | None = typer.Option(
+        None, "--infrastructure-retries", min=0, max=20,
+        help="Raise the total per-cell retry ceiling; existing attempts are retained.",
+    ),
     approve: bool = typer.Option(False, "--approve", help="Trust referenced local code."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
@@ -2479,7 +2483,9 @@ def eval_resume_command(
 
     with _guard(json_output):
         approval = (lambda _path: True) if approve else _trust_prompt(json_output)
-        manifest = resume_eval(eval_run_id, approve_trust=approval)
+        manifest = resume_eval(
+            eval_run_id, approve_trust=approval, infrastructure_retries=infrastructure_retries
+        )
         _emit_eval_manifest(manifest, json_output)
 
 

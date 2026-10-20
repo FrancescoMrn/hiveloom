@@ -601,7 +601,8 @@ def test_corrupt_checkpoint_never_discards_artifacts_or_reexecutes(
     else:
         checkpoint.unlink()
         checkpoint.mkdir()
-    resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+    resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe,
+                          infrastructure_retries=2)
     assert resumed.status == "incomplete"
     assert resumed.cells[0].status == "infrastructure_error"
     assert resumed.cells[0].error_phase == "recovery"
@@ -611,7 +612,8 @@ def test_corrupt_checkpoint_never_discards_artifacts_or_reexecutes(
         checkpoint.rmdir()
     checkpoint.write_bytes(original)
     monkeypatch.setattr(eval_runner, "_score_cell", original_score)
-    assert resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe).status == (
+    assert resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe,
+                          infrastructure_retries=2).status == (
         "completed"
     )
     assert len(calls) == 1
@@ -746,3 +748,111 @@ def test_a_whole_eval_manifest_stays_readable_by_older_releases(tmp_path: Path):
     subset = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
                       case_ids=["case-0"])
     assert json.loads(manifest_path(subset.eval_run_id).read_text())["case_ids"] == ["case-0"]
+
+
+def test_resume_can_raise_retry_ceiling_without_reexecuting_completed_cells(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=2)
+    attempts: list[str] = []
+
+    def unavailable(**kwargs):
+        if kwargs['case'].id == 'case-0':
+            attempts.append(kwargs['cell'].run_id)
+            raise ConnectionError('synthetic endpoint outage')
+        return _completed_result(**kwargs)
+
+    partial = run_eval(eval_file, execute_cell=unavailable, model_probe=probe,
+                       infrastructure_retries=1)
+    completed = next(cell for cell in partial.cells if cell.status == 'completed')
+    completed_receipt = completed.model_dump(mode='json')
+    unchanged = resume_eval(partial.eval_run_id, execute_cell=unavailable, model_probe=probe)
+    assert unchanged.status == 'incomplete' and len(attempts) == 2
+
+    def repaired(**kwargs):
+        assert kwargs['case'].id == 'case-0'
+        attempts.append(kwargs['cell'].run_id)
+        return _completed_result(**kwargs)
+
+    resumed = resume_eval(partial.eval_run_id, execute_cell=repaired, model_probe=probe,
+                          infrastructure_retries=2)
+    assert resumed.status == 'completed'
+    assert resumed.infrastructure_retries == 2
+    recovered = next(cell for cell in resumed.cells if cell.cell_id != completed.cell_id)
+    assert recovered.infrastructure_attempts == 3
+    assert recovered.attempt_run_ids == attempts and attempts[-1].endswith('-a3')
+    assert next(cell for cell in resumed.cells if cell.cell_id == completed.cell_id).model_dump(
+        mode='json'
+    ) == completed_receipt
+    assert resume_eval(partial.eval_run_id, execute_cell=repaired, model_probe=probe,
+                       infrastructure_retries=2).status == 'completed'
+    assert len(attempts) == 3
+
+
+def test_resume_retry_ceiling_is_absolute_persisted_and_not_a_counter_reset(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    attempts = []
+
+    def unavailable(**kwargs):
+        attempts.append(kwargs['cell'].run_id)
+        raise ConnectionError('synthetic endpoint outage')
+
+    failed = run_eval(eval_file, execute_cell=unavailable, model_probe=probe,
+                      infrastructure_retries=1)
+    granted = resume_eval(failed.eval_run_id, execute_cell=unavailable, model_probe=probe,
+                          infrastructure_retries=3, max_cells=0)
+    assert granted.infrastructure_retries == 3 and len(attempts) == 2
+    assert load_eval_manifest(failed.eval_run_id).infrastructure_retries == 3
+    still_failed = resume_eval(failed.eval_run_id, execute_cell=unavailable, model_probe=probe)
+    assert still_failed.status == 'incomplete' and len(attempts) == 4
+    again = resume_eval(failed.eval_run_id, execute_cell=unavailable, model_probe=probe,
+                        infrastructure_retries=3)
+    assert again.status == 'incomplete' and len(attempts) == 4
+    assert again.cells[0].attempt_run_ids == attempts
+
+
+@pytest.mark.parametrize('budget', [-1, 21, True, 1.5, '2', 0])
+def test_resume_rejects_invalid_or_lower_retry_ceiling_without_writing(
+    tmp_path: Path, budget: object
+):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    partial = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
+                       infrastructure_retries=1, max_cells=0)
+    before = manifest_path(partial.eval_run_id).read_bytes()
+    with pytest.raises(ValueError, match='infrastructure retries'):
+        resume_eval(partial.eval_run_id, execute_cell=_completed_result, model_probe=probe,
+                    infrastructure_retries=budget)
+    assert manifest_path(partial.eval_run_id).read_bytes() == before
+
+
+def test_retry_ceiling_is_not_written_when_resume_identity_is_rejected(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    partial = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
+                       infrastructure_retries=1, max_cells=0)
+    before = manifest_path(partial.eval_run_id).read_bytes()
+    construct.set_value(tmp_path / 'harness', 'system_prompt', 'Changed behavior.')
+    with pytest.raises(ValueError, match='harness behavior changed'):
+        resume_eval(partial.eval_run_id, execute_cell=_completed_result, model_probe=probe,
+                    infrastructure_retries=2)
+    assert manifest_path(partial.eval_run_id).read_bytes() == before
+
+
+def test_eval_resume_cli_forwards_the_explicit_retry_ceiling(tmp_path: Path, monkeypatch):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    partial = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
+                       infrastructure_retries=1)
+    received = []
+
+    def resume(run_id, **kwargs):
+        received.append((run_id, kwargs['infrastructure_retries']))
+        return partial
+
+    monkeypatch.setattr(eval_runner, 'resume_eval', resume)
+    result = cli.invoke(app, ['eval', 'resume', partial.eval_run_id,
+                             '--infrastructure-retries', '3', '--json'])
+    assert result.exit_code == 0, result.output
+    assert received == [(partial.eval_run_id, 3)]
+    result = cli.invoke(app, ['eval', 'resume', partial.eval_run_id, '--json'])
+    assert result.exit_code == 0, result.output
+    assert received[-1] == (partial.eval_run_id, None)
+    result = cli.invoke(app, ['eval', 'resume', partial.eval_run_id,
+                             '--infrastructure-retries', '21', '--json'])
+    assert result.exit_code != 0 and len(received) == 2

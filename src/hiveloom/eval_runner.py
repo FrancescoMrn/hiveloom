@@ -650,9 +650,15 @@ def resume_eval(
     model_probe: ModelProbeResult | None = None,
     approve_trust=None,
     max_cells: int | None = None,
+    infrastructure_retries: int | None = None,
 ) -> EvalManifest:
     """Resume only unfinished cells after revalidating every content identity."""
     manifest = load_eval_manifest(eval_run_id)
+    if infrastructure_retries is not None:
+        if type(infrastructure_retries) is not int or not 0 <= infrastructure_retries <= 20:
+            raise ValueError("infrastructure retries must be an integer between 0 and 20")
+        if infrastructure_retries < manifest.infrastructure_retries:
+            raise ValueError("infrastructure retries cannot decrease the recorded ceiling")
     validated, cases = resolve_eval_spec(
         manifest.eval_spec_path, approve_trust=approve_trust
     )
@@ -677,6 +683,10 @@ def resume_eval(
         case = current.get(cell.case_key)
         if case is None or _case_digest(case) != cell.case_digest:
             raise ValueError("eval case identity changed; refusing resume")
+    if infrastructure_retries is not None:
+        # An absolute lifetime ceiling makes repeated resume requests idempotent.
+        # Keep every attempt ID and let checkpoint recovery precede execution.
+        manifest.infrastructure_retries = infrastructure_retries
     return _run_pending(
         manifest,
         validated.spec,

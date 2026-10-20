@@ -148,6 +148,24 @@ completed model result. Each retry has a distinct run ID. Harness verification
 failures, guardrail halts, and provider responses recorded as run outcomes are
 completed cells and are not reclassified as infrastructure errors.
 
+Resume keeps that lifetime retry ceiling by default. After fixing an outage,
+explicitly raise it to permit further attempts, using the CLI or SDK:
+
+```bash
+hiveloom eval resume eval_0123456789abcdef --infrastructure-retries 3 --json
+```
+
+```python
+resume_eval(eval_run_id, execute_cell=callback, infrastructure_retries=3)
+```
+
+The value is an absolute ceiling of zero to twenty retries per cell, in addition
+to the original attempt. A ceiling of three permits four total attempts; it
+does not grant three new attempts on every resume. It cannot decrease the
+recorded ceiling. Attempt counts and run IDs are retained, completed cells are
+untouched, and result checkpoints still recover without another execution.
+The new ceiling is persisted only after all resume identity checks pass.
+
 The SDK's `run_eval(..., execute_cell=callback)` accepts a complete `RunResult`
 from each callback. Before scoring, the runner atomically checkpoints that
 result under `~/.hiveloom/evals/<eval_run_id>/results/` (or the configured
