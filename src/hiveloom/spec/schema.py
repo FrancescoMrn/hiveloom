@@ -1297,8 +1297,8 @@ class ConfinementConfig(BaseModel):
             "RLIMIT_DATA bounds the heap and private writable mappings, not "
             "address space, so runtimes that reserve large virtual ranges (V8 for "
             "WebAssembly, the JVM, Go) run under the default. Shared memory is not "
-            "counted and macOS enforces neither limit; an OS sandbox or a cgroup is "
-            "the hard cap."
+            "counted and macOS enforces neither limit; only a cgroup or a container "
+            "limit is a hard cap."
         ),
     )
     max_processes: int = Field(
