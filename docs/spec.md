@@ -559,7 +559,8 @@ Two builtins start subprocesses: the `shell` tool (argv the *model* chose, from
 your allowlist) and the `command_succeeds` validator (a command *you* chose).
 The allowlist is part of the `shell` tool's description, so the model reads the
 exact argv it may use where it reads the tool; a refusal names the allowed forms
-of the command it tried, and says that pipes and extra arguments never match. A
+of the command it tried, and says that pipes are never interpreted and arguments
+outside the rules are refused. A
 rule naming a program the machine cannot start is logged as a warning when the
 tool is built (at run start and in a dry run), not at the first call. The tool
 result is `exit=N` followed by the output; any stderr comes first under a

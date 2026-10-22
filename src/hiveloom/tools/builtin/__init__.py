@@ -521,8 +521,7 @@ def _matches_shell_rule(parts: list[str], argv: list[str], allow_extra: bool) ->
 
 #: Rules spelled out in the tool description and in a refusal. A longer list
 #: is counted, not dumped: the point is to correct the model's next call.
-_RULES_SHOWN_IN_DESCRIPTION = 20
-_RULES_SHOWN_IN_REFUSAL = 12
+_RULES_SHOWN = 12
 #: Most characters of the model's command echoed back in a refusal.
 _REFUSED_COMMAND_SHOWN = 200
 _SHELL_OPERATORS = ("|", ">", "<", ";", "&&")
@@ -533,9 +532,9 @@ def _render_shell_rule(argv: list[str], allow_extra: bool) -> str:
     return f"`{joined} ...` (extra arguments allowed)" if allow_extra else f"`{joined}`"
 
 
-def _render_shell_rules(rules: list[tuple[list[str], bool]], limit: int) -> str:
-    shown = ", ".join(_render_shell_rule(argv, extra) for argv, extra in rules[:limit])
-    more = len(rules) - limit
+def _render_shell_rules(rules: list[tuple[list[str], bool]]) -> str:
+    shown = ", ".join(_render_shell_rule(argv, extra) for argv, extra in rules[:_RULES_SHOWN])
+    more = len(rules) - _RULES_SHOWN
     return f"{shown}, and {more} more" if more > 0 else shown
 
 
@@ -544,8 +543,8 @@ def _describe_allowlist(rules: list[tuple[list[str], bool]]) -> str:
         return " Disabled: no command allowlist is configured, so every command is refused."
     return (
         " Allowed commands, matched as the exact argv unless noted: "
-        f"{_render_shell_rules(rules, _RULES_SHOWN_IN_DESCRIPTION)}. "
-        "Pipes, redirections, and flags or arguments outside these rules are refused."
+        f"{_render_shell_rules(rules)}. Pipes and redirections are never interpreted; "
+        "flags or arguments outside these rules are refused."
     )
 
 
@@ -557,14 +556,17 @@ def _allowlist_refusal(command: str, parts: list[str], rules: list[tuple[list[st
             shown = shown[:_REFUSED_COMMAND_SHOWN] + "..."
         head = (
             f"command '{shown}' is not in the allowlist; the allowed forms of "
-            f"'{parts[0]}': {_render_shell_rules(same, _RULES_SHOWN_IN_REFUSAL)}."
+            f"'{parts[0]}': {_render_shell_rules(same)}."
         )
     else:
         head = (
             f"command '{parts[0]}' is not in the allowlist; allowed: "
-            f"{_render_shell_rules(rules, _RULES_SHOWN_IN_REFUSAL)}."
+            f"{_render_shell_rules(rules)}."
         )
-    tail = " Rules match the exact argv: no extra flags, no pipes, no shell operators."
+    tail = (
+        " Rules match the exact argv unless marked as allowing extra arguments; pipes "
+        "and shell operators are never interpreted."
+    )
     if any(op in token for token in parts for op in _SHELL_OPERATORS):
         tail += (
             " A pipe or another shell operator is not a command: run the first command "

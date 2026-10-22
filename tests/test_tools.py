@@ -540,6 +540,8 @@ def test_shell_refusal_lists_the_allowlist_for_an_unknown_command(tmp_path: Path
     message = str(refused.value)
     assert "'cd' is not in the allowlist" in message
     assert "`ls workspace`, `./check`, `echo ...` (extra arguments allowed)" in message
+    # One rule allows extra arguments, so the refusal must not claim none do.
+    assert "no extra flags" not in message
 
 
 def test_shell_refusal_explains_that_a_pipe_is_not_a_command(tmp_path: Path):
