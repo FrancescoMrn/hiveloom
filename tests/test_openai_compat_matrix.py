@@ -508,6 +508,9 @@ def test_a_response_cut_off_mid_body_is_retried_not_fatal():
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -561,6 +564,9 @@ def test_an_error_inside_a_200_body_is_retried():
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -608,6 +614,9 @@ def test_a_non_transient_error_body_is_not_retried_forever():
 
         def __exit__(self, *exc):
             return False
+
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
 
         def read(self):
             calls["n"] += 1
@@ -677,6 +686,9 @@ def test_embedded_context_overflow_is_recoverable(monkeypatch):
         def __exit__(self, *exc):
             pass
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             return json.dumps({"error": {"code": 400,
                                         "message": "maximum context length exceeded"}}).encode()
@@ -707,6 +719,9 @@ def _serve_bodies(monkeypatch, *bodies: bytes) -> dict[str, int]:
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             return bodies[min(calls["n"], len(bodies)) - 1]
@@ -732,6 +747,8 @@ def _complete(provider: OpenAICompatProvider, **config) -> ModelResponse:
     [
         pytest.param(b'{"choices": [{"finish_reason": "stop", "mess', id="truncated_json"),
         pytest.param(b"\xff\xfe\x00not utf-8", id="non_utf8"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b"\n", id="whitespace_only"),
     ],
 )
 def test_undecodable_body_is_retried(monkeypatch, first_body):
@@ -756,7 +773,8 @@ def test_undecodable_body_every_time_names_the_failure_and_the_body(monkeypatch)
     [
         pytest.param(b"<!doctype html><title>Sign in</title>", "not JSON", id="html"),
         pytest.param(b"Unauthorized", "not JSON", id="plain_text"),
-        pytest.param(b"", "not JSON", id="empty"),
+        pytest.param(b"\n  <!doctype html>", "not JSON", id="html_after_whitespace"),
+        pytest.param(b"1 error", "not JSON", id="value_then_junk"),
         pytest.param(b'["not", "a", "completion"]', "JSON list instead of an object", id="list"),
         pytest.param(b"null", "JSON NoneType instead of an object", id="null"),
     ],

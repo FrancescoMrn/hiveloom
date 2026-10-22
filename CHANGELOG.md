@@ -7,11 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The OpenAI-compatible provider streams completions. `timeout_seconds` now
+  bounds the wait for the first token and the idle gap between tokens instead
+  of the whole generation, so a local model writing a long file at a few
+  tokens a second no longer times out at 120 s and gets the same reply
+  generated up to four times. A stall or a cut after the first token is
+  reported, never retried; an error the server reports mid-stream is
+  classified like an error body. A gateway that rejects `stream_options` is
+  asked again without it. The chunks are reassembled and read by the same
+  normalizer as a one-shot reply; `stream: false` on the models.yaml entry
+  keeps the one-shot request for a gateway that cannot stream.
+
 ### Fixed
 
 - The OpenAI-compatible provider retries an HTTP 200 whose body is JSON cut
-  off before its end or bytes that are not UTF-8 the way it retries a dropped
-  connection, instead of ending the run with a bare `JSONDecodeError`. A body
+  off before its end, empty, or bytes that are not UTF-8 the way it retries a
+  dropped connection, instead of ending the run with a bare `JSONDecodeError`. A body
   that is not JSON at all (a login page behind a wrong `base_url`) or JSON that
   is not an object fails at once with a readable reason naming the start of
   the body, instead of four attempts or an `AttributeError`.

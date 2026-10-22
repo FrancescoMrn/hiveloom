@@ -499,6 +499,9 @@ def test_openai_compat_retries_transient_transport_failure(monkeypatch):
         def __exit__(self, *_args):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             return b'{"ok": true}'
 
