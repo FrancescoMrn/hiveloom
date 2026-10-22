@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import socket
+import sys
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -436,6 +437,7 @@ class ShellTool(Tool):
             )
         if (
             result.returncode != 0
+            and _MEMORY_LIMIT_APPLIES
             and self._confinement.max_memory_mb
             and _ALLOCATION_FAILURE.search(result.stderr)
         ):
@@ -546,10 +548,14 @@ _SHELL_OPERATORS = ("|", ">", "<", ";", "&&")
 #: limit kills with a signal says nothing, and only stderr is read, so a test
 #: suite that prints the phrase on stdout earns no note.
 _ALLOCATION_FAILURE = re.compile(
-    r"cannot allocate|out of memory|ENOMEM|allocation failed|OutOfMemoryError|"
-    r"MemoryError|memory allocation of",
+    r"cannot allocate|could not allocate|unable to grow|out of memory|ENOMEM|"
+    r"allocation failed|bad_alloc|OutOfMemoryError|MemoryError|memory allocation of",
     re.IGNORECASE,
 )
+#: Linux enforces ``RLIMIT_DATA``; macOS refuses the ``setrlimit`` call
+#: outright (EINVAL). Elsewhere the setting cannot be what killed a command,
+#: and the note would point the operator at a knob that does nothing.
+_MEMORY_LIMIT_APPLIES = sys.platform.startswith("linux")
 
 
 def _render_shell_rule(argv: list[str], allow_extra: bool) -> str:
