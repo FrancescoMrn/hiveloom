@@ -47,7 +47,7 @@ from hiveloom.confine import (
     run_confined,
 )
 from hiveloom.context.notes import DEFAULT_MAX_NOTES, NotesTool
-from hiveloom.context.spill import SpillError, compile_pattern
+from hiveloom.context.spill import TRANSFORM_MAX_PATTERN_CHARS, SpillError, compile_pattern
 from hiveloom.package import is_sensitive_path
 from hiveloom.private import RunBoundary, env_files, is_private
 from hiveloom.spec.schema import (
@@ -315,18 +315,36 @@ class _ScanLimit(Exception):
     """A walk visited more entries than one call may scan."""
 
 
+#: The body of ``fnmatch.translate``'s output: ``(?s:BODY)\\Z`` up to Python
+#: 3.13, ``(?s:BODY)\\z`` from 3.14.
+_TRANSLATED_GLOB = re.compile(r"\(\?s:(.*)\)\\[Zz]", re.DOTALL)
+
+
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """``fnmatch`` rules, where ``*`` and ``?`` span ``/``, plus ``**/`` for zero
     or more directories (``src/**/x.py`` matches ``src/x.py`` and ``src/a/x.py``,
-    never ``src/ax.py``)."""
+    never ``src/ax.py``).
+
+    Bounded like a grep pattern: the same length cap, and runs of ``**/`` are
+    collapsed first, because each one becomes an optional ``.*`` group and a
+    chain of those backtracks exponentially on a path that does not match.
+    The nested-quantifier guard does not apply: a translated glob never
+    repeats a group, since ``fnmatch`` escapes every literal.
+    """
+    if not pattern or len(pattern) > TRANSFORM_MAX_PATTERN_CHARS:
+        raise ToolError(
+            f"glob needs a pattern of 1 to {TRANSFORM_MAX_PATTERN_CHARS} characters"
+        )
+    while "**/**/" in pattern:
+        pattern = pattern.replace("**/**/", "**/")
     pieces: list[str] = []
     for index, segment in enumerate(pattern.split("**/")):
         if index:
             pieces.append("(?:.*/)?")
-        translated = fnmatch.translate(segment)
-        if not (translated.startswith("(?s:") and translated.endswith(")\\Z")):
-            raise RuntimeError(f"unexpected fnmatch.translate output: {translated!r}")
-        pieces.append(translated[len("(?s:") : -len(")\\Z")])
+        translated = _TRANSLATED_GLOB.fullmatch(fnmatch.translate(segment))
+        if translated is None:  # pragma: no cover - a new fnmatch output shape
+            raise RuntimeError("unexpected fnmatch.translate output")
+        pieces.append(translated.group(1))
     return re.compile("(?s:" + "".join(pieces) + ")\\Z")
 
 
@@ -396,15 +414,19 @@ class _DiscoveryTool(Tool):
         queue = deque([(start, 0)])
         while queue:
             directory, depth = queue.popleft()
+            entries: list[os.DirEntry[str]] = []
             try:
                 with os.scandir(directory) as it:
-                    entries = sorted(it, key=lambda e: e.name)
+                    for entry in it:
+                        # Counted while reading, so one huge directory is not
+                        # loaded whole before the cap can stop the walk.
+                        visited += 1
+                        if visited > _DISCOVERY_MAX_VISITED:
+                            raise _ScanLimit
+                        entries.append(entry)
             except OSError:
                 continue
-            for entry in entries:
-                visited += 1
-                if visited > _DISCOVERY_MAX_VISITED:
-                    raise _ScanLimit
+            for entry in sorted(entries, key=lambda e: e.name):
                 candidate = Path(entry.path)
                 is_dir = entry.is_dir()
                 if not self._visible(candidate, private, is_dir=is_dir):
@@ -416,11 +438,12 @@ class _DiscoveryTool(Tool):
                     queue.append((candidate, depth + 1))
 
     def _files(self, start: Path, private: list[Path] | None):
+        """Regular files only: a named pipe or a socket would block the read."""
         if start.is_file():
             yield start
             return
         for candidate, is_dir in self._walk(start, private, max_depth=None):
-            if not is_dir:
+            if not is_dir and candidate.is_file():
                 yield candidate
 
 
@@ -482,8 +505,6 @@ class GlobTool(_DiscoveryTool):
     }
 
     def run(self, pattern: str = "", path: str = ".", **_: Any) -> str:
-        if not pattern:
-            raise ToolError("glob needs a non-empty pattern")
         wanted = _glob_regex(pattern)
         private = self._private()
         target = self._resolve(path, private)
@@ -585,11 +606,11 @@ def _text_file(candidate: Path) -> str | None:
         if candidate.stat().st_size > _GREP_MAX_FILE_BYTES:
             return None
         with candidate.open("rb") as handle:
-            head = handle.read(8192)
-            if b"\x00" in head:
-                return None
-            data = head + handle.read()
+            # Bounded read rather than trusting the size just measured.
+            data = handle.read(_GREP_MAX_FILE_BYTES + 1)
     except OSError:
+        return None
+    if len(data) > _GREP_MAX_FILE_BYTES or b"\x00" in data[:8192]:
         return None
     return data.decode("utf-8", errors="replace")
 
