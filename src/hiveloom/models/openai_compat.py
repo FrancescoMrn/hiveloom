@@ -9,6 +9,16 @@ Uses only the standard library (urllib), mirroring the builtin ``http_get``
 tool: no SDK dependency, and hiveloom's normalized message format converts
 cleanly in both directions. Transport errors surface as exceptions; the agent
 loop converts them into an ``error`` run status.
+
+Completions are streamed. A local model generating at a few tokens a second
+needs minutes for a long reply, and a single read timeout on a one-shot
+request had to cover the whole generation, so the client gave up, retried,
+and the server generated the same reply again. With streaming the socket
+timeout bounds the wait for the first chunk and the gap between chunks, and a
+stall or a cut after the first chunk is reported rather than retried. The chunks are
+reassembled into the one-shot response shape and go through the same
+normalizer, so a streamed reply and a ``stream: false`` reply are read the
+same way.
 """
 
 from __future__ import annotations
@@ -90,6 +100,14 @@ class _UndecodableBody(RuntimeError):
     """A 200 whose JSON body broke off before its end, or whose bytes are not UTF-8."""
 
 
+class _StreamBroken(RuntimeError):
+    """The stream failed after its first chunk: the reply was in progress, not lost."""
+
+
+class _UsageOptionRejected(RuntimeError):
+    """The server refused ``stream_options`` as an unknown field."""
+
+
 def _decode_body(raw: bytes) -> dict[str, Any]:
     """The JSON object a 200 must carry.
 
@@ -117,6 +135,142 @@ def _decode_body(raw: bytes) -> dict[str, Any]:
     return body
 
 
+def _read_stream(resp: Any) -> dict[str, Any]:
+    """Read a server-sent-event stream into the one-shot response shape.
+
+    Iterating the response reads one line at a time, each read bounded by the
+    socket timeout, so the timeout is the wait for the first chunk and the
+    idle gap between chunks. A failure before the first chunk propagates as
+    it would on a one-shot request (retryable). After the first chunk, a
+    failure, or a clean close before any finish reason or ``[DONE]``, raises
+    :class:`_StreamBroken`: the generation was under way, what arrived is a
+    reply the model never finished, and running it again would only repeat
+    the cost. An error the server itself reports as an event is different:
+    it stopped generating and said why, so the error rides into the
+    assembled body and is classified like a one-shot error body. A body that
+    is not a stream at all (an aggregator's one-shot error, a server that
+    ignored ``stream``) is decoded whole, so it is classified exactly like a
+    one-shot reply.
+    """
+    chunks: list[dict[str, Any]] = []
+    other: list[bytes] = []
+    done = False
+    try:
+        for raw in resp:
+            line = raw.strip()
+            if not line or line.startswith(b":"):
+                continue
+            if not line.startswith(b"data:"):
+                other.append(raw)
+                continue
+            payload = line[len(b"data:") :].strip()
+            if payload == b"[DONE]":
+                done = True
+                break
+            if payload:
+                chunks.append(_decode_body(payload))
+    except (OSError, HTTPException, RuntimeError) as exc:
+        # A dropped connection, a body cut off, a line that is not a chunk:
+        # on its own before the first chunk, a broken stream after it.
+        if chunks:
+            raise _StreamBroken(f"after {_count(chunks)}: {exc}") from exc
+        raise
+    if not chunks:
+        if done:
+            raise RuntimeError("provider returned a stream with no completion")
+        return _decode_body(b"".join(other))
+    data = _assemble_stream(chunks)
+    if not done and data["choices"][0]["finish_reason"] is None and "error" not in data:
+        raise _StreamBroken(f"after {_count(chunks)}: the stream ended without a finish reason")
+    return data
+
+
+def _count(chunks: list[Any]) -> str:
+    return f"{len(chunks)} chunk" if len(chunks) == 1 else f"{len(chunks)} chunks"
+
+
+# Top-level keys of a chunk the one-shot reply would carry. ``error`` rides
+# along so a failure the server reports mid-stream (OpenRouter, vLLM) is
+# classified exactly like an error body.
+_ENVELOPE_KEYS = (
+    "id", "model", "provider", "service_tier", "system_fingerprint", "currency", "error"
+)
+
+
+def _assemble_stream(chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold streamed deltas into the ``choices[0].message`` a one-shot reply carries."""
+    text: list[str] = []
+    reasoning: dict[str, list[str]] = {}
+    details: list[Any] = []
+    calls: dict[int, dict[str, Any]] = {}  # arguments buffered as a list until the end
+    finish: str | None = None
+    usage: dict[str, Any] | None = None
+    envelope: dict[str, Any] = {}
+    for chunk in chunks:
+        for key in _ENVELOPE_KEYS:
+            if key not in envelope and chunk.get(key) is not None:
+                envelope[key] = chunk[key]
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        if choice.get("finish_reason"):
+            finish = choice["finish_reason"]
+        delta = choice.get("delta") or {}
+        if isinstance(delta.get("content"), str):
+            text.append(delta["content"])
+        for key in ("reasoning", "reasoning_content"):
+            if isinstance(delta.get(key), str):
+                reasoning.setdefault(key, []).append(delta[key])
+        if isinstance(delta.get("reasoning_details"), list):
+            details.extend(delta["reasoning_details"])
+        for call in delta.get("tool_calls") or []:
+            function = call.get("function") or {}
+            index = call.get("index")
+            call_id = call.get("id")
+            if not isinstance(index, int):
+                # A server that omits the index (Ollama) sends each call whole:
+                # a chunk naming a call starts one, anything else continues the last.
+                starts = bool(call_id or function.get("name"))
+                index = len(calls) if starts or not calls else len(calls) - 1
+            elif call_id and index in calls and calls[index]["id"] not in ("", call_id):
+                # A server that puts index 0 on every call sends each one
+                # whole under its own id: a new id is a new call.
+                index = max(calls) + 1
+            entry = calls.setdefault(
+                index, {"id": "", "type": "function", "function": {"name": "", "arguments": []}}
+            )
+            if call_id:
+                entry["id"] = call_id
+            if function.get("name") and not entry["function"]["name"]:
+                # Sent once by the protocol, repeated on every fragment by some servers.
+                entry["function"]["name"] = function["name"]
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                entry["function"]["arguments"].append(arguments)
+            elif arguments is not None:
+                # Ollama streams the arguments as one object, not as text.
+                entry["function"]["arguments"].append(json.dumps(arguments))
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(text) or None}
+    for key, parts in reasoning.items():
+        message[key] = "".join(parts)
+    if details:
+        message["reasoning_details"] = details
+    if calls:
+        for entry in calls.values():
+            entry["function"]["arguments"] = "".join(entry["function"]["arguments"])
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+    data: dict[str, Any] = {
+        **envelope,
+        "choices": [{"index": 0, "finish_reason": finish, "message": message}],
+    }
+    if usage is not None:
+        data["usage"] = usage
+    return data
+
+
 class OpenAICompatProvider(ModelProvider):
     """Runs the harness model against an OpenAI-compatible ``/chat/completions``."""
 
@@ -126,11 +280,14 @@ class OpenAICompatProvider(ModelProvider):
         api_key: str | None = None,
         *,
         timeout: int = 120,
+        stream: bool = True,
         sleep=time.sleep,
     ):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self._stream = stream
+        self._usage_chunk = True  # cleared once a server rejects stream_options
         self._sleep = sleep
 
     def complete(
@@ -152,7 +309,18 @@ class OpenAICompatProvider(ModelProvider):
         }
         if tools:
             payload["tools"] = [to_openai_tool(t) for t in tools]
-        data = self._post("/chat/completions", payload)
+        if self._stream:
+            payload["stream"] = True
+            if self._usage_chunk:
+                payload["stream_options"] = {"include_usage": True}
+        try:
+            data = self._post("/chat/completions", payload)
+        except _UsageOptionRejected:
+            # A strict gateway that streams but refuses the usage option as an
+            # unknown field: ask again without it, and never send it again.
+            self._usage_chunk = False
+            del payload["stream_options"]
+            data = self._post("/chat/completions", payload)
         return normalize_openai_response(
             data,
             estimated_input_tokens=self.count_tokens(system=system, messages=messages, tools=tools),
@@ -174,7 +342,11 @@ class OpenAICompatProvider(ModelProvider):
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
-                    body = _decode_body(resp.read())
+                    body = (
+                        _read_stream(resp)
+                        if payload.get("stream")
+                        else _decode_body(resp.read())
+                    )
                 embedded = _embedded_error(body)
                 if embedded is None:
                     return body
@@ -189,12 +361,20 @@ class OpenAICompatProvider(ModelProvider):
                     raise ContextOverflowError(message)
                 last_exc = RuntimeError(f"provider returned an error body: {message}")
                 retryable = code == 429 or 500 <= code < 600
+            except _StreamBroken as exc:
+                # The generation was under way: a retry would re-run it in full
+                # on the server for a reply that broke once already.
+                raise RuntimeError(f"provider stream broke {exc}") from exc
             except urlerror.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")[:500]
+                full = exc.read().decode("utf-8", errors="replace")
+                body = full[:500]
                 if exc.code == 400 and _is_overflow(body):
                     raise ContextOverflowError(f"provider returned HTTP 400: {body}") from exc
                 last_exc = RuntimeError(f"provider returned HTTP {exc.code}: {body}")
                 retryable = exc.code == 429 or 500 <= exc.code < 600
+                rejected = exc.code in (400, 422) and "stream_options" in full
+                if rejected and "stream_options" in payload:
+                    raise _UsageOptionRejected(body) from exc
             except (urlerror.URLError, TimeoutError, ConnectionError, HTTPException) as exc:
                 # HTTPException covers http.client.IncompleteRead: a response
                 # cut off mid-body. It inherits from neither URLError nor

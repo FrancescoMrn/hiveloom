@@ -508,6 +508,9 @@ def test_a_response_cut_off_mid_body_is_retried_not_fatal():
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -561,6 +564,9 @@ def test_an_error_inside_a_200_body_is_retried():
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -608,6 +614,9 @@ def test_a_non_transient_error_body_is_not_retried_forever():
 
         def __exit__(self, *exc):
             return False
+
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
 
         def read(self):
             calls["n"] += 1
@@ -677,6 +686,9 @@ def test_embedded_context_overflow_is_recoverable(monkeypatch):
         def __exit__(self, *exc):
             pass
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             return json.dumps({"error": {"code": 400,
                                         "message": "maximum context length exceeded"}}).encode()
@@ -706,6 +718,9 @@ def _serve_bodies(monkeypatch, *bodies: bytes) -> dict[str, int]:
 
         def __exit__(self, *exc):
             return False
+
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
 
         def read(self):
             calls["n"] += 1
