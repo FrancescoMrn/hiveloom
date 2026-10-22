@@ -22,6 +22,7 @@ from hiveloom.tools.registry import (
     Tool,
     ToolError,
     ToolRegistry,
+    ToolResult,
     build_registry,
     schema_from_function,
 )
@@ -753,6 +754,23 @@ def test_tool_errors_are_not_retried_unless_marked_transient():
     assert flaky.is_error and flaky.retryable
     crashed = registry.dispatch(ToolCall(id="3", name="crashing", input={}))
     assert crashed.is_error and not crashed.retryable
+
+
+def test_a_returned_error_result_is_deterministic_unless_it_opts_in():
+    def lookup(key: str) -> ToolResult:
+        return ToolResult(content="record not found", is_error=True)
+
+    def fetch(key: str) -> ToolResult:
+        return ToolResult(content="upstream timed out", is_error=True, retryable=True)
+
+    registry = ToolRegistry()
+    registry.register(FunctionTool(lookup, "lookup", "Lookup.", []))
+    registry.register(FunctionTool(fetch, "fetch", "Fetch.", []))
+
+    missing = registry.dispatch(ToolCall(id="1", name="lookup", input={"key": "k"}))
+    assert missing.is_error and not missing.retryable
+    timed_out = registry.dispatch(ToolCall(id="2", name="fetch", input={"key": "k"}))
+    assert timed_out.is_error and timed_out.retryable
 
 
 def test_http_get_network_failures_are_transient(tmp_path: Path, monkeypatch):

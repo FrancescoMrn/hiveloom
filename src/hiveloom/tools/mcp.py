@@ -299,9 +299,6 @@ class McpToolAdapter(Tool):
             content=_flatten_call_tool_result(result),
             is_error=bool(result.is_error),
             artifacts=_artifacts_from(result),
-            # An error the tool itself reported is its verdict on these
-            # arguments, not a dropped call.
-            retryable=False,
         )
 
 

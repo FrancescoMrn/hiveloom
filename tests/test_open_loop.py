@@ -184,6 +184,37 @@ def test_retry_once_repeats_a_transient_tool_error(harness_dir: Path):
     assert _tool_result_blocks(provider)[0]["content"] == "answer"
 
 
+_NOT_FOUND_TOOL = '''
+from hiveloom.tools import tool
+from hiveloom.tools.registry import ToolResult
+
+_calls = {"n": 0}
+
+
+@tool(description="Reports a missing record as an error result.")
+def lookup(key: str = "") -> ToolResult:
+    _calls["n"] += 1
+    return ToolResult(content=f"record not found (call {_calls['n']})", is_error=True)
+'''
+
+
+def test_retry_once_does_not_repeat_a_returned_error_result(harness_dir: Path):
+    _no_verify(harness_dir)
+    (harness_dir / "tools").mkdir(exist_ok=True)
+    (harness_dir / "tools" / "lookup.py").write_text(_NOT_FOUND_TOOL, encoding="utf-8")
+    construct.add_tool(harness_dir, code="tools/lookup.py:lookup", description="Lookup.")
+    construct.set_field(harness_dir, "loop.on_tool_error", "retry_once")
+    provider = FakeModelProvider(
+        [tool_response("lookup", {"key": "k"}), text_response("done")]
+    )
+
+    result = runner.run_harness(harness_dir, "go", provider=provider)
+
+    assert result.status == "success"
+    assert "tool_retry" not in [event["type"] for event in _events(result.trace_path)]
+    assert _tool_result_blocks(provider)[0]["content"] == "record not found (call 1)"
+
+
 def test_max_turns_preserves_the_last_verification_verdict(harness_dir: Path):
     construct.add_validator(harness_dir, builtin="regex_match", pattern="^good$")
     construct.set_field(harness_dir, "loop.max_turns", "1")

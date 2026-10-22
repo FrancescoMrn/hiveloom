@@ -104,11 +104,11 @@ class ToolResult(BaseModel):
     is_error: bool = False
     terminate: bool = False
     artifacts: list[Artifact] = Field(default_factory=list)
-    # Set False on an error that will deterministically recur, so
-    # `loop.on_tool_error: retry_once` does not repeat it. A refused playbook
-    # switch is a policy decision, not a flaky call: retrying re-runs the gate
-    # hook's side effects and double-counts the refusal in run evidence.
-    retryable: bool = True
+    # An error is deterministic unless the tool says otherwise: only a result
+    # (or a ToolError) marked True earns the one repeat under
+    # `loop.on_tool_error: retry_once`, so a refusal, a missing record or a
+    # policy decision reaches the model at once instead of running twice.
+    retryable: bool = False
 
 
 class Tool(ABC):
@@ -365,11 +365,9 @@ class ToolRegistry:
         """
         tool = self._tools.get(call.name)
         if tool is None:
-            return ToolResult(content=f"unknown tool '{call.name}'", is_error=True, retryable=False)
+            return ToolResult(content=f"unknown tool '{call.name}'", is_error=True)
         if call.name not in self._active:
-            return ToolResult(
-                content=f"tool '{call.name}' is inactive", is_error=True, retryable=False
-            )
+            return ToolResult(content=f"tool '{call.name}' is inactive", is_error=True)
         try:
             kwargs = tool.prepare(dict(call.input))
             if tool.wants_run_context:
@@ -400,11 +398,8 @@ class ToolRegistry:
             return ToolResult(content=f"tool error: {exc}", is_error=True, retryable=exc.retryable)
         except Exception as exc:  # noqa: BLE001 - tools must never crash the loop
             # A crash is a bug or a bad input, not a flaky call: the same
-            # arguments crash the same way again. Only a ToolError a tool marks
-            # transient earns the one retry.
-            return ToolResult(
-                content=f"tool raised {type(exc).__name__}: {exc}", is_error=True, retryable=False
-            )
+            # arguments crash the same way again.
+            return ToolResult(content=f"tool raised {type(exc).__name__}: {exc}", is_error=True)
 
     @staticmethod
     def _expand_handles(
