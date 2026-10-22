@@ -663,12 +663,13 @@ def test_the_memory_limit_is_rlimit_data_not_address_space():
 
 def test_a_large_address_space_reservation_runs_under_the_memory_limit(tmp_path: Path):
     # What V8 does for WebAssembly, a JVM for its heap, Go for its arenas:
-    # reserve far more address space than is ever touched. A 1 GiB PROT_NONE
-    # reservation must succeed under a 256 MiB memory limit.
+    # reserve far more address space than is ever touched. A private 1 GiB
+    # PROT_NONE reservation must succeed under a 256 MiB memory limit.
     import sys
 
+    script = "import mmap; mmap.mmap(-1, 1 << 30, flags=mmap.MAP_PRIVATE, prot=0)"
     result = run_confined(
-        [sys.executable, "-c", "import mmap; mmap.mmap(-1, 1 << 30, prot=0)"],
+        [sys.executable, "-c", script],
         cwd=tmp_path,
         config=ConfinementConfig(mode="off", max_memory_mb=256),
     )
