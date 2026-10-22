@@ -57,7 +57,10 @@ the `--host` shorthand): `hiveloom add tool --builtin http_get --host example.co
 --host '*.example.org' --json`. Omit `--host` to require an interactive decision
 for each new hostname during a plain CLI run.
 
-- **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
+- **Tools:** `file_read`, `file_write` (sandboxed to the working dir),
+  `list_dir`, `glob`, `grep` (read-only discovery under the same sandbox:
+  runtime-private paths and dependency or build trees never appear, and every
+  result is bounded), `shell`
   (allowlist-only, disabled without one), `http_get` (declared hosts or a
   run-time operator decision), `load_skill` (reads a declared skill in full —
   progressive disclosure without a filesystem reader),
