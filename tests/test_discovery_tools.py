@@ -251,8 +251,8 @@ def test_glob_translation_accepts_both_fnmatch_trailers(tmp_path: Path, monkeypa
 
     (tmp_path / "a.py").write_text("", encoding="utf-8")
     real = fnmatch.translate
+    assert real("x")[-2:] in ("\\Z", "\\z")
     for tail in ("\\Z", "\\z"):
-        assert real("x").endswith("\\Z")
         monkeypatch.setattr(
             builtin.fnmatch, "translate", lambda s, tail=tail: real(s)[:-2] + tail
         )
