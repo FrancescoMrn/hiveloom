@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import shlex
+import shutil
 import socket
 import threading
 from collections.abc import Callable
@@ -45,6 +47,8 @@ from hiveloom.spec.schema import (
     MemoryEntry,
 )
 from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
+
+log = logging.getLogger(__name__)
 
 _MAX_HTTP_BYTES = 200_000
 
@@ -321,6 +325,15 @@ class ShellTool(Tool):
     ):
         self._base = base
         self._allowed = [_parse_shell_rule(rule) for rule in allowed]
+        # A rule naming a program this machine cannot start fails only when the
+        # model calls it, as "command could not be started". Say so when the
+        # harness loads instead, where the operator can still fix the image.
+        missing = _missing_binaries(base, self._allowed)
+        if missing:
+            log.warning(
+                "shell allowlist names commands this machine cannot start: %s",
+                ", ".join(missing),
+            )
         self._confinement = confinement or ConfinementConfig()
         self._trace_dir = trace_dir
         # The runtime's own state is not part of the machine a spawned command
@@ -334,7 +347,10 @@ class ShellTool(Tool):
             self._masked.append(trace_root)
         entry = BUILTIN_TOOLS["shell"]
         self.name = "shell"
-        self.description = entry.description
+        # The allowlist is part of the tool's contract, so the model reads it
+        # where it reads the tool: a refusal then corrects a guess rather than
+        # teaching the model that the command does not exist.
+        self.description = entry.description + _describe_allowlist(self._allowed)
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
@@ -370,7 +386,7 @@ class ShellTool(Tool):
             None,
         )
         if matched is None:
-            raise ToolError(f"command '{parts[0]}' is not in the allowlist")
+            raise ToolError(_allowlist_refusal(command, parts, self._allowed))
         if (
             matched[1]
             and parts[0] not in PORTABLE_VARIABLE_ARGV
@@ -414,7 +430,14 @@ class ShellTool(Tool):
                 "and tail shown fit the configured budget"
             )
         suffix = f"\n[{'; '.join(notes)}]" if notes else ""
-        return f"exit={result.returncode}\n{result.output}{suffix}"
+        body = result.stdout
+        if result.stderr:
+            # stderr first, labelled: a test runner's summary is the last thing
+            # on stdout, and a bounded preview keeps the tail of the whole
+            # result. With stderr appended after it, that tail showed log noise.
+            stderr = result.stderr.rstrip("\n")
+            body = f"[stderr]\n{stderr}\n" + (f"[stdout]\n{result.stdout}" if result.stdout else "")
+        return f"exit={result.returncode}\n{body}{suffix}"
 
 
 def _refuse_runtime_state_impl(
@@ -494,6 +517,77 @@ def _parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
 
 def _matches_shell_rule(parts: list[str], argv: list[str], allow_extra: bool) -> bool:
     return parts[: len(argv)] == argv and (allow_extra or len(parts) == len(argv))
+
+
+#: Rules spelled out in the tool description and in a refusal. A longer list
+#: is counted, not dumped: the point is to correct the model's next call.
+_RULES_SHOWN_IN_DESCRIPTION = 20
+_RULES_SHOWN_IN_REFUSAL = 12
+#: Most characters of the model's command echoed back in a refusal.
+_REFUSED_COMMAND_SHOWN = 200
+_SHELL_OPERATORS = ("|", ">", "<", ";", "&&")
+
+
+def _render_shell_rule(argv: list[str], allow_extra: bool) -> str:
+    joined = shlex.join(argv)
+    return f"`{joined} ...` (extra arguments allowed)" if allow_extra else f"`{joined}`"
+
+
+def _render_shell_rules(rules: list[tuple[list[str], bool]], limit: int) -> str:
+    shown = ", ".join(_render_shell_rule(argv, extra) for argv, extra in rules[:limit])
+    more = len(rules) - limit
+    return f"{shown}, and {more} more" if more > 0 else shown
+
+
+def _describe_allowlist(rules: list[tuple[list[str], bool]]) -> str:
+    if not rules:
+        return " Disabled: no command allowlist is configured, so every command is refused."
+    return (
+        " Allowed commands, matched as the exact argv unless noted: "
+        f"{_render_shell_rules(rules, _RULES_SHOWN_IN_DESCRIPTION)}. "
+        "Pipes, redirections, and flags or arguments outside these rules are refused."
+    )
+
+
+def _allowlist_refusal(command: str, parts: list[str], rules: list[tuple[list[str], bool]]) -> str:
+    same = [(argv, extra) for argv, extra in rules if argv[0] == parts[0]]
+    if same:
+        shown = command.strip()
+        if len(shown) > _REFUSED_COMMAND_SHOWN:
+            shown = shown[:_REFUSED_COMMAND_SHOWN] + "..."
+        head = (
+            f"command '{shown}' is not in the allowlist; the allowed forms of "
+            f"'{parts[0]}': {_render_shell_rules(same, _RULES_SHOWN_IN_REFUSAL)}."
+        )
+    else:
+        head = (
+            f"command '{parts[0]}' is not in the allowlist; allowed: "
+            f"{_render_shell_rules(rules, _RULES_SHOWN_IN_REFUSAL)}."
+        )
+    tail = " Rules match the exact argv: no extra flags, no pipes, no shell operators."
+    if any(op in token for token in parts for op in _SHELL_OPERATORS):
+        tail += (
+            " A pipe or another shell operator is not a command: run the first command "
+            "alone, and search its stored result with search_tool_result if it is large."
+        )
+    return head + tail
+
+
+def _missing_binaries(base: Path, rules: list[tuple[list[str], bool]]) -> list[str]:
+    """Programs the allowlist names that this machine cannot start, in rule order.
+
+    A path (``./check``, ``/usr/bin/git``) is checked relative to the harness
+    directory; a bare name against this process's PATH, which is what the
+    scrubbed child environment inherits. Both must also be executable.
+    """
+    missing: list[str] = []
+    for argv, _ in rules:
+        name = argv[0]
+        if name in missing:
+            continue
+        if shutil.which(str(base / name) if "/" in name else name) is None:
+            missing.append(name)
+    return missing
 
 
 class HttpGetTool(Tool):

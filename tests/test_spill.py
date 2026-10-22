@@ -976,3 +976,19 @@ def test_raw_grep_refuses_rather_than_truncates(tmp_path):
 
     with pytest.raises(SpillError, match="matched more than 10 lines"):
         store.transform(handle, "grep", {"pattern": "ERROR", "raw": True, "max_matches": 10})
+
+
+def test_the_spill_marker_offers_transform_result_when_transforms_are_on(tmp_path: Path):
+    record = _store(tmp_path).spill(tool="t", content="x" * 500)
+    assert 'transform_result(handle="' in record.preview
+    assert 'op="grep"' in record.preview
+
+
+def test_the_spill_marker_omits_transform_result_when_transforms_are_off(tmp_path: Path):
+    config = ToolResultsConfig(
+        max_inline_bytes=200, preview_head_bytes=20, preview_tail_bytes=10, transforms=False
+    )
+    store = SpillStore(tmp_path / "spill", run_id="run_1", config=config)
+    record = store.spill(tool="t", content="x" * 500)
+    assert "transform_result" not in record.preview
+    assert "search_tool_result" in record.preview
