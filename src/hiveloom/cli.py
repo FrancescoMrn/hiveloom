@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal as os_signal  # `signal` is a CLI command below
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +163,66 @@ def _guard(json_output: bool):
             _fail(message, json_output, ExitCode.RUNTIME_ERROR)
 
     return _Guard()
+
+
+@contextmanager
+def _stop_on_signal(eval_run_id: str, json_output: bool):
+    """Make SIGINT, SIGTERM and SIGHUP stop an eval the same way, then leave at once.
+
+    The runner records the interrupt on the manifest before re-raising. The
+    worker threads cannot be stopped mid provider call and Python would join
+    them at exit, so the process leaves through ``os._exit`` once that record
+    is on disk: the sockets close with the process, which is all a client can
+    do about a generation already in progress.
+
+    The first signal starts the record; a second one leaves at once, record
+    or not, so an operator is never stuck behind a hung write. A signal the
+    caller ignored on purpose stays ignored: ``nohup`` ignores SIGHUP so an
+    eval outlives its terminal.
+    """
+    from hiveloom.eval_runner import manifest_path
+
+    previous: dict[int, Any] = {}
+
+    def _leave(_signum, _frame) -> None:
+        os._exit(ExitCode.INTERRUPTED)
+
+    def _interrupt(_signum, _frame) -> None:
+        for signum in tuple(previous):
+            os_signal.signal(signum, _leave)
+        raise KeyboardInterrupt
+
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+            signum = getattr(os_signal, name, None)
+            if signum is not None and os_signal.getsignal(signum) != os_signal.SIG_IGN:
+                previous[signum] = os_signal.signal(signum, _interrupt)
+    try:
+        yield
+    except KeyboardInterrupt:
+        # Whatever goes wrong while telling the operator (a hung-up terminal
+        # raises on write), the process still leaves.
+        try:
+            payload: dict[str, Any] = {"ok": False, "status": "interrupted"}
+            if manifest_path(eval_run_id).exists():
+                payload["eval_run_id"] = eval_run_id
+                payload["error"] = (
+                    f"interrupted; resume with: hiveloom eval resume {eval_run_id}"
+                )
+            else:
+                payload["error"] = "interrupted before the eval started; nothing to resume"
+            if json_output:
+                _emit_json(payload)
+            else:
+                _err_console.print(f"[yellow]{payload['error']}[/yellow]")
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            os._exit(ExitCode.INTERRUPTED)
+    finally:
+        for signum, handler in previous.items():
+            if handler is not None:
+                os_signal.signal(signum, handler)
 
 
 # --------------------------------------------------------------------------- #
@@ -2454,19 +2517,22 @@ def eval_run_command(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Run a model/case/repetition matrix with an atomic resumable manifest."""
-    from hiveloom.eval_runner import run_eval
+    from hiveloom.eval_runner import new_eval_run_id, run_eval
 
     with _guard(json_output):
         approval = (lambda _path: True) if approve else _trust_prompt(json_output)
-        manifest = run_eval(
-            path,
-            model_override=model,
-            provider_override=provider,
-            repetitions=repetitions,
-            concurrency=concurrency,
-            infrastructure_retries=infrastructure_retries,
-            approve_trust=approval,
-        )
+        eval_run_id = new_eval_run_id()
+        with _stop_on_signal(eval_run_id, json_output):
+            manifest = run_eval(
+                path,
+                model_override=model,
+                provider_override=provider,
+                repetitions=repetitions,
+                concurrency=concurrency,
+                infrastructure_retries=infrastructure_retries,
+                approve_trust=approval,
+                eval_run_id=eval_run_id,
+            )
         _emit_eval_manifest(manifest, json_output)
 
 
@@ -2481,7 +2547,8 @@ def eval_resume_command(
 
     with _guard(json_output):
         approval = (lambda _path: True) if approve else _trust_prompt(json_output)
-        manifest = resume_eval(eval_run_id, approve_trust=approval)
+        with _stop_on_signal(eval_run_id, json_output):
+            manifest = resume_eval(eval_run_id, approve_trust=approval)
         _emit_eval_manifest(manifest, json_output)
 
 

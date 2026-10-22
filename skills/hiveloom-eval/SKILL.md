@@ -39,7 +39,9 @@ hiveloom eval compare BASELINE_ID CANDIDATE_ID --format json
 billed calls. Exact model identity is the eval default. Use an alias policy
 only with an explicit alias list. The atomic manifest stores digests and cell
 receipts, not raw case IDs or expected data. Resume refuses changed inputs and
-skips completed cells, so never replace the manifest or edit it by hand.
+skips completed cells, so never replace the manifest or edit it by hand. A
+batch stopped by Ctrl-C, `SIGTERM` or `SIGHUP` exits `130`; `eval resume`
+continues it without spending a retry.
 
 Reports are regenerated from Hive indexes without raw traces. Comparisons pair
 case and repetition identities before calculating deltas and label unmatched

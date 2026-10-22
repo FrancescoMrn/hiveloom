@@ -167,6 +167,19 @@ a valid checkpoint from backup before resuming that cell. Runs without a result 
 including older evals and interruptions before a callback returns, retain
 trace-based recovery. Keep the eval directory with the traces when moving or
 backing up a run; older HiveLoom releases do not read result checkpoints.
+Ctrl-C, `SIGTERM` or `SIGHUP` during `eval run` or `eval resume` stops the
+batch: cells that had not started stay `pending`, the cells in flight return to
+`pending` with `error_phase: interrupted` and no attempt charged against the
+retry ceiling, the manifest is `incomplete`, and the command exits with status
+130 after printing the `eval resume` command. The interrupted attempt keeps its
+run ID, so a trace that finished anyway is recovered on resume instead of being
+run again; otherwise the cell runs under the next run ID. The process leaves
+without waiting for the provider calls in flight, which closes their sockets;
+whether the server stops generating is up to the server. The first signal wins:
+later ones are ignored while the manifest is written. A signal the caller
+ignored on purpose stays ignored, so `nohup hiveloom eval run ...` still
+outlives its terminal. An interrupt before the manifest exists (during the
+probe or the trust prompt) leaves nothing to resume and says so.
 
 ## Report and compare
 
