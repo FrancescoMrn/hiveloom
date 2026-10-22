@@ -1,4 +1,4 @@
-"""Builtin tools for v0: file_read, file_write, shell, http_get.
+"""Builtin tools: file_read, file_write, list_dir, glob, grep, shell, http_get.
 
 All builtins are sandboxed to the harness working directory (files) or an
 allowlist (shell). ``shell`` is disabled unless the spec provides an allowlist.
@@ -10,13 +10,17 @@ credentials through a tool call than an HTTP caller can through `input_file`.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import ipaddress
 import logging
+import os
+import re
 import shlex
 import shutil
 import socket
 import threading
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +47,7 @@ from hiveloom.confine import (
     run_confined,
 )
 from hiveloom.context.notes import DEFAULT_MAX_NOTES, NotesTool
+from hiveloom.context.spill import SpillError, compile_pattern
 from hiveloom.package import is_sensitive_path
 from hiveloom.private import RunBoundary, env_files, is_private
 from hiveloom.spec.schema import (
@@ -261,6 +266,332 @@ class FileWriteTool(Tool):
                 )
             ],
         )
+
+
+# --------------------------------------------------------------------------- #
+# Read-only discovery: list_dir, glob, grep
+# --------------------------------------------------------------------------- #
+#: Directories the discovery tools prune everywhere: dependency and build trees
+#: dominate a repository's file count and never hold the executor's own work.
+SKIPPED_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+        ".tox",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
+_DISCOVERY_MAX_ENTRIES = 500
+#: Entries one call may visit, output or not: a pattern that matches nothing
+#: must not turn into a walk of the whole repository.
+_DISCOVERY_MAX_VISITED = 20_000
+_LIST_DIR_MAX_DEPTH = 4
+_GREP_DEFAULT_MATCHES = 100
+_GREP_MAX_MATCHES = 500
+_GREP_MAX_FILE_BYTES = 1_048_576
+_GREP_MAX_LINE_CHARS = 300
+_SCAN_LIMIT_NOTE = f"... scan stopped after {_DISCOVERY_MAX_VISITED} entries; narrow path"
+
+
+def _arg_int(value: Any, name: str, default: int, *, low: int, high: int) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ToolError(f"{name} must be a number (got {value!r})") from exc
+    return max(low, min(number, high))
+
+
+class _ScanLimit(Exception):
+    """A walk visited more entries than one call may scan."""
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """``fnmatch`` rules, where ``*`` and ``?`` span ``/``, plus ``**/`` for zero
+    or more directories (``src/**/x.py`` matches ``src/x.py`` and ``src/a/x.py``,
+    never ``src/ax.py``)."""
+    pieces: list[str] = []
+    for index, segment in enumerate(pattern.split("**/")):
+        if index:
+            pieces.append("(?:.*/)?")
+        translated = fnmatch.translate(segment)
+        if not (translated.startswith("(?s:") and translated.endswith(")\\Z")):
+            raise RuntimeError(f"unexpected fnmatch.translate output: {translated!r}")
+        pieces.append(translated[len("(?s:") : -len(")\\Z")])
+    return re.compile("(?s:" + "".join(pieces) + ")\\Z")
+
+
+class _DiscoveryTool(Tool):
+    """Shared confinement for the read-only discovery tools.
+
+    Every path a tool resolves or lists goes through :func:`safe_path`, so a
+    listing, a glob or a match can never name what ``file_read`` could not
+    open: runtime-private state, credential files, the trace directory, or a
+    symlink that escapes the harness. :data:`SKIPPED_DIRS` prunes dependency
+    and build trees on top of that, and every result is bounded.
+    """
+
+    def __init__(
+        self,
+        base: Path,
+        *,
+        trace_dir: Path | None = None,
+        private_paths: list[Path] | None = None,
+        run_boundary: RunBoundary | None = None,
+    ):
+        self._base = base
+        self._root = base.resolve()
+        self._trace_dir = trace_dir
+        self._private_paths = private_paths
+        self._run_boundary = run_boundary
+        entry = BUILTIN_TOOLS[self.name]
+        self.description = entry.description
+        self.tags = list(entry.tags)
+
+    def _private(self) -> list[Path] | None:
+        if self._run_boundary is not None:
+            return self._run_boundary.private_paths()
+        return self._private_paths
+
+    def _resolve(self, path: str, private: list[Path] | None) -> Path:
+        target = safe_path(
+            self._base, path or ".", trace_dir=self._trace_dir, private_paths=private
+        )
+        if not target.exists():
+            raise ToolError(f"file not found: {path}")
+        return target
+
+    def _rel(self, candidate: Path) -> str:
+        return candidate.relative_to(self._root).as_posix()
+
+    def _visible(self, candidate: Path, private: list[Path] | None, *, is_dir: bool) -> bool:
+        if is_dir and candidate.name in SKIPPED_DIRS:
+            return False
+        try:
+            safe_path(
+                self._base, self._rel(candidate), trace_dir=self._trace_dir, private_paths=private
+            )
+        except (ToolError, ValueError):
+            return False
+        return True
+
+    def _walk(self, start: Path, private: list[Path] | None, *, max_depth: int | None):
+        """Yield ``(path, is_dir)`` breadth-first, names sorted, hidden paths pruned.
+
+        Breadth-first so that a bounded listing keeps the shallow overview
+        rather than the first subtree's leaves. A symlinked directory is
+        reported but never descended, so a link cycle cannot loop. Raises
+        :class:`_ScanLimit` past :data:`_DISCOVERY_MAX_VISITED` entries.
+        """
+        visited = 0
+        queue = deque([(start, 0)])
+        while queue:
+            directory, depth = queue.popleft()
+            try:
+                with os.scandir(directory) as it:
+                    entries = sorted(it, key=lambda e: e.name)
+            except OSError:
+                continue
+            for entry in entries:
+                visited += 1
+                if visited > _DISCOVERY_MAX_VISITED:
+                    raise _ScanLimit
+                candidate = Path(entry.path)
+                is_dir = entry.is_dir()
+                if not self._visible(candidate, private, is_dir=is_dir):
+                    continue
+                yield candidate, is_dir
+                if is_dir and not entry.is_symlink() and (
+                    max_depth is None or depth + 1 < max_depth
+                ):
+                    queue.append((candidate, depth + 1))
+
+    def _files(self, start: Path, private: list[Path] | None):
+        if start.is_file():
+            yield start
+            return
+        for candidate, is_dir in self._walk(start, private, max_depth=None):
+            if not is_dir:
+                yield candidate
+
+
+class ListDirTool(_DiscoveryTool):
+    """List a directory inside the working directory, bounded and confined."""
+
+    name = "list_dir"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Relative directory path (default '.')."},
+            "depth": {
+                "type": "integer",
+                "description": f"Levels to descend, 1 to {_LIST_DIR_MAX_DEPTH} (default 1).",
+            },
+        },
+        "required": [],
+    }
+
+    def run(self, path: str = ".", depth: Any = None, **_: Any) -> str:
+        levels = _arg_int(depth, "depth", 1, low=1, high=_LIST_DIR_MAX_DEPTH)
+        private = self._private()
+        target = self._resolve(path, private)
+        if not target.is_dir():
+            raise ToolError(f"'{path}' is not a directory")
+        lines: list[str] = []
+        try:
+            for candidate, is_dir in self._walk(target, private, max_depth=levels):
+                if len(lines) == _DISCOVERY_MAX_ENTRIES:
+                    lines.append(
+                        f"... stopped at {_DISCOVERY_MAX_ENTRIES} entries; narrow path or depth"
+                    )
+                    break
+                lines.append(self._rel(candidate) + ("/" if is_dir else ""))
+        except _ScanLimit:
+            lines.append(_SCAN_LIMIT_NOTE)
+        return "\n".join(lines) if lines else "no entries"
+
+
+class GlobTool(_DiscoveryTool):
+    """Find files by a wildcard pattern over relative paths, bounded and confined."""
+
+    name = "glob"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Wildcard pattern matched against each file's path relative "
+                "to `path`; `*` and `?` also span `/` (so `*.py` finds every Python file "
+                "below `path`, and `**/` is accepted with the same meaning).",
+            },
+            "path": {
+                "type": "string",
+                "description": "Relative directory to search (default '.').",
+            },
+        },
+        "required": ["pattern"],
+    }
+
+    def run(self, pattern: str = "", path: str = ".", **_: Any) -> str:
+        if not pattern:
+            raise ToolError("glob needs a non-empty pattern")
+        wanted = _glob_regex(pattern)
+        private = self._private()
+        target = self._resolve(path, private)
+        root = target if target.is_dir() else target.parent
+        lines: list[str] = []
+        try:
+            for candidate in self._files(target, private):
+                if not wanted.match(candidate.relative_to(root).as_posix()):
+                    continue
+                if len(lines) == _DISCOVERY_MAX_ENTRIES:
+                    lines.append(
+                        f"... stopped at {_DISCOVERY_MAX_ENTRIES} matches; narrow pattern or path"
+                    )
+                    break
+                lines.append(self._rel(candidate))
+        except _ScanLimit:
+            lines.append(_SCAN_LIMIT_NOTE)
+        return "\n".join(lines) if lines else "no matches"
+
+
+class GrepTool(_DiscoveryTool):
+    """Search text files for a regular expression, bounded and confined."""
+
+    name = "grep"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regular expression (Python syntax)."},
+            "path": {
+                "type": "string",
+                "description": "Relative file or directory to search (default '.').",
+            },
+            "glob": {
+                "type": "string",
+                "description": "Only search files whose path relative to `path` matches this "
+                "wildcard (same rules as the glob tool).",
+            },
+            "max_matches": {
+                "type": "integer",
+                "description": f"Stop after this many matches (default {_GREP_DEFAULT_MATCHES}, "
+                f"at most {_GREP_MAX_MATCHES}).",
+            },
+            "ignore_case": {"type": "boolean", "description": "Case-insensitive match."},
+        },
+        "required": ["pattern"],
+    }
+
+    def run(
+        self,
+        pattern: str = "",
+        path: str = ".",
+        glob: str = "",
+        max_matches: Any = None,
+        ignore_case: bool = False,
+        **_: Any,
+    ) -> str:
+        # The same guard transform_result's grep op applies: a length cap and
+        # a refusal of the nested-quantifier shape that backtracks catastrophically.
+        try:
+            regex = compile_pattern(pattern, re.IGNORECASE if ignore_case else 0)
+        except SpillError as exc:
+            raise ToolError(str(exc)) from exc
+        limit = _arg_int(
+            max_matches, "max_matches", _GREP_DEFAULT_MATCHES, low=1, high=_GREP_MAX_MATCHES
+        )
+        wanted = _glob_regex(glob) if glob else None
+        private = self._private()
+        target = self._resolve(path, private)
+        root = target if target.is_dir() else target.parent
+        lines: list[str] = []
+        try:
+            for candidate in self._files(target, private):
+                if wanted and not wanted.match(candidate.relative_to(root).as_posix()):
+                    continue
+                text = _text_file(candidate)
+                if text is None:
+                    continue
+                rel = self._rel(candidate)
+                # Split on newlines only, so a reported line number is the one
+                # file_read and an editor would count.
+                for number, line in enumerate(text.split("\n"), start=1):
+                    if regex.search(line) is None:
+                        continue
+                    if len(lines) == limit:
+                        lines.append(
+                            f"... stopped at {limit} matches (max_matches); narrow the "
+                            "pattern, path or glob"
+                        )
+                        return "\n".join(lines)
+                    lines.append(f"{rel}:{number}: {_clip(line.rstrip(), _GREP_MAX_LINE_CHARS)}")
+        except _ScanLimit:
+            lines.append(_SCAN_LIMIT_NOTE)
+        return "\n".join(lines) if lines else "no matches"
+
+
+def _text_file(candidate: Path) -> str | None:
+    """The file's text, or None when it is too large, binary or unreadable."""
+    try:
+        if candidate.stat().st_size > _GREP_MAX_FILE_BYTES:
+            return None
+        with candidate.open("rb") as handle:
+            head = handle.read(8192)
+            if b"\x00" in head:
+                return None
+            data = head + handle.read()
+    except OSError:
+        return None
+    return data.decode("utf-8", errors="replace")
 
 
 class LoadSkillTool(Tool):
@@ -1233,6 +1564,17 @@ def _register_factories() -> None:
             run_boundary=ctx.run_boundary,
         ),
     )
+    for name, discovery in (("list_dir", ListDirTool), ("glob", GlobTool), ("grep", GrepTool)):
+        ext.register_builtin_factory(
+            "tools",
+            name,
+            lambda _p, ctx, cls=discovery: cls(
+                ctx.base,
+                trace_dir=ctx.trace_dir,
+                private_paths=list(ctx.private_paths or []),
+                run_boundary=ctx.run_boundary,
+            ),
+        )
     ext.register_builtin_factory(
         "tools", "load_skill", lambda _p, ctx: LoadSkillTool(ctx.base, ctx.skills)
     )

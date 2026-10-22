@@ -741,7 +741,7 @@ def _read_whole(path: Path, handle: str, limit: int | None = None) -> bytes:
         return stream.read(limit)
 
 
-def _compile(pattern: str) -> re.Pattern[str]:
+def compile_pattern(pattern: str, flags: int = 0) -> re.Pattern[str]:
     """Compile a model-supplied regex under length and shape limits."""
     if not pattern:
         raise SpillError("this op needs a non-empty pattern")
@@ -757,7 +757,7 @@ def _compile(pattern: str) -> re.Pattern[str]:
             "a single quantifier."
         )
     try:
-        return re.compile(pattern)
+        return re.compile(pattern, flags)
     except re.error as exc:
         raise SpillError(f"invalid regular expression: {exc}") from exc
 
@@ -806,7 +806,7 @@ def _op_tail(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
 
 def _op_grep(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     path = store._resolve(handle)
-    expression = _compile(str(args.get("pattern") or ""))
+    expression = compile_pattern(str(args.get("pattern") or ""))
     # `raw` makes the result the data itself — bare lines, no header, no line
     # numbers — so a derived handle to it can be passed on (to `file_write`,
     # say) as exactly the matching lines. Data is only useful complete, so a
@@ -915,7 +915,7 @@ def _op_json_path(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
 def _op_count(store: SpillStore, handle: str, args: dict[str, Any]) -> str:
     path = store._resolve(handle)
     pattern = str(args.get("pattern") or "")
-    expression = _compile(pattern) if pattern else None
+    expression = compile_pattern(pattern) if pattern else None
     lines = 0
     matches = 0
     for _number, text in _iter_lines(path):

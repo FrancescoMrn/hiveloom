@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when generation stopped at the cap, so the loop used to execute a
   `file_write` whose `content` never arrived; it now refuses the call as
   truncated.
+- `list_dir`, `glob` and `grep` builtin tools: read-only discovery inside the
+  harness working directory under the same private-path rules as `file_read`,
+  with dependency and build trees pruned and every result bounded. An executor
+  no longer needs an exact allowlisted shell argv to find a file.
 
 ## [1.3.0] - 2026-10-04
 

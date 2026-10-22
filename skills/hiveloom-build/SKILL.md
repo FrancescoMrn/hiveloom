@@ -101,7 +101,10 @@ before spending model budget. Legacy strings keep their existing behavior.
 
 Builtin quick reference (list live versions with `hiveloom catalog <kind>`):
 
-- **Tools:** `file_read`, `file_write` (sandboxed to the working dir), `shell`
+- **Tools:** `file_read`, `file_write` (sandboxed to the working dir),
+  `list_dir`, `glob`, `grep` (read-only discovery under the same sandbox,
+  bounded output; prefer them to shell `ls`/`find`/`grep`, which need exact
+  allowlisted argv), `shell`
   (allowlist-only; variable file-reading arguments need an OS sandbox),
   `http_get` (declare repeatable `hosts`; new hosts otherwise need an
   interactive operator decision and fail closed in agent/JSON runs).
