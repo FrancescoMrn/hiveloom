@@ -73,7 +73,7 @@ class MaxTurnsHardCapGuardrail(Guardrail):
 
     def before_model_call(self, state: RunState) -> Decision:
         if state.model_calls >= self._limit:
-            return Halt(f"turns reached hard cap {self._limit}")
+            return Halt(f"model calls reached hard cap {self._limit}")
         return Allow()
 
 

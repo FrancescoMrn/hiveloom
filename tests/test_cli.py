@@ -436,6 +436,27 @@ def test_run_runtime_flags_reach_runner(tmp_path: Path, monkeypatch):
     assert _json(r)["runtime_config"]["resolved"]["model"] == "qwen3.5-9b"
 
 
+def test_run_prints_the_result_warnings(tmp_path: Path, monkeypatch):
+    from hiveloom import runner as runner_mod
+    from hiveloom.loop.agent_loop import RunResult
+
+    directory = tmp_path / "h"
+    construct.init_harness(directory, name="warned", task="Echo input.")
+    warning = "context.max_input_tokens is the default 30000"  # short: rich wraps long lines
+
+    def fake_run_harness(*args, **kwargs):
+        return RunResult(status="success", run_id="r1", trace_path="", warnings=[warning])
+
+    monkeypatch.setattr(runner_mod, "run_harness", fake_run_harness)
+    r = runner.invoke(app, ["run", str(directory), "--input-text", "go"])
+    assert r.exit_code == ExitCode.OK
+    assert f"warning: {warning}" in r.output
+
+    r = runner.invoke(app, ["run", str(directory), "--input-text", "go", "--json"])
+    assert r.exit_code == ExitCode.OK
+    assert _json(r)["warnings"] == [warning]
+
+
 def test_control_plane_json_startup_contract(tmp_path: Path, monkeypatch):
     from hiveloom import construct
 
