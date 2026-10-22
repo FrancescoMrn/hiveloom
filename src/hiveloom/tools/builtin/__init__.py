@@ -28,7 +28,13 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from hiveloom import ext
-from hiveloom.catalog import BUILTIN_TOOLS, EXTRA_ARGS_SAFE_BINARIES, parse_shell_rule
+from hiveloom.catalog import (
+    BLOCKED_SHELL_ARGUMENTS,
+    BLOCKED_SHELL_BINARIES,
+    BUILTIN_TOOLS,
+    EXTRA_ARGS_SAFE_BINARIES,
+    parse_shell_rule,
+)
 from hiveloom.confine import (
     NONE,
     PORTABLE_VARIABLE_ARGV,
@@ -75,13 +81,11 @@ def _path_write_lock(target: Path) -> threading.Lock:
     key = str(target)
     with _WRITE_LOCKS_GUARD:
         return _WRITE_LOCKS.setdefault(key, threading.Lock())
-_BLOCKED_SHELL_BINARIES = {
-    "bash", "dash", "env", "fish", "lua", "node", "perl", "php", "python", "python3",
-    "ruby", "sh", "zsh",
-}
-_BLOCKED_SHELL_ARGUMENTS = {"-exec", "-execdir", "-delete"}
 #: Defined in :mod:`hiveloom.catalog` so spec validation refuses a rule the
-#: runtime would refuse to build, rather than letting it fail at run time.
+#: runtime would refuse to build or to run, rather than letting it fail at run
+#: time; the run-time checks stay as the second line.
+_BLOCKED_SHELL_BINARIES = BLOCKED_SHELL_BINARIES
+_BLOCKED_SHELL_ARGUMENTS = BLOCKED_SHELL_ARGUMENTS
 _EXTRA_ARGS_SAFE_BINARIES = EXTRA_ARGS_SAFE_BINARIES
 
 
@@ -431,7 +435,7 @@ class ShellTool(Tool):
             )
         suffix = f"\n[{'; '.join(notes)}]" if notes else ""
         body = result.stdout
-        if result.stderr:
+        if result.stderr.strip():
             # stderr first, labelled: a test runner's summary is the last thing
             # on stdout, and a bounded preview keeps the tail of the whole
             # result. With stderr appended after it, that tail showed log noise.
@@ -548,30 +552,30 @@ def _describe_allowlist(rules: list[tuple[list[str], bool]]) -> str:
     )
 
 
+def _bounded(text: str) -> str:
+    """The model's own command, echoed back no longer than the cap."""
+    return text if len(text) <= _REFUSED_COMMAND_SHOWN else text[:_REFUSED_COMMAND_SHOWN] + "..."
+
+
 def _allowlist_refusal(command: str, parts: list[str], rules: list[tuple[list[str], bool]]) -> str:
     same = [(argv, extra) for argv, extra in rules if argv[0] == parts[0]]
     if same:
-        shown = command.strip()
-        if len(shown) > _REFUSED_COMMAND_SHOWN:
-            shown = shown[:_REFUSED_COMMAND_SHOWN] + "..."
         head = (
-            f"command '{shown}' is not in the allowlist; the allowed forms of "
-            f"'{parts[0]}': {_render_shell_rules(same)}."
+            f"command '{_bounded(command.strip())}' is not in the allowlist; the allowed "
+            f"forms of '{parts[0]}': {_render_shell_rules(same)}."
         )
     else:
         head = (
-            f"command '{parts[0]}' is not in the allowlist; allowed: "
+            f"command '{_bounded(parts[0])}' is not in the allowlist; allowed: "
             f"{_render_shell_rules(rules)}."
         )
     tail = (
         " Rules match the exact argv unless marked as allowing extra arguments; pipes "
         "and shell operators are never interpreted."
     )
-    if any(op in token for token in parts for op in _SHELL_OPERATORS):
-        tail += (
-            " A pipe or another shell operator is not a command: run the first command "
-            "alone, and search its stored result with search_tool_result if it is large."
-        )
+    # Inside a key=value argument (``--format=a;b``) the character is data.
+    if any(op in token for token in parts if "=" not in token for op in _SHELL_OPERATORS):
+        tail += " A pipe or another shell operator is not a command: run the first command alone."
     return head + tail
 
 

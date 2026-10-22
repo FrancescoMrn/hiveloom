@@ -560,7 +560,11 @@ your allowlist) and the `command_succeeds` validator (a command *you* chose).
 The allowlist is part of the `shell` tool's description, so the model reads the
 exact argv it may use where it reads the tool; a refusal names the allowed forms
 of the command it tried, and says that pipes are never interpreted and arguments
-outside the rules are refused. A
+outside the rules are refused. The rules reach the model and the trace verbatim,
+so a secret has no place in one (`confinement.env_passthrough` carries it). A
+rule the tool would never run (an interpreter such as `python3` or `sh`, or
+`find` with `-exec` or `-delete`) fails `hiveloom validate` instead of being
+advertised and refused. A
 rule naming a program the machine cannot start is logged as a warning when the
 tool is built (at run start and in a dry run), not at the first call. The tool
 result is `exit=N` followed by the output; any stderr comes first under a
