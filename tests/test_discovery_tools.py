@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -235,6 +238,59 @@ def test_walks_are_bounded_in_work_not_only_output(tmp_path: Path, monkeypatch):
     assert GrepTool(tmp_path).run(pattern="nothing").splitlines() == [builtin._SCAN_LIMIT_NOTE]
     listing = ListDirTool(tmp_path).run(path=".").splitlines()
     assert len(listing) == 11 and listing[-1] == builtin._SCAN_LIMIT_NOTE
+
+
+# --------------------------------------------------------------------------- #
+# QA findings on PR #84: fnmatch trailers, glob backtracking, named pipes
+# --------------------------------------------------------------------------- #
+def test_glob_translation_accepts_both_fnmatch_trailers(tmp_path: Path, monkeypatch):
+    """Python 3.14 ends ``fnmatch.translate`` output with ``\\z``, earlier versions with ``\\Z``."""
+    import fnmatch
+
+    import hiveloom.tools.builtin as builtin
+
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    real = fnmatch.translate
+    for tail in ("\\Z", "\\z"):
+        assert real("x").endswith("\\Z")
+        monkeypatch.setattr(
+            builtin.fnmatch, "translate", lambda s, tail=tail: real(s)[:-2] + tail
+        )
+        assert GlobTool(tmp_path).run(pattern="**/*.py") == "a.py"
+        assert GrepTool(tmp_path).run(pattern="x", glob="*.py") == "no matches"
+
+
+def test_glob_patterns_are_bounded_in_length_and_backtracking(tmp_path: Path):
+    deep = tmp_path.joinpath(*[f"d{i}" for i in range(12)])
+    deep.mkdir(parents=True)
+    (deep / "file.txt").write_text("x\n", encoding="utf-8")
+    started = time.monotonic()
+    assert GlobTool(tmp_path).run(pattern="**/" * 24 + "zzz") == "no matches"
+    assert GrepTool(tmp_path).run(pattern="x", glob="**/" * 24 + "zzz") == "no matches"
+    assert time.monotonic() - started < 2
+    assert GlobTool(tmp_path).run(pattern="**/" * 24 + "file.txt").endswith("d11/file.txt")
+    with pytest.raises(ToolError, match="pattern"):
+        GlobTool(tmp_path).run(pattern="*" * 300)
+    with pytest.raises(ToolError, match="pattern"):
+        GrepTool(tmp_path).run(pattern="x", glob="?" * 300)
+
+
+def test_grep_and_glob_skip_named_pipes(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    os.mkfifo(tmp_path / "pipe")
+    results: dict[str, str] = {}
+
+    def search() -> None:
+        results["grep"] = GrepTool(tmp_path).run(pattern="hello")
+        results["glob"] = GlobTool(tmp_path).run(pattern="*")
+
+    worker = threading.Thread(target=search, daemon=True)
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive(), "grep blocked on the FIFO"
+    assert results == {"grep": "a.txt:1: hello", "glob": "a.txt"}
+    # The pipe is still an entry of the directory, so a listing shows it.
+    assert "pipe" in ListDirTool(tmp_path).run(path=".").splitlines()
 
 
 # --------------------------------------------------------------------------- #
