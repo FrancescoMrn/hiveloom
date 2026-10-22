@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The `shell` tool's description carries the allowlist, a refusal names the
-  allowed forms of the command the model tried (and that pipes and extra
-  arguments never match), a rule naming a program the machine cannot start is
+  allowed forms of the command the model tried (and that pipes are never
+  interpreted), a rule naming a program the machine cannot start is
   logged when the tool is built, and a result with stderr puts it before stdout
   under `[stderr]`/`[stdout]` labels so a spilled test run keeps its summary in
   the preview tail. The spill marker also names `transform_result` when
