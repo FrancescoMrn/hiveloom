@@ -171,16 +171,16 @@ def test_shell_allowlist_blocks_unlisted(tmp_path: Path):
 
 
 def test_shell_blocks_interpreters_and_dangerous_arguments(tmp_path: Path):
-    tool = ShellTool(tmp_path, allowed=["python", "find ."])
+    # A rule naming an interpreter fails when the tool is built, as it fails
+    # `hiveloom validate`; a dangerous argument the model appends to an
+    # extra-arguments rule is refused when it runs.
+    with pytest.raises(ToolError, match="'python'"):
+        ShellTool(tmp_path, allowed=["python", "find ."])
+    tool = ShellTool(tmp_path, allowed=[{"argv": ["ls"], "allow_extra_args": True}])
     registry = ToolRegistry()
     registry.register(tool)
-
-    interpreter = registry.dispatch(
-        ToolCall(id="1", name="shell", input={"command": "python -c pass"})
-    )
-    assert interpreter.is_error
     assert registry.dispatch(
-        ToolCall(id="2", name="shell", input={"command": "find . -exec echo {} ;"})
+        ToolCall(id="2", name="shell", input={"command": "ls -delete"})
     ).is_error
 
 
@@ -546,15 +546,22 @@ def test_shell_refusal_lists_the_allowlist_for_an_unknown_command(tmp_path: Path
 
 def test_shell_refusal_explains_that_a_pipe_is_not_a_command(tmp_path: Path):
     tool = ShellTool(tmp_path, allowed=["ls workspace"])
-    with pytest.raises(ToolError, match="pipe") as refused:
+    with pytest.raises(ToolError, match="is not a command") as refused:
         tool.run(command="ls workspace | head")
-    assert "search_tool_result" in str(refused.value)
+    assert "run the first command alone" in str(refused.value)
     # An operator glued to an argument is one shlex token, still not a command.
-    with pytest.raises(ToolError, match="pipe"):
+    with pytest.raises(ToolError, match="is not a command"):
         tool.run(command="ls workspace>out.txt")
+    # Inside a key=value argument the character is data, not an operator: the
+    # refusal is about the flag, so the pipe advice would mislead.
+    with pytest.raises(ToolError, match="allowlist") as flag:
+        tool.run(command="ls --format=a;b")
+    assert "is not a command" not in str(flag.value)
+    # The echoed command is bounded whichever branch answers it.
     with pytest.raises(ToolError, match="allowlist"):
         tool.run(command="ls " + "x" * 1000)
     assert len(str(pytest.raises(ToolError, tool.run, command="ls " + "x" * 1000).value)) < 600
+    assert len(str(pytest.raises(ToolError, tool.run, command="y" * 1000).value)) < 600
 
 
 def test_shell_description_carries_the_allowlist(tmp_path: Path):
@@ -585,6 +592,13 @@ def test_shell_output_puts_stderr_before_stdout_with_labels(tmp_path: Path):
     stderr_only = ShellTool(tmp_path, allowed=["ls missing.txt"]).run(command="ls missing.txt")
     assert stderr_only.split("\n", 1)[1].startswith("[stderr]\n")
     assert "[stdout]" not in stderr_only
+
+
+def test_shell_output_ignores_a_whitespace_only_stderr(tmp_path: Path):
+    script = tmp_path / "blank"
+    script.write_text("#!/bin/sh\necho >&2\necho out\n", encoding="utf-8")
+    script.chmod(0o755)
+    assert ShellTool(tmp_path, allowed=["./blank"]).run(command="./blank") == "exit=0\nout\n"
 
 
 def test_shell_warns_at_construction_about_a_missing_binary(tmp_path: Path, caplog):
