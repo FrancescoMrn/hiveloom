@@ -37,7 +37,7 @@ from hiveloom.tools.mcp import (
     _sanitize,
     connect_mcp_server,
 )
-from hiveloom.tools.registry import ToolRegistry, ToolResult, build_registry
+from hiveloom.tools.registry import ToolError, ToolRegistry, ToolResult, build_registry
 
 FIXTURE = str(Path(__file__).parent / "fixtures" / "mcp_echo_server.py")
 
@@ -118,6 +118,75 @@ def test_adapter_tags_http_is_network():
         timeout=5.0,
     )
     assert adapter.tags == ["mcp", "mcp:s", "network"]
+
+
+def test_adapter_transport_failures_are_transient_tool_errors():
+    class _Bridge:
+        def call(self, fn):
+            raise TimeoutError("mcp call timed out")
+
+    class _Session:
+        def call_tool(self, *args, **kwargs):  # pragma: no cover - never reached
+            raise AssertionError
+
+    adapter = McpToolAdapter(
+        bridge=_Bridge(),
+        session=_Session(),
+        server_name="s",
+        remote_name="t",
+        description="d",
+        input_schema={},
+        transport="http",
+        timeout=5.0,
+    )
+    with pytest.raises(ToolError) as info:
+        adapter.run()
+    assert info.value.retryable
+    assert "mcp tool 'mcp__s__t' failed: mcp call timed out" in str(info.value)
+
+
+def test_adapter_protocol_errors_and_reported_errors_are_not_retried():
+    from mcp.shared.exceptions import MCPError
+
+    class _RefusingBridge:
+        def call(self, fn):
+            raise MCPError(-32602, "invalid params")
+
+    class _ReportingBridge:
+        def call(self, fn):
+            return mcp_types.CallToolResult(
+                content=[mcp_types.TextContent(type="text", text="no such record")],
+                isError=True,
+            )
+
+    class _Session:
+        def call_tool(self, *args, **kwargs):  # pragma: no cover - never reached
+            raise AssertionError
+
+    def _adapter(bridge):
+        return McpToolAdapter(
+            bridge=bridge,
+            session=_Session(),
+            server_name="s",
+            remote_name="t",
+            description="d",
+            input_schema={},
+            transport="http",
+            timeout=5.0,
+        )
+
+    class _TimingOutBridge:
+        def call(self, fn):
+            raise MCPError(mcp_types.REQUEST_TIMEOUT, "Timed out while waiting for response")
+
+    with pytest.raises(ToolError) as info:
+        _adapter(_RefusingBridge()).run()
+    assert not info.value.retryable
+    reported = _adapter(_ReportingBridge()).run()
+    assert reported.is_error and not reported.retryable
+    with pytest.raises(ToolError) as timed_out:
+        _adapter(_TimingOutBridge()).run()
+    assert timed_out.value.retryable
 
 
 def test_adapter_defaults_to_empty_object_schema():

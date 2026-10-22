@@ -468,6 +468,7 @@ class NotesTool(Tool):
         )
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "action": {
                     "type": "string",

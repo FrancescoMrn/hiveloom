@@ -31,7 +31,18 @@ from hiveloom.spec.schema import BuiltinToolRef, CodeToolRef, HarnessSpec
 
 
 class ToolError(HiveloomError):
-    """Raised by a tool when it cannot complete a call."""
+    """Raised by a tool when it cannot complete a call.
+
+    ``retryable`` marks a failure a repeat may clear: a dropped connection, a
+    transport timeout. The default is a deterministic refusal (an allowlist
+    miss, a missing file, a bad argument), which ``loop.on_tool_error:
+    retry_once`` must not repeat: the second call fails the same way and only
+    adds a turn of noise.
+    """
+
+    def __init__(self, message: str = "", *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 # A code tool that declares this parameter is handed the run context instead of
@@ -182,6 +193,12 @@ def schema_from_function(func) -> dict[str, Any]:
     per-run dependencies.
     """
     signature = inspect.signature(func)
+    # A hook that takes **kwargs accepts what it does not name; every other
+    # signature is closed, so an argument the model invents is refused at
+    # dispatch instead of silently dropped.
+    accepts_extra = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+    )
     # Code hooks commonly opt into postponed annotations via
     # ``from __future__ import annotations``.  ``inspect.signature`` then
     # exposes strings such as ``list[ChartSeries]``; handing those strings to
@@ -208,11 +225,43 @@ def schema_from_function(func) -> dict[str, Any]:
         else:
             fields[pname] = (annotation, param.default)
     if not fields:
-        return {"type": "object", "properties": {}}
-    model: type[BaseModel] = create_model("ToolInput", **fields)  # type: ignore[call-overload]
-    schema = model.model_json_schema()
-    schema.pop("title", None)
+        schema: dict[str, Any] = {"type": "object", "properties": {}}
+    else:
+        model: type[BaseModel] = create_model("ToolInput", **fields)  # type: ignore[call-overload]
+        schema = model.model_json_schema()
+        schema.pop("title", None)
+    if not accepts_extra:
+        schema["additionalProperties"] = False
     return schema
+
+
+def _argument_problem(schema: dict[str, Any], kwargs: dict[str, Any]) -> str | None:
+    """Why ``kwargs`` do not fit ``schema``, or None when they do.
+
+    Only the object contract is checked: every ``required`` key present and,
+    when the schema closes the object (``additionalProperties: false``, which
+    hiveloom's own tools declare), no key outside ``properties``. A schema that
+    leaves the object open keeps JSON Schema's default, so a remote MCP tool
+    still decides for itself. Types stay with the tool, which already coerces
+    or refuses them with a message of its own. Before this check an argument
+    the model dropped or invented reached ``run()`` and took the default: a
+    ``file_write`` whose ``content`` the output ceiling cut off wrote an empty
+    file and reported success, and ``offset``/``limit`` on ``file_read`` were
+    silently ignored.
+    """
+    properties = schema.get("properties")
+    if schema.get("type", "object") != "object" or not isinstance(properties, dict):
+        return None
+    missing = [name for name in schema.get("required") or () if name not in kwargs]
+    if missing:
+        return f"missing required argument(s): {', '.join(missing)}"
+    if schema.get("additionalProperties") is not False:
+        return None
+    unknown = sorted(name for name in kwargs if name not in properties)
+    if unknown:
+        accepted = ", ".join(properties) or "none"
+        return f"unknown argument(s): {', '.join(unknown)} (accepted: {accepted})"
+    return None
 
 
 class ToolRegistry:
@@ -316,11 +365,20 @@ class ToolRegistry:
         """
         tool = self._tools.get(call.name)
         if tool is None:
-            return ToolResult(content=f"unknown tool '{call.name}'", is_error=True)
+            return ToolResult(content=f"unknown tool '{call.name}'", is_error=True, retryable=False)
         if call.name not in self._active:
-            return ToolResult(content=f"tool '{call.name}' is inactive", is_error=True)
+            return ToolResult(
+                content=f"tool '{call.name}' is inactive", is_error=True, retryable=False
+            )
         try:
             kwargs = tool.prepare(dict(call.input))
+            if tool.wants_run_context:
+                # Injected below by the runtime: a model-supplied key of the
+                # same name is replaced, never honored.
+                kwargs.pop(RUN_CONTEXT_PARAM, None)
+            problem = _argument_problem(tool.input_schema, kwargs)
+            if problem is not None:
+                raise ToolError(problem)
             if tool.handle_params:
                 # After prepare() and before the call: the tool sees the bytes,
                 # while ``call.input`` — which the journal records and the
@@ -339,9 +397,14 @@ class ToolRegistry:
                 return result
             return ToolResult(content=result)
         except ToolError as exc:
-            return ToolResult(content=f"tool error: {exc}", is_error=True)
+            return ToolResult(content=f"tool error: {exc}", is_error=True, retryable=exc.retryable)
         except Exception as exc:  # noqa: BLE001 - tools must never crash the loop
-            return ToolResult(content=f"tool raised {type(exc).__name__}: {exc}", is_error=True)
+            # A crash is a bug or a bad input, not a flaky call: the same
+            # arguments crash the same way again. Only a ToolError a tool marks
+            # transient earns the one retry.
+            return ToolResult(
+                content=f"tool raised {type(exc).__name__}: {exc}", is_error=True, retryable=False
+            )
 
     @staticmethod
     def _expand_handles(
@@ -392,6 +455,7 @@ class SwitchPlaybookTool(Tool):
         self.tags = ["meta", "playbook"]
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "name": {
                     "type": "string",
@@ -428,6 +492,7 @@ class SearchToolsTool(Tool):
         self.tags = ["meta"]
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "query": {
                     "type": "string",

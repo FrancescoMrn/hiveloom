@@ -276,7 +276,11 @@ active), `prepare(kwargs)` (normalize model-mangled args before validation),
 `run_with_updates(kwargs, on_update)` (+`supports_updates`) for streaming
 progress as `tool_update` trace events, and `ToolResult(terminate=True)` to
 end the run without a final model call (honored when every result in the batch
-terminates).
+terminates). Raise `ToolError` for a refusal; pass `retryable=True` only when a
+repeat may clear it (a dropped connection, a timeout), because
+`loop.on_tool_error: retry_once` repeats nothing else. Arguments are checked
+against the tool's schema before `run()`: a missing required one is refused,
+and so is an undeclared one unless the function takes `**kwargs`.
 
 ### Handle-typed parameters
 
