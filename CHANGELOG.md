@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entries instead of raising `IsADirectoryError`.
 - Spilling byte-identical content from the same tool twice in one run reuses
   the existing handle.
+- `confinement.max_memory_mb` limits writable memory (RLIMIT_DATA) and no
+  longer address space (RLIMIT_AS): under the 2 GiB default, V8 could not
+  reserve the virtual range it needs for WebAssembly and vitest died with
+  "Cannot allocate Wasm memory". The number keeps its default but now bounds a
+  different quantity, so a harness that raised it to let a JVM start can go
+  back to the default; shared memory is not counted, and macOS enforces
+  neither limit. A `shell` result whose command failed with an allocation
+  error on stderr now names the setting and its value.
 
 ## [1.3.0] - 2026-10-04
 

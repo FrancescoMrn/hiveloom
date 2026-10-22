@@ -862,6 +862,17 @@ class ShellTool(Tool):
                 f"{result.discarded_bytes} bytes of output were dropped; the head "
                 "and tail shown fit the configured budget"
             )
+        if (
+            result.returncode != 0
+            and self._confinement.max_memory_mb
+            and _ALLOCATION_FAILURE.search(result.stderr)
+        ):
+            # Name the knob: the model cannot raise it, but the trace then says
+            # why vitest or a JVM died, and the operator knows what to change.
+            notes.append(
+                "stderr reports an allocation failure; confinement.max_memory_mb "
+                f"is {self._confinement.max_memory_mb} MiB (0 = unlimited)"
+            )
         suffix = f"\n[{'; '.join(notes)}]" if notes else ""
         body = result.stdout
         if result.stderr.strip():
@@ -958,6 +969,15 @@ _RULES_SHOWN = 12
 #: Most characters of the model's command echoed back in a refusal.
 _REFUSED_COMMAND_SHOWN = 200
 _SHELL_OPERATORS = ("|", ">", "<", ";", "&&")
+#: What an allocator says on stderr when it hits the memory limit: V8, glibc,
+#: the JVM, Python, Rust and the kernel's ENOMEM. Best effort: a process the
+#: limit kills with a signal says nothing, and only stderr is read, so a test
+#: suite that prints the phrase on stdout earns no note.
+_ALLOCATION_FAILURE = re.compile(
+    r"cannot allocate|out of memory|ENOMEM|allocation failed|OutOfMemoryError|"
+    r"MemoryError|memory allocation of",
+    re.IGNORECASE,
+)
 
 
 def _render_shell_rule(argv: list[str], allow_extra: bool) -> str:

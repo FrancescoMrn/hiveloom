@@ -310,14 +310,14 @@ def _limits(config: ConfinementConfig) -> list[tuple[int, tuple[int, int]]]:
     if resource is None:  # pragma: no cover - Windows
         return []
     limits: list[tuple[int, tuple[int, int]]] = [(resource.RLIMIT_CORE, (0, 0))]
-    if config.max_memory_mb:
+    if config.max_memory_mb and hasattr(resource, "RLIMIT_DATA"):
         size = config.max_memory_mb * 1024 * 1024
-        # RLIMIT_AS is address space, which some allocators reserve far beyond
-        # what they touch; RLIMIT_DATA is the closer analogue of "memory used"
-        # where the platform has it. Setting both is the portable compromise.
-        limits.append((resource.RLIMIT_AS, (size, size)))
-        if hasattr(resource, "RLIMIT_DATA"):
-            limits.append((resource.RLIMIT_DATA, (size, size)))
+        # RLIMIT_DATA bounds the memory a process writes to (heap and private
+        # writable mappings). RLIMIT_AS would bound address space, which V8
+        # reserves by the gigabyte for WebAssembly, a JVM for its heap and Go
+        # for its arenas without touching it: under a 2 GiB RLIMIT_AS, vitest
+        # died with "Cannot allocate Wasm memory" while using a few hundred MB.
+        limits.append((resource.RLIMIT_DATA, (size, size)))
     if config.max_processes and hasattr(resource, "RLIMIT_NPROC"):
         limits.append((resource.RLIMIT_NPROC, (config.max_processes, config.max_processes)))
     return limits
