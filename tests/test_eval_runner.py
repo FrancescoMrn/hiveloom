@@ -1072,3 +1072,26 @@ def test_the_process_still_leaves_when_the_terminal_is_gone(monkeypatch):
             raise KeyboardInterrupt
 
     assert exits == [130]
+
+
+def test_an_abort_at_the_trust_prompt_leaves_with_130_and_nothing_to_resume(
+    monkeypatch, tmp_path: Path
+):
+    eval_file, _probe = _fixture(tmp_path, case_count=1)
+    exits: list[int] = []
+    _leave_through(monkeypatch, exits)
+    # Treat the harness as untrusted so the real prompt runs. With no stdin the
+    # prompt ends the way click ends it on Ctrl-C: with click's Abort, not a
+    # KeyboardInterrupt.
+    monkeypatch.setattr(
+        "hiveloom.trust.ensure_trusted",
+        lambda base, approve, *_args, **_kwargs: approve(str(base)) if approve else None,
+    )
+
+    result = cli.invoke(app, ["eval", "run", str(eval_file)])
+
+    assert "Trust this harness folder?" in result.output
+    assert exits == [130]
+    assert result.exit_code == 130
+    assert "nothing to resume" in result.output
+    assert "Abort" not in result.output

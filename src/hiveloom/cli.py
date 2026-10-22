@@ -199,7 +199,8 @@ def _stop_on_signal(eval_run_id: str, json_output: bool):
                 previous[signum] = os_signal.signal(signum, _interrupt)
     try:
         yield
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, typer.Abort):
+        # typer.Abort is what click raises for Ctrl-C at the trust prompt.
         # Whatever goes wrong while telling the operator (a hung-up terminal
         # raises on write), the process still leaves.
         try:
