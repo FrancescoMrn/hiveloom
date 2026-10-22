@@ -97,8 +97,9 @@ on the first output, recovered, failed, or never ran.
 `turns` counts the model calls the loop made to act, and `loop.max_turns`
 bounds exactly those; `compaction_calls` counts the summarization calls
 compaction made on the side, which are journaled and costed like any model call
-but never spend a turn. A compaction call carries the `turn` of the act turn it
-serves, so `phase` is what tells the two apart.
+but never spend a turn. A compaction call is labelled with the number of act
+turns completed before it, the same `turn` as the act call that follows it, so
+`phase` is what tells the two apart.
 
 A `context_budget_default` event right after `run_started` means the harness
 left `context.max_input_tokens` at the schema default while the model's

@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counts act turns only, and `RunResult.compaction_calls` (also on the
   `run_finished` event and the CLI JSON) reports the compaction calls. A run
   can no longer end with `turns` above `max_turns`.
-- A summarize compaction appends a `# Files touched` index (the paths read or
+- A compaction that applies a summary (the `summarize` method, or a
+  `before_compaction` hook supplying one) appends a `# Files touched` index (the paths read or
   written through `file_read`/`file_write`, with their spill handles) to the
   summary, so the model does not re-read the same files after every compaction.
 - A run whose `context.max_input_tokens` is still the schema default while the
