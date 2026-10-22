@@ -12,7 +12,12 @@ from typing import Any
 
 import pytest
 
-from hiveloom.models.provider import ContextOverflowError, ModelConfig
+from hiveloom.models.provider import (
+    ContextOverflowError,
+    ModelConfig,
+    ProviderError,
+    ProviderUnreachable,
+)
 
 
 def _response(
@@ -39,13 +44,19 @@ def _make_provider(monkeypatch: pytest.MonkeyPatch, create):
     """Install a fake ``anthropic`` module and return a ClaudeProvider over it."""
     module = types.ModuleType("anthropic")
 
-    class BadRequestError(Exception):
+    class APIStatusError(Exception):
         pass
 
-    class RateLimitError(Exception):
+    class BadRequestError(APIStatusError):
         pass
 
-    class InternalServerError(Exception):
+    class AuthenticationError(APIStatusError):
+        pass
+
+    class RateLimitError(APIStatusError):
+        pass
+
+    class InternalServerError(APIStatusError):
         pass
 
     class APIConnectionError(Exception):
@@ -55,7 +66,9 @@ def _make_provider(monkeypatch: pytest.MonkeyPatch, create):
         def __init__(self, api_key: str | None = None):
             self.messages = types.SimpleNamespace(create=create)
 
+    module.APIStatusError = APIStatusError
     module.BadRequestError = BadRequestError
+    module.AuthenticationError = AuthenticationError
     module.RateLimitError = RateLimitError
     module.InternalServerError = InternalServerError
     module.APIConnectionError = APIConnectionError
@@ -144,16 +157,31 @@ def test_overflow_bad_request_maps_to_context_overflow(monkeypatch):
         )
 
 
-def test_other_bad_request_propagates_unchanged(monkeypatch):
+def test_other_bad_request_is_a_provider_error_keeping_the_cause(monkeypatch):
     def create(**kwargs):
         raise sys.modules["anthropic"].BadRequestError("invalid tool schema")
 
     provider, module = _make_provider(monkeypatch, create)
-    with pytest.raises(module.BadRequestError):
+    with pytest.raises(ProviderError, match="invalid tool schema") as excinfo:
         provider.complete(
             system="s", messages=[{"role": "user", "content": "x"}], tools=[],
             config=ModelConfig(id="m"),
         )
+    assert isinstance(excinfo.value.__cause__, module.BadRequestError)
+    assert not isinstance(excinfo.value, ProviderUnreachable)
+
+
+def test_an_authentication_error_is_a_provider_error_not_unreachable(monkeypatch):
+    def create(**kwargs):
+        raise sys.modules["anthropic"].AuthenticationError("invalid x-api-key")
+
+    provider, _module = _make_provider(monkeypatch, create)
+    with pytest.raises(ProviderError, match="invalid x-api-key") as excinfo:
+        provider.complete(
+            system="s", messages=[{"role": "user", "content": "x"}], tools=[],
+            config=ModelConfig(id="m"),
+        )
+    assert not isinstance(excinfo.value, ProviderUnreachable)
 
 
 def test_temperature_travels_in_extra_body_only_where_it_is_accepted(monkeypatch):
@@ -231,3 +259,30 @@ def test_provider_params_reach_claude_extra_body(monkeypatch):
         id="m", temperature=0.5, params={"thinking": {"type": "disabled"}},
     ))
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}, "temperature": 0.5}
+
+
+def test_retries_exhausted_on_connection_errors_are_a_provider_unreachable(monkeypatch):
+    def create(**kwargs):
+        raise sys.modules["anthropic"].APIConnectionError("connection refused")
+
+    provider, _module = _make_provider(monkeypatch, create)
+    monkeypatch.setattr(provider, "_sleep", lambda _s: None)
+    with pytest.raises(ProviderUnreachable, match="after 3 retries"):
+        provider.complete(
+            system="s", messages=[{"role": "user", "content": "x"}], tools=[],
+            config=ModelConfig(id="m"),
+        )
+
+
+def test_retries_exhausted_on_server_errors_are_a_provider_error(monkeypatch):
+    def create(**kwargs):
+        raise sys.modules["anthropic"].InternalServerError("overloaded")
+
+    provider, _module = _make_provider(monkeypatch, create)
+    monkeypatch.setattr(provider, "_sleep", lambda _s: None)
+    with pytest.raises(ProviderError, match="after 3 retries") as excinfo:
+        provider.complete(
+            system="s", messages=[{"role": "user", "content": "x"}], tools=[],
+            config=ModelConfig(id="m"),
+        )
+    assert not isinstance(excinfo.value, ProviderUnreachable)

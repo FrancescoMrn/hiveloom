@@ -654,6 +654,8 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "run_id": result.run_id,
         "trace_path": result.trace_path,
         "reason": result.reason,
+        # Structural fakes (the workbench tests) predate the field.
+        "failure_kind": getattr(result, "failure_kind", ""),
         "artifacts": result.artifacts,
         "provider_calls": getattr(result, "provider_calls", []),
         "steps": [

@@ -295,6 +295,7 @@ def test_model_outcome_and_infrastructure_error_remain_distinct(tmp_path: Path):
             raise ConnectionError("synthetic runner transport failure")
         result = _completed_result(**kwargs)
         result.status = "error"
+        result.failure_kind = "provider_error"
         return result
 
     manifest = run_eval(
@@ -313,6 +314,8 @@ def test_model_outcome_and_infrastructure_error_remain_distinct(tmp_path: Path):
     assert infrastructure.error_phase == "execution"
     assert infrastructure.error_type == "ConnectionError"
     assert model_error.run_status == "error"
+    assert model_error.failure_kind == "provider_error"
+    assert infrastructure.failure_kind == ""
     assert model_error.scorer_status == "success"
 
 
