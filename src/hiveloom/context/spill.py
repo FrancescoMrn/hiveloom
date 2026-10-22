@@ -332,7 +332,13 @@ class SpillStore:
             + f'Read the omitted part with {READ_TOOL}(handle="{handle}", '
             f"offset={head_n}, limit={DEFAULT_READ_BYTES}), or locate it first with "
             f'{SEARCH_TOOL}(handle="{handle}", query="..."). '
-            "Do not guess at the omitted content — read it.\n"
+            + (
+                f'To keep only matching lines, {TRANSFORM_TOOL}(handle="{handle}", '
+                'op="grep", pattern="...") narrows it in place. '
+                if self._config.transforms
+                else ""
+            )
+            + "Do not guess at the omitted content — read it.\n"
             "[/hiveloom spill]\n\n"
         )
         return f"{head}{marker}{tail}", omitted

@@ -515,3 +515,88 @@ def test_a_code_tool_with_postponed_annotations_gets_its_typeddict_item_schema(t
     schema = schema_from_function(import_hook("t.py:apply", tmp_path))
     assert schema["properties"]["changes"]["items"] == {"$ref": "#/$defs/Change"}
     assert schema["$defs"]["Change"]["required"] == ["path", "value"]
+
+
+# --------------------------------------------------------------------------- #
+# Shell refusals tell the model what *is* allowed
+# --------------------------------------------------------------------------- #
+def test_shell_refusal_names_the_allowed_forms_of_the_same_command(tmp_path: Path):
+    tool = ShellTool(tmp_path, allowed=["ls workspace", "./check"])
+    with pytest.raises(ToolError) as refused:
+        tool.run(command="ls -la workspace")
+    message = str(refused.value)
+    assert "'ls -la workspace' is not in the allowlist" in message
+    assert "allowed forms of 'ls': `ls workspace`" in message
+    assert "exact argv" in message
+
+
+def test_shell_refusal_lists_the_allowlist_for_an_unknown_command(tmp_path: Path):
+    tool = ShellTool(
+        tmp_path,
+        allowed=["ls workspace", "./check", {"argv": ["echo"], "allow_extra_args": True}],
+    )
+    with pytest.raises(ToolError) as refused:
+        tool.run(command="cd workspace")
+    message = str(refused.value)
+    assert "'cd' is not in the allowlist" in message
+    assert "`ls workspace`, `./check`, `echo ...` (extra arguments allowed)" in message
+
+
+def test_shell_refusal_explains_that_a_pipe_is_not_a_command(tmp_path: Path):
+    tool = ShellTool(tmp_path, allowed=["ls workspace"])
+    with pytest.raises(ToolError, match="pipe") as refused:
+        tool.run(command="ls workspace | head")
+    assert "search_tool_result" in str(refused.value)
+    # An operator glued to an argument is one shlex token, still not a command.
+    with pytest.raises(ToolError, match="pipe"):
+        tool.run(command="ls workspace>out.txt")
+    with pytest.raises(ToolError, match="allowlist"):
+        tool.run(command="ls " + "x" * 1000)
+    assert len(str(pytest.raises(ToolError, tool.run, command="ls " + "x" * 1000).value)) < 600
+
+
+def test_shell_description_carries_the_allowlist(tmp_path: Path):
+    tool = ShellTool(
+        tmp_path,
+        allowed=["ls workspace", {"argv": ["echo"], "allow_extra_args": True}],
+    )
+    assert "`ls workspace`" in tool.description
+    assert "`echo ...` (extra arguments allowed)" in tool.description
+    assert "Pipes" in tool.description
+    assert "is not in the allowlist" not in tool.description
+
+    disabled = ShellTool(tmp_path, allowed=[])
+    assert "no command allowlist" in disabled.description
+
+
+def test_shell_output_puts_stderr_before_stdout_with_labels(tmp_path: Path):
+    (tmp_path / "present.txt").write_text("x", encoding="utf-8")
+    tool = ShellTool(tmp_path, allowed=["ls present.txt missing.txt"])
+    out = tool.run(command="ls present.txt missing.txt")
+    assert out.startswith("exit=")
+    assert not out.startswith("exit=0")
+    body = out.split("\n", 1)[1]
+    assert body.startswith("[stderr]\n")
+    assert "missing.txt" in body.split("[stdout]\n")[0]
+    assert body.split("[stdout]\n")[1].startswith("present.txt")
+
+    stderr_only = ShellTool(tmp_path, allowed=["ls missing.txt"]).run(command="ls missing.txt")
+    assert stderr_only.split("\n", 1)[1].startswith("[stderr]\n")
+    assert "[stdout]" not in stderr_only
+
+
+def test_shell_warns_at_construction_about_a_missing_binary(tmp_path: Path, caplog):
+    (tmp_path / "check").write_text("#!/bin/sh\n", encoding="utf-8")  # not executable
+    with caplog.at_level("WARNING", logger="hiveloom.tools.builtin"):
+        ShellTool(
+            tmp_path,
+            allowed=["echo hi", "./check", "no-such-binary-hiveloom-xyz --version"],
+        )
+    assert "cannot start: ./check, no-such-binary-hiveloom-xyz" in caplog.text
+    assert "echo" not in caplog.text
+
+    caplog.clear()
+    (tmp_path / "check").chmod(0o755)
+    with caplog.at_level("WARNING", logger="hiveloom.tools.builtin"):
+        ShellTool(tmp_path, allowed=["echo hi", "./check"])
+    assert caplog.text == ""

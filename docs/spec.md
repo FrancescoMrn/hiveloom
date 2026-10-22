@@ -211,7 +211,9 @@ REPORT HEAD
 Shown above: bytes 0-2048. Shown below: bytes 183296-184320.
 Read the omitted part with read_tool_result(handle="tr_…", offset=2048,
 limit=4096), or locate it first with search_tool_result(handle="tr_…",
-query="..."). Do not guess at the omitted content — read it.
+query="..."). To keep only matching lines, transform_result(handle="tr_…",
+op="grep", pattern="...") narrows it in place. Do not guess at the omitted
+content — read it.
 [/hiveloom spill]
 
 … last 1 KB …
@@ -555,6 +557,14 @@ back like any other mutation. The tool never touches `harness.yaml`.
 
 Two builtins start subprocesses: the `shell` tool (argv the *model* chose, from
 your allowlist) and the `command_succeeds` validator (a command *you* chose).
+The allowlist is part of the `shell` tool's description, so the model reads the
+exact argv it may use where it reads the tool; a refusal names the allowed forms
+of the command it tried, and says that pipes and extra arguments never match. A
+rule naming a program the machine cannot start is logged as a warning when the
+tool is built (at run start and in a dry run), not at the first call. The tool
+result is `exit=N` followed by the output; any stderr comes first under a
+`[stderr]` label and stdout follows under `[stdout]`, so the bounded preview of
+a long test run keeps the summary at its tail.
 Allowlisting which command may run is a different question from what it may do
 once it runs, and `confinement` answers the second:
 

@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A run whose `context.max_input_tokens` is still the schema default while the
   model declares a larger `context_window` emits a `context_budget_default`
   event and a warning on `RunResult.warnings` and the CLI.
+### Changed
+
+- The `shell` tool's description carries the allowlist, a refusal names the
+  allowed forms of the command the model tried (and that pipes and extra
+  arguments never match), a rule naming a program the machine cannot start is
+  logged when the tool is built, and a result with stderr puts it before stdout
+  under `[stderr]`/`[stdout]` labels so a spilled test run keeps its summary in
+  the preview tail. The spill marker also names `transform_result` when
+  transforms are on.
 
 ## [1.3.0] - 2026-10-04
 
