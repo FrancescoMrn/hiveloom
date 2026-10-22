@@ -51,6 +51,8 @@ from hiveloom.models.provider import (
     ModelConfig,
     ModelProvider,
     ModelResponse,
+    ProviderError,
+    ProviderUnreachable,
     Usage,
 )
 from hiveloom.models.router import ModelRouter, portable_messages
@@ -110,6 +112,11 @@ class RunResult(BaseModel):
     # truncated | stopped | error
     status: str
     output: str = ""
+    # Why a run ended as "error", as a kind a runner can branch on without
+    # reading `reason`: provider_unreachable | provider_error |
+    # context_overflow | policy | tool_abort | unknown. Empty for every
+    # other status.
+    failure_kind: str = ""
     turns: int = 0
     cost_usd: float = 0.0
     duration_seconds: float = 0.0
@@ -141,6 +148,17 @@ class RunResult(BaseModel):
     def artifacts_of(self, kind: str) -> list[Any]:
         """The ``data`` payloads of every artifact of one kind, in order."""
         return [a["data"] for a in self.artifacts if a.get("kind") == kind]
+
+
+def _failure_kind(exc: BaseException) -> str:
+    """The kind of an exception that ended a run, by type, never by message."""
+    if isinstance(exc, ContextOverflowError):
+        return "context_overflow"
+    if isinstance(exc, ProviderUnreachable):
+        return "provider_unreachable"
+    if isinstance(exc, ProviderError):
+        return "provider_error"
+    return "unknown"
 
 
 class GuardrailHalt(RuntimeError):
@@ -504,7 +522,14 @@ class AgentLoop:
         except GuardrailHalt as exc:
             return self._finish("guardrail_halt", reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
-            return self._finish("error", reason=f"policy failed: {type(exc).__name__}: {exc}")
+            # A policy's own model call fails like the main loop's would; only
+            # a failure nothing else classifies is the policy's.
+            kind = _failure_kind(exc)
+            return self._finish(
+                "error",
+                reason=f"policy failed: {type(exc).__name__}: {exc}",
+                failure_kind="policy" if kind == "unknown" else kind,
+            )
 
         retries = 0
         last_verdicts: list[VerdictResult] = []
@@ -539,7 +564,9 @@ class AgentLoop:
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
-                return self._finish("error", reason=f"{type(exc).__name__}: {exc}")
+                return self._finish(
+                    "error", reason=f"{type(exc).__name__}: {exc}", failure_kind=_failure_kind(exc)
+                )
 
             self._context.add_assistant(self.assistant_blocks(response))
 
@@ -549,7 +576,7 @@ class AgentLoop:
                 except StepPolicyHalt as exc:
                     return self._finish("step_failed", reason=str(exc))
                 except ToolAbort as exc:
-                    return self._finish("error", reason=str(exc))
+                    return self._finish("error", reason=str(exc), failure_kind="tool_abort")
                 if halt is not None:
                     return self._finish("guardrail_halt", reason=halt)
                 self._state.tool_turns += 1
@@ -2035,6 +2062,7 @@ class AgentLoop:
         output: str = "",
         reason: str = "",
         verdicts: list[VerdictResult] | None = None,
+        failure_kind: str = "",
     ) -> RunResult:
         duration_seconds = self._state.elapsed_seconds()
         verification = self._verification_summary(status)
@@ -2108,6 +2136,7 @@ class AgentLoop:
             "run_finished",
             status=status,
             reason=reason,
+            failure_kind=failure_kind,
             turns=self._state.turns,
             cost_usd=self._state.cost_usd,
             duration_seconds=duration_seconds,
@@ -2138,6 +2167,7 @@ class AgentLoop:
             {
                 "status": status,
                 "reason": reason,
+                "failure_kind": failure_kind,
                 "turns": self._state.turns,
                 "cost_usd": self._state.cost_usd,
             },
@@ -2152,6 +2182,7 @@ class AgentLoop:
             trace_path=str(self._trace.path),
             verdicts=verdicts or [],
             reason=reason,
+            failure_kind=failure_kind,
             artifacts=list(self._state.artifacts),
             provider_calls=list(self._provider_calls),
             runtime_config=self._runtime_config,

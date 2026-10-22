@@ -36,7 +36,7 @@ Events and their mutation semantics (a handler returns ``None`` to observe):
 ``before_compaction``     return ``{"cancel": True}`` to skip this round, or
                           ``{"summary": "..."}`` to supply the summary yourself
 ``verification``          observe: ``{verdicts: [...]}``
-``run_finished``          observe: ``{status, reason, turns, cost_usd}``
+``run_finished``          observe: ``{status, reason, failure_kind, turns, cost_usd}``
 ========================  ====================================================
 
 Handler contract (pi's discipline): a handler must not raise. One that does is

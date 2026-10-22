@@ -892,10 +892,14 @@ What travels on that wire:
   Claude Desktop) launches `hiveloom mcp serve` — it too passes a minimal
   environment, so the key has to be configured in the host's server entry or
   in the harness folder.
-- **The result, always as data.** `{status, output, reason, turns, cost_usd,
-  run_id, verdicts}`. A peer that could not even start (no API key, an
-  untrusted folder) answers `status: "error"` with the reason in `reason` —
-  never a protocol error the calling model cannot read.
+- **The result, always as data.** `{status, output, reason, failure_kind,
+  turns, cost_usd, run_id, verdicts}`. A peer that could not even start (no
+  API key, an untrusted folder) answers `status: "error"` with the reason in
+  `reason` — never a protocol error the calling model cannot read. A run that
+  ended as `error` also names its `failure_kind` (`provider_unreachable`,
+  `provider_error`, `context_overflow`, `policy`, `tool_abort` or `unknown`),
+  so a runner can tell infrastructure from the agent's own outcome without
+  parsing the reason.
 - **Artifacts.** A peer run's `RunResult.artifacts` come back in the same
   `_hiveloom` envelope described above, so they land on the caller's
   `RunResult.artifacts`.

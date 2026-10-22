@@ -22,6 +22,8 @@ from hiveloom.models.provider import (
     ModelConfig,
     ModelProvider,
     ModelResponse,
+    ProviderError,
+    ProviderUnreachable,
     ToolCall,
     Usage,
     validate_model_params,
@@ -168,8 +170,16 @@ class ClaudeProvider(ModelProvider):
             except anthropic.BadRequestError as exc:
                 if _is_overflow(str(exc)):
                     raise ContextOverflowError(str(exc)) from exc
-                raise
-        raise RuntimeError(f"model call failed after {_MAX_RETRIES} retries: {last_exc}")
+                raise ProviderError(f"provider rejected the request: {exc}") from exc
+            except anthropic.APIStatusError as exc:
+                # 401, 403, 404, 422: the request or the account, not the network.
+                raise ProviderError(f"provider returned an error: {exc}") from exc
+        failure = (
+            ProviderUnreachable
+            if isinstance(last_exc, anthropic.APIConnectionError)
+            else ProviderError
+        )
+        raise failure(f"model call failed after {_MAX_RETRIES} retries: {last_exc}") from last_exc
 
     def _normalize(self, raw: Any) -> ModelResponse:
         text_parts: list[str] = []
