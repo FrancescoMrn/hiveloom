@@ -10,6 +10,7 @@ tool-call arguments from lenient backends. No network, no API keys.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from urllib import error as urlerror
 
 import pytest
@@ -687,3 +688,196 @@ def test_embedded_context_overflow_is_recoverable(monkeypatch):
         OpenAICompatProvider("http://localhost:9").complete(
             system="s", messages=[], tools=[], config=ModelConfig(id="m"),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Undecodable 200 bodies are provider failures, retried like a dropped socket
+# --------------------------------------------------------------------------- #
+_VALID_REPLY = b'{"choices": [{"finish_reason": "stop", "message": {"content": "42"}}]}'
+
+
+def _serve_bodies(monkeypatch, *bodies: bytes) -> dict[str, int]:
+    """Answer each request with the next body; the last one repeats. Returns the call counter."""
+    calls = {"n": 0}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            calls["n"] += 1
+            return bodies[min(calls["n"], len(bodies)) - 1]
+
+    monkeypatch.setattr(
+        "hiveloom.models.openai_compat.urlrequest.urlopen",
+        lambda request, timeout=0: _Response(),
+    )
+    return calls
+
+
+def _complete(provider: OpenAICompatProvider, **config) -> ModelResponse:
+    return provider.complete(
+        system="s",
+        messages=[{"role": "user", "content": "x"}],
+        tools=[],
+        config=ModelConfig(id="m", **config),
+    )
+
+
+@pytest.mark.parametrize(
+    "first_body",
+    [
+        pytest.param(b'{"choices": [{"finish_reason": "stop", "mess', id="truncated_json"),
+        pytest.param(b"\xff\xfe\x00not utf-8", id="non_utf8"),
+    ],
+)
+def test_undecodable_body_is_retried(monkeypatch, first_body):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = _serve_bodies(monkeypatch, first_body, _VALID_REPLY)
+    assert _complete(provider).text == "42"
+    assert calls["n"] == 2
+
+
+def test_undecodable_body_every_time_names_the_failure_and_the_body(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = _serve_bodies(monkeypatch, b'{"choices": [{"finish_reason": "stop", "mess')
+    with pytest.raises(RuntimeError, match="undecodable body") as excinfo:
+        _complete(provider)
+    # The excerpt is what tells a truncated reply from anything else.
+    assert "finish_reason" in str(excinfo.value)
+    assert calls["n"] == 4  # the first attempt plus _MAX_RETRIES
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        pytest.param(b"<!doctype html><title>Sign in</title>", "not JSON", id="html"),
+        pytest.param(b"Unauthorized", "not JSON", id="plain_text"),
+        pytest.param(b"", "not JSON", id="empty"),
+        pytest.param(b'["not", "a", "completion"]', "JSON list instead of an object", id="list"),
+        pytest.param(b"null", "JSON NoneType instead of an object", id="null"),
+    ],
+)
+def test_an_endpoint_answering_something_else_fails_at_once(monkeypatch, body, reason):
+    # A login page or a plain "Unauthorized" behind a wrong base_url, or an
+    # endpoint answering a list, answers the same way again: no retry, and a
+    # readable reason instead of the AttributeError the normalizer raised.
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = _serve_bodies(monkeypatch, body)
+    with pytest.raises(RuntimeError, match=reason):
+        _complete(provider)
+    assert calls["n"] == 1
+
+
+def test_a_byte_order_mark_is_not_a_failure(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    calls = _serve_bodies(monkeypatch, b"\xef\xbb\xbf" + _VALID_REPLY)
+    assert _complete(provider).text == "42"
+    assert calls["n"] == 1
+
+
+def test_only_a_decode_failure_is_an_undecodable_body(monkeypatch):
+    # The retry clause is narrower than ValueError: a ValueError from anywhere
+    # else in the request path surfaces as itself, unrelabelled and unretried.
+    sleeps = []
+    provider = OpenAICompatProvider("http://localhost:9", sleep=sleeps.append)
+    _serve_bodies(monkeypatch, _VALID_REPLY)
+    monkeypatch.setattr(
+        "hiveloom.models.openai_compat._decode_body",
+        lambda raw: (_ for _ in ()).throw(ValueError("not a transport failure")),
+    )
+    with pytest.raises(ValueError, match="not a transport failure"):
+        _complete(provider)
+    assert sleeps == []
+
+
+# --------------------------------------------------------------------------- #
+# vLLM reports finish_reason "tool_calls" for a call that parsed even when
+# generation stopped at max_tokens; a tool call at the cap is a truncated one.
+# --------------------------------------------------------------------------- #
+def _tool_call_reply(completion_tokens: int | None, finish: str = "tool_calls") -> dict:
+    data = {
+        "choices": [
+            {
+                "finish_reason": finish,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "file_write", "arguments": '{"path": "a"}'},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    if completion_tokens is not None:
+        data["usage"] = {"prompt_tokens": 30, "completion_tokens": completion_tokens}
+    return data
+
+
+def test_tool_calls_at_the_output_ceiling_normalize_to_max_tokens():
+    response = _normalize(_tool_call_reply(8), max_tokens=8)
+    assert response.stop_reason == "max_tokens"
+    # The call itself is kept: the loop refuses it per call, with the id.
+    assert [c.name for c in response.tool_calls] == ["file_write"]
+
+
+def test_tool_calls_below_the_output_ceiling_stay_tool_use():
+    assert _normalize(_tool_call_reply(7), max_tokens=8).stop_reason == "tool_use"
+
+
+def test_missing_usage_never_counts_as_the_ceiling():
+    # Without a reported count the estimate stands in for cost, not for truncation.
+    assert _normalize(_tool_call_reply(None), max_tokens=1).stop_reason == "tool_use"
+
+
+def test_a_tool_call_reply_at_the_ceiling_is_truncated_whatever_the_finish_reason():
+    assert _normalize(_tool_call_reply(8, finish="stop"), max_tokens=8).stop_reason == "max_tokens"
+
+
+def test_a_text_reply_at_the_ceiling_keeps_the_servers_verdict():
+    # A text reply the server cut off already arrives as "length"; "stop" with
+    # a count at the cap is a reply that happened to end there.
+    reply = {
+        "choices": [{"finish_reason": "stop", "message": {"content": "eight tokens"}}],
+        "usage": {"prompt_tokens": 30, "completion_tokens": 8},
+    }
+    assert _normalize(reply, max_tokens=8).stop_reason == "end_turn"
+
+
+def test_complete_applies_the_configured_ceiling(monkeypatch):
+    import json as _json
+
+    provider = OpenAICompatProvider("http://localhost:9")
+    _serve_bodies(monkeypatch, _json.dumps(_tool_call_reply(64)).encode())
+    assert _complete(provider, max_tokens=64).stop_reason == "max_tokens"
+
+
+def test_the_loop_refuses_a_tool_call_the_cap_cut_off(harness_dir, monkeypatch):
+    """End to end: the Quality Lab case, a file_write whose content never arrived."""
+    import json as _json
+
+    from hiveloom import construct, runner
+
+    construct.set_field(harness_dir, "loop.require_verification", "false")
+    construct.set_field(harness_dir, "model.max_tokens", "64")
+    construct.add_tool(harness_dir, builtin="file_write")
+    done = b'{"choices": [{"finish_reason": "stop", "message": {"content": "done"}}]}'
+    _serve_bodies(monkeypatch, _json.dumps(_tool_call_reply(64)).encode(), done)
+
+    result = runner.run_harness(
+        harness_dir, "go", provider=OpenAICompatProvider("http://localhost:9")
+    )
+
+    assert result.status == "success"
+    assert not (harness_dir / "a").exists()
+    events = [_json.loads(line) for line in Path(result.trace_path).read_text().splitlines()]
+    refused = [e for e in events if e["type"] == "tool_truncated"]
+    assert [e["payload"]["name"] for e in refused] == ["file_write"]

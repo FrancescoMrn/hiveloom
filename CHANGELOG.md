@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The OpenAI-compatible provider retries an HTTP 200 whose body is JSON cut
+  off before its end or bytes that are not UTF-8 the way it retries a dropped
+  connection, instead of ending the run with a bare `JSONDecodeError`. A body
+  that is not JSON at all (a login page behind a wrong `base_url`) or JSON that
+  is not an object fails at once with a readable reason naming the start of
+  the body, instead of four attempts or an `AttributeError`.
+- A reply carrying tool calls whose reported completion count reached
+  `model.max_tokens` is normalized to `stop_reason: max_tokens` whatever the
+  server's `finish_reason`. vLLM reports `tool_calls` for a call it parsed even
+  when generation stopped at the cap, so the loop used to execute a
+  `file_write` whose `content` never arrived; it now refuses the call as
+  truncated.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model

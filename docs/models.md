@@ -259,6 +259,11 @@ A model registered through an extension or `models.yaml` can declare a positive
 Unknown capabilities use the spec's absolute 1,000,000-token validation bound;
 this does not promise that an endpoint accepts that many tokens. The runtime
 never automatically raises the configured budget after a truncated response.
+A reply carrying tool calls whose reported completion count reaches
+`model.max_tokens` is treated as truncated whatever the server's finish reason:
+vLLM reports `tool_calls` for a call it parsed even when generation stopped at
+the cap, and the loop refuses such a call rather than run it on unfinished
+arguments.
 
 Custom OpenAI-compatible endpoints can declare a positive `timeout_seconds`:
 
