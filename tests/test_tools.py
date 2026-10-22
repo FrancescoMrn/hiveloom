@@ -859,22 +859,38 @@ def test_file_read_on_a_large_directory_cuts_the_listing(tmp_path: Path):
     assert "f20.txt" not in message and message.endswith("(+3 more)")
 
 
-def test_shell_hints_at_the_memory_limit_on_an_allocation_failure(tmp_path: Path):
-    script = tmp_path / "oom"
-    script.write_text(
-        "#!/bin/sh\necho 'Out of memory: Cannot allocate Wasm memory' >&2\nexit 1\n",
-        encoding="utf-8",
-    )
+def _failing_script(tmp_path: Path, name: str, stderr: str, exit_code: int = 1) -> ShellTool:
+    script = tmp_path / name
+    script.write_text(f"#!/bin/sh\necho '{stderr}' >&2\nexit {exit_code}\n", encoding="utf-8")
     script.chmod(0o755)
-    tool = ShellTool(tmp_path, allowed=["./oom"], confinement=ConfinementConfig(max_memory_mb=512))
-    out = tool.run(command="./oom")
+    return ShellTool(
+        tmp_path, allowed=[f"./{name}"], confinement=ConfinementConfig(max_memory_mb=512)
+    )
+
+
+def test_shell_hints_at_the_memory_limit_on_an_allocation_failure(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("hiveloom.tools.builtin._MEMORY_LIMIT_APPLIES", True)
+    out = _failing_script(tmp_path, "oom", "Out of memory: Cannot allocate Wasm memory").run(
+        command="./oom"
+    )
     assert "exit=1" in out
     assert "allocation failure" in out and "confinement.max_memory_mb is 512 MiB" in out
+    # The messages V8 and a C++ runtime print when the limit bites count too.
+    wasm = _failing_script(
+        tmp_path, "wasm", "RangeError: WebAssembly.Memory(): could not allocate memory"
+    )
+    assert "max_memory_mb" in wasm.run(command="./wasm")
+    native = _failing_script(tmp_path, "native", "terminate called after throwing std::bad_alloc")
+    assert "max_memory_mb" in native.run(command="./native")
 
     unlimited = ShellTool(
         tmp_path, allowed=["./oom"], confinement=ConfinementConfig(max_memory_mb=0)
     )
     assert "max_memory_mb" not in unlimited.run(command="./oom")
+
+    # A command that exited 0 did not die of it, whatever stderr says.
+    survived = _failing_script(tmp_path, "survived", "warning: out of memory once", exit_code=0)
+    assert "max_memory_mb" not in survived.run(command="./survived")
 
     # A failing test suite that *prints* the phrase on stdout is not an
     # allocation failure; only stderr counts.
@@ -885,3 +901,8 @@ def test_shell_hints_at_the_memory_limit_on_an_allocation_failure(tmp_path: Path
         tmp_path, allowed=["./chatty"], confinement=ConfinementConfig(max_memory_mb=512)
     )
     assert "max_memory_mb" not in tool.run(command="./chatty")
+
+    # Where the kernel refuses the limit (macOS), the setting cannot be the
+    # cause, and the note would point the operator at a knob that does nothing.
+    monkeypatch.setattr("hiveloom.tools.builtin._MEMORY_LIMIT_APPLIES", False)
+    assert "max_memory_mb" not in _failing_script(tmp_path, "oom2", "ENOMEM").run(command="./oom2")

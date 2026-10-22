@@ -600,8 +600,11 @@ exhaust the runtime's memory or disk. `max_memory_mb` is `RLIMIT_DATA`, the
 heap and private writable mappings: address space is not limited, so a runtime
 that reserves gigabytes it never touches (V8 for WebAssembly, a JVM, Go) starts
 under the default, while shared memory is not counted and macOS enforces neither
-limit. A `shell` result whose command failed with an allocation error on stderr
-names the setting, so the trace says why vitest or a JVM died.
+limit. Memory a runtime commits up front still counts: a JVM's initial heap is
+a 64th of the host's RAM unless `-Xms` says otherwise, so on a large host it
+needs that flag or a higher limit. A `shell` result whose command failed with
+an allocation error on stderr names the setting (on Linux, where the limit is
+enforced), so the trace says why vitest or a JVM died.
 
 Where the platform has a sandbox — `bwrap` (bubblewrap) on Linux,
 `sandbox-exec` on macOS — it also gets **kernel-enforced isolation**: the
