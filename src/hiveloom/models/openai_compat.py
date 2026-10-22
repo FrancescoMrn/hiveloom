@@ -86,6 +86,37 @@ def _is_overflow(body: str) -> bool:
     return any(marker in lowered for marker in _OVERFLOW_MARKERS)
 
 
+class _UndecodableBody(RuntimeError):
+    """A 200 whose JSON body broke off before its end, or whose bytes are not UTF-8."""
+
+
+def _decode_body(raw: bytes) -> dict[str, Any]:
+    """The JSON object a 200 must carry.
+
+    JSON that started well and broke off before its end, or bytes that are
+    not UTF-8, are a transport failure and raise :class:`_UndecodableBody`,
+    which the retry loop treats like a dropped connection. A body that is not
+    JSON at all (an HTML login page or a plain ``Unauthorized`` behind a wrong
+    ``base_url``) or JSON that is not an object (``null``, a list) is an
+    endpoint answering something else, and it will again, so it fails at once
+    with a readable message. Every message carries the start of the body: that
+    is what the run's reason has to go on.
+    """
+    try:
+        body = json.loads(raw.decode("utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        if exc.pos == 0:
+            raise RuntimeError(f"provider returned a body that is not JSON: {raw[:200]!r}") from exc
+        raise _UndecodableBody(f"{exc}: {raw[:200]!r}") from exc
+    except UnicodeDecodeError as exc:
+        raise _UndecodableBody(f"{exc}: {raw[:200]!r}") from exc
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            f"provider returned a JSON {type(body).__name__} instead of an object: {raw[:200]!r}"
+        )
+    return body
+
+
 class OpenAICompatProvider(ModelProvider):
     """Runs the harness model against an OpenAI-compatible ``/chat/completions``."""
 
@@ -125,6 +156,7 @@ class OpenAICompatProvider(ModelProvider):
         return normalize_openai_response(
             data,
             estimated_input_tokens=self.count_tokens(system=system, messages=messages, tools=tools),
+            max_tokens=config.max_tokens,
         )
 
     # ------------------------------------------------------------------ #
@@ -142,7 +174,7 @@ class OpenAICompatProvider(ModelProvider):
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
-                    body = json.loads(resp.read().decode("utf-8"))
+                    body = _decode_body(resp.read())
                 embedded = _embedded_error(body)
                 if embedded is None:
                     return body
@@ -171,6 +203,11 @@ class OpenAICompatProvider(ModelProvider):
                 # streams hundreds of KB over several minutes, and any dropped
                 # connection in that window lands here.
                 last_exc = RuntimeError(f"provider unreachable at {self._base_url}: {exc}")
+                retryable = True
+            except _UndecodableBody as exc:
+                # The request produced no result, any more than a dropped
+                # connection did, so it is retried the same way.
+                last_exc = RuntimeError(f"provider returned an undecodable body: {exc}")
                 retryable = True
             if not retryable or attempt == _MAX_RETRIES:
                 break
@@ -256,8 +293,19 @@ def to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, A
 
 
 def normalize_openai_response(
-    data: dict[str, Any], *, estimated_input_tokens: int = 0
+    data: dict[str, Any], *, estimated_input_tokens: int = 0, max_tokens: int | None = None
 ) -> ModelResponse:
+    """Normalize a chat-completions body into a :class:`ModelResponse`.
+
+    ``max_tokens`` is the output ceiling the request carried. vLLM reports
+    ``finish_reason: tool_calls`` for a call it managed to parse even when
+    generation stopped at that cap, and executing such a call acts on
+    arguments the model never finished writing; a reply carrying tool calls
+    whose reported completion count reached the ceiling is therefore
+    normalized as ``max_tokens``, whatever finish reason the server put on
+    it. A text-only reply keeps the server's verdict: one cut off at the cap
+    already arrives as ``length``.
+    """
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError(f"provider returned no choices: {json.dumps(data)[:300]}")
@@ -353,11 +401,14 @@ def normalize_openai_response(
         input_tokens = _usage("input_tokens")
     if input_tokens is None:
         input_tokens = estimated_input_tokens
-    output_tokens = _usage("completion_tokens")
-    if output_tokens is None:
-        output_tokens = _usage("output_tokens")
-    if output_tokens is None:
-        output_tokens = estimate_tokens(text or json.dumps(message.get("tool_calls") or []))
+    reported_output_tokens = _usage("completion_tokens")
+    if reported_output_tokens is None:
+        reported_output_tokens = _usage("output_tokens")
+    output_tokens = (
+        reported_output_tokens
+        if reported_output_tokens is not None
+        else estimate_tokens(text or json.dumps(message.get("tool_calls") or []))
+    )
     # OpenAI-style usage counts cached tokens *inside* prompt_tokens; hiveloom's
     # Usage keeps input_tokens uncached-only, so split the cached share out.
     details = raw_usage.get("prompt_tokens_details")
@@ -370,6 +421,15 @@ def normalize_openai_response(
         cache_read_tokens=cache_read,
     )
     finish = choice.get("finish_reason") or "stop"
+    if (
+        tool_calls
+        and max_tokens is not None
+        and reported_output_tokens is not None
+        and reported_output_tokens >= max_tokens
+    ):
+        # Only a count the server reported: the estimate above stands in for
+        # cost, never for a truncation verdict.
+        finish = "length"
     raw_cost = raw_usage.get("cost")
     billed_cost = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
     billed_currency = ""
