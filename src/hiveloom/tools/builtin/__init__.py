@@ -316,12 +316,22 @@ class _ScanLimit(Exception):
 
 
 def _glob_pattern(pattern: str) -> list[str]:
-    """A glob's segments, with the same length cap as a grep pattern."""
+    """A glob's segments, with the same length cap as a grep pattern.
+
+    The forms a model writes by habit mean what it intends: a leading ``./``,
+    a trailing ``/`` and ``.`` segments are dropped rather than matching
+    nothing. A leading ``/`` is refused, since every pattern is relative.
+    """
     if not pattern or len(pattern) > TRANSFORM_MAX_PATTERN_CHARS:
         raise ToolError(
             f"glob needs a pattern of 1 to {TRANSFORM_MAX_PATTERN_CHARS} characters"
         )
-    return pattern.split("/")
+    if pattern.startswith("/"):
+        raise ToolError("glob patterns are relative to the harness directory; drop the leading /")
+    segments = [segment for segment in pattern.split("/") if segment not in ("", ".")]
+    if not segments:
+        raise ToolError(f"glob pattern {pattern!r} names no file")
+    return segments
 
 
 def _glob_match(pattern: str | list[str], path: str) -> bool:
@@ -507,7 +517,7 @@ class GlobTool(_DiscoveryTool):
                 "description": "Wildcard pattern matched against each file's path relative "
                 "to `path`, segment by segment: `**` spans directories, `*` and `?` stay "
                 "within one (`**/*.py` finds every Python file below `path`, `*.py` only "
-                "those directly in it).",
+                "those directly in it). A leading `./` or a trailing `/` is accepted.",
             },
             "path": {
                 "type": "string",
