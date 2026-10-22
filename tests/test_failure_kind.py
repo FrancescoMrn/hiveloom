@@ -46,6 +46,7 @@ def test_a_tool_abort_is_its_own_kind(harness_dir: Path):
     assert result.failure_kind == "tool_abort"
 
 
+@pytest.mark.parametrize("hook", ["on_run_start", "before_model_turn", "after_model_turn"])
 @pytest.mark.parametrize(
     ("exc", "kind"),
     [
@@ -55,18 +56,18 @@ def test_a_tool_abort_is_its_own_kind(harness_dir: Path):
     ],
 )
 def test_a_policy_failure_is_its_own_kind_unless_a_typed_one(
-    harness_dir: Path, monkeypatch, exc, kind
+    harness_dir: Path, monkeypatch, hook, exc, kind
 ):
     _no_verify(harness_dir)
 
-    def explode(self, loop):
+    def explode(self, loop, *args):
         raise exc
 
-    monkeypatch.setattr(policies.ReactPolicy, "on_run_start", explode)
+    monkeypatch.setattr(policies.ReactPolicy, hook, explode)
     provider = FakeModelProvider([text_response("42")])
     result = runner.run_harness(harness_dir, "go", provider=provider)
     assert result.status == "error"
-    assert result.reason.startswith(f"policy failed: {type(exc).__name__}")
+    assert f"{type(exc).__name__}: " in result.reason
     assert result.failure_kind == kind
 
 

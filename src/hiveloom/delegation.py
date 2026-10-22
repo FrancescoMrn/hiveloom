@@ -113,6 +113,8 @@ class DelegationRecord(BaseModel):
     turns: int = 0
     output: str = ""
     reason: str = ""
+    # The child's RunResult.failure_kind when its status is "error".
+    failure_kind: str = ""
 
 
 class Selection(BaseModel):
@@ -391,6 +393,7 @@ def delegate(
         turns=result.turns,
         output=result.output,
         reason=result.reason,
+        failure_kind=result.failure_kind,
     )
 
 

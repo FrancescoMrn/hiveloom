@@ -454,6 +454,7 @@ def create_app(
                             "status": "error",
                             "run_id": run_id,
                             "reason": f"{type(exc).__name__}: {exc}",
+                            "failure_kind": "unknown",
                         }
                     )
                 )

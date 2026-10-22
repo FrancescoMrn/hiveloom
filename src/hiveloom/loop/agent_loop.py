@@ -114,8 +114,9 @@ class RunResult(BaseModel):
     output: str = ""
     # Why a run ended as "error", as a kind a runner can branch on without
     # reading `reason`: provider_unreachable | provider_error |
-    # context_overflow | policy | tool_abort | unknown. Empty for every
-    # other status.
+    # context_overflow | policy (a policy hook failed on its own, at run
+    # start or around a model turn) | tool_abort | unknown. A delegated run
+    # adopts the peer's kind with its status. Empty for every other status.
     failure_kind: str = ""
     turns: int = 0
     cost_usd: float = 0.0
@@ -555,17 +556,23 @@ class AgentLoop:
                     self._switch_playbook_from_operator(**request)
             truncation_exhausted = False
             policy_incomplete = False
+            in_policy_hook = True
             try:
                 self._policy.before_model_turn(self)
+                in_policy_hook = False
                 response = self.model_turn()
+                in_policy_hook = True
                 self._policy.after_model_turn(self, response)
             except StepPolicyHalt as exc:
                 return self._finish("step_failed", reason=str(exc))
             except GuardrailHalt as exc:
                 return self._finish("guardrail_halt", reason=str(exc))
             except Exception as exc:  # noqa: BLE001 - surface as an error run, not a crash
+                kind = _failure_kind(exc)
+                if kind == "unknown" and in_policy_hook:
+                    kind = "policy"
                 return self._finish(
-                    "error", reason=f"{type(exc).__name__}: {exc}", failure_kind=_failure_kind(exc)
+                    "error", reason=f"{type(exc).__name__}: {exc}", failure_kind=kind
                 )
 
             self._context.add_assistant(self.assistant_blocks(response))
@@ -1874,7 +1881,13 @@ class AgentLoop:
                 f"{record.reason or record.status}"
             )
         )
-        return self._finish(status, output=output, reason=reason, verdicts=verdicts)
+        return self._finish(
+            status,
+            output=output,
+            reason=reason,
+            verdicts=verdicts,
+            failure_kind=record.failure_kind if status == "error" else "",
+        )
 
     def _escalate_on_verify_fail(self) -> RunResult | None:
         """One last hand-off after this harness has exhausted its own retries."""

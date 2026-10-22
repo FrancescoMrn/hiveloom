@@ -897,9 +897,10 @@ What travels on that wire:
   API key, an untrusted folder) answers `status: "error"` with the reason in
   `reason` — never a protocol error the calling model cannot read. A run that
   ended as `error` also names its `failure_kind` (`provider_unreachable`,
-  `provider_error`, `context_overflow`, `policy`, `tool_abort` or `unknown`),
-  so a runner can tell infrastructure from the agent's own outcome without
-  parsing the reason.
+  `provider_error`, `context_overflow`, `policy` for a policy hook that failed
+  on its own, `tool_abort` or `unknown`), so a runner can tell infrastructure
+  from the agent's own outcome without parsing the reason. A delegated run
+  adopts the peer's kind with its status.
 - **Artifacts.** A peer run's `RunResult.artifacts` come back in the same
   `_hiveloom` envelope described above, so they land on the caller's
   `RunResult.artifacts`.
