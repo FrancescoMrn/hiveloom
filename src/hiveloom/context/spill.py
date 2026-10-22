@@ -233,6 +233,12 @@ class SpillStore:
         # handle -> the file this run is authorized to read for it. Authority
         # is a recorded fact, never inferred from a name.
         self._authorized: dict[str, tuple[Path, str, int]] = {}
+        # (sha256, size) -> (handle, file) for the plain tool results this run
+        # minted, so byte-identical content maps back to the handle the
+        # context already quotes. Derived and inherited objects stay out: a
+        # derived object's sidecar is its provenance, an inherited one lives
+        # in another directory.
+        self._by_digest: dict[tuple[str, int], tuple[str, Path]] = {}
         # Called when ``transform_result`` mints a *derived* object. The store
         # cannot journal (it has no trace writer), and the loop cannot see
         # inside a tool call, so the one place that knows a new object exists
@@ -279,6 +285,22 @@ class SpillStore:
         stored = self._redact(content) if self._redact is not None else content
         data = stored.encode("utf-8")
         digest = hashlib.sha256(data).hexdigest()
+        existing = None if derived_from else self._minted(digest, len(data))
+        if existing is not None:
+            # Byte-identical to a result this run already stored (the same
+            # listing run twice): the handle the context already quotes is
+            # the one worth having, and a second copy would cost a second
+            # read to learn it says the same thing.
+            handle, body = existing
+            preview, omitted = self._preview(handle, data)
+            return SpillRecord(
+                handle=handle,
+                preview=preview,
+                total_bytes=len(data),
+                omitted_bytes=omitted,
+                path=body,
+                sha256=digest,
+            )
         handle = f"tr_{secrets.token_hex(8)}"
         body = self._run_dir / f"{handle}.txt"
         try:
@@ -306,6 +328,8 @@ class SpillStore:
             return None
         with self._lock:
             self._authorized[handle] = (body, digest, len(data))
+            if not derived_from:
+                self._by_digest.setdefault((digest, len(data)), (handle, body))
         preview, omitted = self._preview(handle, data)
         return SpillRecord(
             handle=handle,
@@ -315,6 +339,14 @@ class SpillStore:
             path=body,
             sha256=digest,
         )
+
+    def _minted(self, digest: str, size: int) -> tuple[str, Path] | None:
+        """The handle and file this run minted for these exact bytes, if any."""
+        with self._lock:
+            existing = self._by_digest.get((digest, size))
+        if existing is not None and existing[1].is_file():
+            return existing
+        return None
 
     def _preview(self, handle: str, data: bytes) -> tuple[str, int]:
         """Head, an instruction marker naming the handle, then tail."""
@@ -1099,6 +1131,7 @@ class ReadToolResultTool(_SpillTool):
     )
     input_schema = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "handle": {
                 "type": "string",
@@ -1139,6 +1172,7 @@ class SearchToolResultTool(_SpillTool):
     )
     input_schema = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "handle": {
                 "type": "string",
@@ -1185,6 +1219,7 @@ class TransformResultTool(_SpillTool):
     )
     input_schema = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "handle": {
                 "type": "string",

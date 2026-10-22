@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tool calls are checked against the tool's input schema before they run: a
+  missing required argument is a tool error, and so is an undeclared argument
+  when the schema closes the object (`additionalProperties: false`, now set on
+  every builtin and on code tools without `**kwargs`). A `file_write` cut off
+  at the output ceiling no longer writes an empty file and reports success,
+  and `offset`/`limit` passed to `file_read` are refused instead of silently
+  ignored. Remote MCP schemas keep their own policy.
+- `loop.on_tool_error: retry_once` repeats only a `ToolError` raised with
+  `retryable=True` (`http_get` network errors, MCP transport failures).
+  Allowlist refusals, missing files, bad arguments, unknown and inactive tools,
+  errors an MCP server reports and uncaught exceptions in a tool are surfaced
+  to the model at once instead of being retried.
+- `file_read` names a broken symlink and, on a directory, lists its first 20
+  entries instead of raising `IsADirectoryError`.
+- Spilling byte-identical content twice in one run reuses the existing handle.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model

@@ -119,6 +119,50 @@ def test_a_result_within_budget_is_not_spilled(tmp_path: Path):
     assert _store(tmp_path).spill(tool="t", content="small") is None
 
 
+def test_identical_content_reuses_the_handle(tmp_path: Path):
+    store = _store(tmp_path)
+
+    first = store.spill(tool="ls", content="x" * 500)
+    again = store.spill(tool="ls", content="x" * 500)
+    other = store.spill(tool="ls", content="y" * 500)
+
+    assert again.handle == first.handle and again.preview == first.preview
+    assert again.sha256 == first.sha256 and again.total_bytes == first.total_bytes
+    assert other.handle != first.handle
+    assert sorted(store.handles) == sorted({first.handle, other.handle})
+    assert first.path.read_text(encoding="utf-8") == "x" * 500
+
+
+def test_derived_objects_are_never_shared_with_plain_results(tmp_path: Path):
+    store = _store(tmp_path)
+    source = store.spill(tool="ls", content="z" * 500)
+
+    derived = store.spill(
+        tool="transform", content="w" * 500, derived_from=source.handle, op="grep"
+    )
+    plain = store.spill(tool="ls", content="w" * 500)
+    derived_again = store.spill(
+        tool="transform", content="w" * 500, derived_from=source.handle, op="grep"
+    )
+
+    assert plain.handle != derived.handle
+    assert derived_again.handle not in {derived.handle, plain.handle}
+    derived_sidecar = json.loads(derived.path.with_suffix(".json").read_text())
+    plain_sidecar = json.loads(plain.path.with_suffix(".json").read_text())
+    assert derived_sidecar["derived_from"] == source.handle
+    assert "derived_from" not in plain_sidecar
+
+
+def test_a_handle_whose_body_is_gone_is_not_reused(tmp_path: Path):
+    store = _store(tmp_path)
+    first = store.spill(tool="ls", content="v" * 500)
+    first.path.unlink()
+
+    again = store.spill(tool="ls", content="v" * 500)
+
+    assert again.handle != first.handle and again.path.is_file()
+
+
 def test_a_preview_keeps_the_head_and_the_tail(tmp_path: Path):
     store = _store(tmp_path)
     content = "HEAD" + ("m" * 500) + "TAIL"

@@ -19,6 +19,7 @@ from hiveloom.tools.builtin import (
 )
 from hiveloom.tools.registry import (
     FunctionTool,
+    Tool,
     ToolError,
     ToolRegistry,
     build_registry,
@@ -231,6 +232,7 @@ def test_dispatch_unknown_tool_is_error():
     registry = ToolRegistry()
     result = registry.dispatch(ToolCall(id="1", name="nope", input={}))
     assert result.is_error and "unknown tool" in result.content
+    assert not result.retryable
 
 
 def test_dispatch_inactive_tool_is_error(tmp_path: Path):
@@ -515,3 +517,227 @@ def test_a_code_tool_with_postponed_annotations_gets_its_typeddict_item_schema(t
     schema = schema_from_function(import_hook("t.py:apply", tmp_path))
     assert schema["properties"]["changes"]["items"] == {"$ref": "#/$defs/Change"}
     assert schema["$defs"]["Change"]["required"] == ["path", "value"]
+
+
+# --------------------------------------------------------------------------- #
+# Argument contract: required and unknown arguments are refused before a tool runs
+# --------------------------------------------------------------------------- #
+def test_dispatch_refuses_a_missing_required_argument(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.register(FileWriteTool(tmp_path))
+
+    result = registry.dispatch(ToolCall(id="1", name="file_write", input={"path": "a.txt"}))
+
+    assert result.is_error and not result.retryable
+    assert "missing required argument(s): content" in result.content
+    assert not (tmp_path / "a.txt").exists()
+
+
+def test_dispatch_refuses_arguments_the_schema_does_not_declare(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(FileReadTool(tmp_path))
+
+    result = registry.dispatch(
+        ToolCall(id="1", name="file_read", input={"path": "a.txt", "offset": 0, "limit": 10})
+    )
+
+    assert result.is_error and not result.retryable
+    assert "unknown argument(s): limit, offset (accepted: path)" in result.content
+
+
+def test_function_tool_defaults_stay_optional_and_extras_are_refused():
+    def search(query: str, limit: int = 3) -> str:
+        return f"{query}:{limit}"
+
+    registry = ToolRegistry()
+    registry.register(FunctionTool(search, "search", "Search.", []))
+
+    assert registry.dispatch(ToolCall(id="1", name="search", input={"query": "x"})).content == "x:3"
+    extra = registry.dispatch(ToolCall(id="2", name="search", input={"query": "x", "page": 2}))
+    assert extra.is_error
+    assert "unknown argument(s): page (accepted: query, limit)" in extra.content
+
+
+def test_run_context_is_never_taken_from_the_model():
+    def whoami(label: str, run_context: dict) -> str:
+        return f"{label}:{run_context.get('run_id', '')}"
+
+    def plain(label: str) -> str:
+        return label
+
+    registry = ToolRegistry()
+    registry.register(FunctionTool(whoami, "whoami", "Who.", []))
+    registry.register(FunctionTool(plain, "plain", "Plain.", []))
+
+    # A tool that asks for the context gets the runtime's, whatever the model sent.
+    forged = registry.dispatch(
+        ToolCall(id="1", name="whoami", input={"label": "x", "run_context": {"run_id": "evil"}}),
+        run_context={"run_id": "r1"},
+    )
+    assert forged.content == "x:r1"
+    # A tool that does not ask for it sees the key for what it is: undeclared.
+    stray = registry.dispatch(
+        ToolCall(id="2", name="plain", input={"label": "x", "run_context": {}})
+    )
+    assert stray.is_error and "unknown argument(s): run_context (accepted: label)" in stray.content
+
+
+class _Loose(Tool):
+    name = "loose"
+    description = "Takes anything."
+    tags: list[str] = []
+    input_schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "additionalProperties": True,
+    }
+
+    def run(self, **kwargs) -> str:
+        return ",".join(sorted(kwargs))
+
+
+def test_a_schema_that_allows_additional_properties_is_not_policed():
+    registry = ToolRegistry()
+    registry.register(_Loose())
+    result = registry.dispatch(ToolCall(id="1", name="loose", input={"a": "1", "b": "2"}))
+    assert not result.is_error and result.content == "a,b"
+
+
+def test_an_open_schema_keeps_the_json_schema_default():
+    # A remote MCP tool that never says additionalProperties decides for itself.
+    open_tool = _Loose()
+    open_tool.input_schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    registry = ToolRegistry()
+    registry.register(open_tool)
+    result = registry.dispatch(ToolCall(id="1", name="loose", input={"a": "1", "b": "2"}))
+    assert not result.is_error and result.content == "a,b"
+
+
+def test_a_code_tool_with_kwargs_still_accepts_extra_arguments():
+    def flexible(a: str, **opts) -> str:
+        return ",".join(sorted(opts))
+
+    registry = ToolRegistry()
+    registry.register(FunctionTool(flexible, "flexible", "Flexible.", []))
+    result = registry.dispatch(
+        ToolCall(id="1", name="flexible", input={"a": "x", "mode": "fast", "n": 1})
+    )
+    assert not result.is_error and result.content == "mode,n"
+    assert "additionalProperties" not in schema_from_function(flexible)
+
+
+# --------------------------------------------------------------------------- #
+# A tool error is a deterministic refusal unless the tool marks it transient
+# --------------------------------------------------------------------------- #
+class _Raising(Tool):
+    tags: list[str] = []
+    input_schema = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str, exc: Exception):
+        self.name = name
+        self.description = name
+        self._exc = exc
+
+    def run(self, **_) -> str:
+        raise self._exc
+
+
+def test_tool_errors_are_not_retried_unless_marked_transient():
+    registry = ToolRegistry()
+    registry.register(_Raising("refusing", ToolError("not in the allowlist")))
+    registry.register(_Raising("flaky", ToolError("upstream timed out", retryable=True)))
+    registry.register(_Raising("crashing", RuntimeError("boom")))
+
+    refused = registry.dispatch(ToolCall(id="1", name="refusing", input={}))
+    assert refused.is_error and not refused.retryable
+    flaky = registry.dispatch(ToolCall(id="2", name="flaky", input={}))
+    assert flaky.is_error and flaky.retryable
+    crashed = registry.dispatch(ToolCall(id="3", name="crashing", input={}))
+    assert crashed.is_error and not crashed.retryable
+
+
+def test_http_get_network_failures_are_transient(tmp_path: Path, monkeypatch):
+    from urllib import error as urlerror
+
+    from hiveloom.tools import builtin
+
+    monkeypatch.setattr(builtin, "_validate_public_http_url", lambda *a, **k: None)
+
+    class _Opener:
+        def __init__(self, exc: Exception):
+            self._exc = exc
+
+        def open(self, request, timeout=None):
+            raise self._exc
+
+    tool = HttpGetTool(tmp_path, hosts=["example.com"])
+    monkeypatch.setattr(
+        builtin.urlrequest, "build_opener", lambda *a: _Opener(urlerror.URLError("refused"))
+    )
+    with pytest.raises(ToolError) as refused:
+        tool.run(url="http://example.com/")
+    assert refused.value.retryable
+
+    monkeypatch.setattr(
+        builtin.urlrequest, "build_opener", lambda *a: _Opener(ConnectionResetError("reset"))
+    )
+    with pytest.raises(ToolError) as reset:
+        tool.run(url="http://example.com/")
+    assert reset.value.retryable
+
+    monkeypatch.setattr(
+        builtin.urlrequest, "build_opener", lambda *a: _Opener(ValueError("bad redirect"))
+    )
+    with pytest.raises(ToolError) as invalid:
+        tool.run(url="http://example.com/")
+    assert not invalid.value.retryable
+
+
+# --------------------------------------------------------------------------- #
+# file_read says what it found when it is not a readable file
+# --------------------------------------------------------------------------- #
+def test_file_read_names_a_broken_symlink(tmp_path: Path):
+    (tmp_path / "link.txt").symlink_to("missing.txt")
+    with pytest.raises(ToolError, match=r"broken symlink: link.txt \(its target does not exist\)"):
+        FileReadTool(tmp_path).run(path="link.txt")
+
+
+def test_file_read_on_a_directory_lists_its_entries(tmp_path: Path):
+    src = tmp_path / "src"
+    (src / "pkg").mkdir(parents=True)
+    (src / "b.py").write_text("b", encoding="utf-8")
+    (src / "a.py").write_text("a", encoding="utf-8")
+    (src / ".env").write_text("SECRET=1", encoding="utf-8")
+    (src / "__pycache__").mkdir()
+
+    with pytest.raises(ToolError) as info:
+        FileReadTool(tmp_path).run(path="src")
+
+    assert str(info.value) == "'src' is a directory, not a file. Entries: a.py, b.py, pkg/"
+
+
+def test_file_read_on_a_directory_still_lists_an_entry_it_cannot_resolve(tmp_path: Path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("a", encoding="utf-8")
+    (src / "loop").symlink_to("loop")
+
+    with pytest.raises(ToolError) as info:
+        FileReadTool(tmp_path).run(path="src")
+
+    assert str(info.value) == "'src' is a directory, not a file. Entries: a.py, loop"
+
+
+def test_file_read_on_a_large_directory_cuts_the_listing(tmp_path: Path):
+    big = tmp_path / "big"
+    big.mkdir()
+    for i in range(23):
+        (big / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(ToolError) as info:
+        FileReadTool(tmp_path).run(path="big")
+
+    message = str(info.value)
+    assert "f00.txt, f01.txt" in message and "f19.txt" in message
+    assert "f20.txt" not in message and message.endswith("(+3 more)")
