@@ -649,11 +649,13 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "status": result.status,
         "output": result.output,
         "turns": result.turns,
+        "compaction_calls": getattr(result, "compaction_calls", 0),
         "cost_usd": result.cost_usd,
         "duration_seconds": result.duration_seconds,
         "run_id": result.run_id,
         "trace_path": result.trace_path,
         "reason": result.reason,
+        "warnings": list(getattr(result, "warnings", [])),
         "artifacts": result.artifacts,
         "provider_calls": getattr(result, "provider_calls", []),
         "steps": [

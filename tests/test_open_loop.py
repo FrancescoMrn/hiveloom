@@ -479,6 +479,93 @@ def test_summarization_compaction_is_costed_as_a_model_call(harness_dir: Path):
     assert any(event["payload"]["phase"] == "compaction" for event in responses)
 
 
+def _compacting_run(harness_dir: Path, *, max_turns: int) -> tuple[FakeModelProvider, object]:
+    """A run that reads one file, then compacts before its second (final) turn."""
+    _no_verify(harness_dir)
+    construct.add_tool(harness_dir, builtin="file_read")
+    construct.set_field(harness_dir, "context.max_input_tokens", "1")
+    construct.set_field(harness_dir, "context.compaction.trigger_at_pct", "1")
+    construct.set_field(harness_dir, "loop.max_turns", str(max_turns))
+    (harness_dir / "notes.txt").write_text("alpha beta", encoding="utf-8")
+    provider = FakeModelProvider(
+        [
+            tool_response("file_read", {"path": "notes.txt"}, call_id="c1"),
+            text_response("compressed history"),
+            text_response("done"),
+        ]
+    )
+    return provider, runner.run_harness(harness_dir, "go", provider=provider)
+
+
+def test_compaction_does_not_consume_the_turn_budget(harness_dir: Path):
+    # Two act turns and one compaction call: `max_turns: 2` must still finish,
+    # and report turns=2, not 3.
+    provider, result = _compacting_run(harness_dir, max_turns=2)
+
+    assert result.status == "success"
+    assert len(provider.calls) == 3  # tool turn, compaction, final turn
+    assert (result.turns, result.compaction_calls) == (2, 1)
+    finished = next(e for e in _events(result.trace_path) if e["type"] == "run_finished")
+    assert finished["payload"]["turns"] == 2
+    assert finished["payload"]["compaction_calls"] == 1
+    assert runner.run_result_payload(result)["compaction_calls"] == 1
+
+
+def test_compaction_summary_indexes_the_files_the_run_touched(harness_dir: Path):
+    _, result = _compacting_run(harness_dir, max_turns=16)
+
+    # The last compaction: an earlier one fires on turn 1 with nothing to summarize.
+    compaction = [e for e in _events(result.trace_path) if e["type"] == "context_compaction"][-1]
+    summary = next(
+        m["content"]
+        for m in compaction["payload"]["messages"]
+        if isinstance(m.get("content"), str)
+        and m["content"].startswith("[summary of earlier turns]")
+    )
+    assert summary.startswith("[summary of earlier turns]\ncompressed history")
+    assert summary.endswith("# Files touched\n- notes.txt (read)")
+
+
+def _declare_window(model_id: str, context_window: int) -> None:
+    ext.ensure_environment_loaded()
+    ext.ExtensionAPI(source="test:window").register_model(
+        ext.ModelInfo(id=model_id, provider="claude", context_window=context_window)
+    )
+
+
+def test_a_default_context_budget_is_flagged_when_the_model_window_is_larger(harness_dir: Path):
+    _no_verify(harness_dir)
+    _declare_window("claude-haiku-4-5", 200_000)
+
+    result = runner.run_harness(
+        harness_dir, "go", provider=FakeModelProvider([text_response("done")])
+    )
+
+    flagged = [e for e in _events(result.trace_path) if e["type"] == "context_budget_default"]
+    assert [e["payload"] for e in flagged] == [
+        {"model": "claude-haiku-4-5", "max_input_tokens": 30000, "context_window": 200_000}
+    ]
+    assert result.warnings == [
+        "context.max_input_tokens is the default 30000 while claude-haiku-4-5 declares a "
+        "200000-token context window; set it on purpose "
+        "(hiveloom set context.max_input_tokens <n>)"
+    ]
+    assert runner.run_result_payload(result)["warnings"] == result.warnings
+
+
+def test_an_explicit_context_budget_is_not_flagged(harness_dir: Path):
+    _no_verify(harness_dir)
+    _declare_window("claude-haiku-4-5", 200_000)
+    construct.set_field(harness_dir, "context.max_input_tokens", "120000")
+
+    result = runner.run_harness(
+        harness_dir, "go", provider=FakeModelProvider([text_response("done")])
+    )
+
+    assert not [e for e in _events(result.trace_path) if e["type"] == "context_budget_default"]
+    assert result.warnings == []
+
+
 # --------------------------------------------------------------------------- #
 # Tool ergonomics
 # --------------------------------------------------------------------------- #
