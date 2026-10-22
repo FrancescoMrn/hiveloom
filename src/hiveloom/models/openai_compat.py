@@ -111,19 +111,24 @@ class _UsageOptionRejected(RuntimeError):
 def _decode_body(raw: bytes) -> dict[str, Any]:
     """The JSON object a 200 must carry.
 
-    JSON that started well and broke off before its end, or bytes that are
-    not UTF-8, are a transport failure and raise :class:`_UndecodableBody`,
-    which the retry loop treats like a dropped connection. A body that is not
-    JSON at all (an HTML login page or a plain ``Unauthorized`` behind a wrong
-    ``base_url``) or JSON that is not an object (``null``, a list) is an
-    endpoint answering something else, and it will again, so it fails at once
-    with a readable message. Every message carries the start of the body: that
-    is what the run's reason has to go on.
+    JSON that started well and broke off before its end, an empty body (a
+    proxy that closed after the headers), or bytes that are not UTF-8, are a
+    transport failure and raise :class:`_UndecodableBody`, which the retry
+    loop treats like a dropped connection. A body that is not JSON at all (an
+    HTML login page or a plain ``Unauthorized`` behind a wrong ``base_url``)
+    or JSON that is not an object (``null``, a list) is an endpoint answering
+    something else, and it will again, so it fails at once with a readable
+    message. Every message carries the start of the body: that is what the
+    run's reason has to go on.
     """
     try:
-        body = json.loads(raw.decode("utf-8-sig"))
+        text = raw.decode("utf-8-sig")
+        body = json.loads(text)
     except json.JSONDecodeError as exc:
-        if exc.pos == 0:
+        # Nothing parsed, whatever whitespace came first, or a complete value
+        # followed by more: not JSON, rather than JSON that broke off.
+        not_json = exc.pos == len(text) - len(text.lstrip()) or exc.msg == "Extra data"
+        if not_json and text.strip():
             raise RuntimeError(f"provider returned a body that is not JSON: {raw[:200]!r}") from exc
         raise _UndecodableBody(f"{exc}: {raw[:200]!r}") from exc
     except UnicodeDecodeError as exc:

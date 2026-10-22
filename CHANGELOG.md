@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The OpenAI-compatible provider retries an HTTP 200 whose body is JSON cut
-  off before its end or bytes that are not UTF-8 the way it retries a dropped
-  connection, instead of ending the run with a bare `JSONDecodeError`. A body
+  off before its end, empty, or bytes that are not UTF-8 the way it retries a
+  dropped connection, instead of ending the run with a bare `JSONDecodeError`. A body
   that is not JSON at all (a login page behind a wrong `base_url`) or JSON that
   is not an object fails at once with a readable reason naming the start of
   the body, instead of four attempts or an `AttributeError`.
