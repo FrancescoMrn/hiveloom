@@ -15,6 +15,8 @@ class ExitCode:
     GUARDRAIL_HALT = 2
     SPEC_ERROR = 3
     RUNTIME_ERROR = 4
+    # An eval run or resume stopped by Ctrl-C, SIGTERM or SIGHUP (the shell's 128 + SIGINT).
+    INTERRUPTED = 130
 
 
 class HiveloomError(Exception):

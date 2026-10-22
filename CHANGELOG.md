@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Ctrl-C, `SIGTERM` or `SIGHUP` during `eval run` or `eval resume` no longer
+  spends an infrastructure attempt on the cell in flight or lets queued cells
+  start: the cell returns to `pending` with `error_phase: interrupted`, the
+  command prints the `eval resume` command and exits with status 130 at once.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model

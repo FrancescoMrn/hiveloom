@@ -331,6 +331,9 @@ def _default_execute(
 def _apply_result(cell: EvalCell, result: RunResult) -> None:
     cell.run_id = result.run_id or cell.run_id
     cell.run_status = result.status
+    cell.error_phase = ""
+    cell.error_type = ""
+    cell.error = ""
     cell.trace_path = result.trace_path or ""
     cell.trace_disabled = not bool(result.trace_path)
     cell.duration_ms = round(result.duration_seconds * 1000)
@@ -399,6 +402,7 @@ def _run_one_cell(
     spec: EvalSpec,
     execute: CellExecutor,
     lock: threading.Lock,
+    started: set[str],
 ) -> None:
     recovered = _result_from_trace(cell.trace_path) if cell.trace_path else None
     if recovered is not None:
@@ -431,10 +435,18 @@ def _run_one_cell(
     maximum_attempts = manifest.infrastructure_retries + 1
     while cell.infrastructure_attempts < maximum_attempts:
         with lock:
+            # A worker that outlives an interrupt (its provider call was
+            # abandoned, not stopped) must not start another attempt.
+            if manifest.status != "running":
+                return
+            started.add(cell.cell_id)
             cell.infrastructure_attempts += 1
-            attempt = cell.infrastructure_attempts
+            # Numbered by run ids issued, not attempts charged: an interrupted
+            # attempt keeps its id (its trace exists) without being charged,
+            # and the next run must not reuse that id.
+            ordinal = len(cell.attempt_run_ids) + 1
             base_run_id = f"{manifest.eval_run_id}_{cell.cell_id[:12]}"
-            cell.run_id = base_run_id if attempt == 1 else f"{base_run_id}-a{attempt}"
+            cell.run_id = base_run_id if ordinal == 1 else f"{base_run_id}-a{ordinal}"
             cell.attempt_run_ids.append(cell.run_id)
             cell.trace_path = str(Path(manifest.trace_root) / f"{cell.run_id}.jsonl")
             cell.trace_disabled = False
@@ -452,6 +464,8 @@ def _run_one_cell(
                 result = recovered
             else:
                 with lock:
+                    if manifest.status != "running":
+                        return  # an abandoned call failing late is not an error
                     cell.status = "infrastructure_error"
                     cell.error_phase = "execution"
                     cell.error_type = type(exc).__name__
@@ -459,6 +473,8 @@ def _run_one_cell(
                 _save_manifest(manifest, lock)
                 continue
         with lock:
+            if manifest.status != "running":
+                return  # abandoned by an interrupt: resume recovers it from the trace
             _apply_result(cell, result)
         _save_manifest(manifest, lock)
         try:
@@ -487,6 +503,31 @@ def _case_map(cases: list[EvalCase]) -> dict[str, EvalCase]:
     return {_case_key(case): case for case in cases}
 
 
+def _record_interrupt(
+    manifest: EvalManifest, started: set[str], lock: threading.Lock
+) -> None:
+    """Return the cells this process started to pending, charging no attempt.
+
+    The attempt was charged before ``execute`` started, so an operator's Ctrl-C
+    would otherwise count against ``infrastructure_retries`` on resume. The run
+    id stays on the cell: its trace exists, and resume recovers a result from
+    it if the run finished anyway. No new status is introduced, so the manifest
+    stays readable by older releases; the error fields say what happened. A cell
+    an earlier crash left ``running`` keeps its charge: it is not in ``started``.
+    """
+    with lock:
+        for cell in manifest.cells:
+            if cell.status != "running" or cell.cell_id not in started:
+                continue
+            cell.status = "pending"
+            cell.infrastructure_attempts -= 1
+            cell.error_phase = "interrupted"
+            cell.error_type = "KeyboardInterrupt"
+            cell.error = "interrupted before the run finished"
+        manifest.status = "incomplete"
+    _save_manifest(manifest, lock)
+
+
 def _run_pending(
     manifest: EvalManifest,
     spec: EvalSpec,
@@ -502,9 +543,13 @@ def _run_pending(
     if max_cells is not None:
         eligible = eligible[:max_cells]
     lock = threading.Lock()
-    manifest.status = "running"
-    _save_manifest(manifest, lock)
-    with ThreadPoolExecutor(max_workers=manifest.concurrency) as pool:
+    started: set[str] = set()
+    # Not a ``with`` block: its exit waits for every worker, and on an
+    # interrupt the cell in flight may be minutes into a provider call.
+    pool = ThreadPoolExecutor(max_workers=manifest.concurrency)
+    try:
+        manifest.status = "running"
+        _save_manifest(manifest, lock)
         futures = [
             pool.submit(
                 _run_one_cell,
@@ -514,11 +559,24 @@ def _run_pending(
                 spec,
                 execute,
                 lock,
+                started,
             )
             for cell in eligible
         ]
         for future in futures:
             future.result()
+    except KeyboardInterrupt:
+        # Only this thread sees the interrupt. The workers cannot be stopped
+        # mid call, but the queued cells must not start, and what was running
+        # is recorded so resume neither charges it nor repeats finished work.
+        pool.shutdown(wait=False, cancel_futures=True)
+        _record_interrupt(manifest, started, lock)
+        raise
+    except BaseException:
+        # Any other failure waits for the workers, as the ``with`` block did.
+        pool.shutdown()
+        raise
+    pool.shutdown()
     manifest.status = (
         "completed"
         if all(cell.status == "completed" for cell in manifest.cells)

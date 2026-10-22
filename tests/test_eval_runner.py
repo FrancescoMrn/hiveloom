@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import signal
 import threading
 import time
 from pathlib import Path
 
 import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
+from hiveloom import cli as cli_module
 from hiveloom import construct, ext
 from hiveloom.cli import app
 from hiveloom.eval_runner import (
@@ -104,6 +109,15 @@ def _fixture(tmp_path: Path, *, case_count: int = 4, repetitions: int = 1):
         expires_at="2100-01-01T00:00:00+00:00",
     )
     return eval_file, probe
+
+
+def _wait_for_workers() -> None:
+    """Block until the eval's pool threads have ended (an abandoned worker included)."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and any(
+        thread.name.startswith("ThreadPoolExecutor") for thread in threading.enumerate()
+    ):
+        time.sleep(0.02)
 
 
 def _completed_result(*, manifest, cell, case, spec) -> RunResult:
@@ -592,3 +606,315 @@ def test_a_whole_eval_manifest_stays_readable_by_older_releases(tmp_path: Path):
     subset = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe,
                       case_ids=["case-0"])
     assert json.loads(manifest_path(subset.eval_run_id).read_text())["case_ids"] == ["case-0"]
+
+
+# --------------------------------------------------------------------------- #
+# Operator interrupts: Ctrl-C must not spend an infrastructure attempt
+# --------------------------------------------------------------------------- #
+def test_an_interrupt_records_the_cell_in_flight_without_charging_an_attempt(
+    tmp_path: Path,
+):
+    eval_file, probe = _fixture(tmp_path, case_count=3)
+    seen: list[str] = []
+    release = threading.Event()
+
+    def interrupt_first(**kwargs):
+        # The operator's Ctrl-C lands while this cell's provider call is in
+        # flight; the call itself is abandoned, as a real one would be.
+        seen.append(kwargs["cell"].cell_id)
+        os.kill(os.getpid(), signal.SIGINT)
+        release.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_eval(
+            eval_file,
+            execute_cell=interrupt_first,
+            model_probe=probe,
+            concurrency=1,
+            eval_run_id="eval_interrupt_fixture",
+        )
+
+    assert len(seen) == 1
+    manifest = load_eval_manifest("eval_interrupt_fixture")
+    assert manifest.status == "incomplete"
+    assert manifest.summary()["pending"] == 3
+    [hit] = [cell for cell in manifest.cells if cell.cell_id == seen[0]]
+    assert hit.status == "pending"
+    assert hit.error_phase == "interrupted"
+    assert hit.error_type == "KeyboardInterrupt"
+    assert hit.infrastructure_attempts == 0
+    assert hit.attempt_run_ids == [hit.run_id]
+    for cell in manifest.cells:
+        if cell.cell_id != seen[0]:
+            assert cell.error_phase == ""
+            assert cell.attempt_run_ids == []
+    release.set()
+
+    # The default ceiling allows exactly one attempt: the interrupted one was
+    # not it, so resume runs the cell again under a distinct run id.
+    completed = resume_eval(
+        "eval_interrupt_fixture", execute_cell=_completed_result, model_probe=probe
+    )
+    assert completed.status == "completed"
+    assert completed.summary()["completed"] == 3
+    [hit] = [cell for cell in completed.cells if cell.cell_id == seen[0]]
+    assert hit.infrastructure_attempts == 1
+    assert len(hit.attempt_run_ids) == 2
+    assert hit.attempt_run_ids[1] == hit.run_id
+    assert hit.run_id.endswith("-a2")
+
+
+@pytest.mark.parametrize("outcome", ["fails", "finishes"])
+def test_a_worker_that_outlives_an_interrupt_leaves_no_mark(tmp_path: Path, outcome: str):
+    eval_file, probe = _fixture(tmp_path, case_count=2)
+    calls: list[str] = []
+    release = threading.Event()
+
+    def abandoned(**kwargs):
+        calls.append(kwargs["cell"].run_id)
+        if len(calls) == 1:
+            os.kill(os.getpid(), signal.SIGINT)
+            release.wait(timeout=10)
+        if outcome == "finishes":
+            return _completed_result(**kwargs)
+        raise RuntimeError("the abandoned call failed when its socket closed")
+
+    with pytest.raises(KeyboardInterrupt):
+        run_eval(
+            eval_file,
+            execute_cell=abandoned,
+            model_probe=probe,
+            concurrency=1,
+            infrastructure_retries=1,
+            eval_run_id="eval_outlived_fixture",
+        )
+    release.set()
+    _wait_for_workers()  # a retry, if the worker were going to start one, has happened
+
+    assert len(calls) == 1
+    manifest = load_eval_manifest("eval_outlived_fixture")
+    assert manifest.status == "incomplete"
+    [interrupted, pending] = sorted(manifest.cells, key=lambda c: c.error_phase, reverse=True)
+    assert interrupted.error_phase == "interrupted"
+    assert interrupted.status == "pending"  # the abandoned call's late outcome left no mark
+    assert interrupted.infrastructure_attempts == 0
+    assert pending.attempt_run_ids == []
+    if outcome == "finishes":
+        # The finished trace is picked up on resume without running the cell again.
+        resumed = resume_eval(
+            "eval_outlived_fixture", execute_cell=_completed_result, model_probe=probe
+        )
+        [recovered] = [cell for cell in resumed.cells if cell.cell_id == interrupted.cell_id]
+        assert recovered.status == "completed"
+        assert recovered.attempt_run_ids == [calls[0]]
+        assert (recovered.error_phase, recovered.error_type, recovered.error) == ("", "", "")
+
+
+def test_a_cell_an_earlier_crash_left_running_keeps_its_charge(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=2)
+    first = run_eval(
+        eval_file,
+        execute_cell=_completed_result,
+        model_probe=probe,
+        max_cells=0,
+        eval_run_id="eval_stale_fixture",
+    )
+    # What a hard kill leaves behind: both cells charged and still "running",
+    # with a retry left so the resume can run them.
+    first.infrastructure_retries = 1
+    for cell in first.cells:
+        cell.status = "running"
+        cell.infrastructure_attempts = 1
+        cell.attempt_run_ids = [f"eval_stale_fixture_{cell.cell_id[:12]}"]
+    manifest_path("eval_stale_fixture").write_text(first.model_dump_json(indent=2))
+    release = threading.Event()
+
+    def interrupt(**kwargs):
+        os.kill(os.getpid(), signal.SIGINT)
+        release.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        resume_eval(
+            "eval_stale_fixture",
+            execute_cell=interrupt,
+            model_probe=probe,
+            max_cells=None,
+        )
+    release.set()
+
+    cells = {cell.error_phase: cell for cell in load_eval_manifest("eval_stale_fixture").cells}
+    refunded = cells["interrupted"]
+    assert refunded.status == "pending"
+    assert refunded.infrastructure_attempts == 1  # only this process's charge is refunded
+    assert len(refunded.attempt_run_ids) == 2
+    stale = cells[""]
+    assert stale.status == "running"
+    assert stale.infrastructure_attempts == 1  # the crashed attempt stays charged
+
+
+def test_run_ids_count_the_attempts_issued_not_the_attempts_charged(tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    release = threading.Event()
+    calls = 0
+
+    def fails_then_is_interrupted(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("infrastructure failure")
+        os.kill(os.getpid(), signal.SIGINT)
+        release.wait(timeout=10)
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_eval(
+            eval_file,
+            execute_cell=fails_then_is_interrupted,
+            model_probe=probe,
+            concurrency=1,
+            infrastructure_retries=2,
+            eval_run_id="eval_numbering_fixture",
+        )
+    release.set()
+    [cell] = load_eval_manifest("eval_numbering_fixture").cells
+    assert cell.error_phase == "interrupted"
+    assert cell.infrastructure_attempts == 1  # the failure was charged, the interrupt was not
+    assert len(cell.attempt_run_ids) == 2
+
+    completed = resume_eval(
+        "eval_numbering_fixture", execute_cell=_completed_result, model_probe=probe
+    )
+    [cell] = completed.cells
+    assert cell.infrastructure_attempts == 2
+    assert len(set(cell.attempt_run_ids)) == 3
+    assert cell.run_id.endswith("-a3")
+
+
+def _leave_through(monkeypatch, exits: list[int]) -> None:
+    """Stand in for ``os._exit``: record the code and leave through the CLI's own exit."""
+
+    def _exit(code: int) -> None:
+        exits.append(code)
+        raise typer.Exit(code)
+
+    monkeypatch.setattr("hiveloom.cli.os._exit", _exit)
+
+
+def test_eval_run_reports_how_to_resume_and_leaves_with_130(monkeypatch, tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    exits: list[int] = []
+    _leave_through(monkeypatch, exits)
+    monkeypatch.setattr("hiveloom.eval_runner._probe_for_eval", lambda *_args: probe)
+
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    # The manifest exists by the time the batch is interrupted.
+    monkeypatch.setattr("hiveloom.eval_runner._run_pending", interrupted)
+
+    result = cli.invoke(app, ["eval", "run", str(eval_file), "--approve", "--json"])
+
+    assert exits == [130]
+    assert result.exit_code == 130
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["status"] == "interrupted"
+    assert payload["eval_run_id"].startswith("eval_")
+    assert f"hiveloom eval resume {payload['eval_run_id']}" in payload["error"]
+
+
+def test_an_interrupt_before_the_eval_exists_has_nothing_to_resume(monkeypatch, tmp_path: Path):
+    eval_file, _probe = _fixture(tmp_path, case_count=1)
+    exits: list[int] = []
+    _leave_through(monkeypatch, exits)
+
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt  # the probe, the trust prompt: before any manifest
+
+    monkeypatch.setattr("hiveloom.eval_runner.run_eval", interrupted)
+
+    result = cli.invoke(app, ["eval", "run", str(eval_file), "--approve", "--json"])
+
+    assert exits == [130]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "interrupted"
+    assert "eval_run_id" not in payload
+    assert "nothing to resume" in payload["error"]
+
+
+def test_a_termination_signal_stops_eval_resume_like_ctrl_c(monkeypatch, tmp_path: Path):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    finished = run_eval(eval_file, execute_cell=_completed_result, model_probe=probe)
+    exits: list[int] = []
+    _leave_through(monkeypatch, exits)
+
+    def killed(*_args, **_kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(1)
+        raise AssertionError("SIGTERM was not turned into an interrupt")
+
+    monkeypatch.setattr("hiveloom.eval_runner.resume_eval", killed)
+    before = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM)}
+
+    result = cli.invoke(app, ["eval", "resume", finished.eval_run_id, "--approve"])
+
+    assert exits == [130]
+    assert result.exit_code == 130
+    assert f"hiveloom eval resume {finished.eval_run_id}" in result.output
+    assert {name: signal.getsignal(name) for name in before} == before
+
+
+def test_a_second_signal_leaves_at_once_without_waiting_for_the_record(monkeypatch):
+    exits: list[int] = []
+    armed: list[object] = []
+
+    def _exit(code: int) -> None:
+        exits.append(code)
+        if not armed:
+            # What a second Ctrl-C, SIGTERM or SIGHUP meets while the record
+            # is written: the handlers armed by the first signal.
+            armed.extend(
+                signal.getsignal(name)
+                for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+            )
+            raise typer.Exit(code)
+
+    monkeypatch.setattr("hiveloom.cli.os._exit", _exit)
+
+    with pytest.raises(typer.Exit):
+        with cli_module._stop_on_signal("eval_0123456789abcdef", True):
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(1)
+
+    assert len(set(map(id, armed))) == 1
+    armed[0](signal.SIGINT, None)
+    assert exits == [130, 130]
+
+
+def test_a_signal_the_caller_ignored_on_purpose_stays_ignored():
+    # ``nohup`` ignores SIGHUP so an eval outlives its terminal.
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        with cli_module._stop_on_signal("eval_0123456789abcdef", True):
+            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+        assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, before)
+
+
+def test_the_process_still_leaves_when_the_terminal_is_gone(monkeypatch):
+    exits: list[int] = []
+    _leave_through(monkeypatch, exits)
+
+    def hung_up(*_args, **_kwargs):
+        raise OSError(errno.EIO, "the terminal hung up")
+
+    monkeypatch.setattr(cli_module._err_console, "print", hung_up)
+
+    with pytest.raises(typer.Exit):
+        with cli_module._stop_on_signal("eval_0123456789abcdef", False):
+            raise KeyboardInterrupt
+
+    assert exits == [130]

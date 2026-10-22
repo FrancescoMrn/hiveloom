@@ -148,6 +148,20 @@ completed model result. Each retry has a distinct run ID. Harness verification
 failures, guardrail halts, and provider responses recorded as run outcomes are
 completed cells and are not reclassified as infrastructure errors.
 
+Ctrl-C, `SIGTERM` or `SIGHUP` during `eval run` or `eval resume` stops the
+batch: cells that had not started stay `pending`, the cells in flight return to
+`pending` with `error_phase: interrupted` and no attempt charged against the
+retry ceiling, the manifest is `incomplete`, and the command exits with status
+130 after printing the `eval resume` command. The interrupted attempt keeps its
+run ID, so a trace that finished anyway is recovered on resume instead of being
+run again; otherwise the cell runs under the next run ID. The process leaves
+without waiting for the provider calls in flight, which closes their sockets;
+whether the server stops generating is up to the server. The first signal wins:
+later ones are ignored while the manifest is written. A signal the caller
+ignored on purpose stays ignored, so `nohup hiveloom eval run ...` still
+outlives its terminal. An interrupt before the manifest exists (during the
+probe or the trust prompt) leaves nothing to resume and says so.
+
 ## Report and compare
 
 Eval manifests are indexed into the Hive as they change. Reports therefore use
