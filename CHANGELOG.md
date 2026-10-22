@@ -16,14 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at the output ceiling no longer writes an empty file and reports success,
   and `offset`/`limit` passed to `file_read` are refused instead of silently
   ignored. Remote MCP schemas keep their own policy.
-- `loop.on_tool_error: retry_once` repeats only a `ToolError` raised with
-  `retryable=True` (`http_get` network errors, MCP transport failures).
-  Allowlist refusals, missing files, bad arguments, unknown and inactive tools,
-  errors an MCP server reports and uncaught exceptions in a tool are surfaced
+- `loop.on_tool_error: retry_once` repeats only a `ToolError` raised, or a
+  `ToolResult` returned, with `retryable=True` (`http_get` network errors, MCP
+  transport failures); `ToolResult.retryable` now defaults to False. Allowlist
+  refusals, missing files, bad arguments, unknown and inactive tools, errors a
+  tool or an MCP server reports and uncaught exceptions in a tool are surfaced
   to the model at once instead of being retried.
 - `file_read` names a broken symlink and, on a directory, lists its first 20
   entries instead of raising `IsADirectoryError`.
-- Spilling byte-identical content twice in one run reuses the existing handle.
+- Spilling byte-identical content from the same tool twice in one run reuses
+  the existing handle.
 
 ## [1.3.0] - 2026-10-04
 

@@ -1472,7 +1472,7 @@ class AgentLoop:
             refused_reason=outcome.reason,
         )
         if not outcome.ok:
-            return ToolResult(content=outcome.reason, is_error=True, retryable=False)
+            return ToolResult(content=outcome.reason, is_error=True)
 
         self._apply_playbook_model(name)
         self._events.emit(
@@ -1874,7 +1874,6 @@ class AgentLoop:
                     "the task yourself, or tell the user which harness would fit."
                 ),
                 is_error=True,
-                retryable=False,
             )
         header = (
             f"[{record.harness} run {record.run_id} finished: {record.status}, "
@@ -1884,8 +1883,6 @@ class AgentLoop:
         return ToolResult(
             content=f"{header}\n{body}",
             is_error=record.status != "success",
-            # Never retried automatically: a repeat is a second paid child run.
-            retryable=False,
         )
 
     def _handle_list_peers(self, candidates: list[PeerCandidate]) -> ToolResult:

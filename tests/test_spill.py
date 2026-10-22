@@ -133,6 +133,16 @@ def test_identical_content_reuses_the_handle(tmp_path: Path):
     assert first.path.read_text(encoding="utf-8") == "x" * 500
 
 
+def test_identical_content_from_another_tool_gets_its_own_handle(tmp_path: Path):
+    store = _store(tmp_path)
+
+    listed = store.spill(tool="ls", content="x" * 500)
+    fetched = store.spill(tool="http_get", content="x" * 500)
+
+    assert fetched.handle != listed.handle
+    assert json.loads(fetched.path.with_suffix(".json").read_text())["tool"] == "http_get"
+
+
 def test_derived_objects_are_never_shared_with_plain_results(tmp_path: Path):
     store = _store(tmp_path)
     source = store.spill(tool="ls", content="z" * 500)

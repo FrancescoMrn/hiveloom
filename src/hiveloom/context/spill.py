@@ -238,7 +238,7 @@ class SpillStore:
         # context already quotes. Derived and inherited objects stay out: a
         # derived object's sidecar is its provenance, an inherited one lives
         # in another directory.
-        self._by_digest: dict[tuple[str, int], tuple[str, Path]] = {}
+        self._by_digest: dict[tuple[str, str, int], tuple[str, Path]] = {}
         # Called when ``transform_result`` mints a *derived* object. The store
         # cannot journal (it has no trace writer), and the loop cannot see
         # inside a tool call, so the one place that knows a new object exists
@@ -285,10 +285,10 @@ class SpillStore:
         stored = self._redact(content) if self._redact is not None else content
         data = stored.encode("utf-8")
         digest = hashlib.sha256(data).hexdigest()
-        existing = None if derived_from else self._minted(digest, len(data))
+        existing = None if derived_from else self._minted(tool, digest, len(data))
         if existing is not None:
-            # Byte-identical to a result this run already stored (the same
-            # listing run twice): the handle the context already quotes is
+            # Byte-identical to a result this tool already produced in this run
+            # (the same listing run twice): the handle the context already quotes is
             # the one worth having, and a second copy would cost a second
             # read to learn it says the same thing.
             handle, body = existing
@@ -329,7 +329,7 @@ class SpillStore:
         with self._lock:
             self._authorized[handle] = (body, digest, len(data))
             if not derived_from:
-                self._by_digest.setdefault((digest, len(data)), (handle, body))
+                self._by_digest.setdefault((tool, digest, len(data)), (handle, body))
         preview, omitted = self._preview(handle, data)
         return SpillRecord(
             handle=handle,
@@ -340,10 +340,10 @@ class SpillStore:
             sha256=digest,
         )
 
-    def _minted(self, digest: str, size: int) -> tuple[str, Path] | None:
-        """The handle and file this run minted for these exact bytes, if any."""
+    def _minted(self, tool: str, digest: str, size: int) -> tuple[str, Path] | None:
+        """The handle and file this run minted for these exact bytes from ``tool``."""
         with self._lock:
-            existing = self._by_digest.get((digest, size))
+            existing = self._by_digest.get((tool, digest, size))
         if existing is not None and existing[1].is_file():
             return existing
         return None
