@@ -616,3 +616,31 @@ def test_shell_warns_at_construction_about_a_missing_binary(tmp_path: Path, capl
     with caplog.at_level("WARNING", logger="hiveloom.tools.builtin"):
         ShellTool(tmp_path, allowed=["echo hi", "./check"])
     assert caplog.text == ""
+
+
+def test_shell_hints_at_the_memory_limit_on_an_allocation_failure(tmp_path: Path):
+    script = tmp_path / "oom"
+    script.write_text(
+        "#!/bin/sh\necho 'Out of memory: Cannot allocate Wasm memory' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    tool = ShellTool(tmp_path, allowed=["./oom"], confinement=ConfinementConfig(max_memory_mb=512))
+    out = tool.run(command="./oom")
+    assert "exit=1" in out
+    assert "allocation failure" in out and "confinement.max_memory_mb is 512 MiB" in out
+
+    unlimited = ShellTool(
+        tmp_path, allowed=["./oom"], confinement=ConfinementConfig(max_memory_mb=0)
+    )
+    assert "max_memory_mb" not in unlimited.run(command="./oom")
+
+    # A failing test suite that *prints* the phrase on stdout is not an
+    # allocation failure; only stderr counts.
+    chatty = tmp_path / "chatty"
+    chatty.write_text("#!/bin/sh\necho 'expected: out of memory'\nexit 1\n", encoding="utf-8")
+    chatty.chmod(0o755)
+    tool = ShellTool(
+        tmp_path, allowed=["./chatty"], confinement=ConfinementConfig(max_memory_mb=512)
+    )
+    assert "max_memory_mb" not in tool.run(command="./chatty")

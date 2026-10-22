@@ -582,7 +582,7 @@ confinement:
   env_passthrough: []     # extra environment variables to forward
   timeout_seconds: 30     # wall-clock ceiling for a `shell` call
   max_output_bytes: 1048576 # retained per stream (stdout and stderr)
-  max_memory_mb: 2048     # 0 = unlimited
+  max_memory_mb: 2048     # RLIMIT_DATA: writable memory, not address space; 0 = unlimited
   max_processes: 0        # RLIMIT_NPROC; per-user, so 0 unless hiveloom owns the uid
 ```
 
@@ -592,7 +592,12 @@ run — only `PATH`, `HOME`, locale, and anything in `env_passthrough` survive),
 closed stdin, its own session so a timeout kills the whole process tree rather
 than orphaning a backgrounded grandchild, POSIX resource limits, and output
 streamed through bounded head/tail collectors so a runaway writer cannot
-exhaust the runtime's memory or disk.
+exhaust the runtime's memory or disk. `max_memory_mb` is `RLIMIT_DATA`, the
+heap and private writable mappings: address space is not limited, so a runtime
+that reserves gigabytes it never touches (V8 for WebAssembly, a JVM, Go) starts
+under the default, while shared memory is not counted and macOS enforces neither
+limit. A `shell` result whose command failed with an allocation error on stderr
+names the setting, so the trace says why vitest or a JVM died.
 
 Where the platform has a sandbox — `bwrap` (bubblewrap) on Linux,
 `sandbox-exec` on macOS — it also gets **kernel-enforced isolation**: the

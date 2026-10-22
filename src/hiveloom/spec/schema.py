@@ -1290,7 +1290,16 @@ class ConfinementConfig(BaseModel):
         ),
     )
     max_memory_mb: int = Field(
-        default=2048, ge=0, description="Address-space limit per spawned process (0 = unlimited)."
+        default=2048,
+        ge=0,
+        description=(
+            "Writable-memory limit per spawned process in MiB (0 = unlimited): "
+            "RLIMIT_DATA bounds the heap and private writable mappings, not "
+            "address space, so runtimes that reserve large virtual ranges (V8 for "
+            "WebAssembly, the JVM, Go) run under the default. Shared memory is not "
+            "counted and macOS enforces neither limit; an OS sandbox or a cgroup is "
+            "the hard cap."
+        ),
     )
     max_processes: int = Field(
         default=0,
