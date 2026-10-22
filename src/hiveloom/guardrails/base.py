@@ -53,6 +53,8 @@ class RunState:
     delegated_cost_usd: float = 0.0
     turns: int = 0
     model_calls: int = 0
+    # Summarization calls made by compaction: model calls, but not turns.
+    compaction_calls: int = 0
     tool_turns: int = 0
     verify_retries: int = 0
     policy_nudges: int = 0

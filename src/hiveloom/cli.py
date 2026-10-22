@@ -1454,6 +1454,8 @@ def run(
                 _console.print(result.output)
             if result.reason:
                 _console.print(f"reason: {result.reason}")
+            for warning in result.warnings:
+                _console.print(f"[yellow]warning:[/yellow] {warning}")
         if sync:
             from hiveloom import cloud as cloud_mod
 

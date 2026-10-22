@@ -27,6 +27,7 @@ usage guidelines.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -95,6 +96,12 @@ constraints, error messages."""
 
 
 _SUMMARY_PREFIX = "[summary of earlier turns]\n"
+# Appended to every summary by the manager itself, from what the loop told it
+# (see :meth:`ContextManager.note_file_access`): a model asked to remember
+# which files it read forgets them, and re-reads them after every compaction.
+_FILES_HEADER = "# Files touched"
+_FILES_INDEX_MAX = 50
+_FILES_PATH_MAX_CHARS = 200
 # A second compaction must not re-summarize the first summary as if it were one
 # more transcript line: that is how an identifier or a ruled-out approach from
 # the first half of a long run quietly drops out by the third compaction.
@@ -121,7 +128,7 @@ def _summary_prompt(
 ) -> str:
     """The summarize request: format, previous summary, transcript, recency anchor."""
     previous = [
-        _message_text(message)[len(_SUMMARY_PREFIX):]
+        _message_text(message)[len(_SUMMARY_PREFIX):].split("\n\n" + _FILES_HEADER, 1)[0]
         for message in older
         if message.get("role") == "user"
         and _message_text(message).startswith(_SUMMARY_PREFIX)
@@ -227,6 +234,8 @@ class ContextManager:
         self._notes_index: Callable[[], str | None] | None = None
         self.messages: list[dict[str, Any]] = []
         self._history_count = 0
+        # path -> (verb, spill handle), oldest first; a re-touch moves it last.
+        self._files_touched: dict[str, tuple[str, str]] = {}
 
     @property
     def pinned_message_count(self) -> int:
@@ -475,11 +484,31 @@ class ContextManager:
             keep_from = self.retained_tail_start(self._config.max_input_tokens)
         keep_from = max(self.pinned_message_count, min(keep_from, len(self.messages)))
         recent = self.messages[keep_from:] if len(self.messages) > 1 else []
+        files = self._files_section()
         summary_block = {
             "role": "user",
-            "content": f"{_SUMMARY_PREFIX}{summary}",
+            "content": f"{_SUMMARY_PREFIX}{summary}" + (f"\n\n{files}" if files else ""),
         }
         self.messages = [*pinned, summary_block, *recent]
+
+    def note_file_access(self, path: str, verb: str, handle: str = "") -> None:
+        """Record a file the run read or wrote, with the spill handle of its result."""
+        # One entry per file however the model spelled it, on one line however
+        # long: the path is model-supplied and lands in a user message.
+        path = os.path.normpath(" ".join(path.split()))[:_FILES_PATH_MAX_CHARS]
+        self._files_touched.pop(path, None)
+        self._files_touched[path] = (verb, handle)
+        if len(self._files_touched) > _FILES_INDEX_MAX:
+            del self._files_touched[next(iter(self._files_touched))]
+
+    def _files_section(self) -> str:
+        if not self._files_touched:
+            return ""
+        lines = [
+            f"- {path} ({verb}, handle {handle})" if handle else f"- {path} ({verb})"
+            for path, (verb, handle) in self._files_touched.items()
+        ]
+        return "\n".join([_FILES_HEADER, *lines])
 
     def maybe_compact(self) -> bool:
         """Compact the history if it exceeds the configured trigger. Returns True if it did."""

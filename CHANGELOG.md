@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Compaction's summarization calls no longer spend `loop.max_turns`: `turns`
+  counts act turns only, and `RunResult.compaction_calls` (also on the
+  `run_finished` event and the CLI JSON) reports the compaction calls. A run
+  can no longer end with `turns` above `max_turns`.
+- A summarize compaction appends a `# Files touched` index (the paths read or
+  written through `file_read`/`file_write`, with their spill handles) to the
+  summary, so the model does not re-read the same files after every compaction.
+- A run whose `context.max_input_tokens` is still the schema default while the
+  model declares a larger `context_window` emits a `context_budget_default`
+  event and a warning on `RunResult.warnings` and the CLI.
+
 ## [1.3.0] - 2026-10-04
 
 The research and real-demos release. Research programs let a director model
