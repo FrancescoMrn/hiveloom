@@ -283,6 +283,21 @@ def test_glob_matches_segment_by_segment():
     assert not _glob_match("a/b", "a/b/c") and not _glob_match("a/b/c", "a/b")
 
 
+def test_glob_forms_a_model_writes_mean_what_it_intends(tmp_path: Path):
+    _tree(tmp_path)
+    for tool_run in (
+        lambda p: GlobTool(tmp_path).run(pattern=p),
+        lambda p: GrepTool(tmp_path).run(pattern="needle", glob=p),
+    ):
+        assert tool_run("./src/**/*.py") == tool_run("src/**/*.py") != "no matches"
+        assert tool_run("src/**/") == tool_run("src/**") != "no matches"
+        assert tool_run("src/./util/*.py") == tool_run("src/util/*.py") != "no matches"
+        with pytest.raises(ToolError, match="drop the leading /"):
+            tool_run("/src/**/*.py")
+        with pytest.raises(ToolError, match="pattern"):
+            tool_run("./")
+
+
 def test_grep_and_glob_skip_named_pipes(tmp_path: Path):
     (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
     os.mkfifo(tmp_path / "pipe")
