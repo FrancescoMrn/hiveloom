@@ -415,14 +415,17 @@ class _DiscoveryTool(Tool):
         while queue:
             directory, depth = queue.popleft()
             entries: list[os.DirEntry[str]] = []
+            exhausted = False
             try:
                 with os.scandir(directory) as it:
                     for entry in it:
                         # Counted while reading, so one huge directory is not
-                        # loaded whole before the cap can stop the walk.
+                        # loaded whole before the cap can stop the walk; what
+                        # was read is still reported, then the note.
+                        if visited == _DISCOVERY_MAX_VISITED:
+                            exhausted = True
+                            break
                         visited += 1
-                        if visited > _DISCOVERY_MAX_VISITED:
-                            raise _ScanLimit
                         entries.append(entry)
             except OSError:
                 continue
@@ -436,6 +439,8 @@ class _DiscoveryTool(Tool):
                     max_depth is None or depth + 1 < max_depth
                 ):
                     queue.append((candidate, depth + 1))
+            if exhausted:
+                raise _ScanLimit
 
     def _files(self, start: Path, private: list[Path] | None):
         """Regular files only: a named pipe or a socket would block the read."""
