@@ -95,11 +95,11 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
         name="glob",
         description=(
             "Find files inside the harness working directory by a wildcard "
-            "pattern matched against each file's path relative to `path`; `*` and "
-            "`?` also span `/`, so `*.py` finds every Python file below `path` "
-            "(`**/` is accepted with the same meaning). "
-            "Read-only, at most 500 results, with the same private and dependency "
-            "trees skipped as list_dir."
+            "pattern matched segment by segment against each file's path relative "
+            "to `path`: `**` spans directories, `*` and `?` stay within one, so "
+            "`**/*.py` finds every Python file below `path` and `*.py` only those "
+            "directly in it. Read-only, at most 500 results, with the same private "
+            "and dependency trees skipped as list_dir."
         ),
         tags=["read", "file"],
     ),

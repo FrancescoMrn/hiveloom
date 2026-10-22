@@ -315,37 +315,44 @@ class _ScanLimit(Exception):
     """A walk visited more entries than one call may scan."""
 
 
-#: The body of ``fnmatch.translate``'s output: ``(?s:BODY)\\Z`` up to Python
-#: 3.13, ``(?s:BODY)\\z`` from 3.14.
-_TRANSLATED_GLOB = re.compile(r"\(\?s:(.*)\)\\[Zz]", re.DOTALL)
-
-
-def _glob_regex(pattern: str) -> re.Pattern[str]:
-    """``fnmatch`` rules, where ``*`` and ``?`` span ``/``, plus ``**/`` for zero
-    or more directories (``src/**/x.py`` matches ``src/x.py`` and ``src/a/x.py``,
-    never ``src/ax.py``).
-
-    Bounded like a grep pattern: the same length cap, and runs of ``**/`` are
-    collapsed first, because each one becomes an optional ``.*`` group and a
-    chain of those backtracks exponentially on a path that does not match.
-    The nested-quantifier guard does not apply: a translated glob never
-    repeats a group, since ``fnmatch`` escapes every literal.
-    """
+def _glob_pattern(pattern: str) -> list[str]:
+    """A glob's segments, with the same length cap as a grep pattern."""
     if not pattern or len(pattern) > TRANSFORM_MAX_PATTERN_CHARS:
         raise ToolError(
             f"glob needs a pattern of 1 to {TRANSFORM_MAX_PATTERN_CHARS} characters"
         )
-    while "**/**/" in pattern:
-        pattern = pattern.replace("**/**/", "**/")
-    pieces: list[str] = []
-    for index, segment in enumerate(pattern.split("**/")):
-        if index:
-            pieces.append("(?:.*/)?")
-        translated = _TRANSLATED_GLOB.fullmatch(fnmatch.translate(segment))
-        if translated is None:  # pragma: no cover - a new fnmatch output shape
-            raise RuntimeError("unexpected fnmatch.translate output")
-        pieces.append(translated.group(1))
-    return re.compile("(?s:" + "".join(pieces) + ")\\Z")
+    return pattern.split("/")
+
+
+def _glob_match(pattern: str | list[str], path: str) -> bool:
+    """Match a relative path segment by segment.
+
+    ``**`` spans zero or more directories; every other segment matches exactly
+    one path segment under ``fnmatch`` rules, so ``*`` and ``?`` never cross a
+    ``/`` (the gitignore and pathlib convention). The greedy walk keeps one
+    backtrack point, the last ``**``, which makes the cost the product of the
+    two lengths: a regex over the whole path backtracked exponentially on
+    patterns such as ``**/*`` repeated.
+    """
+    wanted = pattern.split("/") if isinstance(pattern, str) else pattern
+    parts = path.split("/")
+    p = s = 0
+    star = star_s = -1
+    while s < len(parts):
+        if p < len(wanted) and wanted[p] == "**":
+            star, star_s = p, s
+            p += 1
+        elif p < len(wanted) and fnmatch.fnmatchcase(parts[s], wanted[p]):
+            p += 1
+            s += 1
+        elif star >= 0:
+            star_s += 1
+            p, s = star + 1, star_s
+        else:
+            return False
+    while p < len(wanted) and wanted[p] == "**":
+        p += 1
+    return p == len(wanted)
 
 
 class _DiscoveryTool(Tool):
@@ -498,8 +505,9 @@ class GlobTool(_DiscoveryTool):
             "pattern": {
                 "type": "string",
                 "description": "Wildcard pattern matched against each file's path relative "
-                "to `path`; `*` and `?` also span `/` (so `*.py` finds every Python file "
-                "below `path`, and `**/` is accepted with the same meaning).",
+                "to `path`, segment by segment: `**` spans directories, `*` and `?` stay "
+                "within one (`**/*.py` finds every Python file below `path`, `*.py` only "
+                "those directly in it).",
             },
             "path": {
                 "type": "string",
@@ -510,14 +518,14 @@ class GlobTool(_DiscoveryTool):
     }
 
     def run(self, pattern: str = "", path: str = ".", **_: Any) -> str:
-        wanted = _glob_regex(pattern)
+        wanted = _glob_pattern(pattern)
         private = self._private()
         target = self._resolve(path, private)
         root = target if target.is_dir() else target.parent
         lines: list[str] = []
         try:
             for candidate in self._files(target, private):
-                if not wanted.match(candidate.relative_to(root).as_posix()):
+                if not _glob_match(wanted, candidate.relative_to(root).as_posix()):
                     continue
                 if len(lines) == _DISCOVERY_MAX_ENTRIES:
                     lines.append(
@@ -545,7 +553,8 @@ class GrepTool(_DiscoveryTool):
             "glob": {
                 "type": "string",
                 "description": "Only search files whose path relative to `path` matches this "
-                "wildcard (same rules as the glob tool).",
+                "wildcard (same rules as the glob tool: `**/*.ts` for every TypeScript "
+                "file, `*.ts` for those directly in `path`).",
             },
             "max_matches": {
                 "type": "integer",
@@ -575,14 +584,14 @@ class GrepTool(_DiscoveryTool):
         limit = _arg_int(
             max_matches, "max_matches", _GREP_DEFAULT_MATCHES, low=1, high=_GREP_MAX_MATCHES
         )
-        wanted = _glob_regex(glob) if glob else None
+        wanted = _glob_pattern(glob) if glob else None
         private = self._private()
         target = self._resolve(path, private)
         root = target if target.is_dir() else target.parent
         lines: list[str] = []
         try:
             for candidate in self._files(target, private):
-                if wanted and not wanted.match(candidate.relative_to(root).as_posix()):
+                if wanted and not _glob_match(wanted, candidate.relative_to(root).as_posix()):
                     continue
                 text = _text_file(candidate)
                 if text is None:
