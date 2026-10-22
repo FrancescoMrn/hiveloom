@@ -87,17 +87,19 @@ def test_list_dir_output_is_bounded(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 def test_glob_matches_relative_paths_across_directories(tmp_path: Path):
     _tree(tmp_path)
-    out = GlobTool(tmp_path).run(pattern="*.py")
+    out = GlobTool(tmp_path).run(pattern="**/*.py")
     assert out.splitlines() == ["src/main.py", "src/util/helpers.py"]
     assert GlobTool(tmp_path).run(pattern="*.py", path="src/util").splitlines() == [
         "src/util/helpers.py"
     ]
-    assert GlobTool(tmp_path).run(pattern="*.rs") == "no matches"
+    # A segment wildcard stays inside one directory level.
+    assert GlobTool(tmp_path).run(pattern="*.py") == "no matches"
+    assert GlobTool(tmp_path).run(pattern="**/*.rs") == "no matches"
 
 
 def test_glob_hides_private_and_dependency_trees(tmp_path: Path):
     _tree(tmp_path)
-    out = GlobTool(tmp_path).run(pattern="*")
+    out = GlobTool(tmp_path).run(pattern="**/*")
     assert "node_modules" not in out
     assert ".env" not in out
     assert "traces" not in out
@@ -127,7 +129,7 @@ def test_grep_reports_path_line_and_text(tmp_path: Path):
         "src/util/helpers.py:1: def needle():",
         "src/util/deep/leaf.txt:1: leaf needle",
     ]
-    assert GrepTool(tmp_path).run(pattern="needle", glob="*.py").splitlines() == [
+    assert GrepTool(tmp_path).run(pattern="needle", glob="**/*.py").splitlines() == [
         "src/main.py:2: print('needle')",
         "src/util/helpers.py:1: def needle():",
     ]
@@ -199,7 +201,7 @@ def test_symlinked_directories_are_shown_but_not_descended(tmp_path: Path):
     (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
     listing = ListDirTool(tmp_path).run(path=".", depth=4).splitlines()
     assert listing == ["link/", "loop/", "real/", "real/inner.txt"]
-    assert GlobTool(tmp_path).run(pattern="*.txt") == "real/inner.txt"
+    assert GlobTool(tmp_path).run(pattern="**/*.txt") == "real/inner.txt"
     assert GrepTool(tmp_path).run(pattern="needle") == "real/inner.txt:1: needle"
 
 
@@ -243,23 +245,6 @@ def test_walks_are_bounded_in_work_not_only_output(tmp_path: Path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # QA findings on PR #84: fnmatch trailers, glob backtracking, named pipes
 # --------------------------------------------------------------------------- #
-def test_glob_translation_accepts_both_fnmatch_trailers(tmp_path: Path, monkeypatch):
-    """Python 3.14 ends ``fnmatch.translate`` output with ``\\z``, earlier versions with ``\\Z``."""
-    import fnmatch
-
-    import hiveloom.tools.builtin as builtin
-
-    (tmp_path / "a.py").write_text("", encoding="utf-8")
-    real = fnmatch.translate
-    assert real("x")[-2:] in ("\\Z", "\\z")
-    for tail in ("\\Z", "\\z"):
-        monkeypatch.setattr(
-            builtin.fnmatch, "translate", lambda s, tail=tail: real(s)[:-2] + tail
-        )
-        assert GlobTool(tmp_path).run(pattern="**/*.py") == "a.py"
-        assert GrepTool(tmp_path).run(pattern="x", glob="*.py") == "no matches"
-
-
 def test_glob_patterns_are_bounded_in_length_and_backtracking(tmp_path: Path):
     deep = tmp_path.joinpath(*[f"d{i}" for i in range(12)])
     deep.mkdir(parents=True)
@@ -267,12 +252,35 @@ def test_glob_patterns_are_bounded_in_length_and_backtracking(tmp_path: Path):
     started = time.monotonic()
     assert GlobTool(tmp_path).run(pattern="**/" * 24 + "zzz") == "no matches"
     assert GrepTool(tmp_path).run(pattern="x", glob="**/" * 24 + "zzz") == "no matches"
+    # Interleaved `**/*` runs defeated collapsing and backtracked for minutes.
+    for repeats in (6, 8, 12):
+        assert GlobTool(tmp_path).run(pattern="**/*" * repeats + "zzz") == "no matches"
+        assert GrepTool(tmp_path).run(pattern="x", glob="**/*" * repeats + "zzz") == (
+            "no matches"
+        )
     assert time.monotonic() - started < 2
     assert GlobTool(tmp_path).run(pattern="**/" * 24 + "file.txt").endswith("d11/file.txt")
     with pytest.raises(ToolError, match="pattern"):
         GlobTool(tmp_path).run(pattern="*" * 300)
     with pytest.raises(ToolError, match="pattern"):
         GrepTool(tmp_path).run(pattern="x", glob="?" * 300)
+
+
+def test_glob_matches_segment_by_segment():
+    from hiveloom.tools.builtin import _glob_match
+
+    assert _glob_match("src/**/x.py", "src/x.py")
+    assert _glob_match("src/**/x.py", "src/a/b/x.py")
+    assert not _glob_match("src/**/x.py", "src/ax.py")
+    assert _glob_match("**/x.py", "x.py")
+    assert _glob_match("*.py", "b.py")
+    assert not _glob_match("*.py", "a/b.py")
+    assert _glob_match("**", "a/b/c.py") and _glob_match("**", "c.py")
+    assert _glob_match("a/**", "a/b/c") and _glob_match("a/**", "a")
+    assert _glob_match("a/**/**/c", "a/c") and _glob_match("a/**/*/c", "a/b/c")
+    assert not _glob_match("a/**/*/c", "a/c")
+    assert _glob_match("?/[bc]/*", "a/b/d") and not _glob_match("?/[bc]/*", "a/d/d")
+    assert not _glob_match("a/b", "a/b/c") and not _glob_match("a/b/c", "a/b")
 
 
 def test_grep_and_glob_skip_named_pipes(tmp_path: Path):
