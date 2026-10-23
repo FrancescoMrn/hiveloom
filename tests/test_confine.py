@@ -647,3 +647,45 @@ def test_diagnostic_does_not_claim_safety_when_egress_is_disabled(tmp_path: Path
     payload = json.loads(result.stdout)
     assert not payload["provider_egress_active"]
     assert not payload["prompt_injection_boundary"]["safe_for_untrusted_input"]
+
+
+# --------------------------------------------------------------------------- #
+# The memory limit bounds memory used, not address space
+# --------------------------------------------------------------------------- #
+def test_the_memory_limit_is_rlimit_data_not_address_space():
+    import resource
+
+    limits = dict(confine._limits(ConfinementConfig(max_memory_mb=512)))
+    assert resource.RLIMIT_AS not in limits
+    assert limits[resource.RLIMIT_DATA] == (512 * 1024 * 1024, 512 * 1024 * 1024)
+    assert resource.RLIMIT_DATA not in dict(confine._limits(ConfinementConfig(max_memory_mb=0)))
+
+
+def test_a_large_address_space_reservation_runs_under_the_memory_limit(tmp_path: Path):
+    # What V8 does for WebAssembly, a JVM for its heap, Go for its arenas:
+    # reserve far more address space than is ever touched. A private 1 GiB
+    # PROT_NONE reservation must succeed under a 256 MiB memory limit.
+    import sys
+
+    script = "import mmap; mmap.mmap(-1, 1 << 30, flags=mmap.MAP_PRIVATE, prot=0)"
+    result = run_confined(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        config=ConfinementConfig(mode="off", max_memory_mb=256),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux", reason="macOS enforces neither RLIMIT_DATA nor RLIMIT_AS"
+)
+def test_the_memory_limit_still_stops_a_process_that_writes_past_it(tmp_path: Path):
+    import sys
+
+    result = run_confined(
+        [sys.executable, "-c", "b = bytearray(400 * 1024 * 1024); b[-1] = 1"],
+        cwd=tmp_path,
+        config=ConfinementConfig(mode="off", max_memory_mb=256),
+    )
+    assert result.returncode != 0
+    assert "MemoryError" in result.stderr
