@@ -975,7 +975,13 @@ class LoopConfig(BaseModel):
         default=20, gt=0, le=1_000, description="Max loop turns before stopping."
     )
     on_tool_error: Literal["retry_once", "surface_to_model", "abort"] = Field(
-        default="retry_once", description="What to do when a tool call errors."
+        default="retry_once",
+        description=(
+            "What to do when a tool call errors. 'retry_once' repeats a transient "
+            "failure (a dropped connection, a transport timeout) once; a "
+            "deterministic refusal such as an allowlist miss, a missing file or a "
+            "bad argument is surfaced to the model at once."
+        ),
     )
     tool_execution: Literal["sequential", "parallel"] = Field(
         default="sequential",

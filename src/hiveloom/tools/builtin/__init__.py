@@ -23,6 +23,7 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
@@ -62,6 +63,9 @@ from hiveloom.tools.registry import Artifact, Tool, ToolError, ToolResult
 log = logging.getLogger(__name__)
 
 _MAX_HTTP_BYTES = 200_000
+#: Entry names ``file_read`` names when asked to read a directory: enough to
+#: pick the file that was meant, not a listing tool.
+_DIRECTORY_ENTRIES_SHOWN = 20
 
 #: Ceilings on one ``recall_runs`` call. Prior runs compete with the task for
 #: context, so the spec's `limit` is itself capped and each field is clipped.
@@ -155,12 +159,13 @@ class FileReadTool(Tool):
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {"path": {"type": "string", "description": "Relative file path."}},
             "required": ["path"],
         }
 
-    def run(self, path: str = "", **_: Any) -> str:
-        target = safe_path(
+    def _resolve(self, path: str) -> Path:
+        return safe_path(
             self._base,
             path,
             trace_dir=self._trace_dir,
@@ -170,9 +175,54 @@ class FileReadTool(Tool):
                 else self._private_paths
             ),
         )
+
+    def run(self, path: str = "", **_: Any) -> str:
+        target = self._resolve(path)
         if not target.exists():
+            # ``safe_path`` resolved the link away; the unresolved path still
+            # knows it was one. "file not found" on a name the model just saw
+            # in a listing sends it looking for a typo that is not there.
+            if (self._base / path).is_symlink():
+                raise ToolError(f"broken symlink: {path} (its target does not exist)")
             raise ToolError(f"file not found: {path}")
+        if target.is_dir():
+            raise ToolError(
+                f"'{path}' is a directory, not a file. Entries: {self._entries(target)}"
+            )
         return target.read_text(encoding="utf-8")
+
+    def _entries(self, directory: Path) -> str:
+        """The directory's entries a read would be allowed, sorted and bounded.
+
+        Resolution stops once the shown names are collected, so a huge
+        directory costs its listing and not a stat per entry; the remainder
+        is counted unfiltered.
+        """
+        base = self._base.resolve()
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError as exc:
+            return f"unreadable ({exc.strerror or exc})"
+        names: list[str] = []
+        consumed = 0
+        for entry in entries:
+            if len(names) == _DIRECTORY_ENTRIES_SHOWN:
+                break
+            consumed += 1
+            try:
+                self._resolve(str(entry.relative_to(base)))
+            except ToolError:
+                continue  # protected harness state is not listed either
+            except (OSError, RuntimeError):
+                # A symlink loop or an unreadable entry still has a name; only
+                # Python 3.12 and older raise here, 3.13 resolves it quietly.
+                pass
+            names.append(f"{entry.name}/" if entry.is_dir() else entry.name)
+        if not names:
+            return "none"
+        extra = len(entries) - consumed
+        shown = ", ".join(names)
+        return f"{shown} (+{extra} more)" if extra > 0 else shown
 
 
 def _file_state(target: Path) -> dict[str, Any] | None:
@@ -210,6 +260,7 @@ class FileWriteTool(Tool):
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "path": {"type": "string", "description": "Relative file path."},
                 "content": {
@@ -659,6 +710,7 @@ class LoadSkillTool(Tool):
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "name": {
                     "type": "string",
@@ -734,6 +786,7 @@ class ShellTool(Tool):
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {"command": {"type": "string", "description": "Command to run."}},
             "required": ["command"],
         }
@@ -989,6 +1042,7 @@ class HttpGetTool(Tool):
         self.tags = list(entry.tags)
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {"url": {"type": "string", "description": "URL to fetch."}},
             "required": ["url"],
         }
@@ -1005,7 +1059,14 @@ class HttpGetTool(Tool):
             opener = urlrequest.build_opener(_SafeRedirectHandler(self.allowed_hosts))
             with opener.open(request, timeout=30) as resp:  # noqa: S310 - validated URL and redirects
                 body = resp.read(_MAX_HTTP_BYTES)
-        except (urlerror.URLError, ValueError) as exc:
+        except urlerror.HTTPError as exc:
+            transient = exc.code == 429 or exc.code >= 500
+            raise ToolError(f"http_get failed: {exc}", retryable=transient) from exc
+        except (urlerror.URLError, TimeoutError, ConnectionError, HTTPException) as exc:
+            # HTTPException covers IncompleteRead and RemoteDisconnected: a body
+            # cut off mid-read, which is as transient as a refused connection.
+            raise ToolError(f"http_get failed: {exc}", retryable=True) from exc
+        except ValueError as exc:
             raise ToolError(f"http_get failed: {exc}") from exc
         return body.decode("utf-8", errors="replace")
 
@@ -1135,6 +1196,7 @@ class RecallRunsTool(Tool):
         self.wants_run_context = True
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "status": {
                     "type": "string",
@@ -1299,6 +1361,7 @@ class ProposeMemoryTool(Tool):
         self._reserved = 0
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "kind": {
                     "type": "string",

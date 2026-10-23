@@ -418,6 +418,7 @@ class DelegateTool(Tool):
         self.tags = ["delegation"]
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "task": {
                     "type": "string",
@@ -449,7 +450,7 @@ class ListPeersTool(Tool):
             "tell the user which harness fits their task better than you do."
         )
         self.tags = ["delegation", "meta"]
-        self.input_schema = {"type": "object", "properties": {}}
+        self.input_schema = {"type": "object", "properties": {}, "additionalProperties": False}
         self._handler: Any = None
 
     def bind(self, handler) -> None:

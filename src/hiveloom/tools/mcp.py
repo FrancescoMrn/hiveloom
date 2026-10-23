@@ -27,12 +27,22 @@ from anyio.from_thread import start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+from mcp.shared.exceptions import MCPError as McpProtocolError
 
 from hiveloom.errors import McpError
 from hiveloom.spec.schema import McpHttpServerRef, McpServerRef, McpStdioServerRef
 from hiveloom.tools.registry import RUN_CONTEXT_PARAM, Artifact, Tool, ToolError, ToolResult
 
 _MAX_DISCOVERED_TOOLS = 500
+#: JSON-RPC errors that say the request itself was wrong; repeating it changes nothing.
+_DETERMINISTIC_MCP_CODES = frozenset(
+    {
+        mcp_types.PARSE_ERROR,
+        mcp_types.INVALID_REQUEST,
+        mcp_types.METHOD_NOT_FOUND,
+        mcp_types.INVALID_PARAMS,
+    }
+)
 _NAME_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 
@@ -275,8 +285,16 @@ class McpToolAdapter(Tool):
                     meta=meta,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - any transport/timeout failure is a ToolError
-            raise ToolError(f"mcp tool '{self.name}' failed: {exc}") from exc
+        except McpProtocolError as exc:
+            # The SDK reports its own timeouts and closed connections as
+            # JSON-RPC errors too, so the code decides: a malformed or unknown
+            # request fails the same way again, anything else may clear.
+            raise ToolError(
+                f"mcp tool '{self.name}' failed: {exc}",
+                retryable=exc.code not in _DETERMINISTIC_MCP_CODES,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - a transport/timeout failure may clear on retry
+            raise ToolError(f"mcp tool '{self.name}' failed: {exc}", retryable=True) from exc
         return ToolResult(
             content=_flatten_call_tool_result(result),
             is_error=bool(result.is_error),

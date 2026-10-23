@@ -120,6 +120,7 @@ class SearchMemoryTool(Tool):
         self.tags = ["memory"]
         self.input_schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "query": {"type": "string", "description": "Keywords to search for."},
                 "limit": {
