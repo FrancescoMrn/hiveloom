@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer needs an exact allowlisted shell argv to find a file.
 ### Fixed
 
+- Eval resume accepts an explicit higher infrastructure retry ceiling after an
+  outage exhausts the previous budget. The SDK and CLI retain attempt history,
+  completed cells and result checkpoints; repeated requests for the same ceiling
+  do not grant additional attempts.
 - OpenAI-compatible tool calls retain a fixed diagnostic when malformed arguments
   are normalized to an empty object. Dispatched calls expose it in the journal,
   so evaluators can distinguish invalid JSON from a valid empty argument object
