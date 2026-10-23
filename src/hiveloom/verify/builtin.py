@@ -313,6 +313,104 @@ class GroundedReferencesVerifier(Verifier):
         )
 
 
+class HttpVerdictVerifier(Verifier):
+    """Ask a remote endpoint for the verdict.
+
+    The application that owns the facts (its records, its grants) is the one
+    that can tell a grounded answer from an invented one; this posts the run's
+    output and evidence to it and takes its answer. Header values come from
+    the caller's per-run ``context`` and are never traced or echoed.
+    """
+
+    name = "http_verdict"
+
+    def __init__(
+        self,
+        url: str,
+        header_context: dict[str, str] | None = None,
+        timeout_seconds: int = 30,
+    ):
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("http_verdict url must be http:// or https://")
+        if not all(
+            isinstance(k, str) and isinstance(v, str) and k and v
+            for k, v in (header_context or {}).items()
+        ):
+            raise ValueError("http_verdict header_context maps header names to context keys")
+        self._url = url
+        self._header_context = dict(header_context or {})
+        self._timeout = timeout_seconds
+
+    def _fail(self, feedback: str) -> VerdictResult:
+        return VerdictResult(passed=False, feedback=feedback, verifier=self.name)
+
+    def validate(
+        self,
+        run_output: str,
+        run_context: dict[str, Any],
+        verification_context: VerificationContext | None = None,
+    ) -> VerdictResult:
+        import urllib.error
+        import urllib.request
+
+        caller = run_context.get("context") if isinstance(run_context, dict) else None
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        for header, key in self._header_context.items():
+            value = (caller or {}).get(key) if isinstance(caller, dict) else None
+            if not isinstance(value, str) or not value:
+                return self._fail(
+                    f"http_verdict wants run-context key '{key}' (for header "
+                    f"'{header}') but the run did not supply it"
+                )
+            headers[header] = value
+        if verification_context is not None:
+            artifacts = [dict(a) for a in verification_context.artifacts]
+        else:
+            artifacts = list((run_context or {}).get("artifacts") or [])
+        evidence = [
+            a["data"]["id"]
+            for a in artifacts
+            if isinstance(a, dict)
+            and a.get("kind") == "evidence"
+            and isinstance(a.get("data"), dict)
+            and "id" in a["data"]
+        ]
+        body = json.dumps(
+            {
+                "output": run_output,
+                "evidence": evidence,
+                "artifacts": artifacts,
+                "drew": any(isinstance(a, dict) and a.get("kind") == "view" for a in artifacts),
+            },
+            default=str,
+        ).encode("utf-8")
+        request = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            return self._fail(f"http_verdict endpoint answered HTTP {exc.code}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            return self._fail(f"http_verdict endpoint unreachable: {reason}")
+        try:
+            verdict = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self._fail("http_verdict endpoint did not answer JSON")
+        if not isinstance(verdict, dict) or not isinstance(verdict.get("passed"), bool):
+            return self._fail('http_verdict endpoint must answer {"passed": bool}')
+        if verdict["passed"]:
+            return VerdictResult(passed=True, verifier=self.name)
+        dropped = [str(d) for d in verdict.get("dropped") or [] if str(d).strip()]
+        parts: list[str] = []
+        if dropped:
+            parts.append("These parts did not pass:\n" + "\n".join(f"- {d}" for d in dropped))
+        if isinstance(verdict.get("feedback"), str) and verdict["feedback"].strip():
+            parts.append(verdict["feedback"].strip())
+        feedback = "\n\n".join(parts) or "the verdict endpoint did not pass the output"
+        return self._fail(feedback[:4000])
+
+
 def build_verifiers(
     spec: HarnessSpec,
     base_dir: str | Path,
@@ -431,6 +529,13 @@ def _register_factories() -> None:
         "grounded_references",
         lambda p, _ctx: GroundedReferencesVerifier(
             p["output_path"], p["evidence_paths"], p.get("normalize", "string")
+        ),
+    )
+    ext.register_builtin_factory(
+        "validators",
+        "http_verdict",
+        lambda p, _ctx: HttpVerdictVerifier(
+            p["url"], p.get("header_context") or {}, p.get("timeout_seconds", 30)
         ),
     )
 

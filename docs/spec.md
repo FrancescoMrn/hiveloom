@@ -78,7 +78,8 @@ for each new hostname during a plain CLI run.
 - **Validators:** `output_schema` (JSON-schema check), `regex_match`,
   `file_exists`, `command_succeeds` (exit 0 = pass; `timeout` seconds, default
   600, and confined like any other spawn), `grounded_references` (selected
-  output IDs must occur in approved evidence from this run).
+  output IDs must occur in approved evidence from this run), `http_verdict`
+  (a remote endpoint returns the verdict; see below).
 - **Policies:** `react`, `plan_then_act`, `sequential_steps` (walks the fixed,
   ordered `loop.steps` list; object steps can enforce tools and call limits),
   `best_of_n` (experimental consensus over `loop.attempts` samples).
@@ -166,6 +167,26 @@ comes only from allowed calls executed in the current run; failed or differently
 named tools cannot satisfy the validator. Scalar values are normalized to
 strings, null and missing values are ignored, and failure feedback lists only
 missing normalized references rather than the surrounding private records.
+
+Use `http_verdict` when the application that owns the facts is the one that can
+judge the answer. The validator POSTs `{"output", "evidence", "artifacts",
+"drew"}` — `evidence` is the `data.id` of every `kind: evidence` artifact,
+`drew` is true when any artifact has `kind: view` — and reads back
+`{"passed": bool, "dropped": [str]}` (an optional `"feedback"` string is
+appended). On failure the model is told `These parts did not pass:` followed by
+one `- ` line per dropped part, and retries under `verify.on_fail`:
+
+```bash
+hiveloom add validator --builtin http_verdict \
+  --url https://app.example/api/verdict \
+  --header-context Authorization=reader_token --dir ./h --json
+```
+
+`header_context` takes each header from the run's caller-owned `context`, like
+an HTTP MCP server's; the value is never traced. A missing key, a network error,
+a non-2xx answer or a body that is not `{"passed": bool}` is a failed verdict
+that names the cause; the validator never raises. `timeout_seconds` defaults to
+30.
 
 A tool that declares a `run_context` parameter is handed the run context
 (`input`, `harness_dir`, `run_id`, `harness_id`, `harness_name`,

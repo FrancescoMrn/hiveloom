@@ -821,11 +821,28 @@ def add_validator_cmd(
     normalize: str | None = typer.Option(
         None, "--normalize", help="Reference normalization for grounded_references."
     ),
+    url: str | None = typer.Option(None, "--url", help="For http_verdict: the endpoint."),
+    header_context: list[str] | None = typer.Option(
+        None,
+        "--header-context",
+        help="For http_verdict: repeat HEADER=CONTEXT_KEY (value from the run's context).",
+    ),
+    timeout_seconds: int | None = typer.Option(
+        None, "--timeout-seconds", help="For http_verdict: request timeout."
+    ),
     directory: str = typer.Option(".", "--dir", "-d", help="Harness directory."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Add a verifier. ``--code`` scaffolds a stub file if it does not exist."""
     with _guard(json_output):
+        header_map = None
+        if header_context:
+            header_map = {}
+            for pair in header_context:
+                name, sep, key = pair.partition("=")
+                if not sep or not name.strip() or not key.strip():
+                    raise SpecError("--header-context must use HEADER=CONTEXT_KEY")
+                header_map[name.strip()] = key.strip()
         evidence_paths = None
         if evidence_path:
             evidence_paths = []
@@ -851,6 +868,9 @@ def add_validator_cmd(
             output_path=output_path,
             evidence_paths=evidence_paths,
             normalize=normalize,
+            url=url,
+            header_context=header_map,
+            timeout_seconds=timeout_seconds,
         )
         _added(json_output, "validator", builtin or code)
 

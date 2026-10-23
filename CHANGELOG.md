@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-run `context`, for a served harness that acts for an end user with that
   user's own credential. `hiveloom serve` accepts `"context"` on `POST /runs`;
   the values are never traced or echoed, and `dry_run` takes `context` too.
+- `http_verdict` builtin validator: POSTs the output, evidence ids and
+  artifacts to a URL whose `{"passed", "dropped"}` answer is the verdict, with
+  headers taken from the run's `context` (`hiveloom add validator --builtin
+  http_verdict --url ... --header-context Header=KEY`). Failures never raise.
 - Opt-in `ppc` research strategy: independent procedure/domain proposals,
   working-case probe comparisons, and one evidence-cited composition before
   selection. `ppc_select` provides the no-composer ablation. Existing budget,

@@ -393,6 +393,22 @@ BUILTIN_VALIDATORS: dict[str, CatalogEntry] = _entries(
             ),
         ],
     ),
+    CatalogEntry(
+        name="http_verdict",
+        description=(
+            "POST the output, evidence ids and artifacts to a URL; its JSON "
+            "{passed, dropped} is the verdict."
+        ),
+        tags=["http", "remote", "evidence"],
+        params=[
+            ParamSpec(name="url", type="str", required=True,
+                      description="Endpoint that returns {passed, dropped?, feedback?}."),
+            ParamSpec(name="header_context", type="dict", default={},
+                      description="Header name -> run-context key (never traced)."),
+            ParamSpec(name="timeout_seconds", type="int", default=30,
+                      description="Seconds before the request fails the check."),
+        ],
+    ),
 )
 
 
