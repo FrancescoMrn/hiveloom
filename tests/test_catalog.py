@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hiveloom import catalog
 
 
@@ -79,6 +81,15 @@ def test_parse_shell_rule_allows_extra_args_for_safe_binaries():
         True,
     )
     assert catalog.parse_shell_rule("wc -l app.log") == (["wc", "-l", "app.log"], False)
+
+
+def test_parse_shell_rule_refuses_a_rule_the_shell_tool_never_runs():
+    # The tool refuses interpreters and find's action flags at run time; a
+    # rule naming them would be advertised to the model and never work.
+    with pytest.raises(ValueError, match="'python3'"):
+        catalog.parse_shell_rule("python3 check.py")
+    with pytest.raises(ValueError, match="'-delete'"):
+        catalog.parse_shell_rule("find . -name '*.tmp' -delete")
 
 
 def test_notes_is_a_catalog_tool_with_bounded_parameters():

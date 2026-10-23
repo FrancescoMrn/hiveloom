@@ -443,6 +443,16 @@ CATALOGS: dict[str, dict[str, CatalogEntry]] = {
 EXTRA_ARGS_SAFE_BINARIES: frozenset[str] = frozenset(
     {"diff", "echo", "grep", "head", "ls", "printf", "pwd", "sort", "tail", "uniq", "wc"}
 )
+#: Interpreters the shell tool refuses whatever the rule says (they would run
+#: arbitrary code), and find's action flags it refuses in any argument. Shared
+#: with the runtime for the same reason as the set above: a rule the tool would
+#: never run must not pass ``hiveloom validate`` and reach the model's tool
+#: description.
+BLOCKED_SHELL_BINARIES: frozenset[str] = frozenset(
+    {"bash", "dash", "env", "fish", "lua", "node", "perl", "php", "python", "python3",
+     "ruby", "sh", "zsh"}
+)
+BLOCKED_SHELL_ARGUMENTS: frozenset[str] = frozenset({"-exec", "-execdir", "-delete"})
 
 
 def parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
@@ -471,6 +481,16 @@ def parse_shell_rule(rule: Any) -> tuple[list[str], bool]:
             f"shell rule for '{argv[0]}' cannot allow arbitrary extra arguments "
             f"(allow_extra_args is limited to: {safe}); declare the exact argv instead"
         )
+    if argv[0] in BLOCKED_SHELL_BINARIES:
+        raise ValueError(
+            f"shell rule for '{argv[0]}' names an interpreter the shell tool never runs; "
+            "allowlist the program it would start instead"
+        )
+    for arg in argv[1:]:
+        if arg in BLOCKED_SHELL_ARGUMENTS:
+            raise ValueError(
+                f"shell rule for '{argv[0]}' includes '{arg}', which the shell tool never accepts"
+            )
     return argv, allow_extra
 
 
