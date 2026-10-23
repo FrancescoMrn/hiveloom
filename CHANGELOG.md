@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `hiveloom worker`: a stateless HTTP worker for harnesses that live in an
+  application. Every request carries the harness as a bundle with no code;
+  the worker creates, constructs, validates, runs, evolves and applies
+  proposals in a temporary directory and keeps nothing. See docs/worker.md.
 - `header_context` on an HTTP MCP server: a header taken from the caller's
   per-run `context`, for a served harness that acts for an end user with that
   user's own credential. `hiveloom serve` accepts `"context"` on `POST /runs`;

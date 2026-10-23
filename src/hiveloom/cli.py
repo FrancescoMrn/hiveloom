@@ -1613,6 +1613,50 @@ def serve(
         serve_mod.serve_forever(server)
 
 
+@app.command()
+def worker(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (0.0.0.0 in containers)."),
+    port: int = typer.Option(8790, "--port", help="Bind port."),
+    concurrency: int = typer.Option(
+        4, "--concurrency", help="Concurrent requests allowed; extra requests get 429."
+    ),
+    insecure_no_auth: bool = typer.Option(
+        False, "--insecure-no-auth", help="Run without HIVELOOM_API_KEY, for local work only."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the startup line as JSON."),
+) -> None:
+    """Run the stateless worker: harnesses that live in an application, over HTTP.
+
+    Every request carries the whole harness as a bundle; the worker builds,
+    validates, runs or evolves it in a temporary directory and keeps nothing.
+    See docs/worker.md. Requires ``HIVELOOM_API_KEY`` unless ``--insecure-no-auth``.
+    """
+    from hiveloom.serve.worker import WorkerServer
+
+    with _guard(json_output):
+        server = WorkerServer(
+            host, port, concurrency=concurrency, insecure_no_auth=insecure_no_auth
+        )
+        info = {
+            "ok": True,
+            "host": host,
+            "port": server.server_address[1],
+            "auth": bool(server.api_key),
+            "concurrency": concurrency,
+        }
+        if json_output:
+            _emit_json(info)
+        else:
+            auth = "API key required" if info["auth"] else "NO API KEY (local work only)"
+            _console.print(f"[green]worker[/green] on http://{host}:{info['port']} — {auth}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+
+
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )

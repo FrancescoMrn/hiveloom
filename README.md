@@ -552,6 +552,7 @@ language-neutral integration, use `run --stream` (JSONL) or `serve` (HTTP).
 - [Extensions](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/extending.md)
 - [Deployment and evolution](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/deploying-and-evolving.md)
 - [Control plane](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/control-plane.md)
+- [The stateless worker: harnesses that live in an application](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/worker.md)
 - [Link/sync protocol](https://github.com/FrancescoMrn/hiveloom/blob/main/docs/sync-protocol.md)
 - [Contributing and QA](https://github.com/FrancescoMrn/hiveloom/blob/main/CONTRIBUTING.md)
 - [Code of conduct](https://github.com/FrancescoMrn/hiveloom/blob/main/CODE_OF_CONDUCT.md)
