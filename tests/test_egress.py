@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from hiveloom import construct, runner
-from hiveloom.egress import CREDENTIAL_PATTERNS, EgressFilter, policy_name
+from hiveloom.egress import (
+    CREDENTIAL_PATTERNS,
+    EgressFilter,
+    _apply_path,
+    _parse_path,
+    policy_name,
+)
 from hiveloom.logging.journal import read_events
 from hiveloom.logging.trace import payload_hash
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
@@ -162,6 +168,119 @@ def test_structured_logging_redaction_applies_outbound():
     serialized = json.dumps(verdict.messages)
     assert "known-by-key" not in serialized
     assert "known-by-path" not in serialized
+
+
+def test_array_wildcard_path_redacts_every_element():
+    # A [*] array leaf scrubs every entry, not just one.
+    redaction = RedactionConfig(paths=["secrets[*]"])
+    verdict = EgressFilter(EgressConfig(), redaction).apply(
+        "",
+        [{"role": "user", "content": {"secrets": ["alpha", "beta", "gamma"]}}],
+    )
+
+    serialized = json.dumps(verdict.messages)
+    assert "alpha" not in serialized
+    assert "beta" not in serialized
+    assert "gamma" not in serialized
+    assert verdict.findings == [{"pattern": "logging.redact.path[0]", "count": 3}]
+
+
+def test_nested_dot_path_redacts_a_deep_value():
+    # A multi-segment dot path drills through nested dictionaries.
+    redaction = RedactionConfig(paths=["payload.inner.secret"])
+    verdict = EgressFilter(EgressConfig(), redaction).apply(
+        "",
+        [{"role": "user", "content": {"payload": {"inner": {"secret": "deep"}}}}],
+    )
+
+    serialized = json.dumps(verdict.messages)
+    assert "deep" not in serialized
+    assert "[REDACTED]" in serialized
+    assert verdict.findings == [{"pattern": "logging.redact.path[0]", "count": 1}]
+
+
+def test_wildcard_mid_path_redacts_each_list_element():
+    # A [*] in a non-leaf position scrubs the matching field of every element.
+    redaction = RedactionConfig(paths=["batch.items[*].secret"])
+    verdict = EgressFilter(EgressConfig(), redaction).apply(
+        "",
+        [
+            {
+                "role": "user",
+                "content": {
+                    "batch": {
+                        "items": [{"secret": "s1"}, {"other": "keep"}, {"secret": "s2"}]
+                    }
+                },
+            }
+        ],
+    )
+
+    serialized = json.dumps(verdict.messages)
+    assert "s1" not in serialized
+    assert "s2" not in serialized
+    assert "keep" in serialized  # untouched siblings stay
+    assert verdict.findings == [{"pattern": "logging.redact.path[0]", "count": 2}]
+
+
+def test_wildcard_on_a_non_list_value_is_a_no_op():
+    # A [*] over a scalar (or a non-leaf wildcard over a non-list) matches nothing;
+    # the value is left exactly where it was.
+    redaction = RedactionConfig(paths=["leaf[*]", "branch.items[*].secret"])
+    verdict = EgressFilter(EgressConfig(), redaction).apply(
+        "",
+        [
+            {
+                "role": "user",
+                "content": {"leaf": 42, "branch": {"items": "not-a-list"}},
+            }
+        ],
+    )
+
+    assert verdict.clean
+    assert verdict.messages[0]["content"] == {"leaf": 42, "branch": {"items": "not-a-list"}}
+
+
+def test_malformed_path_segments_are_skipped():
+    # The schema rejects these, but the parser degrades gracefully rather than raise.
+    assert _parse_path("a.b!c") == (("a", False),)
+
+
+def test_apply_path_is_a_noop_guard_on_non_dict_or_empty_path():
+    # Defensive entry guards: a non-dict root or an empty/fully-skipped path matches nothing.
+    assert _apply_path("not-a-dict", (("secret", False),)) == 0
+    assert _apply_path({"secret": "x"}, ()) == 0
+
+
+def test_custom_egress_pattern_redacts_outbound():
+    # A regex in egress.patterns scrubs on the way out too.
+    verdict = _filter(patterns=[r"CUST-\d+"]).apply(
+        "", [{"role": "user", "content": "account CUST-4821 is overdue"}]
+    )
+
+    serialized = json.dumps(verdict.messages)
+    assert "CUST-4821" not in serialized
+    assert "[REDACTED]" in serialized
+    assert verdict.findings == [{"pattern": "egress.patterns[0]", "count": 1}]
+
+
+def test_detect_credentials_blocks_a_credential_that_empty_redact_would_let_through():
+    # With no logging.redact rules at all, only the built-in credential shapes
+    # catch the secret -- and detect_credentials is the switch that turns them on.
+    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+
+    blocked = _filter(detect_credentials=True).apply(
+        "", [{"role": "user", "content": f"deploy key is {secret}"}]
+    )
+    assert not blocked.clean
+    assert secret not in json.dumps(blocked.messages)
+    assert blocked.findings == [{"pattern": "aws_access_key_id", "count": 1}]
+
+    let_through = _filter(detect_credentials=False).apply(
+        "", [{"role": "user", "content": f"deploy key is {secret}"}]
+    )
+    assert let_through.clean  # no redact rules, credentials off -> the secret leaves
+    assert secret in json.dumps(let_through.messages)
 
 
 def test_the_filter_can_be_switched_off():

@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness working directory under the same private-path rules as `file_read`,
   with dependency and build trees pruned and every result bounded. An executor
   no longer needs an exact allowlisted shell argv to find a file.
+- `cloud` pull (linked mode) refuses to write a `.env*` (except the shipped
+  `.env.example`/`.env.template` templates) or `.hiveloom/**` path from the
+  packaged zip, reusing the same `is_sensitive_path` predicate packaging uses,
+  instead of trusting the server excluded them, so a buggy or malicious linked
+  server can no longer overwrite the local link config or secrets.
 ### Fixed
 
 - Eval resume accepts an explicit higher infrastructure retry ceiling after an
