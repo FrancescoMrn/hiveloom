@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
@@ -338,9 +338,21 @@ def _resolve_env(ref: McpStdioServerRef) -> dict[str, str]:
     return env
 
 
-def _resolve_headers(ref: McpHttpServerRef) -> dict[str, str]:
-    """Literal ``headers`` plus ``header_env`` secrets resolved from this process."""
+def _resolve_headers(
+    ref: McpHttpServerRef, run_context: Mapping[str, Any] | None = None
+) -> dict[str, str]:
+    """Literal ``headers``, ``header_env`` secrets resolved from this process,
+    and ``header_context`` values taken from the caller's per-run context.
+    """
     headers = dict(ref.headers)
+    for header_name, key in ref.header_context.items():
+        value = (run_context or {}).get(key)
+        if not isinstance(value, str) or not value:
+            raise McpError(
+                f"mcp server '{ref.name}': header_context wants run-context key "
+                f"'{key}' (for header '{header_name}') but the run did not supply it"
+            )
+        headers[header_name] = value
     for header_name, host_var in ref.header_env.items():
         value = os.environ.get(host_var)
         if value is None:
@@ -423,6 +435,7 @@ def connect_mcp_server(
     base_dir: Path,
     bridge: McpBridge,
     harness_id: str | None = None,
+    run_context: Mapping[str, Any] | None = None,
 ) -> list[Tool]:
     """Connect to one declared MCP server and adapt its (allowlisted) tools.
 
@@ -441,7 +454,9 @@ def connect_mcp_server(
             session = bridge.connect_stdio(params, ref.timeout_seconds)
         else:
             transport = "http"
-            session = bridge.connect_http(ref.url, _resolve_headers(ref), ref.timeout_seconds)
+            session = bridge.connect_http(
+                ref.url, _resolve_headers(ref, run_context), ref.timeout_seconds
+            )
 
         remote_tools = _list_all_tools(bridge, session)
     except McpError:

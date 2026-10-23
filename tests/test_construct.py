@@ -469,6 +469,7 @@ def test_add_mcp_server_http(harness_dir: Path):
         url="https://mcp.acme.com/mcp",
         headers={"X-Foo": "bar"},
         header_env={"Authorization": "TOKEN_VAR"},
+        header_context={"X-Reader": "reader_token"},
         tools=["search_issues"],
         deferred=True,
     )
@@ -478,6 +479,7 @@ def test_add_mcp_server_http(harness_dir: Path):
     assert server.url == "https://mcp.acme.com/mcp"
     assert server.headers == {"X-Foo": "bar"}
     assert server.header_env == {"Authorization": "TOKEN_VAR"}
+    assert server.header_context == {"X-Reader": "reader_token"}
     assert server.tools == ["search_issues"]
     assert server.deferred is True
 

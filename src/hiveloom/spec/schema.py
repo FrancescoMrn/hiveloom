@@ -351,6 +351,15 @@ class McpHttpServerRef(BaseModel):
             "environment at connect time (e.g. Authorization -> ACME_MCP_TOKEN)."
         ),
     )
+    header_context: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "header-name -> run-context key, resolved from the caller's per-run "
+            "`context` at connect time (e.g. Authorization -> reader_token). For a "
+            "credential that belongs to one run, such as the end user a served "
+            "harness acts for; never traced, never shown to the model."
+        ),
+    )
     tools: list[str] | None = Field(
         default=None,
         description=(

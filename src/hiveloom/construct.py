@@ -980,6 +980,7 @@ def add_mcp_server(
     url: str | None = None,
     headers: dict[str, str] | None = None,
     header_env: dict[str, str] | None = None,
+    header_context: dict[str, str] | None = None,
     tools: list[str] | None = None,
     deferred: bool = False,
     timeout_seconds: float | None = None,
@@ -1020,6 +1021,8 @@ def add_mcp_server(
             entry["headers"] = dict(headers)
         if header_env:
             entry["header_env"] = dict(header_env)
+        if header_context:
+            entry["header_context"] = dict(header_context)
     if tools:
         entry["tools"] = list(tools)
     if deferred:

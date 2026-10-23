@@ -874,6 +874,24 @@ mcp_servers:
     tools: [search_issues, create_issue]   # allowlist; omit to expose all
 ```
 
+A served harness that acts *for* someone — the end user of the application
+calling it — needs that person's credential, not the host's. `header_context`
+takes a header from the caller's per-run `context` (`run_harness(...,
+context=)`, or `"context"` on `hiveloom serve`'s `POST /runs`) instead of the
+environment, so each run reaches the server as the person it serves:
+
+```yaml
+mcp_servers:
+  - name: platform
+    transport: http
+    url: https://app.example/api/mcp
+    header_context:
+      Authorization: reader_token   # the run's context["reader_token"]
+```
+
+The value is never traced, never echoed and never shown to the model; a run
+whose context lacks the key fails to connect and says which key it wanted.
+
 Add one with `hiveloom add mcp-server` (see `hiveloom add mcp-server --help`);
 inspect what a harness's declared servers actually expose with
 `hiveloom mcp list-tools --dir ./h`.

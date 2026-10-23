@@ -358,6 +358,26 @@ def test_resolve_headers_missing_host_var_raises(monkeypatch):
         _resolve_headers(ref)
 
 
+def test_resolve_headers_reads_header_context_from_the_run():
+    ref = McpHttpServerRef(
+        name="h", url="https://example.invalid/mcp",
+        header_context={"Authorization": "reader_token"},
+    )
+    run_context = {"reader_token": "Bearer run-scoped"}
+    assert _resolve_headers(ref, run_context) == {"Authorization": "Bearer run-scoped"}
+
+
+def test_resolve_headers_missing_run_context_key_raises():
+    ref = McpHttpServerRef(
+        name="h", url="https://example.invalid/mcp",
+        header_context={"Authorization": "reader_token"},
+    )
+    with pytest.raises(McpError, match="reader_token"):
+        _resolve_headers(ref)
+    with pytest.raises(McpError, match="reader_token"):
+        _resolve_headers(ref, {"reader_token": ""})
+
+
 # --------------------------------------------------------------------------- #
 # Real stdio subprocess (offline, local)
 # --------------------------------------------------------------------------- #

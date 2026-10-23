@@ -161,6 +161,7 @@ def dry_run(
     model_override: str | None = None,
     provider_override: str | None = None,
     approve_trust=None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the first model call without calling the model provider.
 
@@ -178,7 +179,7 @@ def dry_run(
     )
     resolve_hooks(spec, base)
     run_boundary = RunBoundary.resolve(base, spec)
-    registry = build_registry(spec, base, run_boundary=run_boundary)
+    registry = build_registry(spec, base, run_boundary=run_boundary, run_context=context)
     try:
         history, run_input = _resolve_conversation(
             base, input_value, conversation, literal_input=literal_input
@@ -393,7 +394,7 @@ def run_harness(
     run_boundary = RunBoundary.resolve(
         base, spec, trace_dir=trace_dir, hive_path=hive_path
     )
-    registry = build_registry(spec, base, run_boundary=run_boundary)
+    registry = build_registry(spec, base, run_boundary=run_boundary, run_context=context)
     if tool_policy is not None:
         # A research execution policy (hiveloom.research.execution) may only
         # tighten the tool set: deny a tool or swap it for recorded results.

@@ -996,6 +996,14 @@ def add_mcp_server_cmd(
         "--header-env",
         help="HTTP header resolved from the host as Name=HOST_VAR (repeatable, http only).",
     ),
+    header_context: list[str] = typer.Option(
+        [],
+        "--header-context",
+        help=(
+            "HTTP header taken from the caller's per-run context as Name=CONTEXT_KEY "
+            "(repeatable, http only)."
+        ),
+    ),
     tool: list[str] = typer.Option(
         [], "--tool", help="Allowlist a remote tool name (repeatable; omit to expose all)."
     ),
@@ -1030,6 +1038,7 @@ def add_mcp_server_cmd(
             url=url,
             headers=_parse_header_pairs(header) or None,
             header_env=_parse_kv_pairs(header_env, "--header-env") or None,
+            header_context=_parse_kv_pairs(header_context, "--header-context") or None,
             tools=tool or None,
             deferred=deferred,
             timeout_seconds=timeout_seconds,

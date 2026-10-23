@@ -526,8 +526,13 @@ def build_registry(
     base_dir: str | Path,
     *,
     run_boundary: RunBoundary | None = None,
+    run_context: dict[str, Any] | None = None,
 ) -> ToolRegistry:
-    """Instantiate catalog tools and import code-hook tools from a spec."""
+    """Instantiate catalog tools and import code-hook tools from a spec.
+
+    ``run_context`` is the caller's per-run context; an HTTP MCP server's
+    ``header_context`` reads its credentials from it.
+    """
     from hiveloom.tools import builtin  # local import to avoid cycles
 
     base = Path(base_dir)
@@ -598,7 +603,9 @@ def build_registry(
                 has_deferred = has_deferred or not active
                 # `spec.identity` is the Hive key: a peer hiveloom MCP server
                 # uses it to link the delegated run and to refuse a cycle.
-                for adapter in connect_mcp_server(server_ref, base, bridge, spec.identity):
+                for adapter in connect_mcp_server(
+                    server_ref, base, bridge, spec.identity, run_context
+                ):
                     registry.register(adapter, active=active)
         except Exception:
             # A later server failing to connect must not leak an earlier
