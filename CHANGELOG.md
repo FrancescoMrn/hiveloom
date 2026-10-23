@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `header_context` on an HTTP MCP server: a header taken from the caller's
+  per-run `context`, for a served harness that acts for an end user with that
+  user's own credential. `hiveloom serve` accepts `"context"` on `POST /runs`;
+  the values are never traced or echoed, and `dry_run` takes `context` too.
 - Opt-in `ppc` research strategy: independent procedure/domain proposals,
   working-case probe comparisons, and one evidence-cited composition before
   selection. `ppc_select` provides the no-composer ablation. Existing budget,

@@ -114,6 +114,34 @@ def test_stream_emits_events_then_run_result_last(server):
     assert lines[-1]["run_id"] == lines[0]["run_id"]
 
 
+def test_run_context_reaches_the_run_and_is_never_persisted(server, monkeypatch):
+    from hiveloom import runner
+
+    seen: list[dict] = []
+    original = runner.run_harness
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("context"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "run_harness", spy)
+    secret = "Bearer reader-credential-7f3a"
+    body = {"input": _LONG_INPUT, "context": {"reader_token": secret}}
+    with _post(server, "/runs", body) as response:
+        body = response.read().decode()
+    assert json.loads(body)["status"] == "success"
+    assert seen == [{"reader_token": secret}]
+    assert secret not in body
+    traces = Path(server.base_dir) / ".hiveloom" / "traces"
+    assert all(secret not in f.read_text() for f in traces.rglob("*") if f.is_file())
+
+
+def test_run_context_must_be_an_object_of_strings(server):
+    with pytest.raises(urllib.error.HTTPError) as err:
+        _post(server, "/runs", {"input": _LONG_INPUT, "context": {"reader_token": 1}})
+    assert err.value.code == 400
+
+
 def test_bad_body_is_400_and_unknown_path_404(server):
     with pytest.raises(urllib.error.HTTPError) as err:
         _post(server, "/runs", {"nope": 1})

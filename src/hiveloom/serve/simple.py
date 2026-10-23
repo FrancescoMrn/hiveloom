@@ -12,7 +12,9 @@ Endpoints:
 - ``POST /runs`` — body carries exactly one of ``{"input": "..."}`` (single
   shot) or ``{"messages": [{"role": ..., "content": ...}, ...]}`` (the whole
   conversation, for a multi-turn caller that owns the thread), plus an
-  optional ``"stream": true``. Non-stream responses mirror
+  optional ``"stream": true`` and an optional ``"context"`` object of strings —
+  the per-run values the caller owns (the end user's credential an HTTP MCP
+  server's ``header_context`` forwards), never traced and never echoed. Non-stream responses mirror
   ``hiveloom run --json`` — including ``artifacts``, so a served harness can
   drive a real UI; ``"stream": true`` responds with ``application/x-ndjson``
   chunks: first a ``{"type": "run_accepted", "run_id": ...}`` line (so the
@@ -206,7 +208,7 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._send_json(400, {"ok": False, "error": "body must be a JSON object"})
             return
-        unknown = sorted(set(body) - {"input", "messages", "stream"})
+        unknown = sorted(set(body) - {"input", "messages", "stream", "context"})
         if unknown:
             self._send_json(400, {"ok": False, "error": f"unknown fields: {unknown}"})
             return
@@ -226,6 +228,15 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        context = body.get("context")
+        if context is not None and not (
+            isinstance(context, dict)
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in context.items())
+        ):
+            self._send_json(
+                400, {"ok": False, "error": '"context" must be an object of strings'}
+            )
+            return
         if not self.server._slots.acquire(blocking=False):
             self._send_json(
                 429, {"ok": False, "error": "server is at capacity"}, retry_after=5
@@ -236,6 +247,7 @@ class _Handler(BaseHTTPRequestHandler):
                 body.get("input") if has_input else None,
                 body.get("messages") if has_messages else None,
                 stream=bool(body.get("stream")),
+                context=context,
             )
         finally:
             self.server._slots.release()
@@ -295,6 +307,7 @@ class _Handler(BaseHTTPRequestHandler):
         conversation: list[Any] | None,
         *,
         stream: bool,
+        context: dict[str, str] | None = None,
     ) -> None:
         from hiveloom import runner
         from hiveloom.loop.control import RunControl
@@ -314,6 +327,9 @@ class _Handler(BaseHTTPRequestHandler):
         control = RunControl()
         self.server.register_control(run_id, control)
         run_kwargs.update(run_id=run_id, control=control)
+        if context is not None:
+            # A copy: the caller's credential is this run's alone.
+            run_kwargs["context"] = dict(context)
 
         if not stream:
             try:
