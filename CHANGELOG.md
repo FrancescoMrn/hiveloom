@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness working directory under the same private-path rules as `file_read`,
   with dependency and build trees pruned and every result bounded. An executor
   no longer needs an exact allowlisted shell argv to find a file.
+### Fixed
+
+- Eval resume now preserves complete returned results, including artifacts added
+  by an SDK `execute_cell` callback after the trace was written. Atomic, redacted
+  result checkpoints let scoring resume without executing the agent again, even
+  when tracing is disabled; existing trace-only evals still resume.
 
 ## [1.3.0] - 2026-10-04
 

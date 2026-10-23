@@ -11,7 +11,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from hiveloom import construct, ext
+from hiveloom import construct, eval_runner, ext
 from hiveloom.cli import app
 from hiveloom.eval_runner import (
     load_eval_manifest,
@@ -488,6 +488,160 @@ def test_scoring_failure_preserves_the_completed_model_outcome(tmp_path: Path):
     assert manifest.cells[0].status == "ran"
     assert manifest.cells[0].run_status == "success"
     assert manifest.cells[0].error_phase == "scoring"
+
+
+@pytest.mark.parametrize("trace_enabled", [True, False])
+def test_resume_preserves_the_returned_result_without_reexecuting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trace_enabled: bool
+):
+    """A callback can add artifacts after its container has written the trace."""
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    returned = []
+    scored = []
+    original_score = eval_runner._score_cell
+
+    def execute(**kwargs):
+        result = _completed_result(**kwargs)
+        if not trace_enabled:
+            Path(result.trace_path).unlink()
+            result.trace_path = ""
+        result.artifacts.append({"kind": "workspace", "data": "/durable/workspace.tar"})
+        result.runtime_config = {"requested": {"model": "synthetic-model"}}
+        result.referrals = [{"name": "synthetic-peer"}]
+        returned.append(result.model_dump(mode="json"))
+        return result
+
+    def score(*args):
+        scored.append(args[-1].model_dump(mode="json"))
+        if len(scored) == 1:
+            raise OSError("temporary scorer outage")
+        return original_score(*args)
+
+    monkeypatch.setattr(eval_runner, "_score_cell", score)
+    partial = run_eval(eval_file, execute_cell=execute, model_probe=probe)
+    assert partial.status == "incomplete"
+    assert partial.cells[0].error_phase == "scoring"
+    resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+
+    assert resumed.status == "completed"
+    assert len(returned) == 1
+    assert scored == [returned[0], returned[0]]
+    resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+    assert len(returned) == 1
+    assert len(scored) == 2
+
+
+def test_result_checkpoint_uses_the_harness_redaction_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    construct.set_value(tmp_path / "harness", "logging.redact", {
+        "patterns": ["synthetic-pattern"],
+        "keys": ["private_key"],
+        "paths": ["artifacts[*].data.private_path"],
+    })
+    scored = []
+    original_score = eval_runner._score_cell
+
+    def execute(**kwargs):
+        result = _completed_result(**kwargs)
+        result.artifacts = [{"kind": "workspace", "data": {
+            "label": "synthetic-pattern", "private_key": "synthetic-key-value",
+            "private_path": "synthetic-path-value", "path": "/durable/workspace.tar",
+        }}]
+        return result
+
+    def score(*args):
+        scored.append(args[-1])
+        if len(scored) == 1:
+            raise OSError("temporary scorer outage")
+        return original_score(*args)
+
+    monkeypatch.setattr(eval_runner, "_score_cell", score)
+    partial = run_eval(eval_file, execute_cell=execute, model_probe=probe)
+    [checkpoint] = (manifest_path(partial.eval_run_id).parent / "results").glob("*.json")
+    content = checkpoint.read_text()
+    assert "synthetic-pattern" not in content
+    assert "synthetic-key-value" not in content
+    assert "synthetic-path-value" not in content
+    assert checkpoint.stat().st_mode & 0o777 == 0o600
+    assert checkpoint.parent.stat().st_mode & 0o777 == 0o700
+    public_manifest = manifest_path(partial.eval_run_id).read_text()
+    assert "/durable/workspace.tar" not in public_manifest
+    resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+    assert resumed.status == "completed"
+    assert scored[1].artifacts == [{"kind": "workspace", "data": {
+        "label": "[REDACTED]", "private_key": "[REDACTED]",
+        "private_path": "[REDACTED]", "path": "/durable/workspace.tar",
+    }}]
+    assert scored[0].artifacts[0]["data"]["label"] == "synthetic-pattern"
+
+
+@pytest.mark.parametrize("corruption", ["json", "directory"])
+def test_corrupt_checkpoint_never_discards_artifacts_or_reexecutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
+):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    calls = []
+    original_score = eval_runner._score_cell
+
+    def execute(**kwargs):
+        calls.append(kwargs["cell"].cell_id)
+        return _completed_result(**kwargs)
+
+    def unavailable(*args):
+        raise OSError("temporary scorer outage")
+
+    monkeypatch.setattr(eval_runner, "_score_cell", unavailable)
+    partial = run_eval(eval_file, execute_cell=execute, model_probe=probe)
+    [checkpoint] = (manifest_path(partial.eval_run_id).parent / "results").glob("*.json")
+    original = checkpoint.read_bytes()
+    if corruption == "json":
+        checkpoint.write_text("invalid json")
+    else:
+        checkpoint.unlink()
+        checkpoint.mkdir()
+    resumed = resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe)
+    assert resumed.status == "incomplete"
+    assert resumed.cells[0].status == "infrastructure_error"
+    assert resumed.cells[0].error_phase == "recovery"
+    assert resumed.cells[0].error_type == "InvalidCheckpoint"
+    assert len(calls) == 1
+    if checkpoint.is_dir():
+        checkpoint.rmdir()
+    checkpoint.write_bytes(original)
+    monkeypatch.setattr(eval_runner, "_score_cell", original_score)
+    assert resume_eval(partial.eval_run_id, execute_cell=execute, model_probe=probe).status == (
+        "completed"
+    )
+    assert len(calls) == 1
+
+
+def test_checkpoint_survives_interruption_before_manifest_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    eval_file, probe = _fixture(tmp_path, case_count=1)
+    original_apply = eval_runner._apply_result
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs["cell"].cell_id)
+        result = _completed_result(**kwargs)
+        Path(result.trace_path).unlink()
+        result.trace_path = ""
+        return result
+
+    def interrupt(*args):
+        raise OSError("interrupted after durable result")
+
+    monkeypatch.setattr(eval_runner, "_apply_result", interrupt)
+    with pytest.raises(OSError, match="after durable result"):
+        run_eval(eval_file, execute_cell=execute, model_probe=probe,
+                 eval_run_id="eval_checkpoint_window")
+    monkeypatch.setattr(eval_runner, "_apply_result", original_apply)
+    resumed = resume_eval("eval_checkpoint_window", execute_cell=execute, model_probe=probe)
+    assert resumed.status == "completed"
+    assert len(calls) == 1
 
 
 def test_manifest_lookup_rejects_unknown_and_malformed_ids():

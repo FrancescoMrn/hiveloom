@@ -148,6 +148,26 @@ completed model result. Each retry has a distinct run ID. Harness verification
 failures, guardrail halts, and provider responses recorded as run outcomes are
 completed cells and are not reclassified as infrastructure errors.
 
+The SDK's `run_eval(..., execute_cell=callback)` accepts a complete `RunResult`
+from each callback. Before scoring, the runner atomically checkpoints that
+result under `~/.hiveloom/evals/<eval_run_id>/results/` (or the configured
+`HIVELOOM_HOME`). This includes artifacts added after the run's trace was
+written, such as a workspace archive copied out of a disposable container.
+The files have owner-only permissions and use the harness's `logging.redact`
+patterns, keys, and paths, just like trace payloads. The manifest and Hive
+index continue to contain receipts rather than model or tool payloads.
+
+`resume_eval(..., execute_cell=callback)` scores a checkpointed result without
+executing the cell again, including runs with tracing disabled. Scorers must
+therefore accept redacted values during recovery. Artifact references are
+preserved; the callback remains responsible for keeping their files available.
+A malformed or unreadable checkpoint records an `InvalidCheckpoint` recovery
+error and leaves the eval incomplete, without executing the cell again. Restore
+a valid checkpoint from backup before resuming that cell. Runs without a result checkpoint,
+including older evals and interruptions before a callback returns, retain
+trace-based recovery. Keep the eval directory with the traces when moving or
+backing up a run; older HiveLoom releases do not read result checkpoints.
+
 ## Report and compare
 
 Eval manifests are indexed into the Hive as they change. Reports therefore use
