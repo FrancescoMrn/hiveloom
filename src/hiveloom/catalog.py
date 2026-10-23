@@ -80,6 +80,41 @@ BUILTIN_TOOLS: dict[str, CatalogEntry] = _entries(
         tags=["write", "file"],
     ),
     CatalogEntry(
+        name="list_dir",
+        description=(
+            "List a directory inside the harness working directory, read-only: "
+            "entries sorted, directories marked with a trailing slash, nested "
+            "levels with `depth` (at most 4), at most 500 entries. Runtime-private "
+            "paths (.hiveloom, traces, .env files) and dependency or build trees "
+            "(.git, node_modules, .venv, __pycache__, dist, build, target, caches) "
+            "never appear."
+        ),
+        tags=["read", "file"],
+    ),
+    CatalogEntry(
+        name="glob",
+        description=(
+            "Find files inside the harness working directory by a wildcard "
+            "pattern matched segment by segment against each file's path relative "
+            "to `path`: `**` spans directories, `*` and `?` stay within one, so "
+            "`**/*.py` finds every Python file below `path` and `*.py` only those "
+            "directly in it. Read-only, at most 500 results, with the same private "
+            "and dependency trees skipped as list_dir."
+        ),
+        tags=["read", "file"],
+    ),
+    CatalogEntry(
+        name="grep",
+        description=(
+            "Search text files inside the harness working directory for a regular "
+            "expression, read-only: one `path:line: text` per match, lines clipped "
+            "to 300 characters, at most `max_matches` (default 100, cap 500), files "
+            "over 1 MiB and binary files skipped, with the same private and "
+            "dependency trees skipped as list_dir."
+        ),
+        tags=["read", "file"],
+    ),
+    CatalogEntry(
         name="load_skill",
         description=(
             "Read one of the harness's declared skills in full. Progressive "
