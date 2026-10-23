@@ -394,7 +394,8 @@ declared.
 
 Every CLI command supports `--json`. Exit codes are stable:
 `0` success, `1` verification failed, `2` guardrail halt, `3` invalid spec or
-request, and `4` runtime failure.
+request, and `4` runtime failure. `eval run` and `eval resume` also exit `130`
+when Ctrl-C, `SIGTERM` or `SIGHUP` stops them; `eval resume` continues the batch.
 
 ```bash
 # Explore and construct

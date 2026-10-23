@@ -17,7 +17,8 @@ the library; humans should start at [README.md](README.md).
    `migrate`. These paths validate and roll back — hand edits bypass that.
 2. **Always pass `--json`** and branch on the result and the exit code:
    `0` success · `1` verify failed · `2` guardrail halt · `3` spec/validation
-   error · `4` runtime error.
+   error · `4` runtime error · `130` `eval run`/`eval resume` interrupted (run
+   `eval resume`).
 3. **The catalog is the truth for builtin and extension-registered entries.**
    If `hiveloom catalog <kind>` doesn't list one, it doesn't exist. Check
    `hiveloom extensions` — installed packs may have widened the catalog. MCP

@@ -100,7 +100,8 @@ commands under the hood).
 hiveloom run ./h --input notes.txt --json
 ```
 Interpret the **exit code**: `0` success, `1` verify failed, `2` guardrail halt,
-`3` spec/validation error, `4` runtime error. Traces land in
+`3` spec/validation error, `4` runtime error (`130`: an `eval run`/`eval resume`
+stopped by a signal; run `eval resume`). Traces land in
 `./h/.hiveloom/traces/<run_id>.jsonl`; inspect with `hiveloom trace <run_id>` and
 aggregate with `hiveloom stats ./h` (success rate / cost / turns **per version
 hash**). Use `hiveloom stats ./h --include-friction --json` or `hiveloom
