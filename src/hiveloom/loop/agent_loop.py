@@ -23,7 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from hiveloom import confine, delegation
+from hiveloom import confine, delegation, ext
 from hiveloom.context import spill
 from hiveloom.context.manager import ContextManager
 from hiveloom.context.notes import (
@@ -56,7 +56,7 @@ from hiveloom.models.provider import (
 from hiveloom.models.router import ModelRouter, portable_messages
 from hiveloom.playbooks import PlaybookManager
 from hiveloom.private import RunBoundary
-from hiveloom.spec.schema import HarnessSpec
+from hiveloom.spec.schema import ContextConfig, HarnessSpec
 from hiveloom.tools.builtin import PROPOSE_MEMORY_TOOL, ProposeMemoryTool
 from hiveloom.tools.registry import SearchToolsTool, ToolError, ToolRegistry, ToolResult
 from hiveloom.verify.base import (
@@ -67,6 +67,9 @@ from hiveloom.verify.base import (
     invoke_verifier,
 )
 
+# Builtins whose ``path`` argument the compaction summary indexes (see
+# ``ContextManager.note_file_access``), with the verb the index shows.
+_FILE_TOOLS = {"file_read": "read", "file_write": "written"}
 _EVIDENCE_RECORD_LIMIT = 2_000
 _EVIDENCE_STRING_LIMIT = 4_000
 _EVIDENCE_LIST_LIMIT = 2_000
@@ -111,12 +114,17 @@ class RunResult(BaseModel):
     status: str
     output: str = ""
     turns: int = 0
+    # Compaction's summarization calls: paid for and journaled like any model
+    # call, but not turns, so they never spend ``loop.max_turns``.
+    compaction_calls: int = 0
     cost_usd: float = 0.0
     duration_seconds: float = 0.0
     run_id: str = ""
     trace_path: str = ""
     verdicts: list[VerdictResult] = Field(default_factory=list)
     reason: str = ""
+    # Run-start advisories that did not stop the run (a budget left at its default).
+    warnings: list[str] = Field(default_factory=list)
     # Structured tool side-products in dispatch order: {"kind", "data", "tool"}.
     # Populated even on a failed run — a turn that proposed something before
     # hitting max_turns still produced it.
@@ -268,6 +276,7 @@ class AgentLoop:
         self._egress = EgressFilter(spec.egress, spec.logging.redact)
         self._state = RunState(tool_names=set(registry.names()))
         self._provider_calls: list[dict[str, Any]] = []
+        self._warnings: list[str] = []
         # Delegation bookkeeping. `depth`/`chain` come from the lineage this
         # run was started with, so an inherited chain is what depth and cycle
         # refusals are judged against — not something this run can restate.
@@ -426,6 +435,8 @@ class AgentLoop:
             },
         )
 
+        self._flag_default_context_budget()
+
         halt = self._guardrail_halt(lambda g: g.before_run(self._state))
         if halt is not None:
             return self._finish("guardrail_halt", reason=halt)
@@ -508,7 +519,7 @@ class AgentLoop:
 
         retries = 0
         last_verdicts: list[VerdictResult] = []
-        while self._state.model_calls < loop.max_turns:
+        while self._state.turns < loop.max_turns:
             # Turn boundary: the one point where outside control is consumed.
             # The state is coherent here — no model call or tool in flight.
             if self._control is not None:
@@ -594,9 +605,9 @@ class AgentLoop:
                 # records why the turn ended.
                 truncation_exhausted = (
                     self._state.truncated_turns > _MAX_TRUNCATED_TURNS
-                    or self._state.model_calls >= loop.max_turns
+                    or self._state.turns >= loop.max_turns
                 )
-                if not truncation_exhausted and self._state.model_calls < loop.max_turns:
+                if not truncation_exhausted and self._state.turns < loop.max_turns:
                     self._context.add_user(self._truncation_feedback())
                     continue
                 output = response.text
@@ -683,6 +694,31 @@ class AgentLoop:
                 if self._last_output_block
                 else ""
             ),
+        )
+
+    def _flag_default_context_budget(self) -> None:
+        """Say so when the input budget is the schema default and the model has more.
+
+        The default suits a small model; left in place on a 128K or 200K window
+        it compacts every few turns for no reason. The models.yaml entry knows
+        the window, so the run can tell the difference between a budget someone
+        chose and one nobody looked at.
+        """
+        budget = self._spec.context.max_input_tokens
+        if budget != ContextConfig.model_fields["max_input_tokens"].default:
+            return
+        model = self._router.config.id
+        info = ext.model_info(model)
+        window = info.context_window if info is not None else None
+        if window is None or window <= budget:
+            return
+        self._trace.emit(
+            "context_budget_default", model=model, max_input_tokens=budget, context_window=window
+        )
+        self._warnings.append(
+            f"context.max_input_tokens is the default {budget} while {model} declares a "
+            f"{window}-token context window; set it on purpose "
+            "(hiveloom set context.max_input_tokens <n>)"
         )
 
     # ------------------------------------------------------------------ #
@@ -868,7 +904,10 @@ class AgentLoop:
             config=config,
         )
         self._state.model_calls += 1
-        self._state.turns = self._state.model_calls
+        if phase == "compaction":
+            self._state.compaction_calls += 1
+        else:
+            self._state.turns += 1
         self._usage = self._usage + response.usage
         estimated_cost = self._router.provider.estimated_cost(
             response.usage, self._router.config.id, self._router.config.provider
@@ -1142,10 +1181,12 @@ class AgentLoop:
         decides how much of it the model carries.
         """
         content = result.content
+        handle = ""
         if self._spill is not None and call.name not in spill.EXEMPT_TOOLS:
             record = self._spill.spill(tool=call.name, content=content)
             if record is not None:
                 content = record.preview
+                handle = record.handle
                 # Deferred until now: the readers cost payload on every turn,
                 # and until something is spilled there is nothing to read.
                 self._registry.activate(list(spill.TOOL_NAMES))
@@ -1158,6 +1199,9 @@ class AgentLoop:
                     sha256=record.sha256,
                     omitted_bytes=record.omitted_bytes,
                 )
+        path = call.input.get("path")
+        if call.name in _FILE_TOOLS and not result.is_error and isinstance(path, str) and path:
+            self._context.note_file_access(path, _FILE_TOOLS[call.name], handle)
         return {"tool_use_id": call.id, "content": content, "is_error": result.is_error}
 
     def _preflight_call(self, call: Any) -> tuple[str, str] | None:
@@ -2109,6 +2153,7 @@ class AgentLoop:
             status=status,
             reason=reason,
             turns=self._state.turns,
+            compaction_calls=self._state.compaction_calls,
             cost_usd=self._state.cost_usd,
             duration_seconds=duration_seconds,
             # The split between what this run spent itself and what it paid a
@@ -2146,12 +2191,14 @@ class AgentLoop:
             status=status,
             output=output,
             turns=self._state.turns,
+            compaction_calls=self._state.compaction_calls,
             cost_usd=self._state.cost_usd,
             duration_seconds=duration_seconds,
             run_id=self._run_id,
             trace_path=str(self._trace.path),
             verdicts=verdicts or [],
             reason=reason,
+            warnings=list(self._warnings),
             artifacts=list(self._state.artifacts),
             provider_calls=list(self._provider_calls),
             runtime_config=self._runtime_config,

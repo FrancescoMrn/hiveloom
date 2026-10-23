@@ -31,7 +31,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `context` | Context assembly & budgeting | `max_input_tokens`, `strategy` (`rolling`\|`full`\|`summary`), `compaction.{trigger_at_pct,method,max_tokens}`, `pinned`, `tool_results.{max_inline_bytes,preview_head_bytes,preview_tail_bytes}` |
 | `memory` | Durable lessons rendered into the system prompt | `enabled`, `max_entries`, `max_entry_chars`, `prompt_budget_chars`, `selection`, `max_selected` (**all frozen from evolution**), `entries` (evolvable) |
 | `guardrails` | Safety gates | list of builtins/code; **frozen from evolution** |
-| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns`, `on_tool_error`, `require_verification` |
+| `loop` | Loop policy & stop conditions | `policy` (`react`\|`plan_then_act`\|`sequential_steps`), `steps` (string objectives or structured phases), `max_turns` (act turns; compaction's summarization calls are reported separately as `compaction_calls`), `on_tool_error`, `require_verification` |
 | `verify` | Verification (the reward signal) | `validators` (builtins/code), `on_fail.{action,max_retries}` |
 | `confinement` | OS confinement for spawned processes | `mode` (`auto`\|`off`\|`require`), `network`, `writable`, `hide_home`, `env_passthrough`, `timeout_seconds`, `max_output_bytes`, `max_memory_mb`, `max_processes`; **frozen from evolution** |
 | `egress` | What may leave in a model request | `mode` (`redact`\|`block`\|`off`), `detect_credentials`, `patterns`; **frozen from evolution** |

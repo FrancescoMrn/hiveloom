@@ -94,6 +94,19 @@ provider-reported model identities separate; sums provider-call usage; labels
 cost as billed, estimated, or mixed; and records whether verification passed
 on the first output, recovered, failed, or never ran.
 
+`turns` counts the model calls the loop made to act, and `loop.max_turns`
+bounds exactly those; `compaction_calls` counts the summarization calls
+compaction made on the side, which are journaled and costed like any model call
+but never spend a turn. A compaction call is labelled with the number of act
+turns completed before it, the same `turn` as the act call that follows it, so
+`phase` is what tells the two apart.
+
+A `context_budget_default` event right after `run_started` means the harness
+left `context.max_input_tokens` at the schema default while the model's
+`models.yaml` entry declares a larger `context_window`; the same text reaches
+`RunResult.warnings` and the CLI. Compaction then fires on a 30,000-token
+budget inside a 200,000-token window until someone sets the budget on purpose.
+
 `behavior_hash` is the current name of the harness version hash inside this
 public envelope. `schema_version` reflects the canonical harness document
 field. Legacy documents using `version` load with the same meaning and migrate
