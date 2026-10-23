@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artifacts to a URL whose `{"passed", "dropped"}` answer is the verdict, with
   headers taken from the run's `context` (`hiveloom add validator --builtin
   http_verdict --url ... --header-context Header=KEY`). Failures never raise.
+- `hiveloom.serve.bundle`: a harness as a JSON bundle of text files, with
+  `check_bundle`, `materialize` and `extract`. A bundle refuses absolute,
+  traversing, `.hiveloom/` and `.env*` paths, code files and dependency
+  manifests, and any spec declaring code tools, validators or hooks,
+  extensions, stdio MCP servers or `shell`.
 - Opt-in `ppc` research strategy: independent procedure/domain proposals,
   working-case probe comparisons, and one evidence-cited composition before
   selection. `ppc_select` provides the no-composer ablation. Existing budget,
