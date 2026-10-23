@@ -1092,7 +1092,10 @@ class AgentLoop:
                     return reason, None
                 results.append(_blocked_result(call, reason))
                 continue
-            self._trace.emit("tool_call", name=call.name, input=call.input, id=call.id)
+            self._trace.emit(
+                "tool_call", name=call.name, input=call.input, id=call.id,
+                **({"arguments_error": call.arguments_error} if call.arguments_error else {}),
+            )
             result = self._execute_call(call)
             halt = self._finalize_call(call, result)
             if halt is not None:
@@ -1116,7 +1119,10 @@ class AgentLoop:
                     return reason, None
                 plan.append((call, reason))
                 continue
-            self._trace.emit("tool_call", name=call.name, input=call.input, id=call.id)
+            self._trace.emit(
+                "tool_call", name=call.name, input=call.input, id=call.id,
+                **({"arguments_error": call.arguments_error} if call.arguments_error else {}),
+            )
             plan.append((call, None))
 
         runnable = [(i, call) for i, (call, blocked) in enumerate(plan) if blocked is None]
