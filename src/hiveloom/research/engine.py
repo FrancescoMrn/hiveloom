@@ -168,6 +168,7 @@ class Engine(ConceptsEngine):
             "promotion": _live_promotion(state.get("promotion")),
             "ledger": self.program.ledger.verify(),
             "mode": "concepts" if self.charter.concepts_mode else "eval",
+            "strategy": self.charter.strategy,
             "awaiting": "contract" if state["unit"] == "approve" else None,
             "blocked_reason": state.get("blocked_reason"),
             "questions": ({"open": len(self.questions.open()),
@@ -213,7 +214,24 @@ class Engine(ConceptsEngine):
         self.program.ledger.append("round_started", round=state["round"],
                                    incumbent=state["incumbent"])
         state["unit"] = "hypothesize"
+        if self.charter.strategy != "autonomous":
+            state["unit"] = "propose_procedure"
         return {"outcome": f"round {state['round']}"}
+
+    def _unit_propose_procedure(self, state: dict[str, Any]) -> dict[str, Any]:
+        from .ppc import propose
+
+        return propose(self, state, "procedure")
+
+    def _unit_propose_domain(self, state: dict[str, Any]) -> dict[str, Any]:
+        from .ppc import propose
+
+        return propose(self, state, "domain")
+
+    def _unit_compose(self, state: dict[str, Any]) -> dict[str, Any]:
+        from .ppc import compose
+
+        return compose(self, state)
 
     def _unit_hypothesize(self, state: dict[str, Any]) -> dict[str, Any]:
         session = DirectorSession(self, state, "hypothesize")
@@ -232,6 +250,9 @@ class Engine(ConceptsEngine):
                                         if e["id"] != experiment["id"]]
         state["experiments"].append(result)
         state["unit"] = "experiment" if state["pending_experiments"] else "interpret"
+        if (self.charter.strategy == "ppc" and not state["pending_experiments"]
+                and result.get("ppc_role") != "compose"):
+            state["unit"] = "compose"
         return {"outcome": f"{result['id']}: {result['verdict']}", "experiment": result["id"]}
 
     def _unit_interpret(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -252,7 +273,8 @@ class Engine(ConceptsEngine):
             self.program.ledger.append("kept", experiment=kept["id"],
                                        candidate=kept["candidate"])
             runners_up = [e for e in eligible if e is not kept and not e.get("stacked_from")]
-            if runners_up and self._stack(state, kept, runners_up):
+            if (self.charter.strategy == "autonomous" and runners_up
+                    and self._stack(state, kept, runners_up)):
                 state["unit"] = "experiment"
                 return {"outcome": f"kept {kept['candidate']}; re-testing "
                                    f"{len(runners_up)} other winner(s) on top of it"}
@@ -1024,6 +1046,7 @@ class Engine(ConceptsEngine):
     def _report(self, state: dict[str, Any]) -> str:
         charter = self.charter
         lines = [f"# Research program: {self.program.name}", "", f"**Goal.** {charter.goal}", ""]
+        lines += [f"**Strategy:** {charter.strategy}", ""]
         stop = state.get("stop_reason") or {}
         lines += [f"**Stopped:** {stop.get('condition', '—')} — {stop.get('detail', '')}"]
         if stop.get("recommendation"):
@@ -1037,6 +1060,13 @@ class Engine(ConceptsEngine):
             lines.append(f"| {e['id']} | {e['hypothesis']} | {e['verdict']}"
                          f"{' (' + e['stopped_early'] + ')' if e.get('stopped_early') else ''}"
                          f" | {'yes' if e.get('kept') else 'no'} | {e.get('measured_effect')} |")
+        for composition in state.get("compositions", []):
+            outcome = composition.get("experiment", "abstained")
+            lines += ["", f"### Composition round {composition['round']}: {outcome}", ""]
+            for decision in composition["decisions"]:
+                runs = ", ".join(decision["run_ids"])
+                lines.append(f"- {decision['action']} `{decision['path']}`: "
+                             f"{decision['reason']} (runs: {runs})")
         lines += ["", "## Hypotheses", ""]
         for h in state["hypotheses"]:
             lines.append(f"- **{h['id']}** ({h.get('status', 'registered')}): {h['claim']} — "
@@ -1317,13 +1347,15 @@ class DirectorSession(FrameTools):
                         and q.kind in ("disambiguate", "confirm")],
         }
 
-    def _runs(self, status: str = "", feature: str = "", limit: int = 10) -> dict[str, Any]:
+    def _runs(self, status: str = "", feature: str = "", limit: int = 10,
+              offset: int = 0) -> dict[str, Any]:
         engine = self.engine
         with Hive() as hive:
             runs = engine._working_runs(hive, self.state["incumbent"], self.state)
             chosen = [r for r in runs
                       if (not status or r["status"] == status)
-                      and (not feature or feature in r["features"])][:max(1, min(limit, 25))]
+                      and (not feature or feature in r["features"])][
+                          max(0, offset):max(0, offset) + max(1, min(limit, 25))]
             detail = []
             for run in chosen:
                 row = hive.get_run(run["run_id"]) or {}
@@ -1425,7 +1457,10 @@ class DirectorSession(FrameTools):
         return {"registered": hypothesis["id"]}
 
     def _design_experiment(self, hypothesis_id: str,
-                           changes: list[dict[str, Any]]) -> dict[str, Any]:
+                           changes: list[dict[str, Any]],
+                           decisions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        if decisions:
+            raise ValueError("decisions are only accepted in the PPC compose phase")
         engine, state = self.engine, self.state
         hypothesis = next((h for h in state["hypotheses"] if h["id"] == hypothesis_id), None)
         if hypothesis is None:

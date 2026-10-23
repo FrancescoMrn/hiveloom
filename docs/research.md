@@ -98,6 +98,71 @@ experiments_per_round: 2
 - fewer than two working cases remain after the holdout;
 - a tool with effects the engine cannot bound is unclassified (see §4).
 
+### Opt-in Propose-Probe-Compose
+
+Set `strategy: ppc` in the charter for two independent proposals followed by one
+composition. `strategy: autonomous` is the default and keeps the existing search
+and `_stack` behavior. `strategy: ppc_select` runs the same two proposal roles
+and selects without a composer, for an ablation under the same total budget.
+
+PPC requires a fixed eval, a nonzero holdout, and `experiments_per_round: 2`.
+Its allowed levers are `system_prompt`, `loop.max_turns`, and
+`loop.on_tool_error`, further restricted by the harness's mutation policy.
+Tools, model, validators and scoring rules cannot be changed by this strategy.
+All hypotheses target `success_rate` increase, so the harness's verifiers must
+check content correctness as well as output shape.
+
+Each round advances through persisted units:
+
+```text
+survey -> propose_procedure -> propose_domain -> experiment A -> experiment B
+       -> compose -> experiment C (optional) -> interpret
+```
+
+The two proposers start from the same incumbent and pre-round hypothesis
+history, in separate model conversations. A focuses on general procedure; B on
+domain interpretation. Neither sees the other's current changes through brief,
+diff or excerpt. Both probes use the working split. Existing sequential harm
+and futility rules may stop a probe early; missing evidence is explicit.
+
+The composer sees paginated case comparisons of base/A/B, including losing
+variants, outputs, verifier feedback, costs and durations. `runs(offset=...,
+limit=4)` pages the comparison; `diff` and `excerpt` open details. Each page
+shows one sample run per role plus repetition and success counts. Unstable
+repetitions and missing runs are labeled separately from shared failures.
+Only working-split runs are accessible through these tools.
+
+To design C, the composer registers a new hypothesis and supplies structured
+`decisions` to `design_experiment`: each contains `path`, `action`
+(`kept`, `revised`, or `dropped`), `reason`, and `run_ids`. Every source and output
+path needs a decision. Referenced runs must belong to this round's base or
+probes on the working split. This checks reference provenance, not whether the
+model's causal explanation is true. Decisions persist in the ledger and report.
+Empty changes with decisions mean abstaining from composition. The engine then
+selects among the unchanged base and eligible measured candidates.
+
+C is measured against the same round base. The engine selects only after C's
+assessment, using the existing guards. PPC disables `_stack` so a round has at
+most two proposals and one composition. A missing/unaffordable probe skips
+composition. Director calls, including the composer, debit exploration;
+candidate runs debit experiments; confirmation stays reserved. `step` resumes
+at each unit boundary and interrupted evals retain the existing resume behavior.
+An interrupted director call can be repeated and incur additional cost, as in
+the default strategy.
+
+This is a dataset-based adaptation inspired by
+[Harness²'s independent INV/DOM proposals](https://github.com/google-research/harness2/blob/main/harness2/core/recursion.py)
+and its [evidence-based composer](https://github.com/google-research/harness2/blob/main/harness2/core/prompts.py).
+It adds no Harness² runtime dependency or copied prompts. Unlike `_stack`, the
+composer can rewrite a solution using behavior from variants that did not win.
+The benefit must be tested against default autonomous search and A/B selection
+at equal total spending limits. The
+[saved-page pilot](../evals/research-ppc/README.md) provides a synthetic extraction
+fixture and comparison protocol. It does not establish real-model improvement,
+statistical equivalence, or a new automatic-adoption policy. Final confirmation
+and promotion continue through the existing path; per-request adaptation is
+outside this prototype.
+
 ## 2. Commands
 
 All take `--json` and use the usual exit codes (`3` for a refused charter).

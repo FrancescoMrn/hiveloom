@@ -36,7 +36,8 @@ system_prompt: |
   5. Change as little as the idea needs, so the result says something about the
      idea. One idea per experiment.
      A change is `{"path": "system_prompt", "value": "<the whole new prompt>"}`:
-     keep the current prompt and add to it, rather than rewriting it.
+     preserve the current prompt unless the task requests PPC composition. In that
+     phase, rewrite instructions when cited probe evidence supports the change.
   6. A refuted or regressed idea stays refuted. Do not re-test it unless you have
      new evidence, and say what the evidence is.
   7. In the interpret phase, the verdicts are final. Record what they teach, what

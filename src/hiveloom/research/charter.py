@@ -195,12 +195,24 @@ class Charter(BaseModel):
     execution: Execution = Field(default_factory=Execution)
     models: Models
     experiments_per_round: int = Field(default=2, ge=1, le=5)
+    strategy: Literal["autonomous", "ppc", "ppc_select"] = "autonomous"
     human: Human = Field(default_factory=Human)
     trust: Trust = Field(default_factory=Trust)
     dataset: DatasetPlan = Field(default_factory=DatasetPlan)
 
     @model_validator(mode="after")
     def _mode(self) -> Charter:
+        if self.strategy != "autonomous":
+            if self.concepts is not None:
+                raise ValueError("PPC requires a fixed eval")
+            if self.holdout == 0:
+                raise ValueError("PPC requires a nonzero holdout for final confirmation")
+            if self.experiments_per_round != 2:
+                raise ValueError("PPC requires experiments_per_round: 2 "
+                                 "(plus at most one composition)")
+            allowed = {"system_prompt", "loop.max_turns", "loop.on_tool_error"}
+            if not set(self.levers) <= allowed:
+                raise ValueError("PPC levers are system_prompt, loop.max_turns, loop.on_tool_error")
         if self.concepts is None:
             if self.eval is None:
                 self.eval = "eval.yaml"

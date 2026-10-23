@@ -49,9 +49,10 @@ def brief(run_context: dict[str, Any] | None = None) -> ToolResult:
 )
 def runs(
     status: str = "", feature: str = "", limit: int = 10,
+    offset: int = 0,
     run_context: dict[str, Any] | None = None,
 ) -> ToolResult:
-    return _call(run_context, "runs", status=status, feature=feature, limit=limit)
+    return _call(run_context, "runs", status=status, feature=feature, limit=limit, offset=offset)
 
 
 @tool(
@@ -101,6 +102,15 @@ class Change(TypedDict):
     value: Any
 
 
+class CompositionDecision(TypedDict):
+    """Evidence for retaining, rewriting or discarding an instruction."""
+
+    path: str
+    action: str
+    reason: str
+    run_ids: list[str]
+
+
 @tool(
     description=(
         "Design one experiment for a registered hypothesis: a list of changes "
@@ -113,10 +123,12 @@ class Change(TypedDict):
 def design_experiment(
     hypothesis_id: str,
     changes: list[Change],
+    decisions: list[CompositionDecision] | None = None,
     run_context: dict[str, Any] | None = None,
 ) -> ToolResult:
     return _call(run_context, "design_experiment", hypothesis_id=hypothesis_id,
-                 changes=[dict(change) for change in changes])
+                 changes=[dict(change) for change in changes],
+                 decisions=[dict(d) for d in decisions] if decisions else None)
 
 
 @tool(
