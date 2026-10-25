@@ -25,7 +25,7 @@ from hiveloom.eval_runner import (
     run_eval,
 )
 from hiveloom.evals import EvalCase, EvalSpec, ScorerOutput
-from hiveloom.execution import RunExecutionEnvelope
+from hiveloom.execution import ModelCallIdentity, RunExecutionEnvelope
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.trace import TraceWriter
 from hiveloom.loop.agent_loop import RunResult
@@ -1203,3 +1203,44 @@ def test_eval_resume_cli_forwards_the_explicit_retry_ceiling(tmp_path: Path, mon
     result = cli.invoke(app, ['eval', 'resume', partial.eval_run_id,
                              '--infrastructure-retries', '21', '--json'])
     assert result.exit_code != 0 and len(received) == 2
+
+
+def test_apply_result_never_keeps_an_earlier_attempts_call_models():
+    call = ModelCallIdentity(
+        turn=1, phase="main", provider="fake", requested_model="m", effective_model="m"
+    )
+    cell = eval_runner.EvalCell(
+        cell_id="c", case_key="k", case_digest="d", repetition=0, call_models=[call]
+    )
+
+    eval_runner._apply_result(cell, RunResult(status="success", run_id="r2"))
+    assert cell.call_models is None
+
+    execution = RunExecutionEnvelope(run_id="r3", status="success", call_models=[call])
+    eval_runner._apply_result(cell, RunResult(status="success", run_id="r3",
+                                              execution=execution))
+    assert cell.call_models == [call]
+
+
+def test_apply_result_without_an_envelope_does_not_keep_an_earlier_model():
+    """A stale effective_model would hide a modelless cell from the report."""
+    from hiveloom.eval_reports import _cell_identities
+
+    cell = eval_runner.EvalCell(
+        cell_id="c", case_key="k", case_digest="d", repetition=0,
+        requested_provider="fake", requested_model="old-model",
+        effective_provider="fake", effective_model="old-model",
+        execution_fingerprint="fp-old",
+    )
+
+    eval_runner._apply_result(cell, RunResult(status="success", run_id="r2"))
+
+    assert cell.status == "ran"
+    assert cell.effective_model is None
+    assert cell.effective_provider is None
+    assert cell.requested_model == ""
+    assert cell.execution_fingerprint == ""
+    _identities, missing = _cell_identities([cell.model_dump(mode="json")])
+    assert [(item["cell_id"], item["reason"]) for item in missing] == [
+        ("c", "no_effective_model")
+    ]

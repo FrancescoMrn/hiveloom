@@ -36,6 +36,7 @@ from hiveloom.egress import EgressFilter
 from hiveloom.egress import policy_name as egress_policy_name
 from hiveloom.events import EventBus
 from hiveloom.execution import (
+    ModelCallIdentity,
     RunExecutionEnvelope,
     StepExecutionRecord,
     VerificationSummary,
@@ -2097,6 +2098,17 @@ class AgentLoop:
                 if call.get("effective_model")
             )
         )
+        call_models = [
+            ModelCallIdentity(
+                turn=call["turn"],
+                phase=call["phase"],
+                provider=call["provider"],
+                requested_model=call["requested_model"],
+                effective_model=call.get("effective_model"),
+            )
+            for call in self._provider_calls
+            if call.get("requested_model")
+        ]
         cost_sources = {call["cost_source"] for call in self._provider_calls}
         if not cost_sources:
             cost_source = "none"
@@ -2142,6 +2154,7 @@ class AgentLoop:
                 None,
             ),
             models_used=models_used,
+            call_models=call_models,
             started_at=self._started_at,
             finished_at=datetime.now(UTC).isoformat(),
             duration_ms=round(duration_seconds * 1000),

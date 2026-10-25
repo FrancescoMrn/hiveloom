@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from hiveloom import __version__, construct, runner
+from hiveloom.execution import RunExecutionEnvelope
 from hiveloom.models.fake import FakeModelProvider, text_response
 
 
@@ -188,3 +189,60 @@ def test_effective_model_is_the_last_call_even_when_a_model_repeats(tmp_path: Pa
     assert result.execution is not None
     assert len(result.provider_calls) == 3
     assert result.execution.effective_model == "model-a"
+
+
+def test_call_models_report_every_call_in_order_including_a_modelless_one(tmp_path: Path):
+    """A -> B -> A stays three entries, and a call with no model stays visible."""
+    harness = _harness(tmp_path, validator=True)
+    construct.set_value(harness, "verify.on_fail.max_retries", 3)
+
+    result = runner.run_harness(
+        harness,
+        "go",
+        provider=FakeModelProvider(
+            [
+                _response("bad", model="model-a"),
+                _response("worse", model="model-b", request_id="req-2"),
+                _response("still bad", model="", request_id="req-3"),
+                _response("good", model="model-a", request_id="req-4"),
+            ]
+        ),
+        literal_input=True,
+        ingest=False,
+    )
+
+    assert result.status == "success"
+    assert result.execution is not None
+    call_models = result.execution.call_models
+    assert call_models is not None
+    assert [call.effective_model for call in call_models] == [
+        "model-a",
+        "model-b",
+        None,
+        "model-a",
+    ]
+    assert [call.turn for call in call_models] == [1, 2, 3, 4]
+    assert {call.requested_model for call in call_models} == {
+        result.execution.resolved_model
+    }
+    # The singular identity is unchanged: the last call that reported a model.
+    assert result.execution.effective_model == "model-a"
+
+    finished = [
+        json.loads(line)
+        for line in Path(result.trace_path).read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "run_finished"
+    ][-1]
+    traced = finished["payload"]["execution"]["call_models"]
+    assert [call["effective_model"] for call in traced] == [
+        "model-a",
+        "model-b",
+        None,
+        "model-a",
+    ]
+
+
+def test_envelope_without_call_models_still_validates():
+    envelope = RunExecutionEnvelope.model_validate({"run_id": "r", "status": "success"})
+
+    assert envelope.call_models is None

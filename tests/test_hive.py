@@ -421,3 +421,42 @@ def test_pre_identity_traces_stay_keyed_by_name(tmp_path: Path):
         assert hive.summary("triage")["total_runs"] == 1
         # And it does not leak into an id-keyed namesake.
         assert hive.summary("hl-aaa")["total_runs"] == 0
+
+
+def test_migration_adds_call_models_to_an_old_eval_cells_table(tmp_path: Path):
+    """A Hive created before per-call identity gains the column, and its old
+    rows read back as unreported rather than as having made no calls."""
+    db = tmp_path / "hive.db"
+    with Hive(db):
+        pass
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE eval_cells DROP COLUMN call_models_json")
+    conn.execute(
+        "INSERT INTO eval_runs (eval_run_id, status, eval_id, harness_key, "
+        "harness_behavior_hash, requested_provider, requested_model, repetitions, "
+        "manifest_path, created_at, updated_at) "
+        "VALUES ('eval_old', 'completed', 'e', 'h', 'b', 'p', 'm', 1, 'x', 't', 't')"
+    )
+    conn.execute(
+        "INSERT INTO eval_cells (eval_run_id, cell_id, case_key, repetition, status, "
+        "run_id, run_status, scorer_status, requested_provider, requested_model, "
+        "effective_provider, effective_model, execution_fingerprint, duration_ms, "
+        "cost_usd, cost_source, verification_attempts, first_pass_valid, "
+        "recovery_attempted, recovered, verification_final_status, trace_disabled, "
+        "finished_at) VALUES ('eval_old', 'c', 'k', 0, 'completed', 'r', 'success', "
+        "'completed', 'p', 'm', 'p', 'm', 'fp', 1, 0.0, 'none', 1, 1, 0, 0, 'passed', "
+        "0, 't')"
+    )
+    conn.commit()
+    conn.close()
+
+    with Hive(db) as hive:
+        columns = {
+            row["name"] for row in hive._conn.execute("PRAGMA table_info(eval_cells)")
+        }
+        snapshot = hive.get_eval_snapshot("eval_old")
+
+    assert "call_models_json" in columns
+    assert snapshot is not None
+    assert snapshot["cells"][0]["call_models"] is None
+    assert "call_models_json" not in snapshot["cells"][0]
