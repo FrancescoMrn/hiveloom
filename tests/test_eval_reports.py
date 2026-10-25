@@ -11,8 +11,8 @@ from typer.testing import CliRunner
 
 from hiveloom import catalog, construct, ext
 from hiveloom.cli import app
-from hiveloom.eval_reports import build_eval_report, compare_evals
-from hiveloom.eval_runner import run_eval
+from hiveloom.eval_reports import build_eval_report, compare_evals, render_report_markdown
+from hiveloom.eval_runner import load_eval_manifest, manifest_path, run_eval
 from hiveloom.evals import EvalCase, EvalSpec, ScorerOutput
 from hiveloom.execution import RunExecutionEnvelope, VerificationSummary
 from hiveloom.logging.hive import Hive
@@ -98,7 +98,9 @@ def _files(tmp_path: Path, case_count: int = 2) -> tuple[Path, ModelProbeResult]
     return eval_file, probe
 
 
-def _executor(offset: float, cost_source: str):
+def _executor(offset: float, cost_source: str, identity=None):
+    """``identity(cell, case)`` may return envelope fields to override."""
+
     def execute(*, manifest, cell, case, spec):
         del spec
         harness = load_spec(manifest.harness_path)
@@ -130,6 +132,10 @@ def _executor(offset: float, cost_source: str):
             cost_source=cost_source,
             verification=verification,
         )
+        if identity is not None:
+            execution = RunExecutionEnvelope.model_validate(
+                {**execution.model_dump(mode="json"), **identity(cell, case)}
+            )
         writer = TraceWriter(
             manifest.trace_root,
             cell.run_id,
@@ -285,3 +291,195 @@ def test_eval_manifest_index_rolls_back_an_invalid_replacement(tmp_path: Path):
     assert after is not None
     assert after["eval"]["status"] == "completed"
     assert after["cells"] == before["cells"]
+
+
+def _call(model: str | None, turn: int = 1) -> dict:
+    return {
+        "turn": turn,
+        "phase": "main",
+        "provider": "fake",
+        "requested_model": "requested",
+        "effective_model": model,
+    }
+
+
+def test_report_carries_per_call_identity_end_to_end(tmp_path: Path):
+    eval_file, probe = _files(tmp_path, case_count=2)
+
+    def identity(cell, case):
+        if case.expected == 0:
+            return {
+                "effective_model": "model-a",
+                "call_models": [_call("model-a"), _call("model-b", 2), _call("model-a", 3)],
+            }
+        return {"effective_model": "model-a", "call_models": [_call("model-a")]}
+
+    manifest = run_eval(
+        eval_file,
+        repetitions=1,
+        execute_cell=_executor(0.2, "billed", identity),
+        model_probe=probe,
+        eval_run_id="eval_identity_carried",
+    )
+    for cell in manifest.cells:
+        Path(cell.trace_path).unlink()
+
+    # The field survives the manifest round-trip.
+    reloaded = load_eval_manifest(manifest.eval_run_id)
+    assert sorted(
+        [call.effective_model for call in cell.call_models or []]
+        for cell in reloaded.cells
+    ) == [["model-a"], ["model-a", "model-b", "model-a"]]
+
+    report = build_eval_report(manifest.eval_run_id)
+
+    assert report["schema_version"] == 1
+    assert report["effective_models"] == ["model-a"]
+    assert report["cells"]["identity_missing_count"] == 0
+    assert report["cells"]["identity_mixed_count"] == 1
+    assert report["cell_identity_missing"] == []
+    by_count = {item["call_count"]: item for item in report["cell_identities"]}
+    assert by_count[3]["call_effective_models"] == ["model-a", "model-b", "model-a"]
+    assert by_count[1]["call_effective_models"] == ["model-a"]
+    assert all(not item["identity_missing"] for item in report["cell_identities"])
+    assert "Warning" not in render_report_markdown(report)
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"effective_model": "model-a", "call_models": []}, "no_model_calls"),
+        (
+            {"effective_model": "model-a", "call_models": [_call("model-a"), _call(None, 2)]},
+            "call_without_effective_model",
+        ),
+        ({"effective_model": None, "call_models": None}, "no_effective_model"),
+        ({"effective_model": None}, "no_effective_model"),
+    ],
+)
+def test_report_flags_each_kind_of_missing_identity(
+    tmp_path: Path, fields: dict, reason: str
+):
+    eval_file, probe = _files(tmp_path, case_count=1)
+    manifest = run_eval(
+        eval_file,
+        repetitions=1,
+        execute_cell=_executor(0.2, "billed", lambda _cell, _case: fields),
+        model_probe=probe,
+        eval_run_id=f"eval_identity_{reason}",
+    )
+
+    report = build_eval_report(manifest.eval_run_id)
+
+    assert report["cells"]["identity_missing_count"] == 1
+    [flagged] = report["cell_identity_missing"]
+    cell = manifest.cells[0]
+    assert flagged == {
+        "cell_id": cell.cell_id,
+        "case_key": cell.case_key,
+        "repetition": cell.repetition,
+        "run_id": cell.run_id,
+        "run_status": cell.run_status,
+        "reason": reason,
+    }
+    assert report["cell_identities"][0]["identity_missing"] is True
+    assert "Warning: 1 cell(s) ran without a reported model identity" in (
+        render_report_markdown(report)
+    )
+
+
+def test_manifest_without_call_models_reads_as_unreported(tmp_path: Path):
+    """An executor that reports no per-call identity writes no field at all, so
+    the manifest stays readable by releases that predate it."""
+    eval_file, probe = _files(tmp_path, case_count=1)
+    manifest = run_eval(
+        eval_file,
+        repetitions=1,
+        execute_cell=_executor(0.2, "billed"),
+        model_probe=probe,
+        eval_run_id="eval_identity_unreported",
+    )
+
+    raw = json.loads(manifest_path(manifest.eval_run_id).read_text(encoding="utf-8"))
+    assert all("call_models" not in cell for cell in raw["cells"])
+    assert load_eval_manifest(manifest.eval_run_id).cells[0].call_models is None
+
+    report = build_eval_report(manifest.eval_run_id)
+    assert report["cells"]["identity_missing_count"] == 0
+    assert report["cell_identities"][0]["call_count"] is None
+    assert report["cell_identities"][0]["call_effective_models"] is None
+
+
+def test_pending_and_infrastructure_error_cells_are_not_identity_flagged(tmp_path: Path):
+    eval_file, probe = _files(tmp_path, case_count=2)
+    pending = run_eval(
+        eval_file,
+        repetitions=1,
+        execute_cell=_executor(0.2, "billed"),
+        model_probe=probe,
+        eval_run_id="eval_identity_pending",
+        max_cells=1,
+    )
+
+    def broken(**_kwargs):
+        raise RuntimeError("provider unreachable")
+
+    errored = run_eval(
+        eval_file,
+        repetitions=1,
+        execute_cell=broken,
+        model_probe=probe,
+        eval_run_id="eval_identity_infra",
+    )
+
+    pending_report = build_eval_report(pending.eval_run_id)
+    assert pending_report["cells"]["missing_count"] == 1
+    assert pending_report["cells"]["identity_missing_count"] == 0
+    errored_report = build_eval_report(errored.eval_run_id)
+    assert errored_report["cells"]["missing_count"] == 2
+    assert errored_report["cells"]["identity_missing_count"] == 0
+    assert errored_report["cell_identity_missing"] == []
+
+
+def _collect(report: dict, expected_models: set[str]) -> None:
+    """A collector built only on the additive report fields."""
+    if report["cells"]["identity_missing_count"]:
+        raise ValueError("eval has cells with no model identity")
+    for item in report["cell_identities"]:
+        served = set(item["call_effective_models"] or []) | {item["effective_model"]}
+        unexpected = {model for model in served if model} - expected_models
+        if unexpected:
+            raise ValueError(f"eval served an unexpected model: {sorted(unexpected)}")
+
+
+def test_collector_refuses_modelless_and_unexpected_model_cells(tmp_path: Path):
+    eval_file, probe = _files(tmp_path, case_count=1)
+
+    def run(eval_run_id: str, fields: dict) -> dict:
+        run_eval(
+            eval_file,
+            repetitions=1,
+            execute_cell=_executor(0.2, "billed", lambda _cell, _case: fields),
+            model_probe=probe,
+            eval_run_id=eval_run_id,
+        )
+        return build_eval_report(eval_run_id)
+
+    clean = run("eval_collect_clean", {"call_models": [_call("model-a")],
+                                       "effective_model": "model-a"})
+    modelless = run("eval_collect_modelless", {"call_models": [_call(None)],
+                                               "effective_model": None})
+    unexpected = run(
+        "eval_collect_unexpected",
+        {"call_models": [_call("model-b"), _call("model-a", 2)], "effective_model": "model-a"},
+    )
+
+    _collect(clean, {"model-a"})
+    # The pre-existing aggregate drops the modelless cell and hides the
+    # substituted call; only the per-cell fields expose either.
+    assert modelless["effective_models"] == []
+    assert unexpected["effective_models"] == ["model-a"]
+    with pytest.raises(ValueError, match="no model identity"):
+        _collect(modelless, {"model-a"})
+    with pytest.raises(ValueError, match="unexpected model"):
+        _collect(unexpected, {"model-a"})

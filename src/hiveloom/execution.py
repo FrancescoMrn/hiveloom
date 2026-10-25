@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from hiveloom.models.provider import Usage
 
@@ -35,6 +35,18 @@ class StepExecutionRecord(BaseModel):
     violations: list[str] = Field(default_factory=list, max_length=50)
 
 
+class ModelCallIdentity(BaseModel):
+    """Which model served one provider call, as the provider reported it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn: int
+    phase: str
+    provider: str
+    requested_model: str
+    effective_model: str | None = None
+
+
 class RunExecutionEnvelope(BaseModel):
     """What was requested, what executed, and what the run consumed."""
 
@@ -53,6 +65,10 @@ class RunExecutionEnvelope(BaseModel):
     effective_provider: str | None = None
     effective_model: str | None = None
     models_used: list[dict[str, Any]] = Field(default_factory=list)
+    # One entry per provider call, in order and not deduplicated, so a call
+    # that reported no model stays visible. None means not reported (a trace
+    # from an older release or a custom executor); [] means no calls were made.
+    call_models: list[ModelCallIdentity] | None = None
     started_at: str = ""
     finished_at: str = ""
     duration_ms: int = 0
