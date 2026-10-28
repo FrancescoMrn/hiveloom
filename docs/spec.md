@@ -37,7 +37,7 @@ hiveloom explain <path>       # field docs, e.g. `hiveloom explain context.compa
 | `egress` | What may leave in a model request | `mode` (`redact`\|`block`\|`off`), `detect_credentials`, `patterns`; **frozen from evolution** |
 | `logging` | Journal policy | `trace_dir` (in-folder by default), `level` (`journal`/`summary`), `snapshot_files`, `redact.{keys,paths,patterns}` (**frozen**; legacy regex lists still load), optional `retention.{days,max_runs,max_bytes}` |
 | `delegation` | Whether this harness may hand a task to a peer harness | `enabled` (off by default), `directory` (`local`), `when` (`on_start`/`on_verify_fail`/`model_choice`), `min_peer_success_rate`, `min_peer_runs`, `max_depth`, `budget_share`, `exclude`; tunable by evolution |
-| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger), `reflect` (post-run lesson drafting), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all four nested policies are frozen |
+| `evolution` | What the evolver may change | `enabled`, `mutable`, `frozen`, `auto_propose` (draft trigger; optional `friction_trigger.{category,component,min_events,cooldown_hours}` drafts on matching friction even after a successful run), `reflect` (post-run lesson drafting), `trace_excerpts` (bounded incident evidence), `objectives` (metric goals); all four nested policies are frozen |
 
 ## Builtins
 

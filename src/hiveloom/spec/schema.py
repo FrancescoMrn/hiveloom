@@ -1523,8 +1523,38 @@ def _default_frozen() -> list[str]:
 MIN_COOLDOWN_HOURS = 1 / 60
 
 
+class FrictionTriggerConfig(BaseModel):
+    """Draft when indexed friction crosses a threshold, even after a successful run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str | None = Field(
+        default=None,
+        description="Friction category to count (e.g. `tool_error`, `retry`); unset counts any.",
+    )
+    component: str | None = Field(
+        default=None,
+        description="Friction component to count (e.g. a tool name); unset counts any.",
+    )
+    min_events: int = Field(
+        default=5, ge=1,
+        description=(
+            "Matching friction events of the current harness version (since the last "
+            "auto-proposal) required before drafting."
+        ),
+    )
+    cooldown_hours: float | None = Field(
+        default=None, ge=MIN_COOLDOWN_HOURS,
+        description=(
+            "Minimum gap for friction-triggered drafts; unset inherits the top-level "
+            "`cooldown_hours`, which is also a floor: this can only lengthen the gap."
+        ),
+    )
+
+
 class AutoProposeConfig(BaseModel):
-    """Opt-in: draft (never apply) an evolution proposal after a failing run."""
+    """Opt-in: draft (never apply) an evolution proposal after a failing run,
+    or after any run once ``friction_trigger`` matches enough friction."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1551,6 +1581,14 @@ class AutoProposeConfig(BaseModel):
     model: str | None = Field(
         default=None,
         description="Strong-model override for auto-drafted proposals; else the CLI/env default.",
+    )
+    friction_trigger: FrictionTriggerConfig | None = Field(
+        default=None,
+        description=(
+            "Optional second gate: draft when a friction pattern crosses a threshold, "
+            "even on a successful or recovered run. Shares the auto-proposal cooldown. "
+            "Disabled when absent."
+        ),
     )
 
 

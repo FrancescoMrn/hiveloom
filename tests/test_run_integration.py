@@ -306,22 +306,117 @@ def test_auto_propose_default_disabled_makes_no_hive_proposals_query(
     # evolution.auto_propose.enabled defaults to False — left untouched on purpose.
 
     calls: list[str] = []
-    original = Hive.failure_count
 
-    def spy(self, *args, **kwargs):
-        calls.append("failure_count")
-        return original(self, *args, **kwargs)
+    def spy_on(method: str) -> None:
+        original = getattr(Hive, method)
 
-    monkeypatch.setattr(Hive, "failure_count", spy)
+        def spy(self, *args, **kwargs):
+            calls.append(method)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Hive, method, spy)
+
+    spy_on("failure_count")
+    spy_on("friction_summary")
 
     result = runner.run_harness(
         target, "x", provider=_failing_provider(), strong_model=FakeStrongModel([])
     )
 
     assert result.status == "guardrail_halt"
-    assert calls == []  # disabled short-circuits before any Hive proposals query
+    assert calls == []  # disabled short-circuits before either gate queries the Hive
     with Hive() as hive:
         assert hive.list_proposals(harness_name="plain-demo") == []
+
+
+def _recovering_provider() -> FakeModelProvider:
+    # An unknown tool call is a recovered tool_error once the run then succeeds.
+    return FakeModelProvider(
+        [tool_response("no_such_tool", {}), text_response("done")]
+    )
+
+
+def _friction_harness(tmp_path: Path, *, category: str | None = None) -> Path:
+    harness = _auto_harness(tmp_path, min_failures=1, cooldown_hours=24.0)
+    construct.set_value(harness, "evolution.auto_propose.friction_trigger.min_events", 1)
+    if category is not None:
+        construct.set_value(
+            harness, "evolution.auto_propose.friction_trigger.category", category
+        )
+    return harness
+
+
+def test_auto_propose_friction_trigger_drafts_on_a_successful_run(tmp_path: Path):
+    harness = _friction_harness(tmp_path, category="tool_error")
+    model = FakeStrongModel([_AUTO_PROPOSAL_PAYLOAD])
+
+    result = runner.run_harness(harness, "x", provider=_recovering_provider(), strong_model=model)
+
+    assert result.status == "success"
+    identity = load_spec(harness).identity
+    with Hive() as hive:
+        assert hive.friction_summary(identity, category="tool_error", recovered=True)[
+            "events"
+        ] >= 1
+        proposals = hive.list_proposals(harness_name=identity)
+    assert len(proposals) == 1
+    assert proposals[0]["status"] == "pending"
+    assert proposals[0]["trigger"] == "auto"
+    assert len(model.prompts) == 1
+
+
+def test_auto_propose_friction_trigger_shares_the_failure_cooldown(tmp_path: Path):
+    harness = _friction_harness(tmp_path)  # any category
+    payload_two = json.dumps(
+        {
+            "rationale": "tighten more",
+            "target": {"signal": "success_rate", "expect": "increase"},
+            "yaml_changes": [{"path": "loop.max_turns", "value": 12}],
+        }
+    )
+    model = FakeStrongModel([_AUTO_PROPOSAL_PAYLOAD, payload_two])
+    identity = load_spec(harness).identity
+
+    runner.run_harness(harness, "x", provider=_recovering_provider(), strong_model=model)
+    with Hive() as hive:
+        first = hive.list_proposals(harness_name=identity)
+    assert len(first) == 1 and len(model.prompts) == 1
+
+    # A failing run meeting min_failures is held by the shared cooldown.
+    runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+    with Hive() as hive:
+        assert len(hive.list_proposals(harness_name=identity)) == 1
+        hive.update_proposal(
+            first[0]["id"], created_at=(datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        )
+    assert len(model.prompts) == 1
+
+    # Once the cooldown has elapsed, the failure path drafts again.
+    runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+    with Hive() as hive:
+        after = hive.list_proposals(harness_name=identity)
+    assert len(after) == 2
+    assert {p["trigger"] for p in after} == {"auto"}
+    assert len(model.prompts) == 2
+
+
+def test_auto_propose_friction_trigger_ignores_other_categories(tmp_path: Path):
+    harness = _friction_harness(tmp_path, category="retry")
+    model = FakeStrongModel([_AUTO_PROPOSAL_PAYLOAD])
+    identity = load_spec(harness).identity
+
+    result = runner.run_harness(harness, "x", provider=_recovering_provider(), strong_model=model)
+
+    assert result.status == "success"
+    with Hive() as hive:
+        assert hive.list_proposals(harness_name=identity) == []
+    assert model.prompts == []
+
+    runner.run_harness(harness, "x", provider=_failing_provider(), strong_model=model)
+    with Hive() as hive:
+        proposals = hive.list_proposals(harness_name=identity)
+    assert len(proposals) == 1
+    assert proposals[0]["trigger"] == "auto"
 
 
 def test_auto_propose_raising_strong_model_does_not_fail_the_run(

@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation gates, sealed confirmation and review-queue promotion still apply.
   Includes a synthetic saved-page extraction pilot; real-model benefit has
   not been measured.
+- Optional `evolution.auto_propose.friction_trigger` (`category`, `component`,
+  `min_events`, `cooldown_hours`): auto-draft a proposal when matching friction
+  of the current version crosses a threshold, even after a successful or
+  recovered run. It shares the `trigger=auto` cooldown with the failure gate,
+  and the top-level `cooldown_hours` is its floor. Disabled when absent.
 ### Changed
 
 - Compaction's summarization calls no longer spend `loop.max_turns`: `turns`

@@ -584,7 +584,10 @@ def _maybe_auto_propose(
         auto = spec.evolution.auto_propose
         if not auto.enabled:
             return
-        if result.status == "success":
+        friction = auto.friction_trigger
+        failed = result.status != "success"
+        # Only the friction gate can fire on a successful run.
+        if not failed and friction is None:
             return
         # A run inside an eval batch is a measurement in progress: drafting from
         # it would spend a strong-model call on partial evidence mid-batch. The
@@ -600,15 +603,38 @@ def _maybe_auto_propose(
         with Hive(hive_path) as hive:
             # One version for both: the gate must count what the report carries.
             version = spec_version_hash(spec, base)
+            # Both gates share one cooldown: the last trigger=auto proposal.
             since = last_auto_proposal_at(hive, spec.identity)
-            if hive.failure_count(spec.identity, since=since, version=version) < auto.min_failures:
+            elapsed_hours = (
+                None
+                if since is None
+                else (datetime.now(UTC) - datetime.fromisoformat(since)).total_seconds() / 3600
+            )
+
+            def cooled(hours: float) -> bool:
+                return elapsed_hours is None or elapsed_hours >= hours
+
+            fire = (
+                failed
+                and hive.failure_count(spec.identity, since=since, version=version)
+                >= auto.min_failures
+                and cooled(auto.cooldown_hours)
+            )
+            if not fire and friction is not None:
+                # The top-level cooldown is a floor: the trigger can only lengthen it.
+                cooldown = max(friction.cooldown_hours or 0.0, auto.cooldown_hours)
+                fire = cooled(cooldown) and (
+                    hive.friction_summary(
+                        spec.identity,
+                        category=friction.category,
+                        component=friction.component,
+                        since=since,
+                        version=version,
+                    )["events"]
+                    >= friction.min_events
+                )
+            if not fire:
                 return
-            if since is not None:
-                elapsed_hours = (
-                    datetime.now(UTC) - datetime.fromisoformat(since)
-                ).total_seconds() / 3600
-                if elapsed_hours < auto.cooldown_hours:
-                    return
 
             model = strong_model or build_strong_model(auto.model, base)
             report = analyze(

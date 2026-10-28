@@ -309,6 +309,11 @@ evolution:
     min_failures: 5       # non-success runs of THIS version, since the last auto-proposal
     cooldown_hours: 24.0  # minimum gap between auto-drafted proposals
     model: null            # strong-model override; else the CLI/env default
+    friction_trigger:      # optional; absent = disabled
+      category: tool_error # unset counts any category
+      component: null      # unset counts any component (e.g. a tool name)
+      min_events: 5        # matching friction events of THIS version, since the last auto-proposal
+      cooldown_hours: null # unset inherits cooldown_hours, which is also its floor
 ```
 
 This is a synchronous check at the tail of every completed `hiveloom run` —
@@ -329,6 +334,17 @@ there's always a real floor on how often a harness can auto-draft. Each
 qualifying failing run costs a strong-model call unless the dedup pre-check
 catches it, so this is partly a spend guard; `min_failures` is the
 complementary throttle if you want a different shape of restraint.
+
+`friction_trigger` is a second gate for problems that do not end in failure:
+a tool error the model recovered from, a verifier retry that eventually
+passed. When set, the check also runs after a **successful** run and drafts
+once the indexed friction matching `category`/`component` (the same events
+`hiveloom friction` lists, scoped to the current version and to runs since the
+last auto-proposal) reaches `min_events`. Both gates share one cooldown — the
+time since the last `trigger="auto"` proposal — so a friction draft holds back
+a failure draft and vice versa. The trigger's `cooldown_hours` can only
+lengthen that gap: the top-level `cooldown_hours` is always its floor. The
+draft, the dedup, and the "only ever drafts" guarantee are unchanged.
 
 If you'd rather not pay this tail latency inside every run, leave
 `auto_propose` off and instead schedule `hiveloom evolve <dir> --propose`
