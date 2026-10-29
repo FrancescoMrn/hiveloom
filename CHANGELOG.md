@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `run` and HTTP `/run` result payloads now carry a top-level `cost_source`
+  (`billed` / `estimated` / `mixed` / `none`), so a user can tell at a glance
+  whether a run's `cost_usd` was charged by a real provider or only estimated
+  (e.g. local models). The value is read from the run's execution envelope, with
+  `none` as the default for a result that predates the envelope. Eval reports
+  already grouped costs by source, so no eval change was needed.
 - Opt-in `ppc` research strategy: independent procedure/domain proposals,
   working-case probe comparisons, and one evidence-cited composition before
   selection. `ppc_select` provides the no-composer ablation. Existing budget,
