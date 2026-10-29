@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from hiveloom.errors import HiveloomError
+from hiveloom.package import is_sensitive_path
 
 CONFIG_RELPATH = Path(".hiveloom") / "cloud.json"
 
@@ -162,6 +163,18 @@ def _extract_zip(harness_dir: Path, blob: bytes) -> int:
             target = (harness_dir / rel).resolve()
             if not target.is_relative_to(resolved_root):
                 raise CloudError(f"refusing zip entry escaping the harness dir: {info.filename}")
+            # The module promises pull never touches .hiveloom/ or .env*; enforce
+            # it here rather than trust the (open-protocol) server excluded them.
+            # Reuse the one canonical "never leaves the harness" predicate that
+            # packaging itself uses to build the zip, so the two sides agree —
+            # .env* except the shipped .env.example/.env.template templates, and
+            # .hiveloom/** (case-insensitive). Judging both the logical entry and
+            # the resolved one means neither a symlink nor a "sub/../.env" entry can
+            # route around the check.
+            if is_sensitive_path(rel) or is_sensitive_path(target.relative_to(resolved_root)):
+                raise CloudError(
+                    f"refusing zip entry for a protected local path: {info.filename}"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(info))
             written += 1
