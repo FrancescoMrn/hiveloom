@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +73,47 @@ def test_clean_first_pass_has_complete_execution_receipt(tmp_path: Path):
     assert events[0]["payload"]["runtime_config"] == result.runtime_config
     assert events[-1]["payload"]["execution"] == execution.model_dump(mode="json")
     assert runner.run_result_payload(result)["execution"] == execution.model_dump(mode="json")
+
+
+def test_cost_source_is_surfaced_in_run_payload(tmp_path: Path):
+    """The run-result payload carries cost_source at top level, so a user can
+    tell a billed cost from an estimated one without drilling into ``execution``."""
+    harness = _harness(tmp_path, validator=True)
+    result = runner.run_harness(
+        harness,
+        "go",
+        provider=FakeModelProvider([_response("good")]),
+        literal_input=True,
+        ingest=False,
+    )
+
+    payload = runner.run_result_payload(result)
+    assert payload["cost_source"] == "estimated"
+    assert payload["cost_source"] == result.execution.cost_source
+    assert isinstance(payload["cost_source"], str)
+    # The legacy result shape (no execution envelope) still yields a value.
+    assert runner.run_result_payload(
+        result.model_copy(update={"execution": None})
+    )["cost_source"] == "none"
+
+
+def test_cost_source_defaults_when_the_result_has_no_execution_attribute():
+    """A 1.0-era result shape predates the execution envelope entirely, so the
+    payload must not require the attribute to exist — it must default to "none"
+    rather than raising."""
+    legacy = SimpleNamespace(
+        status="success",
+        output="",
+        turns=0,
+        cost_usd=0.0,
+        duration_seconds=0.0,
+        run_id="legacy",
+        trace_path="",
+        reason="",
+        artifacts=[],
+    )
+    assert runner.run_result_payload(legacy)["cost_source"] == "none"
+    assert runner.run_result_payload(legacy)["execution"] is None
 
 
 def test_recovered_output_is_not_reported_as_clean(tmp_path: Path):
