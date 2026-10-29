@@ -2285,6 +2285,12 @@ def stats(
     include_friction: bool = typer.Option(
         False, "--include-friction", help="Include indexed retries and recovered failures."
     ),
+    friction_by_component: bool = typer.Option(
+        False,
+        "--friction-by-component",
+        help="Include per-component friction (which specific mechanism, "
+        "e.g. tool_error on http_get).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
     """Show Hive stats for a harness: success rate, cost, and turns per version.
@@ -2311,11 +2317,18 @@ def stats(
             recent = hive.recent_failures(key, 5)
             outcomes = hive.outcome_summary(key)
             friction = hive.friction_summary(key) if include_friction else None
+            components = (
+                hive.friction_by_component(key)
+                if include_friction or friction_by_component
+                else None
+            )
 
         if json_output:
             payload = {"ok": True, **summary, "recent_failures": recent, "outcomes": outcomes}
             if friction is not None:
                 payload["friction"] = friction
+            if components is not None:
+                payload["friction_by_component"] = components
             _emit_json(payload)
             return
 
@@ -2408,6 +2421,24 @@ def stats(
                         str(row["unrecovered"]),
                     )
                 _console.print(table)
+        if components:
+            table = Table(title="friction by component")
+            table.add_column("component", style="cyan")
+            table.add_column("category", style="yellow")
+            table.add_column("events", justify="right")
+            table.add_column("runs", justify="right")
+            table.add_column("failed runs", justify="right", style="red")
+            table.add_column("recovered", justify="right")
+            for row in components:
+                table.add_row(
+                    str(row["component"]),
+                    row["category"],
+                    str(row["events"]),
+                    str(row["runs"]),
+                    str(row["failed_runs"]),
+                    str(row["recovered"] or 0),
+                )
+            _console.print(table)
         sigs = summary["failure_signatures"]
         if sigs["verdicts"]:
             _console.print("[yellow]top failure verdicts:[/yellow]")

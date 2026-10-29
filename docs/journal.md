@@ -461,6 +461,7 @@ not disappear behind the final status:
 hiveloom friction list ./h --category output_validation --recovered true --json
 hiveloom friction list ./h --model qwen3.5-9b --since 2026-08-01T00:00:00Z --json
 hiveloom stats ./h --include-friction --json
+hiveloom stats ./h --include-friction --friction-by-component --json
 ```
 
 Each record names its run, journal sequence, category, phase, attempt,
