@@ -483,3 +483,74 @@ def test_collector_refuses_modelless_and_unexpected_model_cells(tmp_path: Path):
         _collect(modelless, {"model-a"})
     with pytest.raises(ValueError, match="unexpected model"):
         _collect(unexpected, {"model-a"})
+
+
+def test_integrated_no_effective_model_flows_through_snapshot(tmp_path: Path):
+    """A deliberately modelless cell surfaces through the full path.
+
+    ``run_eval`` -> the persisted ``call_models_json`` hive column ->
+    ``get_eval_snapshot`` (which decodes the column back into ``call_models``)
+    -> ``build_eval_report`` -> ``_cell_identities`` produces both a
+    ``cell_identity_missing`` entry with ``reason = "no_effective_model"``
+    and a matching ``cell_identities`` entry flagged as missing.
+    """
+    eval_file, probe = _files(tmp_path, case_count=1)
+    manifest = run_eval(
+        eval_file,
+        repetitions=1,
+        execute_cell=_executor(0.2, "billed", lambda _cell, _case: {"effective_model": None}),
+        model_probe=probe,
+        eval_run_id="eval_no_effective",  # Deliberately omit call_models too.
+    )
+    cell = manifest.cells[0]
+
+    # The manifest round-trip must omit ``call_models`` for a modelless cell, so
+    # the hive stores SQL NULL in ``call_models_json`` and ``get_eval_snapshot``
+    # decodes that NULL back to Python ``None`` rather than a ``[]``. Asserting
+    # the raw column proves the persistence choice, not only the decoded result.
+    with Hive() as hive:
+        snapshot = hive.get_eval_snapshot(manifest.eval_run_id)
+        raw = hive._conn.execute(
+            "SELECT call_models_json FROM eval_cells WHERE eval_run_id=? "
+            "AND cell_id=?",
+            (manifest.eval_run_id, cell.cell_id),
+        ).fetchone()
+    assert raw is not None
+    assert raw[0] is None  # SQL NULL, not the JSON text ``"null"``.
+    assert snapshot is not None
+    [cell_snapshot] = snapshot["cells"]
+    assert cell_snapshot["call_models"] is None
+    assert cell_snapshot["effective_model"] is None
+
+    report = build_eval_report(manifest.eval_run_id)
+
+    # The report surfaces the missing identity in the aggregate counter, the
+    # per-cell ``cell_identity_missing`` list with the exact reason, and the
+    # corresponding ``cell_identities`` entry flagged as missing.
+    assert report["cells"]["identity_missing_count"] == 1
+    assert report["cells"]["identity_mixed_count"] == 0
+    assert report["effective_models"] == []  # The model isn't silently aggregated away.
+
+    [flagged] = report["cell_identity_missing"]
+    assert flagged == {
+        "cell_id": cell.cell_id,
+        "case_key": cell.case_key,
+        "repetition": cell.repetition,
+        "run_id": cell.run_id,
+        "run_status": cell.run_status,
+        "reason": "no_effective_model",
+    }
+
+    [identity] = report["cell_identities"]
+    assert identity["cell_id"] == flagged["cell_id"]
+    assert identity["case_key"] == flagged["case_key"]
+    assert identity["repetition"] == flagged["repetition"]
+    assert identity["effective_model"] is None
+    assert identity["call_effective_models"] is None  # call_models was not reported.
+    assert identity["call_count"] is None
+    assert identity["identity_missing"] is True
+
+    # The Markdown report carries the warning so a reader of the rendered
+    # output sees the same missing-identity signal as the JSON report.
+    markdown = render_report_markdown(report)
+    assert "Warning: 1 cell(s) ran without a reported model identity" in markdown
