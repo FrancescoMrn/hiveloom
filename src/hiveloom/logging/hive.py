@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS eval_cells (
     requested_model TEXT NOT NULL,
     effective_provider TEXT,
     effective_model TEXT,
+    call_models_json TEXT,
     execution_fingerprint TEXT NOT NULL,
     duration_ms INTEGER NOT NULL,
     cost_usd REAL NOT NULL,
@@ -508,6 +509,16 @@ class Hive:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column" not in str(exc):
                         raise
+        # Per-call model identity of an eval cell; NULL when it was not reported.
+        cell_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(eval_cells)")
+        }
+        if "call_models_json" not in cell_columns:
+            try:
+                self._conn.execute("ALTER TABLE eval_cells ADD COLUMN call_models_json TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc):
+                    raise
 
     def _alter_runs(self, clause: str, *, benign_error: str) -> None:
         """Apply one migration step, tolerating a concurrent connection winning it.
@@ -578,6 +589,7 @@ class Hive:
         for cell in manifest.get("cells") or []:
             verification = cell.get("verification") or {}
             first_pass = verification.get("first_pass_valid")
+            call_models = cell.get("call_models")
             rows.append(
                 (
                     manifest["eval_run_id"],
@@ -592,6 +604,7 @@ class Hive:
                     cell.get("requested_model", ""),
                     cell.get("effective_provider"),
                     cell.get("effective_model"),
+                    None if call_models is None else json.dumps(call_models),
                     cell.get("execution_fingerprint", ""),
                     int(cell.get("duration_ms", 0)),
                     float(cell.get("cost_usd", 0.0)),
@@ -608,11 +621,11 @@ class Hive:
         self._conn.executemany(
             "INSERT INTO eval_cells (eval_run_id, cell_id, case_key, repetition, status, "
             "run_id, run_status, scorer_status, requested_provider, requested_model, "
-            "effective_provider, effective_model, execution_fingerprint, duration_ms, "
-            "cost_usd, cost_source, verification_attempts, first_pass_valid, "
-            "recovery_attempted, recovered, verification_final_status, trace_disabled, "
-            "finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?)",
+            "effective_provider, effective_model, call_models_json, "
+            "execution_fingerprint, duration_ms, cost_usd, cost_source, "
+            "verification_attempts, first_pass_valid, recovery_attempted, recovered, "
+            "verification_final_status, trace_disabled, finished_at) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
     def get_eval_snapshot(self, eval_run_id: str) -> dict[str, Any] | None:
@@ -622,14 +635,16 @@ class Hive:
         ).fetchone()
         if run is None:
             return None
-        cells = [
-            dict(row)
-            for row in self._conn.execute(
-                "SELECT * FROM eval_cells WHERE eval_run_id=? "
-                "ORDER BY case_key, repetition, cell_id",
-                (eval_run_id,),
-            ).fetchall()
-        ]
+        cells = []
+        for row in self._conn.execute(
+            "SELECT * FROM eval_cells WHERE eval_run_id=? "
+            "ORDER BY case_key, repetition, cell_id",
+            (eval_run_id,),
+        ).fetchall():
+            cell = dict(row)
+            encoded = cell.pop("call_models_json", None)
+            cell["call_models"] = None if encoded is None else json.loads(encoded)
+            cells.append(cell)
         metrics = []
         for row in self._conn.execute(
             "SELECT m.id, m.run_id, m.name, m.value, m.direction, m.unit, m.source, "

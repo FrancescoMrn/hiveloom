@@ -136,8 +136,9 @@ Aliases are matched against the **bare model id the provider reports**, not
 manifest without failing the batch.
 
 The manifest records eval, dataset, scorer, and harness identities plus every
-cell's case digest, repetition, requested and effective model, execution
-fingerprint, run ID, trace state, scorer state, and metric-ingestion state.
+cell's case digest, repetition, requested and effective model, per-call model
+identity (`call_models`), execution fingerprint, run ID, trace state, scorer
+state, and metric-ingestion state.
 Raw case IDs and expected values are not stored in the manifest. Resume refuses
 to mix work after the eval, dataset, scorer, harness behavior, provider adapter,
 or effective model changes. Completed cells are neither executed nor scored
@@ -213,6 +214,23 @@ JSON is the canonical format. Markdown renders the same calculations. Every
 aggregate includes its sample and missing-value counts. Costs are grouped by
 `billed`, `estimated`, or `mixed`; a comparison never treats billed and
 estimated values as a paired cost delta.
+
+A report names the model behind every cell. `effective_models` is the set of
+models any cell reported; `cell_identities` has one entry per cell with its
+`effective_model` (the last call that reported one), `call_effective_models`
+(every provider call in order, `null` for a call that reported no model), and
+`call_count`.
+Both of the last two are `null` when the executor did not report per-call
+identity (an older trace or a custom executor) and `[]`/`0` when the cell made
+no calls. A cell with a run outcome that cannot say which model served it is
+listed in `cell_identity_missing` with a `reason` of `no_model_calls`,
+`call_without_effective_model`, or `no_effective_model`, and counted in
+`cells.identity_missing_count`; `cells.identity_mixed_count` counts cells whose
+calls served more than one model. Pending and infrastructure-error cells are
+already in `cells.missing_count` and are not flagged. A collector should refuse
+an eval with `identity_missing_count > 0` or with a model it did not expect in
+`cell_identities`, rather than read a modelless cell as correct. A manifest
+that recorded `call_models` cannot be resumed by an older release.
 
 Comparisons pair the hashed case identity and repetition before calculating
 deltas. Baseline-only and candidate-only cells remain listed instead of being

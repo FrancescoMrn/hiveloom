@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `run` and HTTP `/run` result payloads now carry a top-level `cost_source`
+  (`billed` / `estimated` / `mixed` / `none`), so a user can tell at a glance
+  whether a run's `cost_usd` was charged by a real provider or only estimated
+  (e.g. local models). The value is read from the run's execution envelope, with
+  `none` as the default for a result that predates the envelope. Eval reports
+  already grouped costs by source, so no eval change was needed.
 - `hiveloom stats` gains an opt-in `--friction-by-component` flag that surfaces
   per-`(category, component)` friction (e.g. `tool_error` on `http_get`), as a
   JSON key `friction_by_component` and a console sub-table, complementing the
@@ -19,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation gates, sealed confirmation and review-queue promotion still apply.
   Includes a synthetic saved-page extraction pilot; real-model benefit has
   not been measured.
+- Per-call model identity in eval reports. `RunExecutionEnvelope.call_models`
+  (and the `run_finished` event's `execution`) lists every provider call's
+  requested and effective model, in order and not deduplicated; eval cells
+  persist it as `call_models`. `eval report` adds `cells.identity_missing_count`,
+  `cells.identity_mixed_count`, `cell_identity_missing` (each flagged cell with a
+  `reason` of `no_model_calls`, `call_without_effective_model`, or
+  `no_effective_model`) and `cell_identities`, and the Markdown report warns
+  when a cell ran without a model identity. A cell that served no model is
+  flagged instead of being silently dropped from `effective_models`, which is
+  unchanged. Pending and infrastructure-error cells are not flagged. A manifest
+  whose cells reported `call_models` cannot be resumed by an older release.
 ### Changed
 
 - Compaction's summarization calls no longer spend `loop.max_turns`: `turns`
@@ -61,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness working directory under the same private-path rules as `file_read`,
   with dependency and build trees pruned and every result bounded. An executor
   no longer needs an exact allowlisted shell argv to find a file.
+- `cloud` pull (linked mode) refuses to write a `.env*` (except the shipped
+  `.env.example`/`.env.template` templates) or `.hiveloom/**` path from the
+  packaged zip, reusing the same `is_sensitive_path` predicate packaging uses,
+  instead of trusting the server excluded them, so a buggy or malicious linked
+  server can no longer overwrite the local link config or secrets.
 ### Fixed
 
 - Eval resume accepts an explicit higher infrastructure retry ceiling after an

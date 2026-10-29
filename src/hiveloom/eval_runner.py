@@ -26,7 +26,11 @@ from hiveloom.evals import (
     resolve_eval_spec,
     run_scorers,
 )
-from hiveloom.execution import RunExecutionEnvelope, VerificationSummary
+from hiveloom.execution import (
+    ModelCallIdentity,
+    RunExecutionEnvelope,
+    VerificationSummary,
+)
 from hiveloom.logging.hive import Hive
 from hiveloom.logging.journal import read_events
 from hiveloom.logging.trace import TraceRedactor, spec_version_hash
@@ -77,6 +81,9 @@ class EvalCell(BaseModel):
     requested_model: str = ""
     effective_provider: str | None = None
     effective_model: str | None = None
+    # Per-call model identity copied from the run envelope; None when the run
+    # did not report it (and omitted from the manifest, like case_ids).
+    call_models: list[ModelCallIdentity] | None = None
     execution_fingerprint: str = ""
     duration_ms: int = 0
     cost_usd: float = 0.0
@@ -164,11 +171,24 @@ def _save_manifest(manifest: EvalManifest, lock: threading.Lock) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         # case_ids is written only when a run was restricted, so a manifest of a
         # whole-eval run stays readable by releases that predate the field.
-        exclude = {"case_ids"} if manifest.case_ids is None else None
-        atomic_write_text(path, manifest.model_dump_json(indent=2, exclude=exclude) + "\n")
+        # A cell's call_models is likewise written only when it was reported.
+        exclude: dict[str, Any] = {}
+        if manifest.case_ids is None:
+            exclude["case_ids"] = True
+        unreported = {
+            index: {"call_models"}
+            for index, cell in enumerate(manifest.cells)
+            if cell.call_models is None
+        }
+        if unreported:
+            exclude["cells"] = unreported
+        atomic_write_text(
+            path, manifest.model_dump_json(indent=2, exclude=exclude or None) + "\n"
+        )
         with Hive() as hive:
-            hive.upsert_eval_manifest(manifest.model_dump(mode="json", exclude=exclude),
-                                      str(path))
+            hive.upsert_eval_manifest(
+                manifest.model_dump(mode="json", exclude=exclude or None), str(path)
+            )
 
 
 def _case_key(case: EvalCase) -> str:
@@ -355,11 +375,20 @@ def _apply_result(cell: EvalCell, result: RunResult) -> None:
     cell.trace_disabled = not bool(result.trace_path)
     cell.duration_ms = round(result.duration_seconds * 1000)
     cell.cost_usd = result.cost_usd
+    # Never let an earlier attempt's identity describe this result: a result
+    # without an envelope must read as modelless, not as the previous model.
+    cell.requested_provider = ""
+    cell.requested_model = ""
+    cell.effective_provider = None
+    cell.effective_model = None
+    cell.call_models = None
+    cell.execution_fingerprint = ""
     if result.execution is not None:
         cell.requested_provider = result.execution.requested_provider
         cell.requested_model = result.execution.requested_model
         cell.effective_provider = result.execution.effective_provider
         cell.effective_model = result.execution.effective_model
+        cell.call_models = result.execution.call_models
         cell.execution_fingerprint = result.execution.execution_fingerprint
         cell.duration_ms = result.execution.duration_ms
         cell.cost_usd = result.execution.cost_usd
@@ -482,6 +511,7 @@ def _run_one_cell(
             cell.attempt_run_ids.append(cell.run_id)
             cell.trace_path = str(Path(manifest.trace_root) / f"{cell.run_id}.jsonl")
             cell.trace_disabled = False
+            cell.call_models = None
             cell.status = "running"
             cell.started_at = cell.started_at or _now()
             cell.error_phase = ""
