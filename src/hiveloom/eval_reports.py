@@ -82,6 +82,62 @@ def _metric_aggregates(
     return output
 
 
+def _identity_missing_reason(cell: dict[str, Any]) -> str | None:
+    """Why a cell with a run outcome cannot say which model served it, if so."""
+    call_models = cell.get("call_models")
+    if call_models is not None:
+        if not call_models:
+            return "no_model_calls"
+        if any(not call.get("effective_model") for call in call_models):
+            return "call_without_effective_model"
+    if not cell.get("effective_model"):
+        return "no_effective_model"
+    return None
+
+
+def _cell_identities(
+    cells: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Per-cell model identity, and the cells whose identity is missing.
+
+    Only cells with a run outcome are flagged: a pending or infrastructure-error
+    cell has no outcome to misattribute and is already counted as missing.
+    """
+    identities: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    for cell in cells:
+        call_models = cell.get("call_models")
+        has_outcome = cell["status"] in {"ran", "completed"} and bool(cell.get("run_status"))
+        reason = _identity_missing_reason(cell) if has_outcome else None
+        identities.append(
+            {
+                "cell_id": cell["cell_id"],
+                "case_key": cell["case_key"],
+                "repetition": cell["repetition"],
+                "effective_model": cell.get("effective_model"),
+                "call_effective_models": (
+                    None
+                    if call_models is None
+                    else [call.get("effective_model") for call in call_models]
+                ),
+                "call_count": None if call_models is None else len(call_models),
+                "identity_missing": reason is not None,
+            }
+        )
+        if reason is not None:
+            missing.append(
+                {
+                    "cell_id": cell["cell_id"],
+                    "case_key": cell["case_key"],
+                    "repetition": cell["repetition"],
+                    "run_id": cell["run_id"],
+                    "run_status": cell["run_status"],
+                    "reason": reason,
+                }
+            )
+    return identities, missing
+
+
 def _report_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     metadata = snapshot["eval"]
     cells = snapshot["cells"]
@@ -127,6 +183,18 @@ def _report_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             if cell.get("effective_model")
         }
     )
+    cell_identities, identity_missing = _cell_identities(cells)
+    identity_mixed = sum(
+        len(
+            {
+                model
+                for model in identity["call_effective_models"] or []
+                if model
+            }
+        )
+        > 1
+        for identity in cell_identities
+    )
     return {
         "schema_version": 1,
         "eval_run_id": metadata["eval_run_id"],
@@ -143,7 +211,11 @@ def _report_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "completed_count": len(completed),
             "missing_count": total - len(completed),
             "status_counts": dict(sorted(status_counts.items())),
+            "identity_missing_count": len(identity_missing),
+            "identity_mixed_count": identity_mixed,
         },
+        "cell_identity_missing": identity_missing,
+        "cell_identities": cell_identities,
         "final_success": {
             "sample_count": len(completed),
             "missing_value_count": total - len(completed),
@@ -390,6 +462,15 @@ def render_report_markdown(report: dict[str, Any]) -> str:
         "",
         f"Status: {report['status']}",
         "",
+    ]
+    identity_missing = report["cells"].get("identity_missing_count", 0)
+    if identity_missing:
+        lines += [
+            f"> Warning: {identity_missing} cell(s) ran without a reported model "
+            "identity; see `cell_identity_missing` in the JSON report.",
+            "",
+        ]
+    lines += [
         "| Receipt | Value | n | Missing |",
         "|---|---:|---:|---:|",
         (

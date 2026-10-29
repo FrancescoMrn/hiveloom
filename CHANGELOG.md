@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation gates, sealed confirmation and review-queue promotion still apply.
   Includes a synthetic saved-page extraction pilot; real-model benefit has
   not been measured.
+- Per-call model identity in eval reports. `RunExecutionEnvelope.call_models`
+  (and the `run_finished` event's `execution`) lists every provider call's
+  requested and effective model, in order and not deduplicated; eval cells
+  persist it as `call_models`. `eval report` adds `cells.identity_missing_count`,
+  `cells.identity_mixed_count`, `cell_identity_missing` (each flagged cell with a
+  `reason` of `no_model_calls`, `call_without_effective_model`, or
+  `no_effective_model`) and `cell_identities`, and the Markdown report warns
+  when a cell ran without a model identity. A cell that served no model is
+  flagged instead of being silently dropped from `effective_models`, which is
+  unchanged. Pending and infrastructure-error cells are not flagged. A manifest
+  whose cells reported `call_models` cannot be resumed by an older release.
 ### Changed
 
 - Compaction's summarization calls no longer spend `loop.max_turns`: `turns`
