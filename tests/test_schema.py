@@ -222,6 +222,47 @@ def test_auto_propose_forbids_extra_fields():
         )
 
 
+def test_auto_propose_friction_trigger_defaults():
+    spec = HarnessSpec.model_validate(_minimal())
+    assert spec.evolution.auto_propose.friction_trigger is None
+
+    spec = HarnessSpec.model_validate(
+        _minimal(evolution={"auto_propose": {"friction_trigger": {}}})
+    )
+    trigger = spec.evolution.auto_propose.friction_trigger
+    assert trigger is not None
+    assert trigger.category is None
+    assert trigger.component is None
+    assert trigger.min_events == 5
+    assert trigger.cooldown_hours is None
+
+
+def test_auto_propose_friction_trigger_bounds_and_extra_fields():
+    for bad in ({"min_events": 0}, {"cooldown_hours": 1e-9}, {"unexpected": True}):
+        with pytest.raises(ValidationError):
+            HarnessSpec.model_validate(
+                _minimal(evolution={"auto_propose": {"friction_trigger": bad}})
+            )
+    spec = HarnessSpec.model_validate(
+        _minimal(
+            evolution={
+                "auto_propose": {
+                    "friction_trigger": {
+                        "category": "tool_error",
+                        "component": "http_get",
+                        "min_events": 1,
+                        "cooldown_hours": 1 / 60,
+                    }
+                }
+            }
+        )
+    )
+    trigger = spec.evolution.auto_propose.friction_trigger
+    assert trigger is not None
+    assert (trigger.category, trigger.component) == ("tool_error", "http_get")
+    assert (trigger.min_events, trigger.cooldown_hours) == (1, 1 / 60)
+
+
 def test_memory_budgets_are_always_frozen_but_entries_are_evolvable():
     """The whole point of the section: a harness may learn, but it may never
     widen what it is allowed to learn, or switch the section off to hide it."""

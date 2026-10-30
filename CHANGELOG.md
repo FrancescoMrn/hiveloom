@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation gates, sealed confirmation and review-queue promotion still apply.
   Includes a synthetic saved-page extraction pilot; real-model benefit has
   not been measured.
+- Optional `evolution.auto_propose.friction_trigger` (`category`, `component`,
+  `min_events`, `cooldown_hours`): auto-draft a proposal when matching friction
+  of the current version crosses a threshold, even after a successful or
+  recovered run. It shares the `trigger=auto` cooldown with the failure gate,
+  and the top-level `cooldown_hours` is its floor. Disabled when absent.
 - Per-call model identity in eval reports. `RunExecutionEnvelope.call_models`
   (and the `run_finished` event's `execution`) lists every provider call's
   requested and effective model, in order and not deduplicated; eval cells
