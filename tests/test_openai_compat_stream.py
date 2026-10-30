@@ -340,6 +340,35 @@ def test_an_error_chunk_mid_stream_is_classified_like_an_error_body(monkeypatch)
     assert calls["n"] == 2
 
 
+def test_an_error_chunk_then_a_close_without_done_is_still_classified(monkeypatch):
+    # No [DONE] and no finish reason, but the server said why it stopped: the
+    # error is classified (a 5xx is retried), not reported as a broken stream.
+    failed = {"id": "chatcmpl-1", "choices": [],
+              "error": {"code": 502, "message": "upstream disconnected"}}
+    calls = _serve(
+        monkeypatch,
+        _Stream(_sse(_chunk({"content": "The answer"}), failed, done=False)),
+        _Stream(_sse(_chunk({"content": "42"}, finish="stop"), _USAGE)),
+    )
+    response = _complete(OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None))
+    assert response.text == "42"
+    assert calls["n"] == 2
+
+
+def test_an_error_event_that_is_not_an_object_does_not_pass_a_partial_reply(monkeypatch):
+    # An "error" field the classifier cannot read (a bare string) is not a
+    # reported error: the stream closed mid-generation, so it is broken.
+    failed = {"id": "chatcmpl-1", "choices": [], "error": "upstream timeout"}
+    calls = _serve(
+        monkeypatch,
+        _Stream(_sse(_chunk({"content": "The ans"}), _chunk({"content": "wer is"}), failed,
+                     done=False)),
+    )
+    with pytest.raises(ProviderUnreachable, match="the stream ended without a finish reason"):
+        _complete(OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None))
+    assert calls["n"] == 1
+
+
 def test_the_output_ceiling_applies_to_a_streamed_tool_call(monkeypatch):
     whole = {"index": 0, "id": "call_1", "type": "function",
              "function": {"name": "file_write", "arguments": '{"path": "a"}'}}

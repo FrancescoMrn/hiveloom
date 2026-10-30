@@ -189,7 +189,7 @@ def _read_stream(resp: Any) -> dict[str, Any]:
             raise ProviderError("provider returned a stream with no completion")
         return _decode_body(b"".join(other))
     data = _assemble_stream(chunks)
-    if not done and data["choices"][0]["finish_reason"] is None and "error" not in data:
+    if not done and data["choices"][0]["finish_reason"] is None and _embedded_error(data) is None:
         raise _StreamBroken(f"after {_count(chunks)}: the stream ended without a finish reason")
     return data
 
