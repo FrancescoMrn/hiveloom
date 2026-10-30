@@ -677,6 +677,15 @@ def run_result_payload(result: RunResult) -> dict[str, Any]:
         "turns": result.turns,
         "compaction_calls": getattr(result, "compaction_calls", 0),
         "cost_usd": result.cost_usd,
+        # Whether this run's ``cost_usd`` was billed by a real provider or only
+        # estimated (e.g. local models): billed / estimated / mixed / none. Lives
+        # on the execution envelope, with a defensive default for a 1.0-era result
+        # shape that predates it.
+        "cost_source": (
+            result.execution.cost_source
+            if getattr(result, "execution", None) is not None
+            else "none"
+        ),
         "duration_seconds": result.duration_seconds,
         "run_id": result.run_id,
         "trace_path": result.trace_path,

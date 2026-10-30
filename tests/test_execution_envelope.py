@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from hiveloom import __version__, construct, runner
+from hiveloom.execution import RunExecutionEnvelope
 from hiveloom.models.fake import FakeModelProvider, text_response
 
 
@@ -71,6 +73,47 @@ def test_clean_first_pass_has_complete_execution_receipt(tmp_path: Path):
     assert events[0]["payload"]["runtime_config"] == result.runtime_config
     assert events[-1]["payload"]["execution"] == execution.model_dump(mode="json")
     assert runner.run_result_payload(result)["execution"] == execution.model_dump(mode="json")
+
+
+def test_cost_source_is_surfaced_in_run_payload(tmp_path: Path):
+    """The run-result payload carries cost_source at top level, so a user can
+    tell a billed cost from an estimated one without drilling into ``execution``."""
+    harness = _harness(tmp_path, validator=True)
+    result = runner.run_harness(
+        harness,
+        "go",
+        provider=FakeModelProvider([_response("good")]),
+        literal_input=True,
+        ingest=False,
+    )
+
+    payload = runner.run_result_payload(result)
+    assert payload["cost_source"] == "estimated"
+    assert payload["cost_source"] == result.execution.cost_source
+    assert isinstance(payload["cost_source"], str)
+    # The legacy result shape (no execution envelope) still yields a value.
+    assert runner.run_result_payload(
+        result.model_copy(update={"execution": None})
+    )["cost_source"] == "none"
+
+
+def test_cost_source_defaults_when_the_result_has_no_execution_attribute():
+    """A 1.0-era result shape predates the execution envelope entirely, so the
+    payload must not require the attribute to exist — it must default to "none"
+    rather than raising."""
+    legacy = SimpleNamespace(
+        status="success",
+        output="",
+        turns=0,
+        cost_usd=0.0,
+        duration_seconds=0.0,
+        run_id="legacy",
+        trace_path="",
+        reason="",
+        artifacts=[],
+    )
+    assert runner.run_result_payload(legacy)["cost_source"] == "none"
+    assert runner.run_result_payload(legacy)["execution"] is None
 
 
 def test_recovered_output_is_not_reported_as_clean(tmp_path: Path):
@@ -188,3 +231,60 @@ def test_effective_model_is_the_last_call_even_when_a_model_repeats(tmp_path: Pa
     assert result.execution is not None
     assert len(result.provider_calls) == 3
     assert result.execution.effective_model == "model-a"
+
+
+def test_call_models_report_every_call_in_order_including_a_modelless_one(tmp_path: Path):
+    """A -> B -> A stays three entries, and a call with no model stays visible."""
+    harness = _harness(tmp_path, validator=True)
+    construct.set_value(harness, "verify.on_fail.max_retries", 3)
+
+    result = runner.run_harness(
+        harness,
+        "go",
+        provider=FakeModelProvider(
+            [
+                _response("bad", model="model-a"),
+                _response("worse", model="model-b", request_id="req-2"),
+                _response("still bad", model="", request_id="req-3"),
+                _response("good", model="model-a", request_id="req-4"),
+            ]
+        ),
+        literal_input=True,
+        ingest=False,
+    )
+
+    assert result.status == "success"
+    assert result.execution is not None
+    call_models = result.execution.call_models
+    assert call_models is not None
+    assert [call.effective_model for call in call_models] == [
+        "model-a",
+        "model-b",
+        None,
+        "model-a",
+    ]
+    assert [call.turn for call in call_models] == [1, 2, 3, 4]
+    assert {call.requested_model for call in call_models} == {
+        result.execution.resolved_model
+    }
+    # The singular identity is unchanged: the last call that reported a model.
+    assert result.execution.effective_model == "model-a"
+
+    finished = [
+        json.loads(line)
+        for line in Path(result.trace_path).read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "run_finished"
+    ][-1]
+    traced = finished["payload"]["execution"]["call_models"]
+    assert [call["effective_model"] for call in traced] == [
+        "model-a",
+        "model-b",
+        None,
+        "model-a",
+    ]
+
+
+def test_envelope_without_call_models_still_validates():
+    envelope = RunExecutionEnvelope.model_validate({"run_id": "r", "status": "success"})
+
+    assert envelope.call_models is None

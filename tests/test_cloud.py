@@ -175,6 +175,89 @@ def test_zip_slip_is_refused(tmp_path, fake):
     assert not (tmp_path / "evil.txt").exists()
 
 
+@pytest.mark.parametrize(
+    "entry,local_rel",
+    [
+        ("demo/.env", ".env"),
+        ("demo/.hiveloom/cloud.json", ".hiveloom/cloud.json"),
+    ],
+)
+def test_protected_entry_is_refused_and_untouched(tmp_path, fake, entry, local_rel):
+    """Each protected destination is checked on its own, so its assertion cannot
+    pass merely because extraction stopped at an earlier entry."""
+    _link(tmp_path, fake)
+    base = tmp_path / "demo"
+    local_path = base / local_rel
+    if local_rel.endswith("cloud.json"):
+        original = local_path.read_text()  # the link config written by _link
+    else:
+        local_path.write_text("SECRET=original\n")
+        original = "SECRET=original\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(entry, json.dumps({"base_url": "https://evil.test"}))
+    with pytest.raises(cloud.CloudError, match="protected"):
+        cloud._extract_zip(base, buffer.getvalue())
+    assert local_path.read_text() == original
+
+
+def test_entries_ahead_of_a_refused_one_are_still_written(tmp_path, fake):
+    """Pull is non-transactional: an ordinary file before the refused entry still
+    lands, and the abort happens before any protected destination."""
+    _link(tmp_path, fake)
+    base = tmp_path / "demo"
+    link_config = (base / ".hiveloom" / "cloud.json").read_text()
+    (base / ".env").write_text("SECRET=original\n")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("demo/harness.yaml", "name: demo\nversion: 9\n")
+        archive.writestr("demo/.env", "SECRET=stolen\n")
+        archive.writestr("demo/.hiveloom/cloud.json", json.dumps({"base_url": "https://evil.test"}))
+    with pytest.raises(cloud.CloudError, match="protected"):
+        cloud._extract_zip(base, buffer.getvalue())
+    assert (base / "harness.yaml").read_text() == "name: demo\nversion: 9\n"
+    assert (base / ".env").read_text() == "SECRET=original\n"
+    assert (base / ".hiveloom" / "cloud.json").read_text() == link_config
+
+
+@pytest.mark.parametrize(
+    "entry", ["demo/.env.local", "demo/.HIVELOOM/cloud.json", "demo/sub/../.env"]
+)
+def test_protected_path_variants_are_refused(tmp_path, fake, entry):
+    _link(tmp_path, fake)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(entry, "boom")
+    with pytest.raises(cloud.CloudError, match="protected"):
+        cloud._extract_zip(tmp_path / "demo", buffer.getvalue())
+
+
+@pytest.mark.parametrize("entry", ["demo/.env.example", "demo/.env.template"])
+def test_shipped_env_templates_are_ordinary_harness_files(tmp_path, fake, entry):
+    """The packaged zip ships these templates, so pull must NOT refuse them — this
+    is the Major false-positive the security review caught, now locked."""
+    _link(tmp_path, fake)
+    name = entry.split("/", 1)[1]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(entry, "TOKEN=example\n")
+    assert cloud._extract_zip(tmp_path / "demo", buffer.getvalue()) == 1
+    assert (tmp_path / "demo" / name).read_text() == "TOKEN=example\n"
+
+
+def test_nested_non_template_env_is_refused(tmp_path, fake):
+    """A non-template .env* is refused anywhere by name, mirroring packaging — not
+    just at the root."""
+    _link(tmp_path, fake)
+    (tmp_path / "demo" / "fixtures").mkdir()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("demo/fixtures/.env", "FIXTURE=1\n")
+    with pytest.raises(cloud.CloudError, match="protected"):
+        cloud._extract_zip(tmp_path / "demo", buffer.getvalue())
+    assert not (tmp_path / "demo" / "fixtures" / ".env").exists()
+
+
 def test_status_without_protocol_field_means_revision_one(tmp_path, fake):
     fake.protocol = None
     result = _link(tmp_path, fake)
