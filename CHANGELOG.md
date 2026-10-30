@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flagged instead of being silently dropped from `effective_models`, which is
   unchanged. Pending and infrastructure-error cells are not flagged. A manifest
   whose cells reported `call_models` cannot be resumed by an older release.
+- `RunResult.failure_kind` names why a run ended as `error`
+  (`provider_unreachable`, `provider_error`, `context_overflow`, `policy`,
+  `tool_abort`, `unknown`), set from the exception's type rather than its
+  message; a delegated run adopts the peer's kind with its status. It rides the `run_finished` journal event, the `--json` run output,
+  the MCP run result and the eval cell record, so a runner can separate
+  infrastructure failures from the agent's own outcome. Provider failures are now typed
+  (`ProviderError`, `ProviderUnreachable`), both `RuntimeError` subclasses.
+
 ### Changed
 
 - Compaction's summarization calls no longer spend `loop.max_turns`: `turns`

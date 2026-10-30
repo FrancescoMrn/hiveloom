@@ -37,6 +37,8 @@ from hiveloom.models.provider import (
     ModelConfig,
     ModelProvider,
     ModelResponse,
+    ProviderError,
+    ProviderUnreachable,
     ToolCall,
     Usage,
     estimate_tokens,
@@ -129,12 +131,14 @@ def _decode_body(raw: bytes) -> dict[str, Any]:
         # followed by more: not JSON, rather than JSON that broke off.
         not_json = exc.pos == len(text) - len(text.lstrip()) or exc.msg == "Extra data"
         if not_json and text.strip():
-            raise RuntimeError(f"provider returned a body that is not JSON: {raw[:200]!r}") from exc
+            raise ProviderError(
+                f"provider returned a body that is not JSON: {raw[:200]!r}"
+            ) from exc
         raise _UndecodableBody(f"{exc}: {raw[:200]!r}") from exc
     except UnicodeDecodeError as exc:
         raise _UndecodableBody(f"{exc}: {raw[:200]!r}") from exc
     if not isinstance(body, dict):
-        raise RuntimeError(
+        raise ProviderError(
             f"provider returned a JSON {type(body).__name__} instead of an object: {raw[:200]!r}"
         )
     return body
@@ -182,7 +186,7 @@ def _read_stream(resp: Any) -> dict[str, Any]:
         raise
     if not chunks:
         if done:
-            raise RuntimeError("provider returned a stream with no completion")
+            raise ProviderError("provider returned a stream with no completion")
         return _decode_body(b"".join(other))
     data = _assemble_stream(chunks)
     if not done and data["choices"][0]["finish_reason"] is None and "error" not in data:
@@ -343,7 +347,7 @@ class OpenAICompatProvider(ModelProvider):
             headers=headers,
             method="POST",
         )
-        last_exc: Exception | None = None
+        last_exc: ProviderError | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 with urlrequest.urlopen(request, timeout=self._timeout) as resp:  # noqa: S310
@@ -364,18 +368,18 @@ class OpenAICompatProvider(ModelProvider):
                 code, message = embedded
                 if _is_overflow(message):
                     raise ContextOverflowError(message)
-                last_exc = RuntimeError(f"provider returned an error body: {message}")
+                last_exc = ProviderError(f"provider returned an error body: {message}")
                 retryable = code == 429 or 500 <= code < 600
             except _StreamBroken as exc:
                 # The generation was under way: a retry would re-run it in full
                 # on the server for a reply that broke once already.
-                raise RuntimeError(f"provider stream broke {exc}") from exc
+                raise ProviderUnreachable(f"provider stream broke {exc}") from exc
             except urlerror.HTTPError as exc:
                 full = exc.read().decode("utf-8", errors="replace")
                 body = full[:500]
                 if exc.code == 400 and _is_overflow(body):
                     raise ContextOverflowError(f"provider returned HTTP 400: {body}") from exc
-                last_exc = RuntimeError(f"provider returned HTTP {exc.code}: {body}")
+                last_exc = ProviderError(f"provider returned HTTP {exc.code}: {body}")
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 rejected = exc.code in (400, 422) and "stream_options" in full
                 if rejected and "stream_options" in payload:
@@ -387,17 +391,18 @@ class OpenAICompatProvider(ModelProvider):
                 # the run. Long generations make it routine — a reasoning model
                 # streams hundreds of KB over several minutes, and any dropped
                 # connection in that window lands here.
-                last_exc = RuntimeError(f"provider unreachable at {self._base_url}: {exc}")
+                last_exc = ProviderUnreachable(f"provider unreachable at {self._base_url}: {exc}")
                 retryable = True
             except _UndecodableBody as exc:
                 # The request produced no result, any more than a dropped
                 # connection did, so it is retried the same way.
-                last_exc = RuntimeError(f"provider returned an undecodable body: {exc}")
+                last_exc = ProviderUnreachable(f"provider returned an undecodable body: {exc}")
                 retryable = True
             if not retryable or attempt == _MAX_RETRIES:
                 break
             self._sleep(_BASE_DELAY * (2**attempt))
-        raise RuntimeError(f"model call failed on attempt {attempt + 1}: {last_exc}") from last_exc
+        failure = type(last_exc) if last_exc is not None else ProviderError
+        raise failure(f"model call failed on attempt {attempt + 1}: {last_exc}") from last_exc
 
 
 def to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -493,7 +498,7 @@ def normalize_openai_response(
     """
     choices = data.get("choices") or []
     if not choices:
-        raise RuntimeError(f"provider returned no choices: {json.dumps(data)[:300]}")
+        raise ProviderError(f"provider returned no choices: {json.dumps(data)[:300]}")
     choice = choices[0]
     message = choice.get("message") or {}
     # Reasoning models (DeepSeek-R1 family etc.) may return an empty "content"

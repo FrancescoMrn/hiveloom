@@ -90,6 +90,18 @@ class ContextOverflowError(RuntimeError):
     force a compaction and retry the turn rather than failing the run."""
 
 
+class ProviderError(RuntimeError):
+    """The provider answered, but not with a completion: an HTTP error status,
+    an error body, a body that is not a completion. ``RuntimeError`` so that
+    nothing catching the old bare errors breaks; typed so the agent loop can
+    name the failure kind without reading the message."""
+
+
+class ProviderUnreachable(ProviderError):
+    """No complete answer reached the client: a refused connection, a DNS
+    failure, a timeout, a reply cut off mid-body or a stream that stalled."""
+
+
 class ToolCall(BaseModel):
     """A normalized tool-use request from the model."""
 

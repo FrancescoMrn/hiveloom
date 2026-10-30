@@ -100,7 +100,10 @@ artifacts. It returns `ScorerOutput`, one `RunMetric`, or a list of metrics.
 
 Scorer exceptions do not rewrite the model result. `ScoringResult.run_status`
 keeps the harness outcome while each scorer gets its own success/error receipt.
-Valid metrics from other scorers can still be ingested.
+Valid metrics from other scorers can still be ingested. A cell whose run ended
+as `error` also records the run's `failure_kind` (`provider_unreachable`,
+`provider_error`, `context_overflow`, `policy`, `tool_abort` or `unknown`), so
+a report can separate an unreachable server from a run the agent itself failed.
 
 ## Run and resume a batch
 

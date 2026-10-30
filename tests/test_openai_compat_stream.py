@@ -15,7 +15,7 @@ import pytest
 
 from hiveloom import ext
 from hiveloom.models.openai_compat import OpenAICompatProvider, _assemble_stream
-from hiveloom.models.provider import ModelConfig
+from hiveloom.models.provider import ModelConfig, ProviderError, ProviderUnreachable
 
 
 def _sse(*events: dict, done: bool = True) -> list[bytes]:
@@ -236,7 +236,7 @@ def test_a_stall_after_the_first_chunk_is_not_retried(monkeypatch):
         _Stream(_sse(_chunk({"content": "4"}), _chunk({"content": "2"}, finish="stop")),
                 fail_after=2, exc=TimeoutError("timed out")),
     )
-    with pytest.raises(RuntimeError, match="broke after 1 chunk: timed out"):
+    with pytest.raises(ProviderUnreachable, match="broke after 1 chunk: timed out"):
         _complete(OpenAICompatProvider("http://localhost:9", sleep=sleeps.append))
     assert calls["n"] == 1
     assert sleeps == []
@@ -280,7 +280,7 @@ def test_a_line_that_is_not_a_chunk_after_the_first_chunk_breaks_the_stream(monk
 
 def test_a_stream_with_only_done_is_not_a_completion(monkeypatch):
     _serve(monkeypatch, _Stream([b"data: [DONE]\n"]))
-    with pytest.raises(RuntimeError, match="stream with no completion"):
+    with pytest.raises(ProviderError, match="stream with no completion"):
         _complete(OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None))
 
 

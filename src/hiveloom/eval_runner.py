@@ -94,6 +94,8 @@ class EvalCell(BaseModel):
     error_phase: str = ""
     error_type: str = ""
     error: str = ""
+    # RunResult.failure_kind of a run that ended as "error"; "" otherwise.
+    failure_kind: str = ""
     started_at: str | None = None
     finished_at: str | None = None
 
@@ -313,6 +315,7 @@ def _result_from_trace(path: str | Path) -> RunResult | None:
             for value in payload.get("verdicts") or []
         ],
         reason=str(payload.get("reason") or ""),
+        failure_kind=str(payload.get("failure_kind") or ""),
         artifacts=list(payload.get("artifacts") or []),
         provider_calls=list(payload.get("provider_calls") or []),
         execution=(
@@ -371,6 +374,7 @@ def _apply_result(cell: EvalCell, result: RunResult) -> None:
     cell.error_phase = ""
     cell.error_type = ""
     cell.error = ""
+    cell.failure_kind = result.failure_kind
     cell.trace_path = result.trace_path or ""
     cell.trace_disabled = not bool(result.trace_path)
     cell.duration_ms = round(result.duration_seconds * 1000)
