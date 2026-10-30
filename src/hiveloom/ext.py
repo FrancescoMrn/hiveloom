@@ -995,6 +995,10 @@ class _YamlProviderEntry(BaseModel):
     # frontier APIs; a queued trial endpoint or a local server generating at a
     # few tokens a second needs more, or every call fails as "unreachable".
     timeout_seconds: int | None = Field(default=None, gt=0)
+    # Completions stream by default, so the timeout bounds the wait for the
+    # first token and the gap between tokens. Off for a gateway that cannot
+    # stream, which puts the whole generation under one timeout again.
+    stream: bool = True
     # Display name; defaults to the builtin's label, or the provider's name.
     label: str | None = None
     models: list[_YamlModelEntry] = []
@@ -1041,7 +1045,8 @@ def _load_provider_file(yaml_path: Path, source: str) -> None:
             api: openai_compat          # the only custom api kind in v0
             base_url: http://localhost:11434/v1
             api_key_env: OLLAMA_API_KEY # optional
-            timeout_seconds: 600        # optional, per-request read timeout
+            timeout_seconds: 600        # optional: first token, then idle gap between tokens
+            stream: false               # optional, for a gateway that cannot stream
             models:
               - id: qwen3:8b
                 input_cost_per_mtok: 0
@@ -1079,7 +1084,7 @@ def _load_provider_file(yaml_path: Path, source: str) -> None:
             api.register_provider(
                 name,
                 _openai_compat_factory(
-                    entry.base_url, entry.api_key_env, entry.timeout_seconds
+                    entry.base_url, entry.api_key_env, entry.timeout_seconds, stream=entry.stream
                 ),
                 base_url=entry.base_url,
                 api_key_env=entry.api_key_env or "",
@@ -1151,7 +1156,7 @@ def _builtin_model_is_legacy(provider: str, model_id: str) -> bool:
 
 
 def _openai_compat_factory(
-    base_url: str, api_key_env: str | None, timeout: int | None = None
+    base_url: str, api_key_env: str | None, timeout: int | None = None, *, stream: bool = True
 ) -> ProviderFactory:
     def factory(ctx: BuildContext) -> Any:
         # Same precedence as before (process environment first), same
@@ -1166,9 +1171,12 @@ def _openai_compat_factory(
             )
         from hiveloom.models.openai_compat import OpenAICompatProvider
 
-        if timeout is None:
-            return OpenAICompatProvider(base_url, api_key=api_key)
-        return OpenAICompatProvider(base_url, api_key=api_key, timeout=timeout)
+        options: dict[str, Any] = {}
+        if timeout is not None:
+            options["timeout"] = timeout
+        if not stream:
+            options["stream"] = False
+        return OpenAICompatProvider(base_url, api_key=api_key, **options)
 
     return factory
 
