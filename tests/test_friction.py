@@ -155,6 +155,61 @@ def test_index_covers_trace_friction_and_is_idempotent(tmp_path: Path):
     assert "private operator message" not in serialized
 
 
+def test_friction_by_component_counts_failed_runs_per_mechanism(tmp_path: Path):
+    recovered = _write_events(
+        tmp_path,
+        "recovered-run",
+        [
+            ("tool_retry", {"id": "c1", "name": "search"}),
+            ("tool_retry", {"id": "c4", "name": "search"}),
+            ("tool_result", {"id": "c1", "name": "search", "is_error": True, "content": "x"}),
+            ("tool_truncated", {"id": "c2", "name": "rank"}),
+        ],
+    )
+    failed = _write_events(
+        tmp_path,
+        "failed-run",
+        [
+            ("tool_retry", {"id": "c1", "name": "search"}),
+            (
+                "guardrail_triggered",
+                {"guardrail": "shell_allowlist", "kind": "block", "reason": "not allowed"},
+            ),
+        ],
+        status="max_turns",
+    )
+
+    with Hive(tmp_path / "hive.db") as hive:
+        hive.ingest_trace_file(recovered)
+        hive.ingest_trace_file(failed)
+        rows = hive.friction_by_component("hl-friction")
+
+    by_key = {(row["category"], row["component"]): row for row in rows}
+    assert set(by_key) == {
+        ("retry", "search"),
+        ("tool_error", "search"),
+        ("tool_error", "rank"),
+        ("guardrail_block", "shell_allowlist"),
+        ("loop_limit", "max_turns"),
+    }
+    assert by_key[("retry", "search")] == {
+        "category": "retry",
+        "component": "search",
+        "events": 3,
+        "runs": 2,
+        "failed_runs": 1,
+        "recovered": 2,
+    }
+    assert by_key[("tool_error", "search")]["failed_runs"] == 0
+    assert by_key[("tool_error", "search")]["recovered"] == 1
+    shell = by_key[("guardrail_block", "shell_allowlist")]
+    assert (shell["events"], shell["runs"], shell["failed_runs"]) == (1, 1, 1)
+    assert not shell["recovered"]
+    ordering = [(row["failed_runs"], row["events"]) for row in rows]
+    assert ordering == sorted(ordering, reverse=True)
+    assert rows[0]["category"] == "retry"
+
+
 def test_unrecovered_categories_and_filters_use_run_provenance(tmp_path: Path):
     failed = _write_events(
         tmp_path,
@@ -261,13 +316,67 @@ def test_friction_cli_and_stats_json(monkeypatch, tmp_path: Path):
         ],
     )
     stats = cli.invoke(app, ["stats", "hl-friction", "--include-friction", "--json"])
+    components = cli.invoke(app, ["stats", "hl-friction", "--friction-by-component", "--json"])
+    plain = cli.invoke(app, ["stats", "hl-friction", "--json"])
+    include_console = cli.invoke(app, ["stats", "hl-friction", "--include-friction"])
+    both = cli.invoke(
+        app,
+        ["stats", "hl-friction", "--include-friction", "--friction-by-component"],
+    )
     invalid = cli.invoke(
         app, ["friction", "list", "hl-friction", "--recovered", "maybe", "--json"]
     )
 
     assert listed.exit_code == ExitCode.OK
     assert json.loads(listed.stdout)["friction"][0]["component"] == "search"
+    # Plain stats emits neither friction view.
+    assert plain.exit_code == ExitCode.OK
+    plain_payload = json.loads(plain.stdout)
+    assert "friction" not in plain_payload
+    assert "friction_by_component" not in plain_payload
+    # --include-friction now surfaces BOTH the per-category summary and the
+    # per-component breakdown (the literal acceptance criterion).
     assert stats.exit_code == ExitCode.OK
-    assert json.loads(stats.stdout)["friction"]["events"] == 1
+    stats_payload = json.loads(stats.stdout)
+    assert stats_payload["friction"]["events"] == 1
+    [comp] = stats_payload["friction_by_component"]
+    assert (comp["category"], comp["component"]) == ("retry", "search")
+    # --friction-by-component is a focused view: the component breakdown only,
+    # not the full per-category summary.
+    assert components.exit_code == ExitCode.OK
+    component_payload = json.loads(components.stdout)
+    assert "friction" not in component_payload
+    [row] = component_payload["friction_by_component"]
+    assert (row["category"], row["component"]) == ("retry", "search")
+    assert (row["events"], row["runs"], row["failed_runs"]) == (1, 1, 0)
+    # --include-friction alone must print the component sub-table in console mode.
+    assert include_console.exit_code == ExitCode.OK
+    assert "friction by component" in include_console.stdout
+    assert "friction by category" in include_console.stdout
+    assert "search" in include_console.stdout
+    # Both flags together render both sub-tables with real data.
+    assert both.exit_code == ExitCode.OK
+    assert "friction by category" in both.stdout
+    assert "friction by component" in both.stdout
+    # The component sub-table must carry real data, not just a bare title.
+    assert "search" in both.stdout
     assert invalid.exit_code == ExitCode.SPEC_ERROR
     assert json.loads(invalid.stdout)["ok"] is False
+
+
+def test_stats_friction_by_component_empty(monkeypatch, tmp_path: Path):
+    db = tmp_path / "hive.db"
+    monkeypatch.setenv("HIVELOOM_DB", str(db))
+    # A clean run with no friction events at all.
+    clean = _write_events(tmp_path, "clean-run", [])
+
+    with Hive(db) as hive:
+        hive.ingest_trace_file(clean)
+
+    json_out = cli.invoke(app, ["stats", "hl-friction", "--friction-by-component", "--json"])
+    console_out = cli.invoke(app, ["stats", "hl-friction", "--friction-by-component"])
+
+    assert json_out.exit_code == ExitCode.OK
+    assert json.loads(json_out.stdout)["friction_by_component"] == []
+    assert console_out.exit_code == ExitCode.OK
+    assert "friction by component" not in console_out.stdout

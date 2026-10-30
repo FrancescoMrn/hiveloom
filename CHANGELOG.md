@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. local models). The value is read from the run's execution envelope, with
   `none` as the default for a result that predates the envelope. Eval reports
   already grouped costs by source, so no eval change was needed.
+- `hiveloom stats` gains an opt-in `--friction-by-component` flag that surfaces
+  per-`(category, component)` friction (e.g. `tool_error` on `http_get`), as a
+  JSON key `friction_by_component` and a console sub-table, complementing the
+  existing per-category `--include-friction` view.
 - Opt-in `ppc` research strategy: independent procedure/domain proposals,
   working-case probe comparisons, and one evidence-cited composition before
   selection. `ppc_select` provides the no-composer ablation. Existing budget,
