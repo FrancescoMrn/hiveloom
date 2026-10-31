@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error as urlerror
 from urllib.parse import urlsplit
 
@@ -291,6 +293,158 @@ def test_plain_http_is_allowed_with_the_flag_or_locally(tmp_path, fake):
     )
     assert (tmp_path / "a" / "harness.yaml").exists()
     assert (tmp_path / "b" / "harness.yaml").exists()
+
+
+class _LocalServer:
+    """A real HTTP server on 127.0.0.1 that records the Authorization it sees.
+
+    ``routes`` maps a path to ``(status, headers, body)``; any other path 404s.
+    """
+
+    def __init__(self):
+        self.routes: dict[str, tuple[int, dict[str, str], bytes]] = {}
+        self.seen: list[tuple[str, str | None]] = []
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _serve(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                server.seen.append((self.path, self.headers.get("Authorization")))
+                status, headers, body = server.routes.get(self.path, (404, {}, b""))
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = _serve
+
+            def log_message(self, *_args):
+                pass
+
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._httpd.server_address[1]}"
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        self._thread.start()
+
+    def close(self):
+        self._httpd.shutdown()
+        self._httpd.server_close()
+        self._thread.join()
+
+
+@pytest.fixture()
+def servers(monkeypatch):
+    for var in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    started: list[_LocalServer] = []
+
+    def start() -> _LocalServer:
+        started.append(_LocalServer())
+        return started[-1]
+
+    yield start
+    for server in started:
+        server.close()
+
+
+def _serve_fake_cloud(server: _LocalServer, fake: FakeCloud, prefix: str = "") -> None:
+    status = {"slug": fake.slug, "version_hash": fake.version, "protocol": fake.protocol}
+    server.routes[f"{prefix}/api/link/status"] = (200, {}, json.dumps(status).encode())
+    server.routes[f"{prefix}/api/link/pull"] = (200, {}, fake._zip())
+    server.routes[f"{prefix}/api/link/traces"] = (200, {}, b'{"run_count": 0}')
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [("/api/link/status", "GET"), ("/api/link/pull", "GET"), ("/api/link/traces", "POST")],
+)
+def test_cross_host_redirect_never_forwards_the_token(servers, fake, path, method, code):
+    # For these codes the handler refuses the redirect before urllib applies its
+    # own POST semantics: 307/308 reject a POST redirect outright, 301/302/303
+    # downgrade a POST to a bodyless GET.
+    origin, landing = servers(), servers()
+    _serve_fake_cloud(landing, fake, prefix="/land")
+    origin.routes[path] = (code, {"Location": f"{landing.url}/land{path}"}, b"")
+    link = cloud.Link(base_url=origin.url, token="hl_link_tok")
+    payload = {"files": []} if method == "POST" else None
+    with pytest.raises(cloud.CloudError, match="refusing to follow a redirect"):
+        cloud._request(link, path, method=method, payload=payload)
+    assert origin.seen == [(path, "Bearer hl_link_tok")]
+    assert landing.seen == []  # the redirect was never followed
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_redirect_to_another_host_is_refused_for_every_3xx(servers, fake, code):
+    origin, landing = servers(), servers()
+    _serve_fake_cloud(landing, fake)
+    # Another host *name* for the same machine (localhost vs 127.0.0.1) is
+    # already a different origin. The two servers also bind different ports;
+    # the port-only case is covered separately below.
+    other = landing.url.replace("127.0.0.1", "localhost")
+    origin.routes["/api/link/status"] = (code, {"Location": f"{other}/api/link/status"}, b"")
+    link = cloud.Link(base_url=origin.url, token="hl_link_tok")
+    with pytest.raises(cloud.CloudError, match="refusing to follow a redirect"):
+        cloud.remote_status(link)
+    assert landing.seen == []
+
+
+def test_redirect_to_another_port_on_the_same_host_is_refused(servers, fake):
+    origin, landing = servers(), servers()
+    _serve_fake_cloud(landing, fake)
+    assert urlsplit(origin.url).hostname == urlsplit(landing.url).hostname
+    origin.routes["/api/link/status"] = (
+        302,
+        {"Location": f"{landing.url}/api/link/status"},
+        b"",
+    )
+    link = cloud.Link(base_url=origin.url, token="hl_link_tok")
+    with pytest.raises(cloud.CloudError, match="refusing to follow a redirect"):
+        cloud.remote_status(link)
+    assert landing.seen == []
+
+
+def test_redirect_to_an_unparseable_location_is_refused(servers):
+    origin = servers()
+    # urllib accepts this Location, but its port cannot be parsed.
+    origin.routes["/api/link/status"] = (
+        302,
+        {"Location": "http://127.0.0.1:notaport/api/link/status"},
+        b"",
+    )
+    link = cloud.Link(base_url=origin.url, token="hl_link_tok")
+    with pytest.raises(cloud.CloudError, match="refusing to follow a redirect to an unparseable"):
+        cloud.remote_status(link)
+    assert origin.seen == [("/api/link/status", "Bearer hl_link_tok")]
+
+
+def test_same_host_redirect_is_followed_with_the_token(servers, fake, tmp_path):
+    server = servers()
+    _serve_fake_cloud(server, fake, prefix="/v2")
+    server.routes["/api/link/status"] = (302, {"Location": "/v2/api/link/status"}, b"")
+    server.routes["/api/link/pull"] = (
+        307,
+        {"Location": f"{server.url}/v2/api/link/pull"},
+        b"",
+    )
+    result = cloud.link_harness(server.url, "hl_link_tok", tmp_path / "demo")
+    assert result["changed"] is True
+    assert (tmp_path / "demo" / "harness.yaml").exists()
+    assert ("/v2/api/link/status", "Bearer hl_link_tok") in server.seen
+    assert ("/v2/api/link/pull", "Bearer hl_link_tok") in server.seen
+
+
+def test_insecure_http_link_works_over_a_real_connection(servers, fake, tmp_path):
+    server = servers()
+    _serve_fake_cloud(server, fake)
+    cloud.link_harness(server.url, "hl_link_tok", tmp_path / "demo", allow_insecure_http=True)
+    assert cloud.pull(tmp_path / "demo")["changed"] is False
+    assert all(auth == "Bearer hl_link_tok" for _, auth in server.seen)
 
 
 def test_run_sync_flag_requires_a_linked_dir(tmp_path):

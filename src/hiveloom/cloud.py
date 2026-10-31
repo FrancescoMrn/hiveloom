@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import yaml
 
@@ -91,6 +91,43 @@ def save_link(harness_dir: str | Path, link: Link) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """(scheme, host, port) with the scheme's default port filled in."""
+    split = urlsplit(url)
+    scheme = split.scheme.lower()
+    return scheme, (split.hostname or "").lower(), split.port or _DEFAULT_PORTS.get(scheme)
+
+
+class _OriginPinningRedirectHandler(urlrequest.HTTPRedirectHandler):
+    """Follow a redirect only within the link's origin.
+
+    urllib re-sends the ``Authorization`` header on a followed redirect, so an
+    off-origin ``Location`` would hand the link token to another host (or
+    downgrade it to plain HTTP). Same-origin redirects are followed as usual.
+    """
+
+    def __init__(self, origin_url: str):
+        self._origin = _origin(origin_url)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A target whose origin can't be parsed is treated as off-origin.
+        try:
+            target = _origin(urljoin(req.full_url, newurl))
+            where = "{}://{}:{}".format(*target)
+        except Exception:
+            target, where = None, f"an unparseable location {newurl!r}"
+        if target != self._origin:
+            fp.close()
+            raise CloudError(
+                f"refusing to follow a redirect to {where} from the link "
+                "server — the link token is only sent to the configured host"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _request(
     link: Link,
     path: str,
@@ -105,7 +142,8 @@ def _request(
     request.add_header("Authorization", f"Bearer {link.token}")
     if data is not None:
         request.add_header("Content-Type", "application/json")
-    open_fn = opener or urlrequest.urlopen
+    # build_opener drops its default HTTPRedirectHandler when given a subclass.
+    open_fn = opener or urlrequest.build_opener(_OriginPinningRedirectHandler(url)).open
     try:
         with open_fn(request, timeout=_TIMEOUT) as response:
             return response.status, response.read()
