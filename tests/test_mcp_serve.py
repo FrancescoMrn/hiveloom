@@ -18,6 +18,7 @@ from hiveloom import construct, runner, trust
 from hiveloom.errors import SpecError
 from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
+from hiveloom.models.provider import ProviderUnreachable
 from hiveloom.serve.mcp import _sanitize, build_mcp_server
 from hiveloom.spec.loader import harness_path, load_spec
 
@@ -226,6 +227,20 @@ def test_check_http_bind_refuses_open_network_bind():
 # --------------------------------------------------------------------------- #
 # Errors as data: a caller on the far end of a pipe cannot read a traceback
 # --------------------------------------------------------------------------- #
+def test_run_tool_names_the_failure_kind(tmp_path: Path):
+    harness = _make_harness(tmp_path)
+    server = build_mcp_server(
+        [harness],
+        provider_factory=lambda: FakeModelProvider([ProviderUnreachable("refused")]),
+    )
+
+    result = anyio.run(server.call_tool, "run_example-summarizer", {"input": _SOURCE})
+
+    structured = result.structured_content
+    assert structured["status"] == "error"
+    assert structured["failure_kind"] == "provider_unreachable"
+
+
 def test_run_tool_returns_any_exception_as_a_structured_error(tmp_path: Path):
     """A run that cannot even start (no credentials, unreadable spec) must come
     back as a readable result, not as the SDK's opaque "Error executing tool"."""
@@ -243,6 +258,7 @@ def test_run_tool_returns_any_exception_as_a_structured_error(tmp_path: Path):
         "status": "error",
         "output": "",
         "reason": "RuntimeError: ANTHROPIC_API_KEY is not set",
+        "failure_kind": "unknown",
         "turns": 0,
         "cost_usd": 0.0,
         "run_id": "",

@@ -21,7 +21,13 @@ from hiveloom.models.openai_compat import (
     _normalize,
     _to_openai_messages,
 )
-from hiveloom.models.provider import ContextOverflowError, ModelConfig, ModelResponse
+from hiveloom.models.provider import (
+    ContextOverflowError,
+    ModelConfig,
+    ModelResponse,
+    ProviderError,
+    ProviderUnreachable,
+)
 
 # --------------------------------------------------------------------------- #
 # Per-server response-shape fixtures
@@ -511,6 +517,9 @@ def test_a_response_cut_off_mid_body_is_retried_not_fatal():
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -564,6 +573,9 @@ def test_an_error_inside_a_200_body_is_retried():
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -611,6 +623,9 @@ def test_a_non_transient_error_body_is_not_retried_forever():
 
         def __exit__(self, *exc):
             return False
+
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
 
         def read(self):
             calls["n"] += 1
@@ -680,6 +695,9 @@ def test_embedded_context_overflow_is_recoverable(monkeypatch):
         def __exit__(self, *exc):
             pass
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             return json.dumps({"error": {"code": 400,
                                         "message": "maximum context length exceeded"}}).encode()
@@ -710,6 +728,9 @@ def _serve_bodies(monkeypatch, *bodies: bytes) -> dict[str, int]:
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             calls["n"] += 1
             return bodies[min(calls["n"], len(bodies)) - 1]
@@ -735,6 +756,8 @@ def _complete(provider: OpenAICompatProvider, **config) -> ModelResponse:
     [
         pytest.param(b'{"choices": [{"finish_reason": "stop", "mess', id="truncated_json"),
         pytest.param(b"\xff\xfe\x00not utf-8", id="non_utf8"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b"\n", id="whitespace_only"),
     ],
 )
 def test_undecodable_body_is_retried(monkeypatch, first_body):
@@ -759,7 +782,8 @@ def test_undecodable_body_every_time_names_the_failure_and_the_body(monkeypatch)
     [
         pytest.param(b"<!doctype html><title>Sign in</title>", "not JSON", id="html"),
         pytest.param(b"Unauthorized", "not JSON", id="plain_text"),
-        pytest.param(b"", "not JSON", id="empty"),
+        pytest.param(b"\n  <!doctype html>", "not JSON", id="html_after_whitespace"),
+        pytest.param(b"1 error", "not JSON", id="value_then_junk"),
         pytest.param(b'["not", "a", "completion"]', "JSON list instead of an object", id="list"),
         pytest.param(b"null", "JSON NoneType instead of an object", id="null"),
     ],
@@ -884,3 +908,49 @@ def test_the_loop_refuses_a_tool_call_the_cap_cut_off(harness_dir, monkeypatch):
     events = [_json.loads(line) for line in Path(result.trace_path).read_text().splitlines()]
     refused = [e for e in events if e["type"] == "tool_truncated"]
     assert [e["payload"]["name"] for e in refused] == ["file_write"]
+
+
+def test_a_refused_connection_is_a_provider_unreachable(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+
+    def refuse(request, timeout=0):
+        raise urlerror.URLError("connection refused")
+
+    monkeypatch.setattr("hiveloom.models.openai_compat.urlrequest.urlopen", refuse)
+    with pytest.raises(ProviderUnreachable, match="provider unreachable"):
+        _complete(provider)
+
+
+def test_a_body_cut_off_every_time_is_a_provider_unreachable(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    _serve_bodies(monkeypatch, b'{"choices": [{"finish_reason": "stop", "mess')
+    with pytest.raises(ProviderUnreachable, match="undecodable body"):
+        _complete(provider)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b'{"error": {"message": "invalid model id", "code": 400}}', id="error_body"),
+        pytest.param(b"<!doctype html>", id="not_json"),
+        pytest.param(b'{"choices": []}', id="no_choices"),
+    ],
+)
+def test_an_answer_that_is_not_a_completion_is_a_provider_error(monkeypatch, body):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+    _serve_bodies(monkeypatch, body)
+    with pytest.raises(ProviderError) as excinfo:
+        _complete(provider)
+    assert not isinstance(excinfo.value, ProviderUnreachable)
+
+
+def test_an_http_error_status_is_a_provider_error(monkeypatch):
+    provider = OpenAICompatProvider("http://localhost:9", sleep=lambda _s: None)
+
+    def deny(request, timeout=0):
+        raise urlerror.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b"no key"))
+
+    monkeypatch.setattr("hiveloom.models.openai_compat.urlrequest.urlopen", deny)
+    with pytest.raises(ProviderError, match="HTTP 401") as excinfo:
+        _complete(provider)
+    assert not isinstance(excinfo.value, ProviderUnreachable)

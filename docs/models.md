@@ -265,7 +265,8 @@ vLLM reports `tool_calls` for a call it parsed even when generation stopped at
 the cap, and the loop refuses such a call rather than run it on unfinished
 arguments.
 
-Custom OpenAI-compatible endpoints can declare a positive `timeout_seconds`:
+Custom OpenAI-compatible endpoints can declare a positive `timeout_seconds`
+and turn streaming off:
 
 ```yaml
 providers:
@@ -273,14 +274,27 @@ providers:
     api: openai_compat
     base_url: http://localhost:8000/v1
     timeout_seconds: 600
+    stream: false
     models:
       - id: local-model
         max_output_tokens: 16384
 ```
 
-The default timeout is 120 seconds per HTTP request. Retries can consume
-additional time. Runtime wall-clock guardrails are checked at loop boundaries;
-they do not cancel a blocking HTTP request.
+Completions are streamed, so `timeout_seconds` (default 120) bounds the wait
+for the first token and then the idle gap between tokens, never the whole
+generation: a local model producing a long file at a few tokens a second
+finishes without a timeout in the way. A failure before the first token is
+retried like a dropped connection; a stall or a cut after it is reported as
+`provider stream broke after N chunks: ...` and never retried, because the
+server was already generating the reply and a retry would only run it again.
+An error the server reports as a stream event is classified like an error
+body: retried on 429 and 5xx, fatal otherwise. The request asks for the usage
+chunk with `stream_options`; a gateway that rejects that field is asked again
+without it, once, and not asked again.
+`stream: false` sends the one-shot request instead, for a gateway that cannot
+stream; the whole generation then has to fit in one `timeout_seconds` again.
+Runtime wall-clock guardrails are checked at loop boundaries; they do not
+cancel a blocking HTTP request.
 
 ## Generation and evolution models
 

@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from hiveloom import construct, delegation, ext, registry, runner, trust
 from hiveloom.logging.hive import Hive
 from hiveloom.models.fake import FakeModelProvider, text_response, tool_response
-from hiveloom.models.provider import ModelConfig
+from hiveloom.models.provider import ModelConfig, ProviderUnreachable
 from hiveloom.spec.loader import load_spec
 from hiveloom.spec.schema import DelegationConfig, HarnessSpec
 
@@ -45,6 +45,28 @@ def _harness(tmp_path: Path, name: str, task: str = "Do a small thing.") -> Path
 
 def _delegation_config(directory: Path, **fields: Any) -> None:
     construct.set_value(directory, "delegation", {"enabled": True, **fields})
+
+
+def test_a_delegated_error_carries_the_peers_failure_kind(tmp_path: Path):
+    """The adopted status is the peer's, so the kind that explains it is too."""
+    _fixture_provider({"peer-a": [ProviderUnreachable("refused")]})
+    parent = _harness(tmp_path, "parent")
+    peer = _harness(tmp_path, "peer-a", task="Summarize an article.")
+    construct.set_field(parent, "loop.require_verification", "false")
+    construct.set_field(peer, "loop.require_verification", "false")
+    registry.register(peer)
+    _delegation_config(parent, when=["on_start"])
+
+    result = runner.run_harness(
+        parent, "summarize this", literal_input=True,
+        provider=FakeModelProvider([text_response("peer-a")]),
+    )
+
+    assert result.status == "error"
+    assert result.failure_kind == "provider_unreachable"
+    assert [(d.status, d.failure_kind) for d in result.delegations] == [
+        ("error", "provider_unreachable")
+    ]
 
 
 def _events(result) -> list[dict[str, Any]]:

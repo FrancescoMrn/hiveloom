@@ -357,6 +357,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "ok": False,
                 "status": "error",
                 "reason": f"{type(exc).__name__}: {exc}",
+                "failure_kind": "unknown",
             }
         finally:
             self.server.release_control(run_id)

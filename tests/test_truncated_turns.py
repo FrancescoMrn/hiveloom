@@ -148,6 +148,9 @@ def test_model_params_reach_the_provider_payload(monkeypatch):
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             return json.dumps(
                 {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
@@ -188,6 +191,9 @@ def test_model_params_default_to_nothing_sent(monkeypatch):
         def __exit__(self, *exc):
             return False
 
+        def __iter__(self):  # http.client yields the body line by line
+            yield self.read()
+
         def read(self):
             return json.dumps(
                 {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
@@ -204,7 +210,7 @@ def test_model_params_default_to_nothing_sent(monkeypatch):
         config=ModelConfig(id="m"),
     )
 
-    assert set(sent) == {"model", "max_tokens", "messages"}
+    assert set(sent) == {"model", "max_tokens", "messages", "stream", "stream_options"}
 
 
 def test_a_one_turn_harness_still_submits_what_the_model_produced(harness_dir: Path):

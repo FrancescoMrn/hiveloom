@@ -200,6 +200,8 @@ def _error_result(reason: str) -> dict[str, Any]:
         "status": "error",
         "output": "",
         "reason": reason,
+        # The run never started, so nothing classified what stopped it.
+        "failure_kind": "unknown",
         "turns": 0,
         "cost_usd": 0.0,
         "run_id": "",
@@ -297,6 +299,7 @@ def _make_run_tool(
             "status": result.status,
             "output": result.output,
             "reason": result.reason,
+            "failure_kind": result.failure_kind,
             "turns": result.turns,
             "cost_usd": result.cost_usd,
             "run_id": result.run_id,
