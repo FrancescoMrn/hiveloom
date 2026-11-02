@@ -12,8 +12,14 @@ from pathlib import Path
 
 
 def hiveloom_home() -> Path:
-    """The user-level hiveloom directory: ``$HIVELOOM_HOME`` or ``~/.hiveloom``."""
-    return Path(os.environ.get("HIVELOOM_HOME", "~/.hiveloom")).expanduser()
+    """The user-level hiveloom directory: ``$HIVELOOM_HOME`` or ``~/.hiveloom``.
+
+    An empty ``HIVELOOM_HOME`` counts as unset (``Path("")`` is the working
+    directory, which would plant the trust store wherever the process started),
+    and a relative value is resolved to an absolute path.
+    """
+    override = os.environ.get("HIVELOOM_HOME") or "~/.hiveloom"
+    return Path(os.path.abspath(Path(override).expanduser()))
 
 
 def user_extensions_dir() -> Path:
